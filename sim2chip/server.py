@@ -40,7 +40,7 @@ def default_interviewer(home: Path):
     model = client.model_for("text")
     objaverse_dir = home / "cache" / "objaverse"
     cats = interview.CategoryIndex(cache_dir=objaverse_dir, live=interview.live_searcher(objaverse_dir))
-    return lambda: interview.Session(client, model, cats)
+    return lambda: interview.Session(client, model, cats, scene_check=interview.check_scene)
 
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,

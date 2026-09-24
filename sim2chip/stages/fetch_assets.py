@@ -2,6 +2,7 @@
 
 Downloads go to the shared cache; the job only keeps a manifest.
 Output: fetch_assets/manifest.json  [{uid, class, category, name, license, author, source, glb}]
+        fetch_assets/scene.json     {"skies": [...], "ground": [...]}  cache-relative paths
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ class FetchAssets(Stage):
     runtime = "cpu"
     uses_cache = True
     uses = ("classes", "scene")
-    version = "3"  # v2: glb paths relative to the cache root; v3: live search oversamples candidates
+    version = "4"  # v2: glb paths relative to the cache root; v3: live search oversamples; v4: scene.json
 
     def enabled(self, spec) -> bool:
         return any(c.assets for c in spec.classes)
@@ -36,13 +37,15 @@ class FetchAssets(Stage):
         lvis = self.objaverse_lvis(ctx)
         manifest = lvis + self.live_search(ctx, taken={m["uid"] for m in lvis})
         manifest = self.download(ctx, manifest)
-        n_sky = self.skies(ctx)
+        scene = self.scene_assets(ctx)
         out = ctx.out(self.name)
         (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
+        (out / "scene.json").write_text(json.dumps(scene, indent=1))
+        n_sky = len(scene["skies"])
         per_class = {}
         for m in manifest:
             per_class[m["class"]] = per_class.get(m["class"], 0) + 1
-        ctx.log(f"{len(manifest)} models {per_class}, {n_sky} skies")
+        ctx.log(f"{len(manifest)} models {per_class}, {n_sky} skies, {len(scene['ground'])} ground textures")
         return {"models": per_class}
 
     @staticmethod
@@ -110,7 +113,31 @@ class FetchAssets(Stage):
             ctx.log(f"{len(missing)} models failed to download and are dropped")
         return [m for m in manifest if m["glb"]]
 
-    def skies(self, ctx: Context) -> int:
+    def scene_assets(self, ctx: Context) -> dict:
+        """Sky maps and ground textures for the render, downloaded to the cache."""
+        from .. import polyhaven
+
+        sc, seed = ctx.spec.scene, ctx.spec.generation.seed
+        rel = lambda p: str(p.resolve().relative_to(ctx.cache.root.resolve()))  # noqa: E731
+        if sc.sky_tags or sc.template != "road":
+            ids = polyhaven.pick_skies(polyhaven.catalog("hdris"), sc.sky_tags, sc.weather, 12, seed)
+            if not ids:
+                raise ValueError(f"no Poly Haven sky matches tags {sc.sky_tags} and weather {sc.weather}")
+            ctx.log(f"skies for {sc.sky_tags or 'any place'} + {sc.weather}: {', '.join(ids)}")
+            skies = [rel(polyhaven.download(i, "hdris", ctx.cache.hdri / "polyhaven")) for i in ids]
+        else:
+            skies = [rel(ctx.cache.hdri / s.file) for s in self._road_skies(ctx)]
+        ground = []
+        if sc.ground_tags:
+            ids = polyhaven.pick_textures(polyhaven.catalog("textures"), sc.ground_tags, 8, seed)
+            if not ids:
+                raise ValueError(f"no Poly Haven texture matches ground_tags {sc.ground_tags}")
+            ctx.log(f"ground textures for {sc.ground_tags}: {', '.join(ids)}")
+            ground = [rel(polyhaven.download(i, "textures", ctx.cache.root / "textures")) for i in ids]
+        return {"skies": skies, "ground": ground}
+
+    def _road_skies(self, ctx: Context) -> list:
+        """The curated skies of the road template (NVIDIA's bucket), as in the spike."""
         d = ctx.cache.hdri
         d.mkdir(parents=True, exist_ok=True)
         wanted = [s for s in SKIES if s.weather in ctx.spec.scene.weather]
@@ -126,4 +153,4 @@ class FetchAssets(Stage):
                     tmp.unlink()
                     raise RuntimeError(f"sky download failed: {s.url}")
                 tmp.rename(f)
-        return len(wanted)
+        return wanted

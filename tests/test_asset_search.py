@@ -59,3 +59,17 @@ def test_interview_search_reports_live_counts():
     r = cats.search(["cow", "wild boar"])
     assert r["curated_categories"] == {"cow": 62}
     assert r["live_search"]["wild boar"] == {"models": 3, "examples": ["wild boar 0", "wild boar 1", "wild boar 2"]}
+
+
+def test_polyhaven_picks():
+    from sim2chip import polyhaven
+    hdris = {"a": {"categories": ["outdoor", "nature", "clear"], "tags": ["forest"]},
+             "b": {"categories": ["outdoor", "nature", "night"], "tags": ["forest"]},
+             "c": {"categories": ["indoor", "studio"], "tags": []},
+             "d": {"categories": ["indoor", "artificial light"], "tags": ["warehouse"]}}
+    assert polyhaven.pick_skies(hdris, ["forest"], ["clear"], 5, 0) == ["a"]
+    assert sorted(polyhaven.pick_skies(hdris, ["forest"], ["clear", "night"], 5, 0)) == ["a", "b"]
+    assert polyhaven.pick_skies(hdris, ["indoor"], ["clear"], 5, 0) == ["d"]  # weather ignored, no studios
+    assert polyhaven.pick_skies(hdris, ["indoor", "studio"], ["clear"], 5, 0) == ["c"]
+    tex = {"g": {"categories": ["terrain"], "tags": ["grass", "Leaves"]}, "r": {"categories": ["road"], "tags": []}}
+    assert polyhaven.pick_textures(tex, ["leaves"], 5, 0) == ["g"]

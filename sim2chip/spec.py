@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 ASSET_SOURCES = ("objaverse_lvis", "search")
+WEATHER = ("clear", "cloudy", "evening", "storm", "night")
 MEASURES = ("length", "width", "height")  # length and width: long and short side seen from above
 
 
@@ -63,9 +64,14 @@ class CameraSpec:
 
 @dataclass
 class SceneSpec:
+    """Where the targets are shown. "road" is a hand-built template; "generic" is built from data: a ground
+    texture chosen by `ground_tags` and sky maps chosen by `sky_tags` (both Poly Haven tags, CC0) plus
+    `weather`. Setting sky_tags also makes "road" draw its skies from Poly Haven."""
     template: str = "road"
     weather: list[str] = field(default_factory=lambda: ["clear", "cloudy", "evening", "storm"])
     distractors: list[str] = field(default_factory=lambda: ["tree", "person"])
+    sky_tags: list[str] = field(default_factory=list)
+    ground_tags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -230,6 +236,12 @@ def validate(spec: Spec) -> None:
                 raise SpecError(f"class {c.id}: search assets need queries")
             if c.assets.count < 1:
                 raise SpecError(f"class {c.id}: assets.count must be at least 1")
+    from .scenes import TEMPLATES
+    if spec.scene.template not in TEMPLATES:
+        raise SpecError(f"scene.template must be one of {sorted(TEMPLATES)}")
+    bad = [w for w in spec.scene.weather if w not in WEATHER]
+    if bad or not spec.scene.weather:
+        raise SpecError(f"scene.weather must be a non-empty subset of {WEATHER}")
     for k in spec.user_data.class_map:
         if k not in spec.labels:
             raise SpecError(f"user_data.class_map: '{k}' is not a class of the spec")

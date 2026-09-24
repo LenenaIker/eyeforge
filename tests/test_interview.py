@@ -43,3 +43,14 @@ def test_is_yes():
         assert interview.is_yes(a), a
     for a in ["no", "sí, pero cambia la altura", "add night please", "", "the trucks should be 10 m long instead"]:
         assert not interview.is_yes(a), a
+
+
+def test_scene_tags_are_checked():
+    scene = {"template": "generic", "sky_tags": ["moon"], "ground_tags": ["grass"]}
+    fixed = {"template": "generic", "sky_tags": ["forest"], "ground_tags": ["grass"]}
+    client = Scripted([{"spec": {**GOOD, "scene": scene}}, {"spec": {**GOOD, "scene": fixed}}])
+    check = lambda sc: "no Poly Haven sky matches" if "moon" in sc.sky_tags else None  # noqa: E731
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}), scene_check=check)
+    t = s.reply("cows in a forest")
+    assert t.kind == "confirm" and t.spec.scene.sky_tags == ["forest"]
+    assert "no Poly Haven sky matches" in client.seen[1]

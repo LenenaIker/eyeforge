@@ -2,7 +2,7 @@
 distractors. The spec picks one by name (scene.template)."""
 from __future__ import annotations
 
-TEMPLATES = {"road": "sim2chip.scenes.road:RoadScene"}
+TEMPLATES = {"road": "sim2chip.scenes.road:RoadScene", "generic": "sim2chip.scenes.generic:GenericScene"}
 
 
 def load(name: str):

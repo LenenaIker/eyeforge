@@ -153,9 +153,11 @@ def test_sync_pulls_what_the_stage_reads(tmp_path):
     objects = {("j", "spec.json"): b"{}", ("j", "input/a.jpg"): b"x", ("j", "fetch_assets/manifest.json"): manifest,
                ("j", "convert_assets/assets.json"): b"[]", ("j", "render/0.png"): b"p",
                ("c", "usd/norm/u1_v2.usd"): b"u", ("c", "usd/raw/textures/u1_texture0.png"): b"t",
-               ("c", "usd/raw/u2.usd"): b"other job", ("c", "hdri/sky.hdr"): b"h"}
+               ("c", "usd/raw/u2.usd"): b"other job", ("c", "hdri/sky.hdr"): b"h", ("c", "hdri/other.hdr"): b"o",
+               ("j", "fetch_assets/scene.json"): json.dumps({"skies": ["hdri/sky.hdr"], "ground": []}).encode()}
     job, cache = tmp_path / "job", tmp_path / "cache"
     cloud_sync.pull(Store(objects), BY_NAME["preview_assets"], job, cache, "j", "c")
     got = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_file())
     assert got == ["cache/hdri/sky.hdr", "cache/usd/norm/u1_v2.usd", "cache/usd/raw/textures/u1_texture0.png",
-                   "job/convert_assets/assets.json", "job/fetch_assets/manifest.json", "job/spec.json"]
+                   "job/convert_assets/assets.json", "job/fetch_assets/manifest.json", "job/fetch_assets/scene.json",
+                   "job/spec.json"]

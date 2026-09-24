@@ -10,7 +10,7 @@ local disk and pushes what it wrote:
 Buckets come from S2C_JOB_BUCKET and S2C_CACHE_BUCKET, credentials from AWS_ACCESS_KEY_ID and
 AWS_SECRET_ACCESS_KEY. What a stage reads: spec.json, input/ if `reads_input`, the folders of the
 stages in `after`, and, if `uses_cache`, every cache object of this job's assets (keys contain the
-asset uid) plus the skies. Cache files already present (same size) are not transferred again.
+asset uid) plus the skies and ground textures listed in fetch_assets/scene.json. Cache files already present (same size) are not transferred again.
 """
 from __future__ import annotations
 
@@ -109,8 +109,10 @@ def pull(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_b
     m = 0
     if stage.uses_cache:
         uids = asset_uids(job)
-        ckeys = [k for k in store.listing(cache_bucket)
-                 if k.startswith("hdri/") or any(u in k for u in uids)]
+        scene_file = job / "fetch_assets" / "scene.json"
+        scene = json.loads(scene_file.read_text()) if scene_file.exists() else {}
+        listed = set(scene.get("skies", []) + scene.get("ground", []))
+        ckeys = [k for k in store.listing(cache_bucket) if k in listed or any(u in k for u in uids)]
         m = store.pull(cache_bucket, ckeys, cache)
     print(f"[sim2chip] pulled {n} job files and {m} cache files", flush=True)
 

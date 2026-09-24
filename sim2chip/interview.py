@@ -15,8 +15,6 @@ from pathlib import Path
 from typing import Callable
 
 from . import hardware, spec as spec_mod
-from .scenes import TEMPLATES
-from .scenes.skies import SKIES
 
 SYSTEM = """You are Sim2Chip's setup assistant. Sim2Chip trains a tiny image classifier for low-power hardware
 (for example an ESP32-CAM) from synthetic images rendered with 3D models plus a few real photos from the user.
@@ -42,7 +40,13 @@ If an object still has too few models, or you would substitute it with something
 another class, say so plainly and ASK the user whether that matters for their goal (for some goals it is
 critical, for others irrelevant). Offer the options: merge classes, use a substitute, or rely on their own
 real photos for that class. Never merge or substitute silently.
-Scene templates available: {templates}. Weather options: {weather}.
+Scene: template "road" is a hand-built road with verges (traffic). For anything else use "generic": a ground
+plane textured from Poly Haven by "ground_tags" and sky maps (which also give the background) chosen by
+"sky_tags" plus "weather". Tags must all match, so pick 1 or 2 specific ones: sky categories include
+{sky_tags}; ground categories include {ground_tags}; free tags also work, e.g. sky "forest", "farm", "city", "parking", "warehouse", ground
+"grass", "leaves", "dirt", "gravel", "mud", "asphalt", "tiles". Indoors, put "indoor" in sky_tags (weather is
+then ignored). Tags are checked when you send the spec.
+Weather options: {weather}. Distractors (optional): "tree", "person".
 
 Spec format (JSON, defaults shown; omit a field to keep its default):
 {schema}
@@ -60,10 +64,26 @@ EXAMPLE = {"name": "example", "classes": [{"id": "cow", "description": "cows see
            "qa": {"mode": "auto"}}
 
 
+FALLBACK_TAGS = {"hdris": ["outdoor", "nature", "urban", "indoor", "night", "sunrise-sunset", "overcast",
+                            "partly cloudy", "clear"],
+                 "textures": ["floor", "terrain", "natural", "rock", "concrete", "sand", "road", "asphalt",
+                              "cobblestone", "wood", "brick"]}
+
+
+def scene_tags(kind: str) -> list[str]:
+    """Poly Haven categories, live when the API answers."""
+    from . import polyhaven
+    try:
+        return polyhaven.categories(kind)[:25]
+    except OSError:
+        return FALLBACK_TAGS[kind]
+
+
 def system_prompt() -> str:
     schema = json.dumps(spec_mod.to_dict(spec_mod.from_dict(EXAMPLE)), indent=1)
-    return SYSTEM.format(hardware=", ".join(hardware.PROFILES), templates=", ".join(TEMPLATES),
-                         weather=", ".join(sorted({s.weather for s in SKIES})), schema=schema)
+    return SYSTEM.format(hardware=", ".join(hardware.PROFILES), weather=", ".join(spec_mod.WEATHER),
+                         sky_tags=", ".join(scene_tags("hdris")), ground_tags=", ".join(scene_tags("textures")),
+                         schema=schema)
 
 
 class CategoryIndex:
@@ -100,6 +120,21 @@ class CategoryIndex:
                 if any(v in name or (len(base) >= 4 and base in v) for v in variants):
                     hits[name] = n
         return dict(sorted(hits.items(), key=lambda kv: -kv[1])[:limit])
+
+
+def check_scene(scene) -> str | None:
+    """Do the scene's Poly Haven tags find skies and ground textures? Checked live when a spec is proposed."""
+    from . import polyhaven
+    if scene.template == "road" and not scene.sky_tags:
+        return None
+    try:
+        if not polyhaven.pick_skies(polyhaven.catalog("hdris"), scene.sky_tags, scene.weather, 1, 0):
+            return f"no Poly Haven sky matches sky_tags {scene.sky_tags} with weather {scene.weather}; use fewer tags"
+        if scene.ground_tags and not polyhaven.pick_textures(polyhaven.catalog("textures"), scene.ground_tags, 1, 0):
+            return f"no Poly Haven ground texture matches ground_tags {scene.ground_tags}; use fewer or other tags"
+    except OSError:
+        return None  # offline: the render stage will report it
+    return None
 
 
 def live_searcher(objaverse_dir: Path, pages: int = 2):
@@ -159,8 +194,9 @@ class Turn:
 class Session:
     """One interview, driven one user message at a time (terminal, web or any other front end)."""
 
-    def __init__(self, client, model: str, categories: CategoryIndex, max_turns: int = 60):
+    def __init__(self, client, model: str, categories: CategoryIndex, max_turns: int = 60, scene_check=None):
         self.client, self.model, self.categories, self.max_turns = client, model, categories, max_turns
+        self.scene_check = scene_check  # scene -> error message or None (live Poly Haven check)
         self.messages = [{"role": "system", "content": system_prompt()}]
         self.proposed: spec_mod.Spec | None = None
         self.finished = False
@@ -208,6 +244,9 @@ class Session:
                                for cat in c.assets.categories if cat not in self.categories.counts]
                     if unknown:
                         raise spec_mod.SpecError(f"categories not found in Objaverse-LVIS: {unknown}, use search")
+                    problem = self.scene_check(s.scene) if self.scene_check else None
+                    if problem:
+                        raise spec_mod.SpecError(problem)
                 except spec_mod.SpecError as e:
                     self._note(f"The spec is invalid: {e}. Fix it and send it again.")
                     continue
@@ -223,9 +262,9 @@ class Session:
 
 
 def run(client, model: str, categories: CategoryIndex, ask: Callable[[str], str], tell: Callable[[str], None],
-        max_turns: int = 60) -> spec_mod.Spec | None:
+        max_turns: int = 60, scene_check=None) -> spec_mod.Spec | None:
     """Terminal front end: ask() gets the user's answer to a prompt, tell() shows text."""
-    session = Session(client, model, categories, max_turns)
+    session = Session(client, model, categories, max_turns, scene_check)
     turn = session.reply(ask(FIRST_QUESTION + "\n> "))
     while True:
         if turn.kind == "say":

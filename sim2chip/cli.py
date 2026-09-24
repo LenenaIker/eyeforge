@@ -89,7 +89,7 @@ def cmd_interview(args) -> int:
     print(f"Sim2Chip interview with {model} (Nebius Token Factory). Ctrl+C to quit.\n")
     objaverse_dir = home / "cache" / "objaverse"
     cats = interview.CategoryIndex(cache_dir=objaverse_dir, live=interview.live_searcher(objaverse_dir))
-    spec = interview.run(client, model, cats, ask=input, tell=print)
+    spec = interview.run(client, model, cats, ask=input, tell=print, scene_check=interview.check_scene)
     if spec is None:
         return 1
     out = Path(args.out or f"specs/{spec.name}.json")

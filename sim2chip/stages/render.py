@@ -20,7 +20,7 @@ class Render(Stage):
     gpu = "rtx"
     max_hours = 2
     uses = ("scene", "camera", "generation", "classes", "background_class")
-    after = ("qa_assets",)
+    after = ("qa_assets", "fetch_assets")  # fetch_assets: scene.json with skies and ground textures
 
     def enabled(self, spec) -> bool:
         return any(c.assets for c in spec.classes)
@@ -36,7 +36,6 @@ class Render(Stage):
 
         from .. import scenes
         from ..scenes.common import Paint, Props, look_at, set_visible
-        from ..scenes.skies import SKIES
 
         spec, cam_spec, gen = ctx.spec, ctx.spec.camera, ctx.spec.generation
         out = ctx.job.stage_dir(self.name)
@@ -55,8 +54,10 @@ class Render(Stage):
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
 
         props = Props(stage, app)
-        skies = [str(ctx.cache.hdri / s.file) for s in SKIES if s.weather in spec.scene.weather]
-        scene = scenes.load(spec.scene.template)(stage, props, rng, skies, spec.scene.distractors)
+        chosen = json.loads((ctx.job.stage_dir("fetch_assets") / "scene.json").read_text())
+        scene = scenes.load(spec.scene.template)(
+            stage, props, rng, skies=[str(ctx.cache.root / p) for p in chosen["skies"]],
+            distractors=spec.scene.distractors, ground=[str(ctx.cache.root / p) for p in chosen["ground"]])
         scene.build()
         paint = Paint(stage)
 

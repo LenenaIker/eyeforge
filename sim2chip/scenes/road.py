@@ -18,7 +18,8 @@ VERGES = [(0.18, 0.28, 0.10), (0.30, 0.25, 0.16), (0.35, 0.33, 0.30), (0.22, 0.3
 
 
 class RoadScene:
-    def __init__(self, stage, props, rng, skies: list[str], distractors: list[str]):
+    def __init__(self, stage, props, rng, skies: list[str], distractors: list[str], ground: list[str] = ()):
+        # ground textures are not used: the road template paints its verges with plain colors
         self.stage, self.props, self.rng, self.skies = stage, props, rng, skies
         self.want = set(distractors)
         self.trees, self.people = [], []
