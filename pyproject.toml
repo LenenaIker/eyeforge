@@ -16,13 +16,17 @@ dependencies = []
 train = ["tensorflow>=2.18,<2.19", "numpy", "pillow"]
 assets = ["objaverse", "numpy"]
 cloud = ["boto3"]
-dev = ["pytest"]
+web = ["fastapi", "uvicorn", "python-multipart"]
+dev = ["pytest", "httpx"]
 
 [project.scripts]
 sim2chip = "sim2chip.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["sim2chip*"]
+
+[tool.setuptools.package-data]
+sim2chip = ["web/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

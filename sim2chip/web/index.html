@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sim2Chip</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --text: #1c2330; --muted: #637083; --line: #dde2ea;
+  --accent: #2f6fdf; --accent-text: #ffffff; --ok: #1f9d55; --warn: #c27c0e; --bad: #d64545;
+  --me: #e8f0fe; --bot: #f1f3f6; --code: #f3f5f8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11151c; --card: #19202a; --text: #e4e9f0; --muted: #93a0b3; --line: #2a3340;
+    --accent: #5b8ff0; --accent-text: #0d1117; --ok: #3fbf7a; --warn: #e0a03a; --bad: #ef6b6b;
+    --me: #1f3252; --bot: #222a36; --code: #141a22;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { max-width: 860px; margin: 0 auto; padding: 28px 16px 8px; }
+header h1 { margin: 0; font-size: 26px; letter-spacing: -0.5px; }
+header p { margin: 4px 0 0; color: var(--muted); }
+.badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px;
+         border: 1px solid var(--line); color: var(--muted); margin-left: 8px; vertical-align: middle; }
+main { max-width: 860px; margin: 0 auto; padding: 8px 16px 48px; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px;
+          margin-top: 16px; }
+section h2 { margin: 0 0 4px; font-size: 17px; }
+section .hint { margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+.step { color: var(--accent); font-weight: 600; margin-right: 6px; }
+#chat { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow-y: auto; margin-bottom: 12px; }
+.msg { padding: 9px 12px; border-radius: 10px; max-width: 85%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.bot { background: var(--bot); align-self: flex-start; }
+.msg.me { background: var(--me); align-self: flex-end; }
+.msg.sys { color: var(--muted); font-size: 13px; align-self: center; background: none; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+input[type=text], textarea, select { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
+textarea { width: 100%; min-height: 180px; font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+           background: var(--code); }
+button { font: inherit; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text);
+         border-radius: 8px; padding: 9px 16px; cursor: pointer; font-weight: 500; }
+button.ghost { background: transparent; color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+details summary { cursor: pointer; color: var(--muted); margin: 10px 0 6px; }
+#drop { border: 2px dashed var(--line); border-radius: 10px; padding: 22px; text-align: center; color: var(--muted);
+        cursor: pointer; }
+#drop.over { border-color: var(--accent); color: var(--accent); }
+#thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+#thumbs img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+ol.stages { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+ol.stages li { display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px; border-radius: 8px;
+               background: var(--bg); border: 1px solid var(--line); }
+.state { font-size: 13px; font-weight: 600; }
+.state.done { color: var(--ok); } .state.running { color: var(--warn); } .state.failed { color: var(--bad); }
+.state.pending { color: var(--muted); }
+pre.log { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+          font-size: 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.stat { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.stat b { display: block; font-size: 20px; }
+.stat span { color: var(--muted); font-size: 13px; }
+.hidden { display: none; }
+.muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sim2Chip <span class="badge" id="backend">backend</span></h1>
+  <p>Describe what your camera should see. Get a tiny model ready to flash on a $10 chip.</p>
+</header>
+<main>
+  <section id="s-describe">
+    <h2><span class="step">1</span>Describe</h2>
+    <p class="hint">Chat with Nemotron (Nebius Token Factory). It asks about your objects, camera and hardware, and
+      writes the spec.</p>
+    <div id="chat"></div>
+    <div class="row" id="chat-input">
+      <input type="text" id="say" placeholder="e.g. cows and horses passing a gate, camera on a post 3 m high"
+             autocomplete="off">
+      <button id="send">Send</button>
+    </div>
+    <div class="row hidden" id="confirm">
+      <button id="yes">Looks good</button>
+      <span class="muted">or type what to change above</span>
+    </div>
+    <details id="spec-box">
+      <summary>Spec (JSON): paste your own or edit the proposed one</summary>
+      <textarea id="spec" spellcheck="false" placeholder='{"name": "...", "classes": [...]}'></textarea>
+    </details>
+  </section>
+
+  <section id="s-photos">
+    <h2><span class="step">2</span>Photos <span class="muted">(optional)</span></h2>
+    <p class="hint">A few real photos from your camera help a lot. No need to label them: a vision model does it,
+      and doubtful ones are set aside.</p>
+    <div id="drop">Drop images here or click to choose</div>
+    <input type="file" id="files" accept="image/*" multiple class="hidden">
+    <div id="thumbs"></div>
+  </section>
+
+  <section id="s-run">
+    <h2><span class="step">3</span>Train</h2>
+    <p class="hint">Renders synthetic images with Isaac Sim, trains, quantizes to int8 and exports for the chip.</p>
+    <div class="row">
+      <button id="train" disabled>Train my model</button>
+      <select id="jobs"><option value="">or open an existing job</option></select>
+    </div>
+    <div id="progress" class="hidden">
+      <p class="muted" id="job-line"></p>
+      <ol class="stages" id="stages"></ol>
+      <details><summary>Log</summary><pre class="log" id="log"></pre></details>
+    </div>
+  </section>
+
+  <section id="s-result" class="hidden">
+    <h2><span class="step">4</span>Your model</h2>
+    <div class="stats" id="stats"></div>
+    <div class="row">
+      <a id="dl-h"><button>model_data.h (Arduino / ESP-IDF)</button></a>
+      <a id="dl-tflite"><button class="ghost">model_int8.tflite</button></a>
+      <a id="dl-report"><button class="ghost">report.json</button></a>
+    </div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let session = null, photos = [], currentJob = null, timer = null;
+
+function add(kind, text) {
+  const d = document.createElement("div");
+  d.className = "msg " + kind;
+  d.textContent = text;
+  $("chat").appendChild(d);
+  $("chat").scrollTop = $("chat").scrollHeight;
+}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+
+function specText() { return $("spec").value.trim(); }
+function refreshTrain() { $("train").disabled = !specText(); }
+
+async function send(text) {
+  if (!text) return;
+  add("me", text);
+  $("say").value = "";
+  $("send").disabled = true;
+  $("confirm").classList.add("hidden");
+  add("sys", "thinking...");
+  try {
+    if (!session) session = (await api("/api/interview", {method: "POST"})).session;
+    const t = await api(`/api/interview/${session}`, {method: "POST", headers: {"Content-Type": "application/json"},
+                                                      body: JSON.stringify({text})});
+    $("chat").lastChild.remove();
+    if (t.kind === "say") add("bot", t.text);
+    if (t.kind === "confirm") {
+      add("bot", t.text);
+      $("spec").value = JSON.stringify(t.spec, null, 2);
+      $("confirm").classList.remove("hidden");
+    }
+    if (t.kind === "done") {
+      add("sys", "Spec ready. Add photos if you have them, then train.");
+      $("spec").value = JSON.stringify(t.spec, null, 2);
+      $("chat-input").classList.add("hidden");
+      session = null;
+    }
+    if (t.kind === "failed") { add("sys", t.text); session = null; }
+  } catch (e) {
+    $("chat").lastChild.remove();
+    add("sys", "Error: " + e.message);
+  }
+  $("send").disabled = false;
+  refreshTrain();
+}
+
+function addPhotos(list) {
+  for (const f of list) {
+    if (!f.type.startsWith("image/")) continue;
+    photos.push(f);
+    const img = document.createElement("img");
+    img.src = URL.createObjectURL(f);
+    $("thumbs").appendChild(img);
+  }
+  $("drop").textContent = `${photos.length} photo(s) selected. Drop more or click to add.`;
+}
+
+async function train() {
+  let spec;
+  try { spec = JSON.parse(specText()); } catch (e) { alert("The spec is not valid JSON: " + e.message); return; }
+  const form = new FormData();
+  form.append("spec", JSON.stringify(spec));
+  photos.forEach((f) => form.append("photos", f, f.name));
+  $("train").disabled = true;
+  try {
+    const r = await api("/api/jobs", {method: "POST", body: form});
+    watch(r.job);
+    loadJobs();
+  } catch (e) { alert(e.message); $("train").disabled = false; }
+}
+
+function watch(job) {
+  currentJob = job;
+  $("progress").classList.remove("hidden");
+  clearInterval(timer);
+  poll();
+  timer = setInterval(poll, 5000);
+}
+
+async function poll() {
+  let s;
+  try { s = await api(`/api/jobs/${currentJob}`); } catch (e) { return; }
+  const done = s.stages.filter((x) => x.state === "done").length;
+  $("job-line").textContent = `Job ${s.job}: ${done}/${s.stages.length} stages` +
+    (s.cloud_usd ? `, about $${s.cloud_usd.toFixed(2)} of cloud GPU` : "") + (s.running ? ", running" : "");
+  $("stages").innerHTML = "";
+  for (const st of s.stages) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span>${st.name} <span class="muted">(${st.runtime})</span></span>` +
+                   `<span class="state ${st.state}">${st.state}</span>`;
+    $("stages").appendChild(li);
+  }
+  $("log").textContent = s.log.join("\n");
+  if (s.report) showResult(s);
+  if (!s.running && (s.report || s.stages.some((x) => x.state === "failed"))) clearInterval(timer);
+  refreshTrain();
+}
+
+function showResult(s) {
+  const r = s.report;
+  const acc = r.real_accuracy ? `${(r.real_accuracy.mean * 100).toFixed(1)}%` : "n/a";
+  const stat = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
+  $("stats").innerHTML = stat(acc, "accuracy on your real photos") +
+    stat(`${(r.val_accuracy * 100).toFixed(1)}%`, "synthetic validation") +
+    stat(`${r.model_kb} KB`, `int8, ${r.input[0]}x${r.input[1]} input`) +
+    stat(r.hardware, r.labels.join(", "));
+  for (const [id, f] of [["dl-h", "model_data.h"], ["dl-tflite", "model_int8.tflite"], ["dl-report", "report.json"]])
+    $(id).href = `/api/jobs/${s.job}/files/${f}`;
+  $("s-result").classList.remove("hidden");
+}
+
+async function loadJobs() {
+  const {jobs} = await api("/api/jobs");
+  const sel = $("jobs");
+  sel.length = 1;
+  for (const j of jobs) sel.add(new Option(j, j));
+}
+
+$("send").onclick = () => send($("say").value.trim());
+$("say").onkeydown = (e) => { if (e.key === "Enter") send($("say").value.trim()); };
+$("yes").onclick = () => send("yes");
+$("spec").oninput = refreshTrain;
+$("drop").onclick = () => $("files").click();
+$("files").onchange = (e) => addPhotos(e.target.files);
+$("drop").ondragover = (e) => { e.preventDefault(); $("drop").classList.add("over"); };
+$("drop").ondragleave = () => $("drop").classList.remove("over");
+$("drop").ondrop = (e) => { e.preventDefault(); $("drop").classList.remove("over"); addPhotos(e.dataTransfer.files); };
+$("train").onclick = train;
+$("jobs").onchange = (e) => { if (e.target.value) watch(e.target.value); };
+
+api("/api/config").then((c) => {
+  $("backend").textContent = c.backend === "nebius" ? "Nebius AI Cloud" : "local GPU";
+  add("bot", c.first_question);
+});
+loadJobs();
+</script>
+</body>
+</html>

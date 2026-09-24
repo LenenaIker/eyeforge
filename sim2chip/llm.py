@@ -70,7 +70,11 @@ def parse_json(text: str):
     if start < 0:
         raise ValueError(f"no JSON in answer: {text[:200]!r}")
     end = max(text.rfind("}"), text.rfind("]"))
-    return json.loads(text[start:end + 1])
+    try:
+        return json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        # Models sometimes add a second object or a remark after the JSON: keep the first complete value.
+        return json.JSONDecoder().raw_decode(text[start:])[0]
 
 
 @dataclass

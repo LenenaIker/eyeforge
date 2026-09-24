@@ -5,6 +5,7 @@
     sim2chip status lora_alarm_traffic
     sim2chip stages specs/lora_alarm_traffic.json
     sim2chip interview
+    sim2chip serve --backend nebius
 """
 from __future__ import annotations
 
@@ -98,6 +99,13 @@ def cmd_interview(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    from .server import serve
+    print(f"Sim2Chip web on http://{args.host}:{args.port}  (backend {args.backend})")
+    serve(Path(args.home), args.backend, args.host, args.port, args.max_usd)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="sim2chip")
     p.add_argument("--home", default=str(default_home()), help="folder with jobs/ and cache/ (env SIM2CHIP_HOME)")
@@ -130,6 +138,13 @@ def main(argv: list[str] | None = None) -> int:
     iv.add_argument("--out", help="where to save the spec (default specs/<name>.json)")
     iv.add_argument("--overwrite", action="store_true")
     iv.set_defaults(func=cmd_interview)
+
+    sv = sub.add_parser("serve", help="web UI and API: interview, photos, run, progress, download")
+    sv.add_argument("--backend", default="local", choices=["local", "nebius"])
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8000)
+    sv.add_argument("--max-usd", type=float, help="nebius: spend cap per run")
+    sv.set_defaults(func=cmd_serve)
 
     args = p.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)  # progress shows up when piped to tee or a log file

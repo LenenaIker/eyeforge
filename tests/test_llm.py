@@ -86,6 +86,8 @@ def test_model_selection(server, monkeypatch):
 def test_parse_json_variants():
     assert parse_json('{"a": 1}') == {"a": 1}
     assert parse_json('Sure! {"a": [1, 2]} hope it helps') == {"a": [1, 2]}
+    assert parse_json('{"say": "hi"}\n{"say": "again"}') == {"say": "hi"}
+    assert parse_json('{"say": "a {b}"} then {oops') == {"say": "a {b}"}
     with pytest.raises(ValueError):
         parse_json("no json here")
 
