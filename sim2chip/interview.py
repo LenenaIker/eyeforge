@@ -82,6 +82,21 @@ class CategoryIndex:
         return dict(sorted(hits.items(), key=lambda kv: -kv[1])[:limit])
 
 
+YES = {"y", "yes", "yeah", "yep", "ok", "okay", "sure", "correct", "right", "s", "si", "sí", "vale", "claro",
+       "correcto", "perfecto", "adelante", "bien", "de acuerdo"}
+NO = {"no", "not", "but", "pero", "cambia", "change", "falta", "missing"}
+
+
+def is_yes(answer: str) -> bool:
+    """A short affirmative answer ("Sí, adelante.", "ok!", "yes please") without a change request."""
+    import re
+    words = re.findall(r"[a-záéíóúñ]+", answer.lower())
+    if not words or len(words) > 6 or any(w in NO for w in words):
+        return False
+    text = " ".join(words)
+    return words[0] in YES or text in YES
+
+
 def summary(s: spec_mod.Spec) -> str:
     lines = [f"Spec '{s.name}' for {s.hardware}:",
              f"  classes: {', '.join(s.labels)} (background: {s.background_class})"]
@@ -102,7 +117,7 @@ def run(client, model: str, categories: CategoryIndex, ask: Callable[[str], str]
     from .llm import parse_json
 
     messages = [{"role": "system", "content": system_prompt()}]
-    first = ask("Describe what your camera should see: ")
+    first = ask("Describe what your camera should see / Describe qué debe ver tu cámara:\n> ")
     messages.append({"role": "user", "content": first})
     for _ in range(max_turns):
         text = client.chat(messages, model, purpose="interview", temperature=0.3, max_tokens=4096)
@@ -129,8 +144,8 @@ def run(client, model: str, categories: CategoryIndex, ask: Callable[[str], str]
                 messages.append({"role": "user", "content": f"The spec is invalid: {e}. Fix it and send it again."})
                 continue
             tell(summary(s))
-            answer = ask("Is this right? (yes, or tell me what to change) > ")
-            if answer.strip().lower() in ("y", "yes", "s", "si", "sí", "ok"):
+            answer = ask("Is this right? / ¿Es correcto? (yes/sí, or tell me what to change / o dime qué cambiar) > ")
+            if is_yes(answer):
                 return s
             messages.append({"role": "user", "content": f"The user wants changes: {answer}"})
         else:

@@ -36,3 +36,10 @@ def test_interview_flow():
 def test_system_prompt_mentions_schema():
     p = interview.system_prompt()
     assert '"target_fill"' in p and "esp32cam" in p and "road" in p
+
+
+def test_is_yes():
+    for a in ["yes", "Sí, adelante.", "ok!", "vale", "de acuerdo", "Perfecto, gracias", "si"]:
+        assert interview.is_yes(a), a
+    for a in ["no", "sí, pero cambia la altura", "add night please", "", "the trucks should be 10 m long instead"]:
+        assert not interview.is_yes(a), a
