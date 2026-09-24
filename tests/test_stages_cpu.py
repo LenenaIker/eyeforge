@@ -101,3 +101,16 @@ def test_export_report_is_portable(tmp_path):
     report = json.loads((ctx.job.stage_dir("export") / "report.json").read_text())
     assert report["job"] == "t" and report["model_kb"] == 2.0
     assert (ctx.job.stage_dir("export") / report["model_path"]).read_bytes() == b"\x00" * 2048
+
+
+def test_qa_caps_oversampled_search_classes(tmp_path):
+    classes = [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
+                "assets": {"source": "search", "queries": ["cow"], "count": 2}},
+               {"id": "dog", "size_m": {"measure": "length", "range": [0.5, 1]}, "assets": {"categories": ["dog"]}}]
+    ctx = ctx_for(tmp_path, classes=classes)
+    assets = [{"uid": u, "class": c, "usd": f"usd/{u}.usd", "dims": [2, 1, 1]}
+              for u, c in [("a", "cow"), ("b", "cow"), ("c", "cow"), ("d", "cow"), ("e", "dog")]]
+    (ctx.out("convert_assets") / "assets.json").write_text(json.dumps(assets))
+    assert QAAssets().run(ctx)["kept"] == {"cow": 2, "dog": 1}
+    kept = json.loads((ctx.job.stage_dir("qa_assets") / "assets.json").read_text())
+    assert [a["uid"] for a in kept] == ["a", "b", "e"]  # search relevance order

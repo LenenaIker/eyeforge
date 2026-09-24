@@ -115,9 +115,15 @@ class QAAssets(Stage):
             raise ValueError(f"qa.class_override uses classes that are not in the spec: {bad}")
         kept = [{**a, "class": override.get(a["uid"], a["class"]), "no_color": a["uid"] in no_color}
                 for a in assets if a["uid"] not in exclude]
+        # Live-search classes were oversampled: keep the first `count` survivors (search relevance order).
+        cap = {c.id: c.assets.count for c in ctx.spec.classes if c.assets and c.assets.source == "search"}
         per_class = {}
+        capped = []
         for a in kept:
-            per_class[a["class"]] = per_class.get(a["class"], 0) + 1
+            if per_class.get(a["class"], 0) < cap.get(a["class"], len(kept)):
+                per_class[a["class"]] = per_class.get(a["class"], 0) + 1
+                capped.append(a)
+        kept = capped
         empty = [c.id for c in ctx.spec.classes if c.assets and not per_class.get(c.id)]
         if empty:
             raise ValueError(f"no usable 3D models left for classes {empty}")

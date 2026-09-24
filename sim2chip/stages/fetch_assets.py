@@ -15,6 +15,9 @@ from .base import Context, Stage
 
 # Licenses that allow commercial use and derivatives (attribution is listed in the export report).
 OK_LICENSES = {"by", "by-sa", "cc0"}
+# Live search results are noisy (skulls, toys, fragments): fetch this many candidates per wanted model and
+# let asset QA keep the best `count`.
+SEARCH_OVERSAMPLE = 2
 
 
 class FetchAssets(Stage):
@@ -22,7 +25,7 @@ class FetchAssets(Stage):
     runtime = "cpu"
     uses_cache = True
     uses = ("classes", "scene")
-    version = "2"  # v2: glb paths relative to the cache root
+    version = "3"  # v2: glb paths relative to the cache root; v3: live search oversamples candidates
 
     def enabled(self, spec) -> bool:
         return any(c.assets for c in spec.classes)
@@ -88,7 +91,7 @@ class FetchAssets(Stage):
         mirror = asset_search.Mirror(ctx.cache.objaverse)
         manifest = []
         for c in wanted:  # a model found for two classes goes to the first one only
-            hits = asset_search.find(c.assets.queries, c.assets.count, mirror, exclude=taken)
+            hits = asset_search.find(c.assets.queries, c.assets.count * SEARCH_OVERSAMPLE, mirror, exclude=taken)
             taken |= {h.uid for h in hits}
             ctx.log(f"{c.id:16s} search {c.assets.queries}: {len(hits)} models (open license, in the mirror)")
             manifest += [{"uid": h.uid, "class": c.id, "category": h.query, "name": h.name, "license": h.license,
