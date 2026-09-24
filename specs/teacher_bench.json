@@ -1,0 +1,53 @@
+{
+  "name": "teacher_bench",
+  "task": "roi_classification",
+  "hardware": "esp32cam",
+  "background_class": "empty",
+  "classes": [
+    {
+      "id": "small_vehicle",
+      "description": "cars, taxis, jeeps, minivans, pickups"
+    },
+    {
+      "id": "large_vehicle",
+      "description": "trucks, buses, campers"
+    },
+    {
+      "id": "motorcycle",
+      "description": "motorcycles and scooters"
+    },
+    {
+      "id": "bicycle",
+      "description": "bicycles"
+    }
+  ],
+  "camera": {
+    "height_m": [
+      2,
+      6
+    ],
+    "hfov_deg": 60,
+    "resolution": [
+      320,
+      240
+    ]
+  },
+  "scene": {
+    "template": "road",
+    "weather": [
+      "clear",
+      "cloudy",
+      "evening",
+      "storm"
+    ],
+    "distractors": [
+      "tree",
+      "person"
+    ]
+  },
+  "user_data": {
+    "raw": "raw",
+    "test_per_class": 0,
+    "train_per_class": 40
+  }
+}
