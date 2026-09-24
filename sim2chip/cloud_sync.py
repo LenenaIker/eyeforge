@@ -10,7 +10,7 @@ local disk and pushes what it wrote:
 Buckets come from S2C_JOB_BUCKET and S2C_CACHE_BUCKET, credentials from AWS_ACCESS_KEY_ID and
 AWS_SECRET_ACCESS_KEY. What a stage reads: spec.json, input/ if `reads_input`, the folders of the
 stages in `after`, and, if `uses_cache`, every cache object of this job's assets (keys contain the
-asset uid) plus the skies. Only files missing or with a different size are transferred.
+asset uid) plus the skies. Cache files already present (same size) are not transferred again.
 """
 from __future__ import annotations
 
@@ -77,11 +77,11 @@ class S3Store:
             self.s3.download_file(bucket, key, str(out))
         return len(keys)
 
-    def upload_dir(self, bucket: str, src: Path, prefix: str) -> int:
-        """Uploads files missing or with a different size (symlinks followed)."""
+    def upload_dir(self, bucket: str, src: Path, prefix: str, changed_only: bool = True) -> int:
+        """Uploads files (symlinks followed); with changed_only, only those missing or of another size."""
         if not src.exists():
             return 0
-        have = self.listing(bucket, prefix + "/" if prefix else "")
+        have = self.listing(bucket, prefix + "/" if prefix else "") if changed_only else {}
         todo = []
         for f in sorted(src.rglob("*")):
             if f.is_file():
@@ -116,8 +116,9 @@ def pull(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_b
 
 
 def push(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_bucket: str) -> None:
-    n = store.upload_dir(job_bucket, job / stage.name, stage.name)
-    n += store.upload_dir(job_bucket, job / "logs", "logs")
+    # Stage outputs are rewritten on every run: upload them all. Cache files never change once written.
+    n = store.upload_dir(job_bucket, job / stage.name, stage.name, changed_only=False)
+    n += store.upload_dir(job_bucket, job / "logs", "logs", changed_only=False)
     m = store.upload_dir(cache_bucket, cache, "") if stage.uses_cache else 0
     print(f"[sim2chip] pushed {n} job files and {m} cache files", flush=True)
 
