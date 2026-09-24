@@ -16,6 +16,7 @@ class Export(Stage):
     name = "export"
     runtime = "cpu"
     results = ("*",)
+    version = "2"
     after = ("train", "evaluate", "qa_assets")
     uses = ("hardware", "classes", "background_class")
 
@@ -38,8 +39,8 @@ class Export(Stage):
         credits = sorted({(a["name"], a["author"], a["license"], a["source"]) for a in json.loads(qa.read_text())}) \
             if qa.exists() else []
         report = {
-            "job": ctx.job.name, "hardware": hw.name, "labels": ctx.spec.labels, "input": [hw.input_size] * 2 + [3],
-            "quantization": hw.quantization, "model_path": str(out / "model_int8.tflite"), "model_kb": kb,
+            "job": ctx.spec.name, "hardware": hw.name, "labels": ctx.spec.labels, "input": [hw.input_size] * 2 + [3],
+            "quantization": hw.quantization, "model_path": "model_int8.tflite", "model_kb": kb,
             "seed": int(seed), "val_accuracy": summary[seed]["val_acc"],
             "real_accuracy": json.loads(ev.read_text()) if ev.exists() else None,
             "asset_credits": [{"name": n, "author": a, "license": lic, "source": s} for n, a, lic, s in credits],

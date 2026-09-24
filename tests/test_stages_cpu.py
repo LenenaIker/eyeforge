@@ -88,3 +88,16 @@ def test_crops_from_fake_render(tmp_path):
 def test_c_array():
     h = c_array(bytes(range(20)), ["empty", "cow"], 96)
     assert "sim2chip_model[20]" in h and '"cow"' in h and "0x13" in h
+
+
+def test_export_report_is_portable(tmp_path):
+    from sim2chip.stages.export import Export
+    ctx = ctx_for(tmp_path)
+    seed = ctx.job.stage_dir("train") / "seed_0"
+    seed.mkdir(parents=True)
+    (seed / "model_int8.tflite").write_bytes(b"\x00" * 2048)
+    (ctx.job.stage_dir("train") / "summary.json").write_text(json.dumps({"0": {"val_acc": 0.9}}))
+    Export().run(ctx)
+    report = json.loads((ctx.job.stage_dir("export") / "report.json").read_text())
+    assert report["job"] == "t" and report["model_kb"] == 2.0
+    assert (ctx.job.stage_dir("export") / report["model_path"]).read_bytes() == b"\x00" * 2048

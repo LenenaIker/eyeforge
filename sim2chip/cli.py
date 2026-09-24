@@ -55,7 +55,7 @@ def cmd_run(args) -> int:
     report = pipe.job.stage_dir("export") / "report.json"
     if report.exists():
         r = json.loads(report.read_text())
-        print(f"model: {r['model_path']}  ({r['model_kb']} KB)")
+        print(f"model: {report.parent / r['model_path']}  ({r['model_kb']} KB)")
         if r.get("real_accuracy"):
             a = r["real_accuracy"]
             print(f"real test accuracy (int8): {a['mean']:.3f} +/- {a['std']:.3f} over seeds {a['seeds']}")
