@@ -78,3 +78,19 @@ Mismo experimento híbrido lanzado con `sim2chip run specs/lora_alarm_traffic.js
 Dentro del ruido: criterio de la semana 1 cumplido. Diferencias con el spike: distancia de cámara deducida del tamaño real y del FOV (ya no por clase), escala por asset con otra semilla, reparto test/train de MIO-TCD distinto (otro orden aleatorio). Los mismos 274 modelos seleccionados y los mismos 193 tras la revisión. La precisión por clase varía mucho entre semillas en ambos (bicis: 59-86% en el spike, 81-90% ahora): no sacar conclusiones por clase con 3 semillas.
 
 Tiempos en la 3090: fetch 3 min (con caché), convert 5.5 min (solo normalización, crudos en caché), render 16 min (8000 frames a 320x240), entrenamiento de 3 semillas unos 15 min.
+
+## Semana 2: QA automático de assets con Token Factory (2026-09-24)
+
+En Token Factory ningún Nemotron acepta imágenes (Nano 30B, 3.5 Lightning, Super 120B y Ultra 550B son solo texto). Modelos con visión: MiniCPM-V-4.5, GLM-5.3-Flash, DeepSeek-V4.1-Flash, Kimi K2.6 y K3. Medido contra la revisión humana de los 270 modelos de tráfico (`scripts/qa_agreement.py`, veredictos en `data/jobs/lora_alarm_traffic_autoqa/qa_runs/`), una ejecución por opción, temperatura 0:
+
+| Estrategia | Modelos | Acuerdo | Descartes humanos detectados (de 77) | Aceptados humanos descartados (de 193) | Tiempo | Coste |
+|---|---|---|---|---|---|---|
+| vision | MiniCPM-V-4.5 | 76.7% | 16 | 2 | 36 s | ~0.15 $ |
+| vision | GLM-5.3-Flash | 88.9% | 56 | 9 | 16.5 min | ~0.15 $ |
+| describe_then_decide | MiniCPM-V describe, Nemotron Super decide | 84.4% | 54 | 19 | ~2 min | ~0.22 $ |
+| Referencia | Claude (revisión del spike) | 88.5% | | | | |
+
+- Nemotron como juez sube MiniCPM de 76.7% a 84.4%: MiniCPM ve bien pero decide mal (se contradice: "tiene peana" y aun así "keep").
+- GLM razona mucho por imagen (unos 540 tokens de salida y 21 s por llamada con 8 en paralelo).
+- Diferencias de 2 a 4 puntos (5 a 10 modelos) pueden ser ruido con una sola ejecución.
+- Gasto total en Token Factory del día hasta aquí: ~0.51 $.

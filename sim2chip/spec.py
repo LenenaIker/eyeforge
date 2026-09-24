@@ -80,6 +80,7 @@ class QASpec:
     """Asset quality control: `none` keeps every asset, `manual` applies a human review, `auto` asks a
     vision model (manual lists, if given, are applied on top)."""
     mode: str = "none"
+    strategy: str = "vision"            # auto mode: "vision" or "describe_then_decide"
     exclude: str | None = None          # text file, one uid per line
     class_override: str | None = None   # JSON {uid: {"class": new_class}}
     no_color: str | None = None         # JSON list of uids whose model has no color (always repainted)
@@ -208,6 +209,8 @@ def validate(spec: Spec) -> None:
             raise SpecError(f"user_data.class_map: '{k}' is not a class of the spec")
     if spec.qa.mode not in ("none", "manual", "auto"):
         raise SpecError("qa.mode must be 'none', 'manual' or 'auto'")
+    if spec.qa.strategy not in ("vision", "describe_then_decide"):
+        raise SpecError("qa.strategy must be 'vision' or 'describe_then_decide'")
     lo, hi = spec.camera.target_fill
     if not 0 < lo <= hi <= 1:
         raise SpecError("camera.target_fill must be within (0, 1]")

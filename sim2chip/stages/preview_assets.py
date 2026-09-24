@@ -21,7 +21,7 @@ class PreviewAssets(Stage):
     name = "preview_assets"
     runtime = "isaac"
     gpu = "rtx"
-    uses = ("classes", "qa")
+    uses = ("classes",)  # qa only decides whether the stage runs, not what it renders
     after = ("convert_assets",)
 
     def enabled(self, spec) -> bool:

@@ -3,8 +3,9 @@
 Modes:
   none    keep everything
   manual  apply a human review (exclude list, class overrides, models without color)
-  auto    a vision model (Nemotron on Token Factory) judges a contact sheet of 4 views per asset;
-          any manual lists in the spec are applied on top, so a human can still correct it
+  auto    models on Token Factory judge a contact sheet of 4 views per asset. qa.strategy "vision": a vision
+          model decides; "describe_then_decide": a vision model describes the asset and Nemotron decides.
+          Any manual lists in the spec are applied on top, so a human can still correct it
 Output: qa_assets/assets.json  [{..., class, usd, dims, no_color}]
         qa_assets/verdicts.json (auto): the model's answer per asset
 """
@@ -33,6 +34,33 @@ Decide if the model is usable as a realistic example of a class, as seen by a lo
   sci-fi designs that do not exist in the real world.
 - If it is a valid example of ANOTHER class of the list, keep it and give that class.
 - no_color is true when the model is untextured (plain white or gray everywhere).
+
+Answer only with JSON:
+{{"decision": "keep" | "discard", "class": "<one of: {ids}>", "problems": [subset of {problems}],
+  "no_color": true | false, "reason": "<one short sentence>"}}"""
+
+
+DESCRIBE = """The image shows 4 renders (a 2x2 grid) of ONE 3D model downloaded from the internet. Describe it
+factually; do not judge whether it is useful. Answer only with JSON:
+{"object": "<what it is, a few words>", "style": "realistic" | "stylized" | "fantasy_or_scifi",
+ "upright": true | false, "on_plinth_or_base": true | false, "scene_or_diorama": true | false,
+ "object_count": <integer>, "only_a_part": true | false, "textured": true | false,
+ "details": "<one sentence: shape, parts, anything unusual>"}"""
+
+DECIDE = """You are the quality gate of a synthetic-data generator. A 3D model downloaded from the internet will be
+placed in scenes to train a low-resolution camera that must recognize these classes:
+{classes}
+
+The model was listed under the category "{category}" with the name "{name}" and is currently assigned to
+class "{cls}". A vision model looked at 4 renders of it and described it as:
+{description}
+
+Decide if the model is usable as a realistic example of a class, as seen by a low-resolution camera.
+- KEEP stylized, low-poly or simplified models if a person would still recognize the class at a glance.
+- DISCARD: models on a plinth, base or ground slab; dioramas or whole scenes; several objects; only a part;
+  not upright; a different object than the class; fantasy or sci-fi designs that do not exist in the real world.
+- If it is a valid example of ANOTHER class of the list, keep it and give that class.
+- Trust the description over the listing name when they disagree.
 
 Answer only with JSON:
 {{"decision": "keep" | "discard", "class": "<one of: {ids}>", "problems": [subset of {problems}],
@@ -103,10 +131,15 @@ class QAAssets(Stage):
         ids = ", ".join(c.id for c in ctx.spec.classes)
         ctx.log(f"judging {len(assets)} assets with {model}")
 
-        def one(a):
+        strategy = ctx.spec.qa.strategy
+        text_model = client.model_for("text") if strategy == "describe_then_decide" else None
+        if text_model:
+            ctx.log(f"decisions by {text_model}")
+
+        def sheet_for(a):
             files = views.get(a["uid"], [])
             if len(files) < 4:
-                return a["uid"], None
+                return None
             ims = [Image.open(prev / f).convert("RGB") for f in files[:4]]
             w, h = ims[0].size
             sheet = Image.new("RGB", (w * 2, h * 2))
@@ -114,17 +147,35 @@ class QAAssets(Stage):
                 sheet.paste(im, ((k % 2) * w, (k // 2) * h))
             path = sheets / f"{a['uid']}.jpg"
             sheet.save(path, quality=90)
-            text = PROMPT.format(classes=classes, category=a.get("category", ""), name=a.get("name", ""),
-                                 cls=a["class"], ids=ids, problems=PROBLEMS)
-            msg = [{"role": "user", "content": [{"type": "text", "text": text}, image_part(path)]}]
-            for attempt in range(2):
+            return path
+
+        def ask(msg, mdl, purpose, check):
+            for _ in range(2):
                 try:
-                    v = parse_json(client.chat(msg, model, purpose="qa_assets", temperature=0.0, max_tokens=4096))
-                    if v.get("decision") in ("keep", "discard"):
-                        return a["uid"], v
+                    v = parse_json(client.chat(msg, mdl, purpose=purpose, temperature=0.0, max_tokens=4096))
+                    if check(v):
+                        return v
                 except ValueError:
                     pass
-            return a["uid"], None
+            return None
+
+        def one(a):
+            path = sheet_for(a)
+            if path is None:
+                return a["uid"], None
+            fields = dict(classes=classes, category=a.get("category", ""), name=a.get("name", ""), cls=a["class"],
+                          ids=ids, problems=PROBLEMS)
+            is_verdict = lambda v: v.get("decision") in ("keep", "discard")  # noqa: E731
+            if strategy == "vision":
+                msg = [{"role": "user", "content": [{"type": "text", "text": PROMPT.format(**fields)}, image_part(path)]}]
+                return a["uid"], ask(msg, model, "qa_assets", is_verdict)
+            desc = ask([{"role": "user", "content": [{"type": "text", "text": DESCRIBE}, image_part(path)]}], model,
+                       "qa_describe", lambda v: "object" in v)
+            if desc is None:
+                return a["uid"], None
+            msg = [{"role": "user", "content": DECIDE.format(description=json.dumps(desc), **fields)}]
+            v = ask(msg, text_model, "qa_decide", is_verdict)
+            return a["uid"], ({**v, "description": desc} if v else None)
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             verdicts = dict(pool.map(one, assets))
