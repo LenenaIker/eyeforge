@@ -97,3 +97,11 @@ En Token Factory ningún Nemotron acepta imágenes (Nano 30B, 3.5 Lightning, Sup
 - Afinado del criterio de Nemotron sobre las descripciones guardadas de MiniCPM (`scripts/qa_redecide.py`, ~0.12 $ y 1.5 min por intento), reglas generales, no de vehículos: intento 1 (objeto completo frente a fragmento, variantes cercanas a la clase más parecida, diseños raros pero posibles) 86.7%; intento 2 (las marcas del descriptor mandan, ficha y descripción que no cuadran = descartar) 87.4%.
 - Decisión (usuario, acordada antes de medir): si el afinado no llegaba al nivel de GLM solo, estrategia por defecto "vision" con GLM-5.3-Flash. Se quedó a 1.5 puntos (4 modelos), así que el defecto es GLM solo; `describe_then_decide` (MiniCPM + Nemotron, unas 8 veces más rápido) queda como opción.
 - Gasto total en Token Factory del día hasta aquí: ~0.51 $ más ~0.5 $ de las pruebas posteriores.
+
+## Semana 2: profesor (etiquetado de fotos crudas) con GLM-5.3-Flash (2026-09-24)
+
+200 fotos de MIO-TCD no usadas en el trabajo de tráfico (40 por clase, carpeta plana sin la clase en el nombre), `scripts/label_agreement.py`:
+- Aparta como dudosas 108 (54%): 75 con "unsure" explícito ("muy borrosa y pixelada") y 33 por confianza < 0.6 (en esas acertaría solo 20/33).
+- Acierta 89 de las 92 que etiqueta: **96.7% de precisión**. Etiquetas útiles correctas: 89/200.
+- Las dudosas son las diminutas: lado menor mediano 62 px frente a 94 px de las etiquetadas. MIO-TCD son recortes pequeños de cámaras de tráfico; con fotogramas completos de la ESP32-CAM se esperan muchas menos dudas.
+- Umbral 0.6 se mantiene: prima la precisión sobre la cantidad. 3 min 45 s, ~0.03 $.
