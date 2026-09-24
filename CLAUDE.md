@@ -35,7 +35,7 @@ Desarrollo en la RTX 3090 local; el producto final lanza los trabajos en **Nebiu
 - **GPU en la nube: L40S, no H100/H200.** Isaac Sim necesita GPUs RTX (con RT cores) para renderizar; H100/H200 no los tienen.
 - **Assets 3D son el riesgo principal.** "Detecta cualquier cosa" requiere modelos 3D de cualquier cosa. Alcance del hackathon: catálogo cerrado de 10-20 clases con assets existentes (NVIDIA SimReady, Objaverse) + modo híbrido con fotos reales para lo demás. No prometer "cualquier objeto".
 - **El hardware limita la granularidad.** En ESP32-CAM: pocas clases, baja resolución (p. ej. vehículo grande vs pequeño, no marcas). Se presenta como decisión de diseño, no se esconde.
-- **Caso de demo: `~/work/multi-platform/lora_alarm`** (proyecto hermano e independiente: ESP32-CAM clasifica en el borde, destruye la imagen y manda unos pocos bits por LoRa a un gateway ESP32; pensado para cruces en carreras ciclistas). Este proyecto no modifica lora_alarm; solo le suministra modelos.
+- **Caso de demo: `~/work/multi-platform/lora_alarm`** (proyecto hermano e independiente: ESP32-CAM clasifica en el borde, destruye la imagen y manda unos pocos bits por LoRa a un gateway ESP32; pensado para cruces en carreras ciclistas). Este proyecto no modifica lora_alarm; solo le suministra modelos. La integración en lora_alarm la trabaja el usuario (2026-09-24): aquí no hay tareas de lora_alarm.
 
 ## Requisitos de entrega del hackathon
 
