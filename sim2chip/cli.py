@@ -34,9 +34,21 @@ def cmd_run(args) -> int:
             raise SystemExit(f"--input expects NAME=PATH, got '{item}'")
         link_input(pipe.job, name, Path(path))
     print(f"job {pipe.job.root}  backend {args.backend}")
+    kw = {}
+    if args.backend == "nebius":
+        kw = {"dry_run": args.dry_run, "max_usd": args.max_usd}
+    elif args.dry_run:
+        raise SystemExit("--dry-run is only for the nebius backend")
+    backend = backends.get(args.backend, verbose=args.verbose, **kw)
+    if args.dry_run:
+        pipe.job.spec_path.write_text(pipe.spec.to_json())
+        for p in pipe.plan(args.start, args.only, args.force):
+            if p.action == "run":
+                print(f"> {p.stage.name} ({p.stage.runtime})")
+                backend.run_stage(p.stage, pipe.job, pipe.cache, p.fingerprint)
+        return 0
     try:
-        pipe.run(backends.get(args.backend, verbose=args.verbose), start=args.start, only=args.only,
-                 force=args.force)
+        pipe.run(backend, start=args.start, only=args.only, force=args.force)
     except StageFailed as e:
         print(f"FAILED: {e}", file=sys.stderr)
         return 1
@@ -101,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--only", help="run only this stage (upstream must be done)")
     r.add_argument("--force", action="store_true", help="rerun every stage")
     r.add_argument("-v", "--verbose", action="store_true", help="show the full output of every stage")
+    r.add_argument("--dry-run", action="store_true", help="nebius: print the cloud commands, create nothing")
+    r.add_argument("--max-usd", type=float, help="nebius: spend cap for this run (env SIM2CHIP_MAX_USD, default 5)")
     r.set_defaults(func=cmd_run)
 
     s = sub.add_parser("stages", help="list the stages of a spec and whether they are done")
@@ -121,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(line_buffering=True)  # progress shows up when piped to tee or a log file
     try:
         return args.func(args)
-    except (spec_mod.SpecError, ValueError, KeyError, FileExistsError, FileNotFoundError) as e:
+    except (spec_mod.SpecError, ValueError, KeyError, FileExistsError, FileNotFoundError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 

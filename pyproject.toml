@@ -15,6 +15,7 @@ dependencies = []
 # Stage dependencies live in the runtime that executes them.
 train = ["tensorflow>=2.18,<2.19", "numpy", "pillow"]
 assets = ["objaverse", "numpy"]
+cloud = ["boto3"]
 dev = ["pytest"]
 
 [project.scripts]

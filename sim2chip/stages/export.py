@@ -15,6 +15,7 @@ from .base import Context, Stage
 class Export(Stage):
     name = "export"
     runtime = "cpu"
+    results = ("*",)
     after = ("train", "evaluate", "qa_assets")
     uses = ("hardware", "classes", "background_class")
 

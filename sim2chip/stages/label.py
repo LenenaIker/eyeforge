@@ -25,6 +25,7 @@ Answer only with JSON: {{"class": "<one of: {ids}, unsure>", "confidence": <0 to
 class Label(Stage):
     name = "label"
     runtime = "cpu"
+    needs_llm = True
     uses = ("user_data", "classes", "background_class")
 
     def enabled(self, spec) -> bool:

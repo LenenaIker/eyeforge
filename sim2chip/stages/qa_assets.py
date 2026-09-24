@@ -78,6 +78,7 @@ Answer only with JSON:
 class QAAssets(Stage):
     name = "qa_assets"
     runtime = "cpu"
+    needs_llm = True
     uses = ("qa", "classes")
     after = ("convert_assets", "preview_assets")
 

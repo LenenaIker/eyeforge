@@ -17,6 +17,7 @@ class Render(Stage):
     name = "render"
     runtime = "isaac"
     gpu = "rtx"
+    max_hours = 2
     uses = ("scene", "camera", "generation", "classes", "background_class")
     after = ("qa_assets",)
 

@@ -17,6 +17,7 @@ class Train(Stage):
     name = "train"
     runtime = "tf"
     gpu = "any"
+    max_hours = 2
     uses = ("training", "hardware", "classes", "background_class")
     after = ("crops", "ingest")
 

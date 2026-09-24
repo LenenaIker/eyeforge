@@ -44,6 +44,11 @@ class Stage:
     uses: ClassVar[tuple[str, ...]] = ()
     after: ClassVar[tuple[str, ...]] = ()
     version: ClassVar[str] = "1"
+    # Cloud execution: job timeout, output files (glob, relative to the stage folder) brought back to the
+    # local job folder, and whether the stage calls Token Factory (then it gets the API key secret).
+    max_hours: ClassVar[int] = 1
+    results: ClassVar[tuple[str, ...]] = ("*.json",)
+    needs_llm: ClassVar[bool] = False
 
     def enabled(self, spec: Spec) -> bool:
         return True
