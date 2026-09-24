@@ -4,6 +4,7 @@
     sim2chip run specs/lora_alarm_traffic.json --from train
     sim2chip status lora_alarm_traffic
     sim2chip stages specs/lora_alarm_traffic.json
+    sim2chip interview
 """
 from __future__ import annotations
 
@@ -65,6 +66,26 @@ def cmd_status(args) -> int:
     return cmd_stages(args)
 
 
+def cmd_interview(args) -> int:
+    from . import interview
+    from .llm import Client
+
+    home = Path(args.home)
+    client = Client(usage_log=home / "logs" / "llm_usage.jsonl")
+    model = client.model_for("text")
+    print(f"Sim2Chip interview with {model} (Nebius Token Factory). Ctrl+C to quit.\n")
+    cats = interview.CategoryIndex(cache_dir=home / "cache" / "objaverse")
+    spec = interview.run(client, model, cats, ask=input, tell=print)
+    if spec is None:
+        return 1
+    out = Path(args.out or f"specs/{spec.name}.json")
+    if out.exists() and not args.overwrite:
+        raise SystemExit(f"{out} exists, use --out or --overwrite")
+    out.write_text(spec.to_json() + "\n")
+    print(f"\nsaved {out}. Next: sim2chip run {out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="sim2chip")
     p.add_argument("--home", default=str(default_home()), help="folder with jobs/ and cache/ (env SIM2CHIP_HOME)")
@@ -90,6 +111,11 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("status", help="stage status of an existing job")
     st.add_argument("job")
     st.set_defaults(func=cmd_status)
+
+    iv = sub.add_parser("interview", help="talk to Nemotron to write a spec")
+    iv.add_argument("--out", help="where to save the spec (default specs/<name>.json)")
+    iv.add_argument("--overwrite", action="store_true")
+    iv.set_defaults(func=cmd_interview)
 
     args = p.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)  # progress shows up when piped to tee or a log file

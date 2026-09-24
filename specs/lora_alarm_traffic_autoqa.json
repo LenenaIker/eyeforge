@@ -1,0 +1,158 @@
+{
+  "name": "lora_alarm_traffic_autoqa",
+  "task": "roi_classification",
+  "hardware": "esp32cam",
+  "background_class": "empty",
+  "classes": [
+    {
+      "id": "small_vehicle",
+      "description": "cars, taxis, jeeps, minivans, pickups",
+      "size_m": {
+        "measure": "width",
+        "range": [
+          1.65,
+          1.95
+        ]
+      },
+      "assets": {
+        "source": "objaverse_lvis",
+        "count": 72,
+        "categories": [
+          "car_(automobile)",
+          "cab_(taxi)",
+          "police_cruiser",
+          "jeep",
+          "minivan",
+          "pickup_truck"
+        ]
+      }
+    },
+    {
+      "id": "large_vehicle",
+      "description": "trucks, buses, campers",
+      "size_m": {
+        "measure": "width",
+        "range": [
+          2.4,
+          2.55
+        ]
+      },
+      "assets": {
+        "source": "objaverse_lvis",
+        "count": 72,
+        "categories": [
+          "truck",
+          "trailer_truck",
+          "bus_(vehicle)",
+          "garbage_truck",
+          "tow_truck",
+          "camper_(vehicle)"
+        ]
+      }
+    },
+    {
+      "id": "motorcycle",
+      "description": "motorcycles and scooters",
+      "size_m": {
+        "measure": "length",
+        "range": [
+          1.8,
+          2.3
+        ]
+      },
+      "assets": {
+        "source": "objaverse_lvis",
+        "count": 70,
+        "categories": [
+          "motorcycle",
+          "motor_scooter"
+        ]
+      }
+    },
+    {
+      "id": "bicycle",
+      "description": "bicycles",
+      "size_m": {
+        "measure": "length",
+        "range": [
+          1.6,
+          1.9
+        ]
+      },
+      "assets": {
+        "source": "objaverse_lvis",
+        "count": 60,
+        "categories": [
+          "bicycle"
+        ]
+      }
+    }
+  ],
+  "camera": {
+    "height_m": [
+      2,
+      6
+    ],
+    "hfov_deg": 60,
+    "resolution": [
+      320,
+      240
+    ]
+  },
+  "scene": {
+    "template": "road",
+    "weather": [
+      "clear",
+      "cloudy",
+      "evening",
+      "storm"
+    ],
+    "distractors": [
+      "tree",
+      "person"
+    ]
+  },
+  "user_data": {
+    "labeled": "mio_tcd",
+    "class_map": {
+      "small_vehicle": [
+        "car",
+        "pickup_truck",
+        "work_van"
+      ],
+      "large_vehicle": [
+        "articulated_truck",
+        "bus",
+        "single_unit_truck"
+      ],
+      "motorcycle": [
+        "motorcycle"
+      ],
+      "bicycle": [
+        "bicycle"
+      ],
+      "empty": [
+        "background"
+      ]
+    },
+    "test_per_class": 400,
+    "train_per_class": 50
+  },
+  "qa": {
+    "mode": "auto"
+  },
+  "generation": {
+    "frames": 8000,
+    "empty_ratio": 0.2,
+    "seed": 0
+  },
+  "training": {
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "epochs": 25,
+    "real_weight": 4
+  }
+}

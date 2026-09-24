@@ -1,4 +1,5 @@
-"""Labeled user photos: map their classes to the spec, resize to the model input and split train/test.
+"""User photos: labeled by the user and/or by the teacher (label stage). Map their classes to the spec,
+resize to the model input and split train/test.
 
 Output: ingest/{train,test}/<class>/*.png
 """
@@ -16,17 +17,23 @@ class Ingest(Stage):
     name = "ingest"
     runtime = "cpu"
     uses = ("user_data", "hardware", "classes", "background_class")
+    after = ("label",)
 
     def enabled(self, spec) -> bool:
-        return bool(spec.user_data.labeled)
+        return bool(spec.user_data.labeled or spec.user_data.raw)
 
     def run(self, ctx: Context) -> dict:
         from PIL import Image
 
         ud = ctx.spec.user_data
-        src = ctx.job.resolve_input(ud.labeled)
-        if not src.is_dir():
-            raise FileNotFoundError(f"user_data.labeled: {src} is not a folder")
+        sources = []  # (folder, class map)
+        if ud.labeled:
+            src = ctx.job.resolve_input(ud.labeled)
+            if not src.is_dir():
+                raise FileNotFoundError(f"user_data.labeled: {src} is not a folder")
+            sources.append((src, ud.class_map))
+        if ud.raw:
+            sources.append((ctx.job.stage_dir("label"), {}))  # the teacher already uses spec class names
         size = ctx.hardware.input_size
         out = ctx.job.stage_dir(self.name)
         shutil.rmtree(out, ignore_errors=True)
@@ -34,8 +41,8 @@ class Ingest(Stage):
         need = ud.test_per_class + ud.train_per_class
         counts = {}
         for cls in ctx.spec.labels:
-            folders = ud.class_map.get(cls, [cls])
-            files = sorted(f for d in folders for f in (src / d).glob("*") if f.suffix.lower() in IMAGE_EXT)
+            files = sorted(f for src, cmap in sources for d in cmap.get(cls, [cls]) for f in (src / d).glob("*")
+                           if f.suffix.lower() in IMAGE_EXT)
             rng.shuffle(files)
             # Take images in shuffled order until enough pass the size filter: opening every image of a
             # large dataset just to read its size would take minutes.

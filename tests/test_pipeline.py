@@ -92,7 +92,9 @@ def test_real_stage_registry_plans(tmp_path):
     from sim2chip.stages import STAGES
     spec = {**SPEC, "user_data": {"labeled": "photos"}}
     pipe = Pipeline(from_dict(spec), open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
-    assert [p.stage.name for p in pipe.plan()] == [s.name for s in STAGES]
+    assert [p.stage.name for p in pipe.plan()] == [s.name for s in STAGES if s.name not in ("preview_assets", "label")]
+    auto = Pipeline(from_dict({**spec, "qa": {"mode": "auto"}}), open_job(tmp_path, "j3"), Cache(tmp_path / "cache"))
+    assert "preview_assets" in [p.stage.name for p in auto.plan()]
     no_photos = Pipeline(from_dict(SPEC), open_job(tmp_path, "j2"), Cache(tmp_path / "cache"))
     names = [p.stage.name for p in no_photos.plan()]
     assert "ingest" not in names and "evaluate" not in names and "train" in names

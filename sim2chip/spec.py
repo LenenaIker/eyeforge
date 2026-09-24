@@ -63,9 +63,12 @@ class SceneSpec:
 
 @dataclass
 class UserData:
-    """Labeled photos from the user. `labeled` is a folder with one subfolder per source class;
-    `class_map` maps each spec class to the source subfolders that belong to it."""
+    """Photos from the user. `labeled` is a folder with one subfolder per source class and `class_map`
+    maps each spec class to the source subfolders that belong to it. `raw` is a folder of unlabeled
+    photos that the teacher model labels; answers below `label_min_confidence` are set aside."""
     labeled: str | None = None
+    raw: str | None = None
+    label_min_confidence: float = 0.6
     class_map: dict[str, list[str]] = field(default_factory=dict)
     test_per_class: int = 400
     train_per_class: int = 50
@@ -74,7 +77,8 @@ class UserData:
 
 @dataclass
 class QASpec:
-    """Asset quality control. `manual` applies a human review; `none` keeps every asset."""
+    """Asset quality control: `none` keeps every asset, `manual` applies a human review, `auto` asks a
+    vision model (manual lists, if given, are applied on top)."""
     mode: str = "none"
     exclude: str | None = None          # text file, one uid per line
     class_override: str | None = None   # JSON {uid: {"class": new_class}}
@@ -202,8 +206,8 @@ def validate(spec: Spec) -> None:
     for k in spec.user_data.class_map:
         if k not in spec.labels:
             raise SpecError(f"user_data.class_map: '{k}' is not a class of the spec")
-    if spec.qa.mode not in ("none", "manual"):
-        raise SpecError("qa.mode must be 'none' or 'manual'")
+    if spec.qa.mode not in ("none", "manual", "auto"):
+        raise SpecError("qa.mode must be 'none', 'manual' or 'auto'")
     lo, hi = spec.camera.target_fill
     if not 0 < lo <= hi <= 1:
         raise SpecError("camera.target_fill must be within (0, 1]")
