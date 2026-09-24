@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sim2chip"
+version = "0.1.0"
+description = "Describe what your camera should see. Get a tiny model ready to flash on a $10 chip."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+# The core (spec, pipeline, backends) is stdlib only so it also runs inside Isaac Sim's Python.
+# Stage dependencies live in the runtime that executes them.
+train = ["tensorflow>=2.18,<2.19", "numpy", "pillow"]
+assets = ["objaverse", "numpy"]
+dev = ["pytest"]
+
+[project.scripts]
+sim2chip = "sim2chip.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["sim2chip*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
