@@ -76,7 +76,8 @@ class Pipeline:
         self.job.spec_path.write_text(self.spec.to_json())
         for p in self.plan(start, only, force):
             if p.action == "skip":
-                log(f"= {p.stage.name}: up to date")
+                if only is None:
+                    log(f"= {p.stage.name}: up to date")
                 continue
             log(f"> {p.stage.name} ({p.stage.runtime}{', gpu ' + p.stage.gpu if p.stage.gpu else ''})")
             self.job.clear_done(p.stage.name)

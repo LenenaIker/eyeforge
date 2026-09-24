@@ -65,3 +65,16 @@ Azar: 0.20.
 2. Cámaras más altas y picadas (MIO-TCD son cámaras de tráfico de 6-15 m).
 3. Texturas reales de asfalto y arcén en vez de colores planos.
 4. Evaluar con fotos de la propia ESP32-CAM: MIO-TCD es solo un proxy.
+
+## Paso al paquete `sim2chip` (2026-09-24)
+
+Mismo experimento híbrido lanzado con `sim2chip run specs/lora_alarm_traffic.json` de principio a fin, sin pasos a mano (job en `data/jobs/lora_alarm_traffic/`):
+
+| | Acc. real int8 (3 semillas) | Por semilla |
+|---|---|---|
+| Híbrido v3 (spike) | 0.773 ± 0.017 | 0.785 / 0.754 / 0.781 |
+| Híbrido sim2chip | 0.764 ± 0.001 | 0.765 / 0.764 / 0.763 |
+
+Dentro del ruido: criterio de la semana 1 cumplido. Diferencias con el spike: distancia de cámara deducida del tamaño real y del FOV (ya no por clase), escala por asset con otra semilla, reparto test/train de MIO-TCD distinto (otro orden aleatorio). Los mismos 274 modelos seleccionados y los mismos 193 tras la revisión. La precisión por clase varía mucho entre semillas en ambos (bicis: 59-86% en el spike, 81-90% ahora): no sacar conclusiones por clase con 3 semillas.
+
+Tiempos en la 3090: fetch 3 min (con caché), convert 5.5 min (solo normalización, crudos en caché), render 16 min (8000 frames a 320x240), entrenamiento de 3 semillas unos 15 min.

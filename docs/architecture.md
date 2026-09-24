@@ -1,6 +1,12 @@
-# Arquitectura de Sim2Chip (propuesta, 2026-09-24)
+# Arquitectura de Sim2Chip (2026-09-24)
 
-Estado: borrador para revisar con el usuario antes de escribir código. Sustituye a los scripts sueltos de `spike/`, que se conservan como histórico.
+Estado: aprobada por el usuario e implementada en `sim2chip/` (semana 1). Sustituye a los scripts sueltos de `spike/`, que se conservan como histórico.
+
+Cambios respecto a la propuesta inicial, decididos al implementar:
+- **`convert_assets` no depende de la clase**: solo endereza, centra y mide (largo, ancho, alto). La escala real del spec se aplica en `render`. Una reclasificación en QA no obliga a reconvertir y la caché sirve a cualquier trabajo. El USD normalizado referencia el crudo con ruta relativa, para que la caché se pueda montar en otro sitio (Nebius).
+- **QA manual** (`qa.mode = "manual"`): lista de exclusión, reclasificaciones y modelos sin color, como entradas del trabajo (`--input review=...`). El modo automático con Nemotron VL llega en la semana 2.
+- **Las rutas del spec son relativas a `input/` del trabajo**, que se rellena con `--input NOMBRE=RUTA` (enlace simbólico en local, subida en Nebius).
+- **Selección de assets reproducible**: misma regla de muestreo que el spike; el spec de tráfico elige exactamente los mismos 274 modelos.
 
 ## Principios
 

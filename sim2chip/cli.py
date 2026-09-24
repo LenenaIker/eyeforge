@@ -92,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     st.set_defaults(func=cmd_status)
 
     args = p.parse_args(argv)
+    sys.stdout.reconfigure(line_buffering=True)  # progress shows up when piped to tee or a log file
     try:
         return args.func(args)
     except (spec_mod.SpecError, ValueError, KeyError, FileExistsError, FileNotFoundError) as e:
