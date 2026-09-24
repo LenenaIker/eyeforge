@@ -51,6 +51,8 @@ class ConvertAssets(Stage):
             done.append({**m, "usd": str(norm.relative_to(ctx.cache.root)), "dims": dims})
             if (i + 1) % 25 == 0:
                 ctx.log(f"[{i + 1}/{len(manifest)}]")
+        if not done:
+            raise RuntimeError(f"no asset could be converted ({len(skipped)} failed), see the log above")
         (ctx.out(self.name) / "assets.json").write_text(json.dumps(done, indent=1))
         ctx.log(f"{len(done)} assets ready, {len(skipped)} failed")
         return {"assets": len(done), "failed": skipped}

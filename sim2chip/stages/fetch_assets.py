@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import random
 import urllib.request
+from pathlib import Path
 
 from ..scenes.skies import SKIES
 from .base import Context, Stage
@@ -20,6 +21,7 @@ class FetchAssets(Stage):
     name = "fetch_assets"
     runtime = "cpu"
     uses = ("classes", "scene")
+    version = "2"  # v2: glb paths relative to the cache root
 
     def enabled(self, spec) -> bool:
         return any(c.assets for c in spec.classes)
@@ -70,7 +72,9 @@ class FetchAssets(Stage):
                 ctx.log(f"{c.id:16s} {cat:22s} {len(ok):4d} with an open license, took {min(len(ok), n)}")
         paths = objaverse.load_objects(uids=[m["uid"] for m in manifest], download_processes=8)
         for m in manifest:
-            m["glb"] = str(paths[m["uid"]].replace(str(root) + "/", "")) if m["uid"] in paths else None
+            # Relative to the cache root, where convert_assets resolves it.
+            m["glb"] = str(Path(paths[m["uid"]]).resolve().relative_to(ctx.cache.root.resolve())) \
+                if m["uid"] in paths else None
         missing = [m["uid"] for m in manifest if not m["glb"]]
         if missing:
             ctx.log(f"{len(missing)} models failed to download and are dropped")

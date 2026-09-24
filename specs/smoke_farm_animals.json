@@ -1,0 +1,17 @@
+{
+  "name": "smoke_farm_animals",
+  "hardware": "esp32cam",
+  "background_class": "nothing",
+  "classes": [
+    {"id": "cow", "description": "cows", "size_m": {"measure": "length", "range": [2.0, 2.5]},
+     "assets": {"source": "objaverse_lvis", "categories": ["cow"], "count": 12}},
+    {"id": "sheep", "description": "sheep", "size_m": {"measure": "length", "range": [1.1, 1.5]},
+     "assets": {"source": "objaverse_lvis", "categories": ["sheep"], "count": 12}},
+    {"id": "horse", "description": "horses", "size_m": {"measure": "length", "range": [2.0, 2.4]},
+     "assets": {"source": "objaverse_lvis", "categories": ["horse"], "count": 12}}
+  ],
+  "camera": {"height_m": [1.5, 4], "hfov_deg": 60, "resolution": [320, 240]},
+  "scene": {"template": "road", "weather": ["clear", "cloudy"], "distractors": ["tree"]},
+  "generation": {"frames": 1500, "empty_ratio": 0.25, "seed": 0},
+  "training": {"seeds": [0], "epochs": 8}
+}
