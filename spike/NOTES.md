@@ -1,0 +1,67 @@
+# Prueba de viabilidad: notas
+
+Objetivo: medir si un clasificador tiny entrenado solo con datos sintéticos (Isaac Sim) funciona con imágenes reales de tráfico.
+
+## Pipeline
+
+1. `download_assets.py`: modelos 3D de Objaverse por categoría LVIS (solo licencias CC-BY, CC-BY-SA, CC0).
+2. `convert_assets.py` (Isaac Sim): GLB a USD, escala real por clase.
+3. `generate.py` (Isaac Sim + Replicator): carretera con arcén, cámara de poste 2-6 m, cielos HDRI, árboles y personas como distractores. Modo `preview` para revisar assets uno a uno.
+4. `prepare_crops.py`: recortes 96x96 de la zona de interés (sintético) y conjunto real MIO-TCD.
+5. `train.py`: MobileNetV2 alpha 0.35, 96x96, int8 (TFLite Micro). Se evalúa el modelo int8 sobre reales.
+
+## Hallazgos
+
+- **El catálogo público de NVIDIA no tiene vehículos civiles modernos** (solo una carretilla y material militar/WWII). Objaverse-LVIS sí: 1156 categorías, 30-120 modelos por tipo de vehículo. Sirve también como catálogo del producto.
+- **~30% de los modelos de Objaverse no valen**: peanas y dioramas, modelos tumbados o boca abajo, categorías LVIS mal asignadas, objetos que no son vehículos. Se detectan a simple vista en el preview: es exactamente el paso de control de calidad que haría Nemotron VL en el producto.
+- **Revisión humana de assets (2026-09-23)**: el usuario revisó los 270 con la página "Criba de vehículos". Coincidencia con Claude: 239/270 (88.5%). Claude fue demasiado estricto en 20 (sobre todo buses, caravanas y grúas en vehículo grande, y motos estilizadas) y demasiado permisivo en 11 (mayoría en vehículo grande: modelos que en realidad son furgonetas o pickups mal etiquetadas por LVIS, y motos de ciencia ficción). La clase "vehículo grande" es la más ambigua: ahí está el 61% de los desacuerdos. Tras la revisión quedan 193 válidos (63 pequeños, 42 grandes, 49 motos, 39 bicis).
+- **Escalado (arreglado 2026-09-24, `convert_assets.py` v2)**. Cuatro problemas encadenados:
+  1. Modelos girados dentro del archivo: el bbox alineado a ejes se inflaba. Ahora rectángulo de área mínima en planta (envolvente convexa + calibres rotatorios) y se endereza el modelo con el eje largo en X.
+  2. El conversor GLB->USD mete su propia rotación en el prim raíz y no conmuta con la nuestra. El marco "de pie" es `p_local * to_z * R_raiz`; el envoltorio anula los xformOps de la raíz y aplica una sola matriz. Esto también explicaba el desplazamiento que había que corregir en tiempo de ejecución.
+  3. Algunos modelos traen planos invisibles (suelo o recogedor de sombras) mayores que el vehículo: se ignoran planos grandes sin grosor al medir.
+  4. Vehículos de 4 ruedas se escalan por el ANCHO (normalizado: ~2.5 m pesados, 1.7-1.9 turismos), no por el largo (un bus articulado mide 18 m). Motos y bicis por el largo.
+  Verificación: 266/270 modelos cuadran con los vértices compuestos exactos (el bbox de USD de objetos girados es conservador y NO sirve para verificar). Aceptados fuera de proporciones reales: 42 -> 18 (formas raras de verdad: coche de 1910, tuk-tuk, camiones de dibujos).
+- **Modelos sin color**: 23 de 270 no traen color en origen (no es fallo de conversión: las 162 texturas llegan bien a USD). Aleatorización de pintura en `generate.py`: siempre a los sin color, 35% al resto, paleta de pinturas reales, material ligado con strongerThanDescendants.
+- **Reclasificación**: SUV "SCSO Suburban" y pickup "Carro" pasan de grande a pequeño (`data/usd/class_override.json`).
+- **La escala precalculada no sobrevive a la composición USD** en algunos modelos: se mide y se corrige el bbox en tiempo de ejecución dentro de Isaac.
+- **Assets remotos que aún no han cargado miden 0**: con escala 1 un árbol en cm mide kilómetros. Hay que esperar a la carga y descartar lo que no llegue.
+- **Los HDRI remotos se cargan de forma asíncrona**: la captura sale negra o blanca. Solución: HDRI en local, carga síncrona de texturas y cambiar el cielo cada N frames.
+- **Diferencias clave con el mundo real (MIO-TCD)**: motos y bicis reales siempre llevan persona encima; cámaras de tráfico más altas y picadas; desenfoque, JPEG y colores lavados.
+
+## Resultados (test real MIO-TCD, 400 por clase, modelo int8)
+
+| Entrenamiento | Acc. real int8 | Acc. real float |
+|---|---|---|
+| Solo 50 reales por clase (referencia) | 0.584 | 0.655 |
+| Solo sintético (v1) | 0.500 | 0.595 |
+| Solo sintético (v2, resolución igualada) | 0.539 | 0.533 |
+| Sintético + 50 reales por clase (v1) | **0.794** | 0.793 |
+| Sintético + 50 reales por clase (v2) | 0.757 | 0.771 |
+
+Azar: 0.20.
+
+### v3 (2026-09-24): assets revisados, escalado arreglado, pintura aleatoria. 3 semillas por configuración
+
+| Entrenamiento | Acc. real int8 (media ± desv., 3 semillas) |
+|---|---|
+| Solo sintético v2 | 0.543 ± 0.037 |
+| Solo sintético v3 | 0.545 ± 0.034 |
+| Híbrido v2 | 0.768 ± 0.010 |
+| Híbrido v3 | 0.773 ± 0.017 |
+
+**Sin diferencia medible entre v2 y v3.** El ruido entre semillas en solo sintético es de unos ±3.5 puntos: las comparaciones de una sola ejecución de la tabla anterior no eran fiables. Las mejoras de calidad de assets no son el cuello de botella en MIO-TCD.
+
+**El error dominante es la bici con ciclista**: en solo sintético v3, de 400 bicis reales ~206 se clasifican como moto y solo ~141 como bici. Un ciclista montado se parece más a una moto que a una bici vacía. Siguiente palanca clara: personas montadas.
+
+### Lectura
+
+- **Solo sintético todavía no basta** (54% frente al 58% de 50 fotos reales).
+- **Híbrido funciona muy bien**: los sintéticos suman unos 20 puntos sobre las mismas 50 fotos reales. El producto debe venderse como "pocas fotos reales + sintético", no como "cero fotos".
+- v1 aprendió un atajo: "borroso = dos ruedas" (en el render motos y bicis salen pequeñas). v2 lo corrige igualando la resolución efectiva; la confusión restante es coche frente a camión.
+
+### Siguientes palancas (por impacto esperado)
+
+1. Personas montadas en motos y bicis (en el mundo real siempre las llevan).
+2. Cámaras más altas y picadas (MIO-TCD son cámaras de tráfico de 6-15 m).
+3. Texturas reales de asfalto y arcén en vez de colores planos.
+4. Evaluar con fotos de la propia ESP32-CAM: MIO-TCD es solo un proxy.
