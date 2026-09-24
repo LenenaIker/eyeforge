@@ -7,7 +7,8 @@ Configuration (environment, or the repo's .env file for the key):
     NEBIUS_API_KEY           Token Factory API key
     SIM2CHIP_LLM_BASE_URL    default https://api.tokenfactory.nebius.com/v1
     SIM2CHIP_TEXT_MODEL      model for text tasks (interview); default: a Nemotron text model
-    SIM2CHIP_VISION_MODEL    model for image tasks (asset QA, labeling); default: a Nemotron omni/VL model
+    SIM2CHIP_VISION_MODEL    model for image tasks (asset QA, labeling); default: see PREFERENCES
+    SIM2CHIP_DESCRIBE_MODEL  describer for the describe_then_decide QA strategy
 """
 from __future__ import annotations
 
@@ -28,7 +29,11 @@ DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 # Preferred model families per role, matched against the live /models list (ids change over time).
 PREFERENCES = {
     "text": [r"nemotron-3-super", r"nemotron-3.*nano-30b", r"nemotron"],
-    "vision": [r"nemotron.*omni", r"nemotron.*vl", r"nemotron.*nano.*v"],
+    # No Nemotron on Token Factory accepts images (checked 2026-09-24); prefer one if it appears. GLM-5.3-Flash
+    # agreed best with the human asset review (88.9%), see spike/NOTES.md.
+    "vision": [r"nemotron.*omni", r"nemotron.*vl", r"GLM-5\.3-Flash", r"MiniCPM-V"],
+    # Fast describer for describe_then_decide, where Nemotron makes the decision.
+    "describe": [r"MiniCPM-V", r"GLM-5\.3-Flash"],
 }
 
 

@@ -139,8 +139,7 @@
     "train_per_class": 50
   },
   "qa": {
-    "mode": "auto",
-    "strategy": "describe_then_decide"
+    "mode": "auto"
   },
   "generation": {
     "frames": 8000,

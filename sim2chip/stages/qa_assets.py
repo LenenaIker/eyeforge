@@ -55,12 +55,20 @@ The model was listed under the category "{category}" with the name "{name}" and 
 class "{cls}". A vision model looked at 4 renders of it and described it as:
 {description}
 
-Decide if the model is usable as a realistic example of a class, as seen by a low-resolution camera.
+Decide if the model is usable as an example of a class, as seen by a low-resolution camera.
 - KEEP stylized, low-poly or simplified models if a person would still recognize the class at a glance.
-- DISCARD: models on a plinth, base or ground slab; dioramas or whole scenes; several objects; only a part;
-  not upright; a different object than the class; fantasy or sci-fi designs that do not exist in the real world.
-- If it is a valid example of ANOTHER class of the list, keep it and give that class.
-- Trust the description over the listing name when they disagree.
+- KEEP close variants of a class (a different type, size or configuration of the same kind of thing) under the
+  most similar class of the list, as long as the camera could not tell them apart at low resolution.
+- KEEP unusual, old or concept designs if they still look like something that could exist in the real world.
+- A thing that is commonly seen on its own counts as complete, even if it is sometimes part of something
+  bigger. "Only a part" means a fragment that never appears alone: a head, a wheel, a door, a torso.
+- DISCARD: models on a plinth, base or ground slab; dioramas or whole scenes; several separate objects;
+  fragments; not upright; a clearly different kind of object; impossible designs (flying, robotic, magical).
+- The flags in the description are reliable: discard when style is "fantasy_or_scifi", on_plinth_or_base,
+  scene_or_diorama or only_a_part is true, upright is false or object_count is above 1.
+- If the listing and the description both point to ANOTHER class of the list, keep it and give that class.
+  If they point to different kinds of object (listed as one thing, described as another), the model or its
+  listing is unreliable: discard it.
 
 Answer only with JSON:
 {{"decision": "keep" | "discard", "class": "<one of: {ids}>", "problems": [subset of {problems}],
@@ -126,7 +134,7 @@ class QAAssets(Stage):
         sheets = out / "sheets"
         sheets.mkdir(exist_ok=True)
         client = Client(usage_log=ctx.job.logs / "llm_usage.jsonl")
-        model = client.model_for("vision")
+        model = client.model_for("describe" if ctx.spec.qa.strategy == "describe_then_decide" else "vision")
         classes = "\n".join(f"- {c.id}: {c.description or c.id}" for c in ctx.spec.classes)
         ids = ", ".join(c.id for c in ctx.spec.classes)
         ctx.log(f"judging {len(assets)} assets with {model}")

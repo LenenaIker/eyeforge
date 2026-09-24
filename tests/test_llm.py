@@ -25,7 +25,8 @@ class Fake(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self._send(200, {"data": [{"id": "meta/llama"}, {"id": "nvidia/nemotron-3-super-120b-a12b"},
-                                  {"id": "nvidia/Nemotron-3-Nano-Omni"}]})
+                                  {"id": "nvidia/Nemotron-3-Nano-Omni"}, {"id": "zai-org/GLM-5.3-Flash"},
+                                  {"id": "openbmb/MiniCPM-V-4_5"}]})
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -70,10 +71,14 @@ def test_error_without_retries(server):
 
 
 def test_model_selection(server, monkeypatch):
-    monkeypatch.delenv("SIM2CHIP_VISION_MODEL", raising=False)
+    for role in ("VISION", "DESCRIBE"):
+        monkeypatch.delenv(f"SIM2CHIP_{role}_MODEL", raising=False)
     c = Client(base_url=server, key="k")
     assert c.model_for("text") == "nvidia/nemotron-3-super-120b-a12b"
     assert c.model_for("vision") == "nvidia/Nemotron-3-Nano-Omni"
+    c._models = [m for m in c.models() if "Omni" not in m]
+    assert c.model_for("vision") == "zai-org/GLM-5.3-Flash"
+    assert c.model_for("describe") == "openbmb/MiniCPM-V-4_5"
     monkeypatch.setenv("SIM2CHIP_VISION_MODEL", "x/y")
     assert c.model_for("vision") == "x/y"
 

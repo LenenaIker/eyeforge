@@ -93,4 +93,7 @@ En Token Factory ningún Nemotron acepta imágenes (Nano 30B, 3.5 Lightning, Sup
 - Nemotron como juez sube MiniCPM de 76.7% a 84.4%: MiniCPM ve bien pero decide mal (se contradice: "tiene peana" y aun así "keep").
 - GLM razona mucho por imagen (unos 540 tokens de salida y 21 s por llamada con 8 en paralelo).
 - Diferencias de 2 a 4 puntos (5 a 10 modelos) pueden ser ruido con una sola ejecución.
-- Gasto total en Token Factory del día hasta aquí: ~0.51 $.
+- GLM-5.3-Flash describe + Nemotron Super decide: 83.3% (55 detectados, 23 aceptados descartados, ~6 min, ~0.22 $). Quién describe apenas cambia el resultado: el cuello de botella es la decisión sobre texto.
+- Afinado del criterio de Nemotron sobre las descripciones guardadas de MiniCPM (`scripts/qa_redecide.py`, ~0.12 $ y 1.5 min por intento), reglas generales, no de vehículos: intento 1 (objeto completo frente a fragmento, variantes cercanas a la clase más parecida, diseños raros pero posibles) 86.7%; intento 2 (las marcas del descriptor mandan, ficha y descripción que no cuadran = descartar) 87.4%.
+- Decisión (usuario, acordada antes de medir): si el afinado no llegaba al nivel de GLM solo, estrategia por defecto "vision" con GLM-5.3-Flash. Se quedó a 1.5 puntos (4 modelos), así que el defecto es GLM solo; `describe_then_decide` (MiniCPM + Nemotron, unas 8 veces más rápido) queda como opción.
+- Gasto total en Token Factory del día hasta aquí: ~0.51 $ más ~0.5 $ de las pruebas posteriores.
