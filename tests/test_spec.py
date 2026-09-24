@@ -60,3 +60,14 @@ def test_camera_distance():
     assert camera_distance(4.0, 0.5, 60, (1, 100)) == pytest.approx(6.93, abs=0.01)
     assert camera_distance(4.0, 0.01, 60, (1, 100)) == 100
     assert camera_distance(0.1, 0.9, 60, (4, 100)) == 4
+
+
+def test_empty_optional_fields_do_not_change_fingerprints():
+    from sim2chip.spec import fingerprint
+    base = {"name": "t", "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
+                                      "assets": {"categories": ["cow"]}}]}
+    s = from_dict(base)
+    assert "queries" not in s.section("classes")[0]["assets"]  # empty list left out
+    explicit = from_dict({**base, "classes": [{**base["classes"][0],
+                                               "assets": {"categories": ["cow"], "queries": []}}]})
+    assert fingerprint(s.section("classes")) == fingerprint(explicit.section("classes"))

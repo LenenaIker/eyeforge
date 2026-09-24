@@ -28,7 +28,11 @@ class FetchAssets(Stage):
         return any(c.assets for c in spec.classes)
 
     def run(self, ctx: Context) -> dict:
-        manifest = self.objaverse_lvis(ctx)
+        root = ctx.cache.objaverse
+        root.mkdir(parents=True, exist_ok=True)
+        lvis = self.objaverse_lvis(ctx)
+        manifest = lvis + self.live_search(ctx, taken={m["uid"] for m in lvis})
+        manifest = self.download(ctx, manifest)
         n_sky = self.skies(ctx)
         out = ctx.out(self.name)
         (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
@@ -38,17 +42,18 @@ class FetchAssets(Stage):
         ctx.log(f"{len(manifest)} models {per_class}, {n_sky} skies")
         return {"models": per_class}
 
-    def objaverse_lvis(self, ctx: Context) -> list[dict]:
+    @staticmethod
+    def _objaverse(ctx: Context):
         import objaverse
+        objaverse.BASE_PATH = str(ctx.cache.objaverse)
+        objaverse._VERSIONED_PATH = str(ctx.cache.objaverse / "hf-objaverse-v1")
+        return objaverse
 
-        wanted = [c for c in ctx.spec.classes if c.assets]
-        bad = [c.id for c in wanted if c.assets.source != "objaverse_lvis"]
-        if bad:
-            raise ValueError(f"asset source not supported yet for classes {bad}")
-        root = ctx.cache.objaverse
-        root.mkdir(parents=True, exist_ok=True)
-        objaverse.BASE_PATH = str(root)
-        objaverse._VERSIONED_PATH = str(root / "hf-objaverse-v1")
+    def objaverse_lvis(self, ctx: Context) -> list[dict]:
+        wanted = [c for c in ctx.spec.classes if c.assets and c.assets.source == "objaverse_lvis"]
+        if not wanted:
+            return []
+        objaverse = self._objaverse(ctx)
         lvis = objaverse.load_lvis_annotations()
         unknown = [cat for c in wanted for cat in c.assets.categories if cat not in lvis]
         if unknown:
@@ -71,6 +76,27 @@ class FetchAssets(Stage):
                                      "license": a.get("license"), "author": a.get("user", {}).get("username"),
                                      "source": a.get("viewerUrl")})
                 ctx.log(f"{c.id:16s} {cat:22s} {len(ok):4d} with an open license, took {min(len(ok), n)}")
+        return manifest
+
+    def live_search(self, ctx: Context, taken: set[str]) -> list[dict]:
+        from .. import asset_search
+
+        wanted = [c for c in ctx.spec.classes if c.assets and c.assets.source == "search"]
+        if not wanted:
+            return []
+        self._objaverse(ctx)
+        mirror = asset_search.Mirror(ctx.cache.objaverse)
+        manifest = []
+        for c in wanted:  # a model found for two classes goes to the first one only
+            hits = asset_search.find(c.assets.queries, c.assets.count, mirror, exclude=taken)
+            taken |= {h.uid for h in hits}
+            ctx.log(f"{c.id:16s} search {c.assets.queries}: {len(hits)} models (open license, in the mirror)")
+            manifest += [{"uid": h.uid, "class": c.id, "category": h.query, "name": h.name, "license": h.license,
+                          "author": h.author, "source": h.source} for h in hits]
+        return manifest
+
+    def download(self, ctx: Context, manifest: list[dict]) -> list[dict]:
+        objaverse = self._objaverse(ctx)
         paths = objaverse.load_objects(uids=[m["uid"] for m in manifest], download_processes=8)
         for m in manifest:
             # Relative to the cache root, where convert_assets resolves it.

@@ -38,7 +38,8 @@ def default_interviewer(home: Path):
 
     client = Client(usage_log=home / "logs" / "llm_usage.jsonl")
     model = client.model_for("text")
-    cats = interview.CategoryIndex(cache_dir=home / "cache" / "objaverse")
+    objaverse_dir = home / "cache" / "objaverse"
+    cats = interview.CategoryIndex(cache_dir=objaverse_dir, live=interview.live_searcher(objaverse_dir))
     return lambda: interview.Session(client, model, cats)
 
 

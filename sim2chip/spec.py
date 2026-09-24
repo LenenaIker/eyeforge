@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
+ASSET_SOURCES = ("objaverse_lvis", "search")
 MEASURES = ("length", "width", "height")  # length and width: long and short side seen from above
 
 
@@ -29,9 +30,15 @@ class SizeSpec:
 
 @dataclass
 class AssetQuery:
-    """Where to find 3D models for a class. `count` models are split evenly across `categories`."""
+    """Where to find 3D models for a class.
+
+    source "objaverse_lvis": curated Objaverse-LVIS `categories`, `count` split evenly across them.
+    source "search": live text search (`queries`, e.g. ["wild boar", "boar"]) over Sketchfab, keeping
+    models with an open license that the Objaverse mirror can serve; asset QA then filters them.
+    """
     source: str = "objaverse_lvis"
     categories: list[str] = field(default_factory=list)
+    queries: list[str] = field(default_factory=list)
     count: int = 12
 
 
@@ -126,7 +133,9 @@ class Spec:
         raise KeyError(class_id)
 
     def section(self, name: str) -> Any:
-        return to_dict(getattr(self, name))
+        """A spec section as it enters stage fingerprints: empty values (None, [], {}) are left out, so
+        adding an optional field later does not invalidate existing jobs."""
+        return _prune(to_dict(getattr(self, name)))
 
     def to_json(self) -> str:
         return json.dumps(to_dict(self), indent=2)
@@ -140,6 +149,14 @@ def to_dict(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {k: to_dict(v) for k, v in obj.items()}
     return obj
+
+
+def _prune(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _prune(v) for k, v in value.items() if v not in (None, [], {})}
+    if isinstance(value, list):
+        return [_prune(v) for v in value]
+    return value
 
 
 def fingerprint(*parts: Any) -> str:
@@ -204,6 +221,15 @@ def validate(spec: Spec) -> None:
                 raise SpecError(f"class {c.id}: size_m.range must be 0 < min <= max")
         if c.assets and not c.size_m:
             raise SpecError(f"class {c.id}: 3D assets need size_m to be scaled to real size")
+        if c.assets:
+            if c.assets.source not in ASSET_SOURCES:
+                raise SpecError(f"class {c.id}: assets.source must be one of {ASSET_SOURCES}")
+            if c.assets.source == "objaverse_lvis" and not c.assets.categories:
+                raise SpecError(f"class {c.id}: objaverse_lvis assets need categories")
+            if c.assets.source == "search" and not c.assets.queries:
+                raise SpecError(f"class {c.id}: search assets need queries")
+            if c.assets.count < 1:
+                raise SpecError(f"class {c.id}: assets.count must be at least 1")
     for k in spec.user_data.class_map:
         if k not in spec.labels:
             raise SpecError(f"user_data.class_map: '{k}' is not a class of the spec")

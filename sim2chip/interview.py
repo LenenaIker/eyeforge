@@ -32,8 +32,16 @@ Find out:
   A few real photos improve accuracy a lot compared with synthetic images only; say so.
 - Real-world size of each class (you propose typical sizes, the user confirms).
 
-3D models come from Objaverse-LVIS categories. Before writing classes, use "search" to find categories and
-check they have enough models (at least ~10). Only use category names returned by search.
+3D models, two sources. Always use "search" first; it reports both:
+1. Curated Objaverse-LVIS categories ("assets": {{"source": "objaverse_lvis", "categories": [...]}}). Prefer
+   them when one really matches the object and has at least ~10 models. Only use names returned by search.
+2. Live search over ~800k Sketchfab models ("assets": {{"source": "search", "queries": ["wild boar", "boar"]}}),
+   for anything the curated list lacks. Give 1 to 3 English queries, most specific first; aim for 15+ models
+   in total, since quality control will discard some (skulls, cartoons, fragments).
+If an object still has too few models, or you would substitute it with something similar or merge it into
+another class, say so plainly and ASK the user whether that matters for their goal (for some goals it is
+critical, for others irrelevant). Offer the options: merge classes, use a substitute, or rely on their own
+real photos for that class. Never merge or substitute silently.
 Scene templates available: {templates}. Weather options: {weather}.
 
 Spec format (JSON, defaults shown; omit a field to keep its default):
@@ -61,7 +69,7 @@ def system_prompt() -> str:
 class CategoryIndex:
     """Objaverse-LVIS category names with their model counts, searched by substring."""
 
-    def __init__(self, counts: dict[str, int] | None = None, cache_dir: Path | None = None):
+    def __init__(self, counts: dict[str, int] | None = None, cache_dir: Path | None = None, live=None):
         if counts is None:
             import objaverse
             if cache_dir:
@@ -69,8 +77,19 @@ class CategoryIndex:
                 objaverse._VERSIONED_PATH = str(cache_dir / "hf-objaverse-v1")
             counts = {k: len(v) for k, v in objaverse.load_lvis_annotations().items()}
         self.counts = counts
+        self.live = live  # query -> list of asset_search.Hit, or None for curated categories only
 
-    def search(self, queries: list[str], limit: int = 12) -> dict[str, int]:
+    def search(self, queries: list[str], limit: int = 12) -> dict:
+        curated = self.curated(queries, limit)
+        if self.live is None:
+            return curated
+        live = {}
+        for q in queries:
+            hits = self.live(q)
+            live[q] = {"models": len(hits), "examples": [h.name for h in hits[:6]]}
+        return {"curated_categories": curated, "live_search": live}
+
+    def curated(self, queries: list[str], limit: int = 12) -> dict[str, int]:
         hits: dict[str, int] = {}
         for q in queries:
             q = q.lower().strip().replace(" ", "_")
@@ -81,6 +100,19 @@ class CategoryIndex:
                 if any(v in name or (len(base) >= 4 and base in v) for v in variants):
                     hits[name] = n
         return dict(sorted(hits.items(), key=lambda kv: -kv[1])[:limit])
+
+
+def live_searcher(objaverse_dir: Path, pages: int = 2):
+    """Live search for the interview: open-license Sketchfab hits the Objaverse mirror can serve."""
+    from . import asset_search
+    mirror = None
+
+    def run(query: str):
+        nonlocal mirror
+        if mirror is None:
+            mirror = asset_search.Mirror(objaverse_dir)
+        return [h for h in asset_search.search(query, pages) if h.uid in mirror]
+    return run
 
 
 YES = {"y", "yes", "yeah", "yep", "ok", "okay", "sure", "correct", "right", "s", "si", "sí", "vale", "claro",
@@ -172,8 +204,8 @@ class Session:
             elif "spec" in action:
                 try:
                     s = spec_mod.from_dict(action["spec"])
-                    unknown = [cat for c in s.classes if c.assets for cat in c.assets.categories
-                               if cat not in self.categories.counts]
+                    unknown = [cat for c in s.classes if c.assets and c.assets.source == "objaverse_lvis"
+                               for cat in c.assets.categories if cat not in self.categories.counts]
                     if unknown:
                         raise spec_mod.SpecError(f"categories not found in Objaverse-LVIS: {unknown}, use search")
                 except spec_mod.SpecError as e:

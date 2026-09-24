@@ -87,7 +87,8 @@ def cmd_interview(args) -> int:
     client = Client(usage_log=home / "logs" / "llm_usage.jsonl")
     model = client.model_for("text")
     print(f"Sim2Chip interview with {model} (Nebius Token Factory). Ctrl+C to quit.\n")
-    cats = interview.CategoryIndex(cache_dir=home / "cache" / "objaverse")
+    objaverse_dir = home / "cache" / "objaverse"
+    cats = interview.CategoryIndex(cache_dir=objaverse_dir, live=interview.live_searcher(objaverse_dir))
     spec = interview.run(client, model, cats, ask=input, tell=print)
     if spec is None:
         return 1
