@@ -25,8 +25,9 @@ class FetchAssets(Stage):
     name = "fetch_assets"
     runtime = "cpu"
     uses_cache = True
+    uses_db = True
     uses = ("classes", "scene")
-    version = "4"  # v2: glb paths relative to the cache root; v3: live search oversamples; v4: scene.json
+    version = "5"  # v2: glb paths relative to cache root; v3: search oversamples; v4: scene.json; v5: asset DB
 
     def enabled(self, spec) -> bool:
         return any(c.assets for c in spec.classes)
@@ -90,13 +91,26 @@ class FetchAssets(Stage):
         wanted = [c for c in ctx.spec.classes if c.assets and c.assets.source == "search"]
         if not wanted:
             return []
+        from ..asset_db import AssetDB
+
         self._objaverse(ctx)
         mirror = asset_search.Mirror(ctx.cache.objaverse)
+        db = AssetDB(ctx.cache.db)
         manifest = []
         for c in wanted:  # a model found for two classes goes to the first one only
-            hits = asset_search.find(c.assets.queries, c.assets.count * SEARCH_OVERSAMPLE, mirror, exclude=taken)
+            qs = c.assets.queries
+            # Known good models for these queries need no review: take them first. Known bad ones are skipped.
+            good = [asset_search.Hit(r["uid"], r.get("name", ""), r.get("license", ""), r.get("author", ""),
+                                     r.get("source", ""), r["concept"])
+                    for q in qs for r in db.known(q, "keep") if r["uid"] in mirror and r["uid"] not in taken]
+            good = list({h.uid: h for h in good}.values())[:c.assets.count]
+            bad = {r["uid"] for q in qs for r in db.known(q, "discard")}
+            need = (c.assets.count - len(good)) * SEARCH_OVERSAMPLE
+            found = asset_search.find(qs, need, mirror, exclude=taken | bad | {h.uid for h in good}) if need else []
+            hits = good + found
             taken |= {h.uid for h in hits}
-            ctx.log(f"{c.id:16s} search {c.assets.queries}: {len(hits)} models (open license, in the mirror)")
+            ctx.log(f"{c.id:16s} search {qs}: {len(good)} known good, {len(found)} new candidates"
+                    f" ({len(bad)} known bad skipped)")
             manifest += [{"uid": h.uid, "class": c.id, "category": h.query, "name": h.name, "license": h.license,
                           "author": h.author, "source": h.source} for h in hits]
         return manifest

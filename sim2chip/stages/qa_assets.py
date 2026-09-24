@@ -75,11 +75,17 @@ Answer only with JSON:
   "no_color": true | false, "reason": "<one short sentence>"}}"""
 
 
+def concept_of(asset: dict) -> str:
+    """What the asset was found for: its Objaverse-LVIS category or live search query."""
+    return asset.get("category") or asset["class"]
+
+
 class QAAssets(Stage):
     name = "qa_assets"
     runtime = "cpu"
     needs_llm = True
     reads_input = True
+    uses_db = True
     uses = ("qa", "classes")
     after = ("convert_assets", "preview_assets")
 
@@ -92,7 +98,7 @@ class QAAssets(Stage):
         ids = [k.id for k in ctx.spec.classes]
         exclude, override, no_color = set(), {}, set()
         if qa.mode == "auto":
-            verdicts = self.judge(ctx, assets)
+            verdicts = self.review(ctx, assets)
             for a in assets:
                 v = verdicts.get(a["uid"])
                 if v is None or v["decision"] == "discard":
@@ -130,6 +136,38 @@ class QAAssets(Stage):
         (ctx.out(self.name) / "assets.json").write_text(json.dumps(kept, indent=1))
         ctx.log(f"{len(kept)} of {len(assets)} assets kept (mode {qa.mode}): {per_class}")
         return {"kept": per_class, "dropped": len(assets) - len(kept)}
+
+    def review(self, ctx: Context, assets: list[dict]) -> dict:
+        """Verdicts from the asset knowledge base when known for the asset's concept, the vision model otherwise.
+        New verdicts go back into the knowledge base."""
+        from ..asset_db import AssetDB
+
+        db = AssetDB(ctx.cache.db)
+        verdicts, todo = {}, []
+        for a in assets:
+            r = db.lookup(a["uid"], concept_of(a))
+            if r:
+                verdicts[a["uid"]] = {"decision": r["decision"], "no_color": r.get("no_color", False),
+                                      "reason": r.get("reason", ""), "from_db": True}
+            else:
+                todo.append(a)
+        ctx.log(f"asset knowledge base: {len(verdicts)} verdicts reused, {len(todo)} assets to judge")
+        judged = self.judge(ctx, todo) if todo else {}
+        verdicts |= judged
+        records = []
+        for a in todo:
+            v = judged.get(a["uid"])
+            if v is None:
+                continue  # no valid answer (transient): judge again next time
+            # A model moved to another class of this spec is not a good example of the concept it was found for.
+            keep = v["decision"] == "keep" and v.get("class") in (None, a["class"])
+            records.append({**a, "concept": concept_of(a), "decision": "keep" if keep else "discard",
+                            "no_color": v.get("no_color", False), "problems": v.get("problems"),
+                            "reason": v.get("reason") if keep or v["decision"] == "discard"
+                            else f"judged as {v.get('class')}: {v.get('reason', '')}", "judge": v.get("judge")})
+        db.add(records, ctx.job.name)
+        (ctx.out(self.name) / "verdicts.json").write_text(json.dumps(verdicts, indent=1))
+        return verdicts
 
     def judge(self, ctx: Context, assets: list[dict]) -> dict:
         from PIL import Image
@@ -184,19 +222,19 @@ class QAAssets(Stage):
             is_verdict = lambda v: v.get("decision") in ("keep", "discard")  # noqa: E731
             if strategy == "vision":
                 msg = [{"role": "user", "content": [{"type": "text", "text": PROMPT.format(**fields)}, image_part(path)]}]
-                return a["uid"], ask(msg, model, "qa_assets", is_verdict)
+                v = ask(msg, model, "qa_assets", is_verdict)
+                return a["uid"], ({**v, "judge": model} if v else None)
             desc = ask([{"role": "user", "content": [{"type": "text", "text": DESCRIBE}, image_part(path)]}], model,
                        "qa_describe", lambda v: "object" in v)
             if desc is None:
                 return a["uid"], None
             msg = [{"role": "user", "content": DECIDE.format(description=json.dumps(desc), **fields)}]
             v = ask(msg, text_model, "qa_decide", is_verdict)
-            return a["uid"], ({**v, "description": desc} if v else None)
+            return a["uid"], ({**v, "description": desc, "judge": f"{model} + {text_model}"} if v else None)
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             verdicts = dict(pool.map(one, assets))
         failed = [u for u, v in verdicts.items() if v is None]
         if failed:
             ctx.log(f"{len(failed)} assets without a valid verdict are discarded")
-        (out / "verdicts.json").write_text(json.dumps(verdicts, indent=1))
         return verdicts

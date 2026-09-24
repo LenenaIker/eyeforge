@@ -51,6 +51,7 @@ class Stage:
     needs_llm: ClassVar[bool] = False
     reads_input: ClassVar[bool] = False    # needs the job's input/ folder
     uses_cache: ClassVar[bool] = False     # reads or writes the shared asset cache
+    uses_db: ClassVar[bool] = False        # reads or writes the asset knowledge base (cache/db)
 
     def enabled(self, spec: Spec) -> bool:
         return True

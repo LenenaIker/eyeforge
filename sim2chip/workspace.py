@@ -4,7 +4,8 @@ Stages only see plain folders. Locally they live under the data root; on Nebius 
 mounted at the same layout, so stage code does not change.
 
     <home>/jobs/<job>/spec.json, input/, logs/, <stage>/..., <stage>/_done.json
-    <home>/cache/objaverse, cache/usd/{raw,norm}, cache/hdri
+    <home>/cache/objaverse, cache/usd/{raw,norm}, cache/hdri, cache/textures   (disposable files)
+    <home>/cache/db                                                          (asset knowledge base, keep)
 """
 from __future__ import annotations
 
@@ -40,6 +41,11 @@ class Cache:
     @property
     def hdri(self) -> Path:
         return self.root / "hdri"
+
+    @property
+    def db(self) -> Path:
+        """Asset knowledge base (reviews of assets, not files). Everything else in the cache is disposable."""
+        return self.root / "db"
 
 
 @dataclass(frozen=True)

@@ -21,6 +21,7 @@ class PreviewAssets(Stage):
     name = "preview_assets"
     runtime = "isaac"
     uses_cache = True
+    uses_db = True
     gpu = "rtx"
     uses = ("classes",)  # qa only decides whether the stage runs, not what it renders
     after = ("convert_assets",)
@@ -68,7 +69,18 @@ class PreviewAssets(Stage):
         cam.CreateClippingRangeAttr(Gf.Vec2f(0.05, 1000))
         cam.CreateFocalLengthAttr(18.0)
 
+        from ..asset_db import AssetDB
+        from .qa_assets import concept_of
+
         assets = json.loads((ctx.job.stage_dir("convert_assets") / "assets.json").read_text())
+        db = AssetDB(ctx.cache.db)
+        known = [a for a in assets if db.lookup(a["uid"], concept_of(a))]
+        assets = [a for a in assets if a not in known]  # already reviewed: no preview needed
+        ctx.log(f"{len(known)} assets already reviewed, previewing {len(assets)}")
+        if not assets:
+            shutil.rmtree(raw, ignore_errors=True)
+            (out / "views.json").write_text("{}")
+            return {"assets": 0}
         props = Props(stage, app)
         items = []
         for i, a in enumerate(assets):

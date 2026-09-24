@@ -54,7 +54,8 @@ def cmd_run(args) -> int:
         print(f"FAILED: {e}", file=sys.stderr)
         return 1
     report = pipe.job.stage_dir("export") / "report.json"
-    if report.exists():
+    fresh = any(p.stage.name == "export" and p.action == "skip" for p in pipe.plan())
+    if fresh and report.exists():
         r = json.loads(report.read_text())
         print(f"model: {report.parent / r['model_path']}  ({r['model_kb']} KB)")
         if r.get("real_accuracy"):

@@ -114,6 +114,8 @@ def pull(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_b
         listed = set(scene.get("skies", []) + scene.get("ground", []))
         ckeys = [k for k in store.listing(cache_bucket) if k in listed or any(u in k for u in uids)]
         m = store.pull(cache_bucket, ckeys, cache)
+    if stage.uses_db:
+        m += store.pull(cache_bucket, list(store.listing(cache_bucket, "db/")), cache)
     print(f"[sim2chip] pulled {n} job files and {m} cache files", flush=True)
 
 
@@ -122,6 +124,8 @@ def push(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_b
     n = store.upload_dir(job_bucket, job / stage.name, stage.name, changed_only=False)
     n += store.upload_dir(job_bucket, job / "logs", "logs", changed_only=False)
     m = store.upload_dir(cache_bucket, cache, "") if stage.uses_cache else 0
+    if stage.uses_db and not stage.uses_cache:  # the knowledge base is append-only: new files only
+        m += store.upload_dir(cache_bucket, cache / "db", "db")
     print(f"[sim2chip] pushed {n} job files and {m} cache files", flush=True)
 
 
