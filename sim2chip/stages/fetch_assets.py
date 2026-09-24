@@ -20,6 +20,7 @@ OK_LICENSES = {"by", "by-sa", "cc0"}
 class FetchAssets(Stage):
     name = "fetch_assets"
     runtime = "cpu"
+    uses_cache = True
     uses = ("classes", "scene")
     version = "2"  # v2: glb paths relative to the cache root
 

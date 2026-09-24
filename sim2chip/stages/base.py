@@ -49,6 +49,8 @@ class Stage:
     max_hours: ClassVar[int] = 1
     results: ClassVar[tuple[str, ...]] = ("*.json",)
     needs_llm: ClassVar[bool] = False
+    reads_input: ClassVar[bool] = False    # needs the job's input/ folder
+    uses_cache: ClassVar[bool] = False     # reads or writes the shared asset cache
 
     def enabled(self, spec: Spec) -> bool:
         return True

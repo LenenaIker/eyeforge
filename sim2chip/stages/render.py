@@ -16,6 +16,7 @@ from .base import Context, Stage
 class Render(Stage):
     name = "render"
     runtime = "isaac"
+    uses_cache = True
     gpu = "rtx"
     max_hours = 2
     uses = ("scene", "camera", "generation", "classes", "background_class")

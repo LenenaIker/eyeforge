@@ -26,6 +26,7 @@ class Label(Stage):
     name = "label"
     runtime = "cpu"
     needs_llm = True
+    reads_input = True
     uses = ("user_data", "classes", "background_class")
 
     def enabled(self, spec) -> bool:

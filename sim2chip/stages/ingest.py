@@ -16,6 +16,7 @@ IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 class Ingest(Stage):
     name = "ingest"
     runtime = "cpu"
+    reads_input = True
     uses = ("user_data", "hardware", "classes", "background_class")
     after = ("label",)
 

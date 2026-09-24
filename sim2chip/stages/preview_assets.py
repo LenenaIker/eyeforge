@@ -20,6 +20,7 @@ SIZE = (512, 384)
 class PreviewAssets(Stage):
     name = "preview_assets"
     runtime = "isaac"
+    uses_cache = True
     gpu = "rtx"
     uses = ("classes",)  # qa only decides whether the stage runs, not what it renders
     after = ("convert_assets",)

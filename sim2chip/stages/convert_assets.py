@@ -20,6 +20,7 @@ NORM_VERSION = 2  # bump when normalize() changes
 class ConvertAssets(Stage):
     name = "convert_assets"
     runtime = "isaac"
+    uses_cache = True
     after = ("fetch_assets",)
     version = str(NORM_VERSION)
 
@@ -38,7 +39,12 @@ class ConvertAssets(Stage):
             raw = ctx.cache.usd_raw / f"{m['uid']}.usd"
             norm = ctx.cache.usd_norm / f"{m['uid']}_v{NORM_VERSION}.usd"
             meta = norm.with_suffix(".json")
-            if not raw.exists() and not loop.run_until_complete(_convert(str(ctx.cache.root / m["glb"]), str(raw))):
+            glb = ctx.cache.root / m["glb"]
+            if not raw.exists() and (not glb.exists() or glb.stat().st_size == 0):
+                ctx.log(f"missing or empty download {m['glb']}")  # the converter would crash on it
+                skipped.append(m["uid"])
+                continue
+            if not raw.exists() and not loop.run_until_complete(_convert(str(glb), str(raw))):
                 skipped.append(m["uid"])
                 continue
             if not meta.exists():

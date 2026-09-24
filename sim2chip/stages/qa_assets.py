@@ -79,6 +79,7 @@ class QAAssets(Stage):
     name = "qa_assets"
     runtime = "cpu"
     needs_llm = True
+    reads_input = True
     uses = ("qa", "classes")
     after = ("convert_assets", "preview_assets")
 

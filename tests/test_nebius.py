@@ -15,11 +15,11 @@ class FakeCLI:
     def __init__(self, store, final="COMPLETED"):
         self.store, self.final, self.jobs = store, final, []
 
-    def bucket_id(self, name, create=True):
-        return f"id-{name}"
+    def ensure_bucket(self, name):
+        self.store.buckets.add(name)
 
-    def create_job(self, name, runtime, volumes, script, timeout_h, env_secrets):
-        self.jobs.append({"name": name, "image": runtime.image, "volumes": volumes, "timeout_h": timeout_h,
+    def create_job(self, name, runtime, env, script, timeout_h, env_secrets):
+        self.jobs.append({"name": name, "image": runtime.image, "env": env, "timeout_h": timeout_h,
                           "secrets": env_secrets, "script": script.read_text()})
         if self.final == "COMPLETED":  # the remote stage writes its marker into the job bucket
             stage = name.rsplit("-", 1)[-1]
@@ -37,7 +37,10 @@ class FakeCLI:
 
 class FakeStore:
     def __init__(self):
-        self.objects = {}
+        self.objects, self.buckets = {}, set()
+
+    def url(self, bucket, key):
+        return f"https://signed/{bucket}/{key}"
 
     def put(self, bucket, key, data):
         self.objects[(bucket, key)] = data
@@ -82,9 +85,13 @@ def test_stage_runs_as_job_and_brings_back_small_results(job, tmp_path):
     b.run_stage(BY_NAME["render"], job, None, "fp")
     j = b.cli.jobs[0]
     assert j["image"].startswith("nvcr.io/nvidia/isaac-sim")
-    assert j["volumes"] == ["id-sim2chip-j:/s2c/job", "id-sim2chip-cache:/s2c/cache"]
-    assert j["timeout_h"] == 2 and j["secrets"] == []
-    assert "run_stage render --job /s2c/job --cache /s2c/cache --fingerprint fp" in j["script"]
+    assert store.buckets == {"sim2chip-j", "sim2chip-cache"}
+    assert j["env"] == {"S2C_JOB_BUCKET": "sim2chip-j", "S2C_CACHE_BUCKET": "sim2chip-cache",
+                        "S2C_CODE_URL": "https://signed/sim2chip-j/_code/sim2chip.tar.gz"}
+    assert j["timeout_h"] == 2 and all(s.startswith("AWS_") for s in j["secrets"])
+    script = j["script"]
+    assert script.index("cloud_sync pull render") < script.index("run_stage render") < script.index(
+        "cloud_sync push render")
     assert ("sim2chip-j", "input/photos/a.jpg") in store.objects
     assert ("sim2chip-j", "_code/sim2chip.tar.gz") in store.objects
     assert job.done("render") == {"fingerprint": "fp"}
@@ -115,11 +122,40 @@ def test_llm_stage_needs_the_secret(job, monkeypatch):
     store = FakeStore()
     b = backend(store, final="FAILED")
     b.run_stage(BY_NAME["qa_assets"], job, None, "fp")
-    assert b.cli.jobs[0]["secrets"] == ["NEBIUS_API_KEY=s2c-token"]
+    assert "NEBIUS_API_KEY=s2c-token" in b.cli.jobs[0]["secrets"]
 
 
 def test_code_archive_and_bootstrap():
     names = tarfile.open(fileobj=io.BytesIO(code_archive())).getnames()
     assert "sim2chip/run_stage.py" in names and not any("__pycache__" in n for n in names)
     script = bootstrap(BY_NAME["train"], "abc")
-    assert "pip install" in script and "python3 -m sim2chip.run_stage train" in script
+    assert "pip install -q pillow" in script and "python3 -m sim2chip.run_stage train" in script
+    assert "--target /tmp/s2c/deps boto3" in script
+
+
+def test_sync_pulls_what_the_stage_reads(tmp_path):
+    from sim2chip import cloud_sync
+
+    class Store(cloud_sync.S3Store):
+        def __init__(self, objects):
+            self.objects = objects
+
+        def listing(self, bucket, prefix=""):
+            return {k: len(v) for (b, k), v in self.objects.items() if b == bucket and k.startswith(prefix)}
+
+        def pull(self, bucket, keys, root, strip=""):
+            for k in keys:
+                (root / k).parent.mkdir(parents=True, exist_ok=True)
+                (root / k).write_bytes(self.objects[(bucket, k)])
+            return len(keys)
+
+    manifest = json.dumps([{"uid": "u1"}]).encode()
+    objects = {("j", "spec.json"): b"{}", ("j", "input/a.jpg"): b"x", ("j", "fetch_assets/manifest.json"): manifest,
+               ("j", "convert_assets/assets.json"): b"[]", ("j", "render/0.png"): b"p",
+               ("c", "usd/norm/u1_v2.usd"): b"u", ("c", "usd/raw/textures/u1_texture0.png"): b"t",
+               ("c", "usd/raw/u2.usd"): b"other job", ("c", "hdri/sky.hdr"): b"h"}
+    job, cache = tmp_path / "job", tmp_path / "cache"
+    cloud_sync.pull(Store(objects), BY_NAME["preview_assets"], job, cache, "j", "c")
+    got = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_file())
+    assert got == ["cache/hdri/sky.hdr", "cache/usd/norm/u1_v2.usd", "cache/usd/raw/textures/u1_texture0.png",
+                   "job/convert_assets/assets.json", "job/fetch_assets/manifest.json", "job/spec.json"]

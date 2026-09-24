@@ -1,23 +1,24 @@
-"""Nebius backend: each stage runs as a Serverless AI job on an L40S, with the job and cache buckets mounted.
+"""Nebius backend: each stage runs as a Serverless AI job on an L40S, with its data in Object Storage.
 
-Data stays in Object Storage between stages: the user uploads the spec and input once, every stage
-reads and writes the mounted buckets, and only small results (done markers, reports, the exported
-model) come back to the local job folder, which keeps working as the pipeline's view of the job.
+Data stays in Object Storage between stages: the user uploads the spec and input once, every job pulls
+what its stage reads to local disk, runs it and pushes what it wrote (see cloud_sync.py). Only small
+results (done markers, reports, the exported model) come back to the local job folder, which keeps
+working as the pipeline's view of the job.
 
-    job bucket    s3://<prefix>-<job>   mounted at /s2c/job     (spec.json, input/, <stage>/, logs/)
-    cache bucket  s3://<prefix>-cache   mounted at /s2c/cache   (objaverse, usd, hdri), shared by jobs
+    job bucket    s3://<prefix>-<job>   spec.json, input/, <stage>/, logs/, _code/
+    cache bucket  s3://<prefix>-cache   objaverse, usd, hdri, shared by jobs
 
 Configuration (environment or the repo's .env):
     SIM2CHIP_NEBIUS_CLI        nebius CLI (default: on PATH or ~/.nebius/bin/nebius)
     SIM2CHIP_NEBIUS_PROJECT    project id (default: the CLI profile's parent-id)
     SIM2CHIP_BUCKET_PREFIX     bucket name prefix (default sim2chip)
+    SIM2CHIP_S3_SECRET         MysteryBox secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for the jobs
     SIM2CHIP_NEBIUS_SECRET     MysteryBox secret holding NEBIUS_API_KEY, for stages that call Token Factory
     SIM2CHIP_MAX_USD           spend cap for one run, estimated from GPU time (default 5)
     AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY   Object Storage key, to upload input and fetch results
 """
 from __future__ import annotations
 
-import fnmatch
 import io
 import json
 import os
@@ -29,14 +30,13 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..cloud_sync import S3Store
 from ..stages import Stage
 from ..workspace import DONE, REPO, Cache, Job
 
-REGION = "eu-north1"
-S3_ENDPOINT = f"https://storage.{REGION}.nebius.cloud"
 PLATFORM, PRESET = "gpu-l40s-a", "1gpu-8vcpu-32gb"
 USD_PER_HOUR = 1.55  # on-demand L40S (Intel), nebius.com/prices, 2026-09
-JOB_MOUNT, CACHE_MOUNT = "/s2c/job", "/s2c/cache"
+JOB_DIR, CACHE_DIR = "/tmp/s2c/job", "/tmp/s2c/cache"
 PREFIX = "[sim2chip]"
 
 
@@ -79,18 +79,30 @@ def code_archive() -> bytes:
 
 
 def bootstrap(stage: Stage, fp: str) -> str:
-    """Shell script that runs one stage inside its container."""
+    """Shell script that runs one stage inside its container: fetch the code, pull, run, push.
+
+    The code comes from a presigned URL in S2C_CODE_URL; boto3 (for the sync only) goes to its own folder
+    so it cannot clash with the runtime's packages.
+    """
     rt = RUNTIMES[stage.runtime]
+    dirs = f"--job {JOB_DIR} --cache {CACHE_DIR}"
+    sync = f"PYTHONPATH=/tmp/s2c/code:/tmp/s2c/deps {rt.python} -m sim2chip.cloud_sync"
     lines = [
         "#!/bin/bash",
         "set -eo pipefail",
-        "mkdir -p /tmp/s2c && tar xzf %s/_code/sim2chip.tar.gz -C /tmp/s2c" % JOB_MOUNT,
-        "export PYTHONPATH=/tmp/s2c PYTHONUNBUFFERED=1",
+        f"mkdir -p /tmp/s2c/code /tmp/s2c/deps {JOB_DIR}/logs {CACHE_DIR}",
+        f"{rt.python} -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "
+        '"$S2C_CODE_URL" /tmp/s2c/code.tgz',
+        "tar xzf /tmp/s2c/code.tgz -C /tmp/s2c/code",
+        f"{rt.python} -m pip install -q --target /tmp/s2c/deps boto3",
         rt.setup,
-        "mkdir -p %s/logs" % JOB_MOUNT,
-        "%s -m sim2chip.run_stage %s --job %s --cache %s --fingerprint %s 2>&1 | tee /tmp/stage.log" % (
-            rt.python, stage.name, JOB_MOUNT, CACHE_MOUNT, fp),
-        "cp /tmp/stage.log %s/logs/%s.log" % (JOB_MOUNT, stage.name),
+        "export PYTHONUNBUFFERED=1",
+        f"{sync} pull {stage.name} {dirs}",
+        "set +e",
+        f"PYTHONPATH=/tmp/s2c/code {rt.python} -m sim2chip.run_stage {stage.name} {dirs} --fingerprint {fp} 2>&1 "
+        f"| tee {JOB_DIR}/logs/{stage.name}.log",
+        "set -e",
+        f"{sync} push {stage.name} {dirs}",
     ]
     return "\n".join(l for l in lines if l) + "\n"
 
@@ -115,28 +127,20 @@ class NebiusCLI:
     def _parent(self) -> list[str]:
         return ["--parent-id", self.project] if self.project else []
 
-    def bucket_id(self, name: str, create: bool = True) -> str:
+    def ensure_bucket(self, name: str) -> None:
         if self.dry_run:
-            self("storage", "bucket", "get-by-name", "--name", name, *self._parent())
-            return f"<id of {name}>"
-        out = self("storage", "bucket", "get-by-name", "--name", name, *self._parent(), "--format", "json",
-                   check=False)
-        if not out.strip() and create:
             self("storage", "bucket", "create", "--name", name, *self._parent())
-            out = self("storage", "bucket", "get-by-name", "--name", name, *self._parent(), "--format", "json")
-        if not out.strip():
-            raise RuntimeError(f"bucket {name} not found")
-        return json.loads(out)["metadata"]["id"]
+            return
+        if not self("storage", "bucket", "get-by-name", "--name", name, *self._parent(), check=False).strip():
+            self("storage", "bucket", "create", "--name", name, *self._parent())
 
-    def create_job(self, name: str, runtime: Runtime, volumes: list[str], script: Path, timeout_h: int,
+    def create_job(self, name: str, runtime: Runtime, env: dict[str, str], script: Path, timeout_h: int,
                    env_secrets: list[str]) -> str:
         args = ["ai", "job", "create", "--name", name, "--image", runtime.image, "--platform", PLATFORM,
                 "--preset", PRESET, "--on-demand", "--timeout", f"{timeout_h}h", *self._parent(),
                 "--inject-file", f"{script}:/opt/s2c_stage.sh", "--container-command", "bash",
                 "--args", "/opt/s2c_stage.sh", "--async"]
-        for v in volumes:
-            args += ["--volume", v]
-        for k, v in runtime.env.items():
+        for k, v in {**runtime.env, **env}.items():
             args += ["--env", f"{k}={v}"]
         for s in env_secrets:
             args += ["--env-secret", s]
@@ -158,57 +162,6 @@ class NebiusCLI:
         return self("ai", "job", "logs", job_id, check=False)
 
 
-class S3Store:
-    """Object Storage through boto3 (orchestrator side only; stages see the mounted buckets)."""
-
-    def __init__(self):
-        try:
-            import boto3
-        except ImportError:
-            raise RuntimeError("the Nebius backend needs boto3: pip install -e .[cloud]") from None
-        key, secret = _env("AWS_ACCESS_KEY_ID"), _env("AWS_SECRET_ACCESS_KEY")
-        if not key or not secret:
-            raise RuntimeError("AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (Object Storage key) are not set")
-        self.s3 = boto3.client("s3", endpoint_url=S3_ENDPOINT, region_name=REGION, aws_access_key_id=key,
-                               aws_secret_access_key=secret)
-
-    def listing(self, bucket: str, prefix: str = "") -> dict[str, int]:
-        out = {}
-        for page in self.s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
-            for o in page.get("Contents", []):
-                out[o["Key"]] = o["Size"]
-        return out
-
-    def put(self, bucket: str, key: str, data: bytes) -> None:
-        self.s3.put_object(Bucket=bucket, Key=key, Body=data)
-
-    def upload_dir(self, bucket: str, src: Path, prefix: str) -> int:
-        """Uploads files missing or with a different size (symlinks followed). Returns the count."""
-        have = self.listing(bucket, prefix)
-        n = 0
-        for f in sorted(src.rglob("*")):
-            if f.is_file():
-                key = f"{prefix}/{f.relative_to(src).as_posix()}"
-                if have.get(key) != f.stat().st_size:
-                    self.s3.upload_file(str(f), bucket, key)
-                    n += 1
-        return n
-
-    def download(self, bucket: str, prefix: str, dst: Path, patterns: tuple[str, ...]) -> int:
-        n = 0
-        for key in self.listing(bucket, prefix):
-            rel = key[len(prefix):].lstrip("/")
-            if any(fnmatch.fnmatch(rel, p) for p in patterns):
-                out = dst / rel
-                out.parent.mkdir(parents=True, exist_ok=True)
-                self.s3.download_file(bucket, key, str(out))
-                n += 1
-        return n
-
-    def delete(self, bucket: str, key: str) -> None:
-        self.s3.delete_object(Bucket=bucket, Key=key)
-
-
 class NebiusBackend:
     def __init__(self, verbose: bool = False, dry_run: bool = False, max_usd: float | None = None,
                  cli: NebiusCLI | None = None, store=None, poll_s: float = 20.0):
@@ -218,31 +171,33 @@ class NebiusBackend:
         self._store = store
         self.prefix = _env("SIM2CHIP_BUCKET_PREFIX", "sim2chip")
         self.spent_usd = 0.0
-        self._uploaded: set[str] = set()
+        self._ready: set[str] = set()
 
     @property
     def store(self):
         if self._store is None:
-            self._store = S3Store()
+            self._store = S3Store(_env("AWS_ACCESS_KEY_ID"), _env("AWS_SECRET_ACCESS_KEY"))
         return self._store
 
     def buckets(self, job: Job) -> tuple[str, str]:
         name = f"{self.prefix}-{job.name}".lower().replace("_", "-")[:63]
         return name, f"{self.prefix}-cache"
 
-    def _upload_job(self, job: Job, bucket: str) -> None:
+    def _upload_job(self, job: Job, bucket: str, cache_bucket: str) -> str:
+        """Buckets, code, spec and input (once per run). Returns the code's presigned URL."""
         if self.dry_run:
             print(f"  upload code, spec.json and input/ to s3://{bucket}", flush=True)
-            return
-        if bucket in self._uploaded:
-            self.store.put(bucket, "spec.json", job.spec_path.read_bytes())
-            return
-        self.store.put(bucket, "_code/sim2chip.tar.gz", code_archive())
+            return "<presigned url>"
+        if bucket not in self._ready:
+            for b in (bucket, cache_bucket):
+                self.cli.ensure_bucket(b)
+            self.store.put(bucket, "_code/sim2chip.tar.gz", code_archive())
+            if job.input.exists():
+                n = self.store.upload_dir(bucket, job.input, "input")
+                print(f"  uploaded {n} input files to s3://{bucket}", flush=True)
+            self._ready.add(bucket)
         self.store.put(bucket, "spec.json", job.spec_path.read_bytes())
-        if job.input.exists():
-            n = self.store.upload_dir(bucket, job.input, "input")
-            print(f"  uploaded {n} input files to s3://{bucket}", flush=True)
-        self._uploaded.add(bucket)
+        return self.store.url(bucket, "_code/sim2chip.tar.gz")
 
     def run_stage(self, stage: Stage, job: Job, cache: Cache, fp: str) -> None:
         timeout_h = stage.max_hours
@@ -251,16 +206,15 @@ class NebiusBackend:
                                f"(timeout {timeout_h} h) and ${self.spent_usd:.2f} is already spent: over the "
                                f"cap of ${self.max_usd:.2f} (SIM2CHIP_MAX_USD)")
         job_bucket, cache_bucket = self.buckets(job)
-        job_id_b = self.cli.bucket_id(job_bucket)
-        cache_id_b = self.cli.bucket_id(cache_bucket)
-        self._upload_job(job, job_bucket)
+        code_url = self._upload_job(job, job_bucket, cache_bucket)
         if not self.dry_run:
             self.store.delete(job_bucket, f"{stage.name}/{DONE}")  # a stale marker must not pass as success
 
         script = job.logs / f"{stage.name}.nebius.sh"
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text(bootstrap(stage, fp))
-        secrets = []
+        s3_secret = _env("SIM2CHIP_S3_SECRET", "sim2chip-s3")
+        secrets = [f"AWS_ACCESS_KEY_ID={s3_secret}", f"AWS_SECRET_ACCESS_KEY={s3_secret}"]
         if stage.needs_llm:
             secret = _env("SIM2CHIP_NEBIUS_SECRET")
             if not secret and not self.dry_run:
@@ -268,9 +222,8 @@ class NebiusBackend:
             secrets.append(f"NEBIUS_API_KEY={secret or '<secret>'}")
         name = f"s2c-{job.name}-{stage.name}".lower().replace("_", "-")[:63]
         t0 = time.time()
-        job_id = self.cli.create_job(name, RUNTIMES[stage.runtime],
-                                     [f"{job_id_b}:{JOB_MOUNT}", f"{cache_id_b}:{CACHE_MOUNT}"], script,
-                                     timeout_h, secrets)
+        env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url}
+        job_id = self.cli.create_job(name, RUNTIMES[stage.runtime], env, script, timeout_h, secrets)
         if self.dry_run:
             return
         print(f"  nebius job {job_id} ({PLATFORM}, {PRESET})", flush=True)
@@ -279,13 +232,17 @@ class NebiusBackend:
         self.spent_usd += hours * USD_PER_HOUR
         self._record(job, stage.name, job_id, state, hours)
 
-        logs = self.cli.job_logs(job_id)
-        (job.logs / f"{stage.name}.log").write_text(logs)
-        for line in logs.splitlines():
+        # The job log (nebius ai job logs) is only its last lines: the full stage log comes from the bucket.
+        tail = self.cli.job_logs(job_id)
+        (job.logs / f"{stage.name}.job.log").write_text(tail)
+        stage_log = job.logs / f"{stage.name}.log"
+        stage_log.unlink(missing_ok=True)
+        self.store.download(job_bucket, "logs", job.logs, (stage_log.name, "*.jsonl"))  # + Token Factory usage
+        lines = stage_log.read_text(errors="replace").splitlines() if stage_log.exists() else []
+        for line in lines + [l for l in tail.splitlines() if l not in lines]:
             if self.verbose or line.startswith(PREFIX):
                 print("  " + line.removeprefix(PREFIX).strip(), flush=True)
         self.store.download(job_bucket, stage.name, job.stage_dir(stage.name), (DONE, *stage.results))
-        self.store.download(job_bucket, "logs", job.logs, ("*.jsonl",))  # Token Factory usage
         print(f"  {state} after {hours * 60:.1f} min, about ${hours * USD_PER_HOUR:.2f} "
               f"(run total ${self.spent_usd:.2f})", flush=True)
 
