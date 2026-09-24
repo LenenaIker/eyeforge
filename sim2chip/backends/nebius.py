@@ -183,7 +183,7 @@ class NebiusBackend:
         name = f"{self.prefix}-{job.name}".lower().replace("_", "-")[:63]
         return name, f"{self.prefix}-cache"
 
-    def _upload_job(self, job: Job, bucket: str, cache_bucket: str) -> str:
+    def _upload_job(self, job: Job, cache: Cache, bucket: str, cache_bucket: str) -> str:
         """Buckets, code, spec and input (once per run). Returns the code's presigned URL."""
         if self.dry_run:
             print(f"  upload code, spec.json and input/ to s3://{bucket}", flush=True)
@@ -195,6 +195,7 @@ class NebiusBackend:
             if job.input.exists():
                 n = self.store.upload_dir(bucket, job.input, "input")
                 print(f"  uploaded {n} input files to s3://{bucket}", flush=True)
+            self.store.upload_dir(cache_bucket, cache.db, "db")  # share what this machine learned about assets
             self._ready.add(bucket)
         self.store.put(bucket, "spec.json", job.spec_path.read_bytes())
         return self.store.url(bucket, "_code/sim2chip.tar.gz")
@@ -206,7 +207,7 @@ class NebiusBackend:
                                f"(timeout {timeout_h} h) and ${self.spent_usd:.2f} is already spent: over the "
                                f"cap of ${self.max_usd:.2f} (SIM2CHIP_MAX_USD)")
         job_bucket, cache_bucket = self.buckets(job)
-        code_url = self._upload_job(job, job_bucket, cache_bucket)
+        code_url = self._upload_job(job, cache, job_bucket, cache_bucket)
         if not self.dry_run:
             self.store.delete(job_bucket, f"{stage.name}/{DONE}")  # a stale marker must not pass as success
 
@@ -243,6 +244,8 @@ class NebiusBackend:
             if self.verbose or line.startswith(PREFIX):
                 print("  " + line.removeprefix(PREFIX).strip(), flush=True)
         self.store.download(job_bucket, stage.name, job.stage_dir(stage.name), (DONE, *stage.results))
+        if stage.uses_db:  # new asset reviews made in the cloud
+            self.store.download(cache_bucket, "db", cache.db, ("*.jsonl",), overwrite=False)
         print(f"  {state} after {hours * 60:.1f} min, about ${hours * USD_PER_HOUR:.2f} "
               f"(run total ${self.spent_usd:.2f})", flush=True)
 

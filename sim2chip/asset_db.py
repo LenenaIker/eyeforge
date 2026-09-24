@@ -8,8 +8,8 @@ again, and live search puts known good assets first and skips known bad ones.
 
 A concept is what the asset was searched for: an Objaverse-LVIS category or a live search query, so
 "forklift" asked by two different users hits the same records. Storage is append-only JSON lines, one
-file per job run (cache/db/reviews/<job>-<time>-<random>.jsonl): no write conflicts between jobs, and it syncs to
-Object Storage like any other folder. On read, the newest record per (uid, concept) wins.
+file per job run (cache/db/reviews/<job>-<time>-<random>.jsonl): no write conflicts between jobs, and it
+syncs to Object Storage like any other folder. On read, the newest record per (uid, concept) wins.
 """
 from __future__ import annotations
 

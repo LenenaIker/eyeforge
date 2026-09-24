@@ -68,10 +68,13 @@ class S3Store:
             list(pool.map(lambda kd: self.s3.download_file(bucket, kd[0], str(kd[1])), todo))
         return len(todo)
 
-    def download(self, bucket: str, prefix: str, dst: Path, patterns: tuple[str, ...] = ("*",)) -> int:
+    def download(self, bucket: str, prefix: str, dst: Path, patterns: tuple[str, ...] = ("*",),
+                 overwrite: bool = True) -> int:
+        """Small results; overwrite=False for immutable files (asset reviews) already present."""
         keys = [k for k in self.listing(bucket, prefix + "/")
-                if any(fnmatch.fnmatch(k[len(prefix) + 1:], p) for p in patterns)]
-        for key in keys:  # results are small and may change between runs: always overwrite
+                if any(fnmatch.fnmatch(k[len(prefix) + 1:], p) for p in patterns)
+                and (overwrite or not (dst / k[len(prefix) + 1:]).exists())]
+        for key in keys:
             out = dst / key[len(prefix) + 1:]
             out.parent.mkdir(parents=True, exist_ok=True)
             self.s3.download_file(bucket, key, str(out))

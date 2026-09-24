@@ -8,7 +8,7 @@ import pytest
 from sim2chip.backends import nebius
 from sim2chip.backends.nebius import NebiusBackend, bootstrap, code_archive
 from sim2chip.stages import BY_NAME
-from sim2chip.workspace import DONE, Job
+from sim2chip.workspace import DONE, Cache, Job
 
 
 class FakeCLI:
@@ -54,7 +54,7 @@ class FakeStore:
     def delete(self, bucket, key):
         self.objects.pop((bucket, key), None)
 
-    def download(self, bucket, prefix, dst, patterns):
+    def download(self, bucket, prefix, dst, patterns, overwrite=True):
         import fnmatch
         n = 0
         for (b, key), data in list(self.objects.items()):
@@ -82,7 +82,7 @@ def backend(store, final="COMPLETED", max_usd=10.0):
 def test_stage_runs_as_job_and_brings_back_small_results(job, tmp_path):
     store = FakeStore()
     b = backend(store)
-    b.run_stage(BY_NAME["render"], job, None, "fp")
+    b.run_stage(BY_NAME["render"], job, Cache(job.root.parent / "cache"), "fp")
     j = b.cli.jobs[0]
     assert j["image"].startswith("nvcr.io/nvidia/isaac-sim")
     assert store.buckets == {"sim2chip-j", "sim2chip-cache"}
@@ -104,24 +104,24 @@ def test_stage_runs_as_job_and_brings_back_small_results(job, tmp_path):
 def test_stale_marker_is_removed_before_the_job(job):
     store = FakeStore()
     store.objects[("sim2chip-j", f"render/{DONE}")] = b'{"fingerprint": "fp"}'
-    backend(store, final="FAILED").run_stage(BY_NAME["render"], job, None, "fp")
+    backend(store, final="FAILED").run_stage(BY_NAME["render"], job, Cache(job.root.parent / "cache"), "fp")
     assert job.done("render") is None
 
 
 def test_spend_cap(job):
     with pytest.raises(RuntimeError, match="over the cap"):
-        backend(FakeStore(), max_usd=1.0).run_stage(BY_NAME["render"], job, None, "fp")
+        backend(FakeStore(), max_usd=1.0).run_stage(BY_NAME["render"], job, Cache(job.root.parent / "cache"), "fp")
 
 
 def test_llm_stage_needs_the_secret(job, monkeypatch):
     monkeypatch.delenv("SIM2CHIP_NEBIUS_SECRET", raising=False)
     monkeypatch.setattr(nebius, "REPO", job.root)  # no .env there
     with pytest.raises(RuntimeError, match="SIM2CHIP_NEBIUS_SECRET"):
-        backend(FakeStore()).run_stage(BY_NAME["qa_assets"], job, None, "fp")
+        backend(FakeStore()).run_stage(BY_NAME["qa_assets"], job, Cache(job.root.parent / "cache"), "fp")
     monkeypatch.setenv("SIM2CHIP_NEBIUS_SECRET", "s2c-token")
     store = FakeStore()
     b = backend(store, final="FAILED")
-    b.run_stage(BY_NAME["qa_assets"], job, None, "fp")
+    b.run_stage(BY_NAME["qa_assets"], job, Cache(job.root.parent / "cache"), "fp")
     assert "NEBIUS_API_KEY=s2c-token" in b.cli.jobs[0]["secrets"]
 
 
