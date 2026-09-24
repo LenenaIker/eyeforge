@@ -71,3 +71,28 @@ def test_empty_optional_fields_do_not_change_fingerprints():
     explicit = from_dict({**base, "classes": [{**base["classes"][0],
                                                "assets": {"categories": ["cow"], "queries": []}}]})
     assert fingerprint(s.section("classes")) == fingerprint(explicit.section("classes"))
+
+
+PROP = {"id": "cone", "queries": ["traffic cone"], "size_m": {"measure": "height", "range": [0.5, 0.9]}}
+
+
+def test_props_parse_and_size_of():
+    base = {"name": "x", "classes": [{"id": "car", "size_m": {"measure": "length", "range": [3, 5]}}]}
+    s = from_dict({**base, "props": [PROP]})
+    assert s.props[0].count == 4 and s.size_of("cone").range == (0.5, 0.9) and s.size_of("car").range == (3, 5)
+    for bad in ({**PROP, "id": "car"}, {**PROP, "queries": []}, {**PROP, "max_per_frame": 0},
+                {k: v for k, v in PROP.items() if k != "size_m"}):
+        with pytest.raises(SpecError):
+            from_dict({**base, "props": [bad]})
+
+
+def test_empty_props_keep_fingerprints():
+    from sim2chip.pipeline import Pipeline
+    from sim2chip.workspace import Cache, Job
+    base = {"name": "x", "classes": [{"id": "car", "size_m": {"measure": "length", "range": [3, 5]},
+                                      "assets": {"categories": ["car"]}}]}
+    job, cache = Job(Path("/nonexistent/j")), Cache(Path("/nonexistent/c"))
+    a = Pipeline(from_dict(base), job, cache).fingerprints()
+    b = Pipeline(from_dict({**base, "props": []}), job, cache).fingerprints()
+    c = Pipeline(from_dict({**base, "props": [PROP]}), job, cache).fingerprints()
+    assert a == b and a["fetch_assets"] != c["fetch_assets"] and a["train"] != c["train"]  # downstream too

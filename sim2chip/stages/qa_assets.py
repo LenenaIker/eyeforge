@@ -6,7 +6,9 @@ Modes:
   auto    models on Token Factory judge a contact sheet of 4 views per asset. qa.strategy "vision": a vision
           model decides; "describe_then_decide": a vision model describes the asset and Nemotron decides.
           Any manual lists in the spec are applied on top, so a human can still correct it
-Output: qa_assets/assets.json  [{..., class, usd, dims, no_color}]
+Background props (role "prop") go through the same review with the prop listed next to the classes: a
+prop model judged as a target class is dropped, so the camera never learns to ignore a target.
+Output: qa_assets/assets.json  [{..., class, usd, dims, no_color, role?}]
         qa_assets/verdicts.json (auto): the model's answer per asset
 """
 from __future__ import annotations
@@ -86,7 +88,7 @@ class QAAssets(Stage):
     needs_llm = True
     reads_input = True
     uses_db = True
-    uses = ("qa", "classes")
+    uses = ("qa", "classes", "props")
     after = ("convert_assets", "preview_assets")
 
     def enabled(self, spec) -> bool:
@@ -96,6 +98,7 @@ class QAAssets(Stage):
         assets = json.loads((ctx.job.stage_dir("convert_assets") / "assets.json").read_text())
         qa = ctx.spec.qa
         ids = [k.id for k in ctx.spec.classes]
+        prop_ids = [p.id for p in ctx.spec.props]
         exclude, override, no_color = set(), {}, set()
         if qa.mode == "auto":
             verdicts = self.review(ctx, assets)
@@ -104,8 +107,15 @@ class QAAssets(Stage):
                 if v is None or v["decision"] == "discard":
                     exclude.add(a["uid"])
                     continue
-                if v.get("class") in ids and v["class"] != a["class"]:
-                    override[a["uid"]] = v["class"]
+                judged = v.get("class") or a["class"]
+                if a.get("role") == "prop" and judged != a["class"] and judged in ids + prop_ids:
+                    exclude.add(a["uid"])  # looks like a target (or another prop): not a safe background
+                    continue
+                if a.get("role") != "prop" and judged in prop_ids:
+                    exclude.add(a["uid"])  # a target model that looks like background clutter
+                    continue
+                if a.get("role") != "prop" and judged in ids and judged != a["class"]:
+                    override[a["uid"]] = judged
                 if v.get("no_color"):
                     no_color.add(a["uid"])
         if qa.mode in ("manual", "auto"):
@@ -121,8 +131,9 @@ class QAAssets(Stage):
             raise ValueError(f"qa.class_override uses classes that are not in the spec: {bad}")
         kept = [{**a, "class": override.get(a["uid"], a["class"]), "no_color": a["uid"] in no_color}
                 for a in assets if a["uid"] not in exclude]
-        # Live-search classes were oversampled: keep the first `count` survivors (search relevance order).
+        # Live-search classes and props were oversampled: keep the first `count` survivors (search relevance order).
         cap = {c.id: c.assets.count for c in ctx.spec.classes if c.assets and c.assets.source == "search"}
+        cap |= {p.id: p.count for p in ctx.spec.props}
         per_class = {}
         capped = []
         for a in kept:
@@ -133,6 +144,9 @@ class QAAssets(Stage):
         empty = [c.id for c in ctx.spec.classes if c.assets and not per_class.get(c.id)]
         if empty:
             raise ValueError(f"no usable 3D models left for classes {empty}")
+        no_props = [p.id for p in ctx.spec.props if not per_class.get(p.id)]
+        if no_props:
+            ctx.log(f"WARNING: no usable models for props {no_props}, scenes will lack them")
         (ctx.out(self.name) / "assets.json").write_text(json.dumps(kept, indent=1))
         ctx.log(f"{len(kept)} of {len(assets)} assets kept (mode {qa.mode}): {per_class}")
         return {"kept": per_class, "dropped": len(assets) - len(kept)}
@@ -182,7 +196,11 @@ class QAAssets(Stage):
         client = Client(usage_log=ctx.job.logs / "llm_usage.jsonl")
         model = client.model_for("describe" if ctx.spec.qa.strategy == "describe_then_decide" else "vision")
         classes = "\n".join(f"- {c.id}: {c.description or c.id}" for c in ctx.spec.classes)
-        ids = ", ".join(c.id for c in ctx.spec.classes)
+        if ctx.spec.props:
+            classes += ("\nBackground objects placed around them (the camera must ignore these, so they must not"
+                        " look like any class above):\n")
+            classes += "\n".join(f"- {p.id}: {p.description or p.queries[0]}" for p in ctx.spec.props)
+        ids = ", ".join([c.id for c in ctx.spec.classes] + [p.id for p in ctx.spec.props])
         ctx.log(f"judging {len(assets)} assets with {model}")
 
         strategy = ctx.spec.qa.strategy

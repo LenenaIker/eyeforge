@@ -52,6 +52,20 @@ class ClassSpec:
 
 
 @dataclass
+class PropSpec:
+    """Background objects placed around the targets so scenes are not empty (cones and pallets on a
+    building site, rocks and logs in a forest). Found by live search like a class, checked by asset QA
+    (which also drops models that look like a target class) and never labeled: the camera must ignore them.
+    `count` models are kept; each frame shows between 0 and `max_per_frame` instances of this prop."""
+    id: str
+    queries: list[str]
+    size_m: SizeSpec
+    description: str = ""
+    count: int = 4
+    max_per_frame: int = 4
+
+
+@dataclass
 class CameraSpec:
     height_m: tuple[float, float] = (2.0, 6.0)
     hfov_deg: float = 60.0
@@ -117,6 +131,7 @@ class TrainingSpec:
 class Spec:
     name: str
     classes: list[ClassSpec]
+    props: list[PropSpec] = field(default_factory=list)
     hardware: str = "esp32cam"
     task: str = "roi_classification"
     background_class: str = "empty"
@@ -137,6 +152,13 @@ class Spec:
             if c.id == class_id:
                 return c
         raise KeyError(class_id)
+
+    def size_of(self, asset_class: str) -> SizeSpec:
+        """Real-world size of a class or a prop."""
+        for p in self.props:
+            if p.id == asset_class:
+                return p.size_m
+        return self.cls(asset_class).size_m
 
     def section(self, name: str) -> Any:
         """A spec section as it enters stage fingerprints: empty values (None, [], {}) are left out, so
@@ -202,6 +224,14 @@ def from_dict(data: dict) -> Spec:
         size = _build(SizeSpec, c.pop("size_m"), f"{where}.size_m") if c.get("size_m") else c.pop("size_m", None)
         assets = _build(AssetQuery, c.pop("assets"), f"{where}.assets") if c.get("assets") else c.pop("assets", None)
         classes.append(_build(ClassSpec, {**c, "size_m": size, "assets": assets}, where))
+    props = []
+    for i, p in enumerate(data.pop("props", None) or []):
+        p = dict(p)
+        where = f"props[{i}]"
+        if not isinstance(p.get("size_m"), dict):
+            raise SpecError(f"{where}.size_m: required")
+        props.append(_build(PropSpec, {**p, "size_m": _build(SizeSpec, p["size_m"], f"{where}.size_m")}, where))
+    data["props"] = props
     sections = {"camera": CameraSpec, "scene": SceneSpec, "user_data": UserData, "qa": QASpec,
                 "generation": GenerationSpec, "training": TrainingSpec}
     for key, cls in sections.items():
@@ -236,6 +266,16 @@ def validate(spec: Spec) -> None:
                 raise SpecError(f"class {c.id}: search assets need queries")
             if c.assets.count < 1:
                 raise SpecError(f"class {c.id}: assets.count must be at least 1")
+    pids = [p.id for p in spec.props]
+    if len(set(pids)) != len(pids) or set(pids) & set(spec.labels):
+        raise SpecError("props: ids must be unique and differ from the class ids and background_class")
+    for p in spec.props:
+        if p.size_m.measure not in MEASURES or not 0 < p.size_m.range[0] <= p.size_m.range[1]:
+            raise SpecError(f"prop {p.id}: size_m needs a measure in {MEASURES} and 0 < min <= max")
+        if not p.queries:
+            raise SpecError(f"prop {p.id}: queries cannot be empty")
+        if p.count < 1 or p.max_per_frame < 1:
+            raise SpecError(f"prop {p.id}: count and max_per_frame must be at least 1")
     from .scenes import TEMPLATES
     if spec.scene.template not in TEMPLATES:
         raise SpecError(f"scene.template must be one of {sorted(TEMPLATES)}")

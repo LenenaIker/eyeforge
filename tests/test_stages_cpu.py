@@ -114,3 +114,25 @@ def test_qa_caps_oversampled_search_classes(tmp_path):
     assert QAAssets().run(ctx)["kept"] == {"cow": 2, "dog": 1}
     kept = json.loads((ctx.job.stage_dir("qa_assets") / "assets.json").read_text())
     assert [a["uid"] for a in kept] == ["a", "b", "e"]  # search relevance order
+
+
+def test_qa_props_drop_lookalikes(tmp_path, monkeypatch):
+    classes = [{"id": "excavator", "size_m": {"measure": "length", "range": [6, 9]},
+                "assets": {"source": "search", "queries": ["excavator"], "count": 5}}]
+    props = [{"id": "cone", "queries": ["traffic cone"], "size_m": {"measure": "height", "range": [0.5, 0.9]},
+              "count": 1}]
+    ctx = ctx_for(tmp_path, classes=classes, props=props, qa={"mode": "auto"})
+    assets = [{"uid": "t1", "class": "excavator", "category": "excavator", "usd": "u", "dims": [7, 3, 3]},
+              {"uid": "t2", "class": "excavator", "category": "excavator", "usd": "u", "dims": [7, 3, 3]},
+              {"uid": "p1", "class": "cone", "category": "traffic cone", "role": "prop", "usd": "u", "dims": [1, 1, 1]},
+              {"uid": "p2", "class": "cone", "category": "traffic cone", "role": "prop", "usd": "u", "dims": [1, 1, 1]},
+              {"uid": "p3", "class": "cone", "category": "traffic cone", "role": "prop", "usd": "u", "dims": [1, 1, 1]}]
+    (ctx.out("convert_assets") / "assets.json").write_text(json.dumps(assets))
+    verdicts = {"t1": {"decision": "keep", "class": "excavator"},
+                "t2": {"decision": "keep", "class": "cone"},       # a target that looks like clutter
+                "p1": {"decision": "keep", "class": "excavator"},  # a prop that looks like a target
+                "p2": {"decision": "keep", "class": "cone"}, "p3": {"decision": "keep", "class": "cone"}}
+    monkeypatch.setattr(QAAssets, "review", lambda self, ctx, assets: verdicts)
+    assert QAAssets().run(ctx)["kept"] == {"excavator": 1, "cone": 1}  # p3 capped by count
+    kept = json.loads((ctx.job.stage_dir("qa_assets") / "assets.json").read_text())
+    assert [(a["uid"], a.get("role")) for a in kept] == [("t1", None), ("p2", "prop")]

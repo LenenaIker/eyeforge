@@ -47,6 +47,11 @@ plane textured from Poly Haven by "ground_tags" and sky maps (which also give th
 "grass", "leaves", "dirt", "gravel", "mud", "asphalt", "tiles". Indoors, put "indoor" in sky_tags (weather is
 then ignored). Tags are checked when you send the spec.
 Weather options: {weather}. Distractors (optional): "tree", "person".
+Props: scenes with only the target look empty and the model then learns "anything in the picture is a target".
+Always propose 2 to 5 background props typical of the place ("props": a building site gets traffic cones,
+pallets, barriers, dirt piles; a forest gets rocks, logs, bushes), each with live search queries and a
+real size. They are found live like a class and never labeled. They must not look like any class (no cars as
+props for a vehicle camera); ask the user if a prop could be confused with what they want to detect.
 
 Spec format (JSON, defaults shown; omit a field to keep its default):
 {schema}
@@ -61,6 +66,8 @@ EXAMPLE = {"name": "example", "classes": [{"id": "cow", "description": "cows see
                                            "size_m": {"measure": "length", "range": [2.0, 2.5]},
                                            "assets": {"source": "objaverse_lvis", "categories": ["cow"],
                                                       "count": 20}}],
+           "props": [{"id": "hay_bale", "queries": ["hay bale"], "size_m": {"measure": "length", "range": [1.2, 2.4]},
+                      "count": 4, "max_per_frame": 4}],
            "qa": {"mode": "auto"}}
 
 

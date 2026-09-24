@@ -41,11 +41,13 @@ class Pipeline:
         """Stage fingerprint: its code version, the spec sections it uses and its upstream fingerprints.
 
         Files referenced by the spec (user photos, review lists) are identified by path, not content:
-        after editing them in place, rerun with --from.
+        after editing them in place, rerun with --from. Empty sections are left out, so a stage can start
+        using a new optional section (e.g. props) without invalidating existing jobs.
         """
         fps: dict[str, str] = {}
         for s in self.stages:
-            fps[s.name] = fingerprint(s.name, s.version, {k: self.spec.section(k) for k in s.uses},
+            used = {k: v for k in s.uses if (v := self.spec.section(k)) not in (None, [], {})}
+            fps[s.name] = fingerprint(s.name, s.version, used,
                                       {a: fps[a] for a in s.after if a in fps})
         return fps
 

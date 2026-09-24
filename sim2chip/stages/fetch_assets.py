@@ -1,7 +1,8 @@
 """Find and download 3D models for each class, plus the sky maps of the scene.
 
 Downloads go to the shared cache; the job only keeps a manifest.
-Output: fetch_assets/manifest.json  [{uid, class, category, name, license, author, source, glb}]
+Output: fetch_assets/manifest.json  [{uid, class, category, name, license, author, source, glb, role?}]
+        (role "prop" for background props: `class` is then the prop id)
         fetch_assets/scene.json     {"skies": [...], "ground": [...]}  cache-relative paths
 """
 from __future__ import annotations
@@ -26,11 +27,18 @@ class FetchAssets(Stage):
     runtime = "cpu"
     uses_cache = True
     uses_db = True
-    uses = ("classes", "scene")
+    uses = ("classes", "props", "scene")
     version = "5"  # v2: glb paths relative to cache root; v3: search oversamples; v4: scene.json; v5: asset DB
 
     def enabled(self, spec) -> bool:
         return any(c.assets for c in spec.classes)
+
+    @staticmethod
+    def searched(spec) -> list[dict]:
+        """Everything found by live search, in priority order: search classes first, then props."""
+        return [{"id": c.id, "queries": c.assets.queries, "count": c.assets.count} for c in spec.classes
+                if c.assets and c.assets.source == "search"] + \
+               [{"id": p.id, "queries": p.queries, "count": p.count, "role": "prop"} for p in spec.props]
 
     def run(self, ctx: Context) -> dict:
         root = ctx.cache.objaverse
@@ -88,7 +96,7 @@ class FetchAssets(Stage):
     def live_search(self, ctx: Context, taken: set[str]) -> list[dict]:
         from .. import asset_search
 
-        wanted = [c for c in ctx.spec.classes if c.assets and c.assets.source == "search"]
+        wanted = self.searched(ctx.spec)
         if not wanted:
             return []
         from ..asset_db import AssetDB
@@ -97,22 +105,23 @@ class FetchAssets(Stage):
         mirror = asset_search.Mirror(ctx.cache.objaverse)
         db = AssetDB(ctx.cache.db)
         manifest = []
-        for c in wanted:  # a model found for two classes goes to the first one only
-            qs = c.assets.queries
+        for c in wanted:  # a model found for two classes (or a class and a prop) goes to the first one only
+            qs, count = c["queries"], c["count"]
             # Known good models for these queries need no review: take them first. Known bad ones are skipped.
             good = [asset_search.Hit(r["uid"], r.get("name", ""), r.get("license", ""), r.get("author", ""),
                                      r.get("source", ""), r["concept"])
                     for q in qs for r in db.known(q, "keep") if r["uid"] in mirror and r["uid"] not in taken]
-            good = list({h.uid: h for h in good}.values())[:c.assets.count]
+            good = list({h.uid: h for h in good}.values())[:count]
             bad = {r["uid"] for q in qs for r in db.known(q, "discard")}
-            need = (c.assets.count - len(good)) * SEARCH_OVERSAMPLE
+            need = (count - len(good)) * SEARCH_OVERSAMPLE
             found = asset_search.find(qs, need, mirror, exclude=taken | bad | {h.uid for h in good}) if need else []
             hits = good + found
             taken |= {h.uid for h in hits}
-            ctx.log(f"{c.id:16s} search {qs}: {len(good)} known good, {len(found)} new candidates"
+            ctx.log(f"{c['id']:16s} search {qs}: {len(good)} known good, {len(found)} new candidates"
                     f" ({len(bad)} known bad skipped)")
-            manifest += [{"uid": h.uid, "class": c.id, "category": h.query, "name": h.name, "license": h.license,
-                          "author": h.author, "source": h.source} for h in hits]
+            role = {"role": c["role"]} if "role" in c else {}
+            manifest += [{"uid": h.uid, "class": c["id"], "category": h.query, "name": h.name, "license": h.license,
+                          "author": h.author, "source": h.source, **role} for h in hits]
         return manifest
 
     def download(self, ctx: Context, manifest: list[dict]) -> list[dict]:

@@ -135,3 +135,4 @@ class Paint:
         self.metal.Set(rng.uniform(0.2, 0.8))
         api.Bind(self.mat, UsdShade.Tokens.strongerThanDescendants)
         return True
+

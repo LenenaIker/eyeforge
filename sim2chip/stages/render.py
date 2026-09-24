@@ -1,4 +1,5 @@
-"""Synthetic dataset: one target (or none) per frame, placed by the scene template from the spec.
+"""Synthetic dataset: one target (or none) per frame, placed by the scene template from the spec, with the
+spec's background props scattered around it.
 
 The camera distance is derived from the target's real size and the spec's target_fill, so it adapts to
 any object. Output: render/rgb_*.png, bounding_box_2d_tight_*.{npy,json}, render/labels.json
@@ -19,7 +20,7 @@ class Render(Stage):
     uses_cache = True
     gpu = "rtx"
     max_hours = 2
-    uses = ("scene", "camera", "generation", "classes", "background_class")
+    uses = ("scene", "camera", "generation", "classes", "props", "background_class")
     after = ("qa_assets", "fetch_assets")  # fetch_assets: scene.json with skies and ground textures
 
     def enabled(self, spec) -> bool:
@@ -36,6 +37,7 @@ class Render(Stage):
 
         from .. import scenes
         from ..scenes.common import Paint, Props, look_at, set_visible
+        from ..scenes.scatter import PropScatter
 
         spec, cam_spec, gen = ctx.spec, ctx.spec.camera, ctx.spec.generation
         out = ctx.job.stage_dir(self.name)
@@ -70,6 +72,18 @@ class Render(Stage):
         cam.CreateFocalLengthAttr(aperture / 2 / math.tan(math.radians(cam_spec.hfov_deg) / 2))
 
         assets = json.loads((ctx.job.stage_dir("qa_assets") / "assets.json").read_text())
+        scatter = PropScatter(props, cam_spec.hfov_deg)
+        for p in spec.props:
+            models = []
+            for a in (a for a in assets if a.get("role") == "prop" and a["class"] == p.id):
+                dim = a["dims"][MEASURES.index(p.size_m.measure)]
+                models.append((str(ctx.cache.root / a["usd"]), (math.hypot(*a["dims"][:2]) / 2, a["dims"][2]),
+                               (p.size_m.range[0] / dim, p.size_m.range[1] / dim)))
+            if models:
+                scatter.add_kind(p.max_per_frame, models, f"/World/Props/{p.id}")
+        if spec.props:
+            ctx.log(f"{len(scatter.kinds)} kinds of props, {len(scatter.prims)} instances")
+        assets = [a for a in assets if a.get("role") != "prop"]
         targets: dict[str, list] = {}
         for i, a in enumerate(assets):
             c = spec.cls(a["class"])
@@ -81,7 +95,7 @@ class Render(Stage):
             targets.setdefault(a["class"], []).append((a, prim, scale, size))
         for _ in range(10):
             app.update()
-        props.recenter([t[1] for ts in targets.values() for t in ts])
+        props.recenter([t[1] for ts in targets.values() for t in ts] + scatter.prims)
         scene.after_load()
         for _ in range(30):
             app.update()
@@ -97,12 +111,13 @@ class Render(Stage):
         for f in range(gen.frames):
             scene.randomize(change_sky=f % 20 == 0)
             cls = spec.background_class if rng.random() < gen.empty_ratio else rng.choice(classes)
-            shown, painted, a = [], False, None
+            shown, painted, a, radius, height = [], False, None, 0.0, 0.0
             if cls != spec.background_class:
                 a, prim, scale, size = rng.choice(targets[cls])
                 target = scene.place_target(prim, scale)
                 painted = paint.apply(prim, rng, force=a.get("no_color", False))
                 shown.append(prim)
+                radius, height = math.hypot(*a["dims"][:2]) / 2 * scale, a["dims"][2] * scale
                 dist = camera_distance(size, rng.uniform(*cam_spec.target_fill), cam_spec.hfov_deg,
                                        cam_spec.distance_m)
             else:
@@ -116,6 +131,8 @@ class Render(Stage):
             look_at(cam.GetPrim(), eye, (target[0] + rng.uniform(-j, j), target[1] + rng.uniform(-j, j),
                                          rng.uniform(0.3, 1.2)))
             shown += scene.place_distractors(eye)
+            placed, hidden = scatter.place(eye, target, radius, height, rng)
+            shown += placed
             for pr in visible:
                 set_visible(pr, False)
             for pr in shown:
@@ -123,7 +140,8 @@ class Render(Stage):
             visible = shown
             rep.orchestrator.step(rt_subframes=4)
             labels.append({"frame": f, "class": cls, "uid": a["uid"] if a else None, "cam_dist": round(dist, 2),
-                           "cam_h": round(ch, 2), "painted": painted})
+                           "cam_h": round(ch, 2), "painted": painted,
+                           "props": len(placed), "hidden": round(hidden, 2)})
             if f % 200 == 0:
                 ctx.log(f"[{f}/{gen.frames}] {cls}")
         rep.orchestrator.wait_until_complete()

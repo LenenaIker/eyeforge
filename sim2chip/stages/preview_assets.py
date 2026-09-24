@@ -23,7 +23,7 @@ class PreviewAssets(Stage):
     uses_cache = True
     uses_db = True
     gpu = "rtx"
-    uses = ("classes",)  # qa only decides whether the stage runs, not what it renders
+    uses = ("classes", "props")  # qa only decides whether the stage runs, not what it renders
     after = ("convert_assets",)
 
     def enabled(self, spec) -> bool:
@@ -84,9 +84,9 @@ class PreviewAssets(Stage):
         props = Props(stage, app)
         items = []
         for i, a in enumerate(assets):
-            c = ctx.spec.cls(a["class"])
-            dim = a["dims"][MEASURES.index(c.size_m.measure)]
-            scale = random.Random(f"{ctx.spec.generation.seed}-{a['uid']}").uniform(*c.size_m.range) / dim
+            size = ctx.spec.size_of(a["class"])
+            dim = a["dims"][MEASURES.index(size.measure)]
+            scale = random.Random(f"{ctx.spec.generation.seed}-{a['uid']}").uniform(*size.range) / dim
             items.append((a, props.add(f"/World/Targets/t{i:03d}", str(ctx.cache.root / a["usd"])), scale))
         for _ in range(10):
             app.update()
