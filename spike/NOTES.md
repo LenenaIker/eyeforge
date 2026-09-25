@@ -105,3 +105,13 @@ En Token Factory ningún Nemotron acepta imágenes (Nano 30B, 3.5 Lightning, Sup
 - Acierta 89 de las 92 que etiqueta: **96.7% de precisión**. Etiquetas útiles correctas: 89/200.
 - Las dudosas son las diminutas: lado menor mediano 62 px frente a 94 px de las etiquetadas. MIO-TCD son recortes pequeños de cámaras de tráfico; con fotogramas completos de la ESP32-CAM se esperan muchas menos dudas.
 - Umbral 0.6 se mantiene: prima la precisión sobre la cantidad. 3 min 45 s, ~0.03 $.
+
+## Imagen a 3D con TRELLIS v1 (2026-09-25)
+
+Objetivo: generar assets 3D a partir de fotos cuando la búsqueda en internet no encuentra el objeto. Script `spike/img2mesh/run_trellis.py` (entorno conda `trellis2`; código, extensiones y pesos en `/media/lenena-iker/Crucial/tools/`, cachés con `HF_HUB_CACHE` y `TORCH_HOME` apuntando allí). Resultados y hojas en `data/img2mesh_test/out_trellis1/`.
+
+- Flujo: OWLv2 detecta el objeto por texto y lo recorta, BiRefNet quita el fondo y TRELLIS genera la malla con textura; se exporta un GLB ligero (textura 1024, 2k-16k caras, ~1 MB).
+- Descartados: TRELLIS.2 (necesita DINOv3, gated en Hugging Face; el acceso no llegó) y el quitafondos por defecto de TRELLIS.2, RMBG-2.0 (gated y CC BY-NC). Hunyuan3D: su licencia excluye la UE. Todo lo usado es MIT o Apache.
+- Coste en la 3090: unos 7-9 s de generación + 8-11 s de exportación por modelo, ~10 GB de VRAM.
+- 10 fotos de Wikimedia Commons (licencias en `data/img2mesh_test/inputs/SOURCES.txt`): llaves inglesas 3/3 muy buenas (fotos de producto, fondo liso); cámaras de seguridad 2 buenas, 1 con flecos largos en el soporte (objeto diminuto en la foto) y 1 fallida (contrapicado, sale tumbada sobre una lámina); abejas 1 fallida (láminas planas aunque el recorte era limpio), 2 aceptables (alas pobres).
+- Lectura: objetos rígidos y compactos salen muy bien; lo fino u orgánico y los objetos pequeños en la foto, peor. Los fallos son evidentes a la vista: los puede filtrar la QA con visión existente, y repetir con otra semilla cuesta ~17 s.
