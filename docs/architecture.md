@@ -1,4 +1,4 @@
-# Arquitectura de Sim2Chip (2026-09-24)
+# Arquitectura de EyeForge (motor `sim2chip`, 2026-09-24)
 
 Estado: aprobada por el usuario e implementada en `sim2chip/` (semana 1). Sustituye a los scripts sueltos de `spike/`, que se conservan como histórico.
 

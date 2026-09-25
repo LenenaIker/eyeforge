@@ -1,10 +1,12 @@
-# Sim2Chip
+# EyeForge
 
 **Describe what your camera should see. Get a tiny model ready to flash on a $10 chip.**
 
-Sim2Chip trains vision models for low-power hardware such as the ESP32-CAM from a short spec, a handful
+EyeForge trains vision models for low-power hardware such as the ESP32-CAM from a short spec, a handful
 of real photos and synthetic images rendered with NVIDIA Isaac Sim. The output is an int8 TFLite model
 (and a C array for TFLite Micro) that fits in a microcontroller.
+
+The engine and CLI are still called `sim2chip`.
 
 Status: work in progress for the Nebius x NVIDIA Global AI Hackathon (Physical AI track).
 
