@@ -125,6 +125,9 @@ def test_powered_by_says_where_it_really_runs():
     spec = from_dict({**SPEC, "qa": {"mode": "auto"}})
     assert BY_NAME["render"].powered_by(spec, "local") == "NVIDIA Isaac Sim | local GPU"
     assert BY_NAME["render"].powered_by(spec, "nebius") == "NVIDIA Isaac Sim | Nebius AI Cloud, L40S"
-    assert BY_NAME["qa_assets"].powered_by(spec, "local") == "Nebius Token Factory | local CPU"
+    assert BY_NAME["qa_assets"].powered_by(spec, "local") == \
+        "vision model on Nebius Token Factory, called from local CPU"
+    assert BY_NAME["label"].powered_by(spec, "nebius", "zai-org/GLM-5.3-Flash") == \
+        "GLM-5.3-Flash on Nebius Token Factory, called from Nebius AI Cloud, L40S"
     # Without auto QA the stage makes no Token Factory call, so it must not claim one.
     assert BY_NAME["qa_assets"].powered_by(from_dict(SPEC), "local") == "local CPU"

@@ -153,13 +153,17 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             parsed = spec_mod.from_dict(data)
         except (json.JSONDecodeError, spec_mod.SpecError) as e:
             raise HTTPException(400, f"invalid spec: {e}")
-        name = slug(parsed.name)
-        if name in runs and runs[name].poll() is None:
-            raise HTTPException(409, f"job {name} is already running")
+        # A new request never reuses an existing job folder: it would overwrite that job's results and pick
+        # up its review corrections. Reruns of a job go through the corrections endpoint instead.
+        base = name = slug(parsed.name)
+        n = 1
+        while (home / "jobs" / name).exists():
+            n += 1
+            name = f"{base}_{n}"
         job = open_job(home, name)
         parsed = adopt_uploads(parsed, home / "uploads", job)
         request = job.root / "request.json"
-        request.write_text(parsed.to_json())
+        request.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         folder = job.input / "photos"
         for p in images:
             folder.mkdir(parents=True, exist_ok=True)
@@ -298,13 +302,17 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
                 "cloud_usd": 0.0, "report": None}
     current = next((l[2:].split(" ")[0] for l in reversed(log) if l.startswith("> ")), None)
     failed = any(l.startswith("FAILED") or l.startswith("error:") for l in log[-5:])
+    # Token Factory model each stage really called (the usage log records it per call, by stage name).
+    llm_log = job.logs / "llm_usage.jsonl"
+    models = {r["purpose"]: r["model"] for r in map(json.loads, llm_log.read_text().splitlines())} \
+        if llm_log.exists() else {}
     stages = []
     for p in Pipeline(spec, job, Cache(home / "cache")).plan():
         state = "done" if p.action == "skip" else "pending"
         if state == "pending" and p.stage.name == current:
             state = "running" if running else ("failed" if failed else "pending")
         stages.append({"name": p.stage.name, "runtime": p.stage.runtime, "state": state,
-                       "powered_by": p.stage.powered_by(spec, backend)})
+                       "powered_by": p.stage.powered_by(spec, backend, models.get(p.stage.name))})
     usage = job.logs / "cloud_usage.jsonl"
     cost = sum(json.loads(l)["usd_estimate"] for l in usage.read_text().splitlines()) if usage.exists() else 0.0
     report = job.stage_dir("export") / "report.json"

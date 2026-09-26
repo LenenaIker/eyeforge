@@ -65,12 +65,13 @@ def test_job_with_photos_runs_and_reports(app, tmp_path):
     assert (job / "input" / "photos" / "a.jpg").exists() and not (job / "input" / "photos" / "notes.txt").exists()
     assert json.loads((job / "request.json").read_text())["user_data"]["raw"] == "photos"
     assert app.launched[0][0] == "barn_cam" and app.launched[0][2] == "nebius"
-    assert app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).status_code == 409  # already running
+    # The same spec again is a new job: it must not overwrite barn_cam.
+    assert app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"] == "barn_cam_2"
 
     s = app.get("/api/jobs/barn_cam").json()
     states = {st["name"]: st["state"] for st in s["stages"]}
     assert states["fetch_assets"] == "running" and states["render"] == "pending" and "label" in states
-    assert app.get("/api/jobs").json() == {"jobs": ["barn_cam"]}
+    assert app.get("/api/jobs").json() == {"jobs": ["barn_cam", "barn_cam_2"]}
     assert app.get("/api/jobs/barn_cam/files/model_data.h").status_code == 404
 
     export = job / "export"

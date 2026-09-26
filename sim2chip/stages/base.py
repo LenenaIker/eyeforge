@@ -63,13 +63,16 @@ class Stage:
         """Whether this run of the stage calls Token Factory (some stages only do in some modes)."""
         return self.needs_llm
 
-    def powered_by(self, spec: Spec, backend: str) -> str:
-        """What the stage runs on, as shown to the user: the technology and where it runs. Only what really
-        happens: a local run says local, never Nebius AI Cloud."""
-        tech = [t for t in (RUNTIME_TECH.get(self.runtime), "Nebius Token Factory" if self.calls_llm(spec) else None)
-                if t]
+    def powered_by(self, spec: Spec, backend: str, model: str | None = None) -> str:
+        """What the stage runs on, as shown to the user. Only what really happens: a local run says local,
+        never Nebius AI Cloud. The backend decides where the stage's own process runs; models called through
+        Token Factory always run on Nebius, whatever the backend (they do not fit a local GPU)."""
         where = "Nebius AI Cloud, L40S" if backend == "nebius" else "local GPU" if self.gpu else "local CPU"
-        return f"{' + '.join(tech)} | {where}" if tech else where
+        if self.calls_llm(spec):
+            name = model.split("/")[-1] if model else "vision model"
+            return f"{name} on Nebius Token Factory, called from {where}"
+        tech = RUNTIME_TECH.get(self.runtime)
+        return f"{tech} | {where}" if tech else where
 
     def run(self, ctx: Context) -> dict | None:
         """Do the work. The optional returned dict is stored in the stage's _done.json."""
