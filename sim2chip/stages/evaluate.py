@@ -16,7 +16,8 @@ class Evaluate(Stage):
     after = ("train", "ingest")
 
     def enabled(self, spec) -> bool:
-        return bool(spec.user_data.labeled or spec.user_data.raw) and spec.user_data.test_per_class > 0
+        ud = spec.user_data
+        return bool(ud.labeled or ud.raw or ud.test) and ud.test_per_class > 0
 
     def run(self, ctx: Context) -> dict:
         import numpy as np

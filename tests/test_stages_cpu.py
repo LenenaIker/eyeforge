@@ -46,6 +46,31 @@ def test_ingest_maps_and_splits(tmp_path):
     assert "tiny.png" not in {f.name for f in (out / "test" / "cow").glob("*")} | {f.name for f in files}
 
 
+def test_ingest_separate_test_folder(tmp_path):
+    photos, test = tmp_path / "photos", tmp_path / "test"
+    for i in range(6):
+        img(photos / "cow" / f"p{i}.jpg")
+        img(test / "cow" / f"t{i}.jpg")
+    # A phone photo stored landscape with an EXIF "rotate 90" tag must come out portrait before resizing.
+    phone = Image.new("RGB", (80, 40), (255, 0, 0))
+    phone.paste((0, 0, 255), (40, 0, 80, 40))  # left half red, right half blue
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotate 90 degrees clockwise to display
+    phone.save(photos / "cow" / "phone.jpg", exif=exif)
+    ctx = ctx_for(tmp_path, hardware="generic",
+                  user_data={"labeled": "photos", "test": "test", "test_per_class": 4, "train_per_class": 50})
+    link_input(ctx.job, "photos", photos)
+    link_input(ctx.job, "test", test)
+    info = Ingest().run(ctx)
+    assert info["counts"]["cow"] == {"test": 4, "train": 7}
+    out = ctx.job.stage_dir("ingest")
+    assert all(f.name.startswith("t") for f in (out / "test" / "cow").glob("*"))
+    assert Image.open(out / "train" / "cow" / "p0.png").size == (224, 224)
+    fixed = Image.open(out / "train" / "cow" / "phone.png")
+    top, bottom = fixed.getpixel((112, 20)), fixed.getpixel((112, 200))
+    assert top[0] > 200 and bottom[2] > 200  # upright: red on top, blue at the bottom
+
+
 def test_qa_manual(tmp_path):
     ctx = ctx_for(tmp_path, qa={"mode": "manual", "exclude": "r/ex.txt", "class_override": "r/ov.json",
                                 "no_color": "r/nc.json"})

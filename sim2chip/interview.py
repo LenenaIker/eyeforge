@@ -32,7 +32,8 @@ Find out:
 {hardware}
   If the user has no device, has not decided, or only wants to test on a phone or PC, use "generic".
 - Whether they have photos: labeled (one folder per class) or raw (unlabeled). Ask for the folder path.
-  A few real photos improve accuracy a lot compared with synthetic images only; say so.
+  A few real photos improve accuracy a lot compared with synthetic images only; say so. For an honest score,
+  suggest a separate labeled test folder (user_data.test) with photos taken on another day or place.
 - Real-world size of each class (you propose typical sizes, the user confirms).
 
 3D models, two sources. Always use "search" first; it reports both:
@@ -62,7 +63,7 @@ Spec format (JSON, defaults shown; omit a field to keep its default):
 {schema}
 Notes: size_m.measure is "length" (long side from above), "width" (short side from above) or "height";
 choose the one that varies least across the class. assets.count is the number of models per class.
-user_data.labeled / user_data.raw are folder paths; class_map maps each class id to the subfolder names of
+user_data.labeled / user_data.raw / user_data.test are folder paths; class_map maps each class id to the subfolder names of
 the labeled folder. Keep qa.mode "auto".
 
 Reply ONLY with one JSON object per turn: {{"say": "..."}} or {{"search": ["..."]}} or {{"spec": {{...}}}}."""

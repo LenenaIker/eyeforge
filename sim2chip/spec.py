@@ -92,9 +92,11 @@ class SceneSpec:
 class UserData:
     """Photos from the user. `labeled` is a folder with one subfolder per source class and `class_map`
     maps each spec class to the source subfolders that belong to it. `raw` is a folder of unlabeled
-    photos that the teacher model labels; answers below `label_min_confidence` are set aside."""
+    photos that the teacher model labels; answers below `label_min_confidence` are set aside. `test` is an
+    optional labeled folder (same layout and class_map as `labeled`) used only for the real test."""
     labeled: str | None = None
     raw: str | None = None
+    test: str | None = None
     label_min_confidence: float = 0.6
     class_map: dict[str, list[str]] = field(default_factory=dict)
     test_per_class: int = 400
