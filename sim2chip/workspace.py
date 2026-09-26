@@ -6,6 +6,7 @@ mounted at the same layout, so stage code does not change.
     <home>/jobs/<job>/spec.json, input/, logs/, <stage>/..., <stage>/_done.json
     <home>/cache/objaverse, cache/usd/{raw,norm}, cache/hdri, cache/textures   (disposable files)
     <home>/cache/db                                                          (asset knowledge base, keep)
+    <home>/cache/labels/<prompt>/<model>/<photo>.json                        (teacher answers per photo)
 """
 from __future__ import annotations
 
@@ -16,6 +17,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 DONE = "_done.json"
+
+
+def content_key(path: Path) -> str:
+    """Identity of a photo by its bytes: the same photo in another folder or job has the same key."""
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
 
 
 def default_home() -> Path:

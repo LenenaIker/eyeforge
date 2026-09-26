@@ -4,7 +4,8 @@ Classification: each photo gets one class of the spec (background included) or "
 confidence threshold are set aside for human review instead of being used.
 Count task: the teacher boxes every object in the photo; its centre becomes the object's point. Photos
 without a valid answer go to "unsure"; photos with no objects are kept (they teach what "none" looks like).
-On a rerun, photos already judged with the same prompt and model are not sent again, and the user's
+Teacher answers are kept in the shared cache by photo content, model and prompt: the same photo gets the
+same answer in every job (so test scores compare across jobs) and is never paid for twice. The user's
 corrections from review (input/corrections.json) override the teacher.
 Output: label/<class>/<photo> (copies) or, for count, label/images/<photo>; label/unsure/, label/verdicts.json
 """
@@ -12,10 +13,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import review
+from ..workspace import content_key
 from .base import Context, Stage
 from .ingest import IMAGE_EXT
 
@@ -48,6 +51,7 @@ class Label(Stage):
     runtime = "cpu"
     needs_llm = True
     reads_input = True
+    uses_cache = True
     uses = ("user_data", "classes", "background_class", "task")
 
     def enabled(self, spec) -> bool:
@@ -84,6 +88,13 @@ class Label(Stage):
                        if v.get("judge") == "user" else v) for k, v in previous.items()}
         reuse = {k: v for k, v in teacher.items() if v.get("model") == model and v.get("prompt") == prompt_id
                  and v.get("reason") != "no valid answer"}
+        shared = ctx.cache.root / "labels" / prompt_id / re.sub(r"[^A-Za-z0-9_.-]+", "_", model)
+        shared.mkdir(parents=True, exist_ok=True)
+        keys = {f: content_key(f) for f in files}
+        for f in files:
+            k, hit = str(f.relative_to(src)), shared / f"{keys[f]}.json"
+            if hit.exists():  # the shared answer wins over this job's older one: one truth per photo
+                reuse[k] = json.loads(hit.read_text())
         shutil.rmtree(out, ignore_errors=True)
         small = out / "_small"
         small.mkdir(parents=True)
@@ -119,6 +130,9 @@ class Label(Stage):
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             fresh = dict(pool.map(one, enumerate(todo)))
+        for f, v in fresh.items():
+            if v.get("reason") != "no valid answer":
+                (shared / f"{keys[f]}.json").write_text(json.dumps({**v, "model": model, "prompt": prompt_id}))
         corrections = review.load_corrections(ctx.job)
         fixes, fix_points = corrections["labels"], corrections.get("points", {})
         results = []

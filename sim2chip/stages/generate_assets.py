@@ -114,7 +114,7 @@ class GenerateAssets(Stage):
                     shutil.copy2(cache / f"{uid}.png", seen)
                 manifest.append({"uid": uid, "class": c.id, "category": query, "name": f"{c.id} from {f.name}",
                                  "license": "user photo", "author": "user", "source": "TRELLIS v1 (image to 3D)",
-                                 "glb": str(glb.relative_to(ctx.cache.root)), "photo": f.name,
+                                 "glb": str(glb.relative_to(ctx.cache.root)), "photo": f.name, "photo_key": key,
                                  "detection": round(score, 3), "generated": True})
         (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
         per_class = {}

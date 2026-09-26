@@ -147,3 +147,14 @@ Nueva tarea `task: "count"` (contar y localizar, estilo FOMO): MobileNetV2 corta
 - Perfil de escena (`sim2chip describe-scene`, acción `describe_scene` de la entrevista): GLM describe 16 fotos al azar (contexto, distancia, apoyos, pared, barandilla) y se agregan en `scene.contexts`, `wall_tags` y `railings`. En las macetas: 70% fachada (3-23 m; barandilla, suelo de balcón, repisa, acera), 20% balcón de cerca, 10% interior; revoque, ladrillo, piedra; barrotes y obra. Cuadra con las fotos.
 - Generador procedural (`scenes/places_layout.py`, Python puro y testeado; `scenes/places.py` en Isaac): edificio de 3-6 plantas y 3-6 vanos con balcones (barrotes u obra, a veces toldo), ventanas con repisa, puertas y acera; habitación sin techo con ventana, repisa y muebles. Una malla por material reescrita cada 20 frames; texturas de pared de Poly Haven. Los balcones e interiores salían casi negros: una luz de relleno junto a la cámara lo arregla.
 - Resultado (mismo spec, 2000 frames, 3 semillas; el test no es idéntico porque GLM volvió a marcar): F1 de puntos 0.25 -> 0.35 ± 0.03, error de conteo 3.7 -> 3.1 por foto. Mejoran las fachadas; fallan las macetas grandes de cerca (0 encontradas en 3 fotos): el objetivo es una sola celda y un objeto que llena media imagen no tiene centro claro para el modelo. Siguiente: marcar el núcleo de la caja (ya hay cajas en sintético y del profesor).
+
+## Test fijo (2026-09-27)
+
+Las respuestas del profesor van a una caché compartida (`cache/labels/<prompt>/<modelo>/<foto>.json`, por contenido de la foto) y ganan a las antiguas de cada job; el reparto train/test es por huella del contenido; las fotos de las que salió un 3D van siempre a train; aviso con menos de 20 fotos de test. Comparación limpia sobre las mismas 18 fotos y 103 macetas (3 semillas cada uno):
+
+| job | F1 de puntos | error de conteo por foto | conteo exacto |
+|---|---|---|---|
+| `macetas_count` (solo suelo) | 0.234 ± 0.029 | 3.85 | 7% |
+| `macetas_places` (fachada, balcón, interior) | 0.336 ± 0.008 | 4.28 | 11% |
+
+Las escenas desde las fotos suben el F1 10 puntos y lo hacen más estable entre semillas, pero el error de conteo no mejora (algo peor): acierta más macetas en su sitio y a la vez se equivoca en el número total en las fotos con muchas. 18 fotos siguen siendo pocas: una foto mueve el F1 unos 5 puntos.

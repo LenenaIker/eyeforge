@@ -1,6 +1,7 @@
 """User photos: labeled by the user and/or by the teacher (label stage). Map their classes to the spec,
 resize to the model input and split train/test. With `user_data.test`, the test photos come only from
-that folder and all the others go to training.
+that folder and all the others go to training. Photos that 3D models were made from never go to test (the
+model has seen them as 3D). With fewer than MIN_TEST test photos the score is noisy: the log says so.
 
 Output: ingest/{train,test}/<class>/*.png
 Count task: the teacher's (or the user's) points come along; the train_per_class and test_per_class limits
@@ -9,23 +10,26 @@ then count photos. Output: ingest/{train,test}/images/*.png and ingest/{train,te
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import shutil
 from pathlib import Path
 
+from ..workspace import content_key
 from .base import Context, Stage
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+MIN_TEST = 20  # below this many test photos (per class) one photo moves the score by 5 points or more
 
 
 class Ingest(Stage):
     name = "ingest"
-    version = "3"
+    version = "4"  # v4: 3D source photos out of test; count split by photo content
     runtime = "cpu"
     reads_input = True
     uses = ("user_data", "hardware", "classes", "background_class", "task")
-    after = ("label",)
+    after = ("label", "generate_assets")
 
     def enabled(self, spec) -> bool:
         ud = spec.user_data
@@ -65,6 +69,7 @@ class Ingest(Stage):
                         picked.append(f)
             return files, picked
 
+        held = held_out(ctx)
         counts = {}
         for cls in ctx.spec.labels:
             if test_src:
@@ -74,6 +79,10 @@ class Ingest(Stage):
                 need = ud.test_per_class + ud.train_per_class
                 files, picked = pick(sources, cls, need)
                 n_test = min(ud.test_per_class, len(picked) // 2) if len(picked) < need else ud.test_per_class
+                if held:
+                    picked = [f for f in picked if content_key(f) not in held] + \
+                             [f for f in picked if content_key(f) in held]
+                    n_test = min(n_test, sum(content_key(f) not in held for f in picked))
                 test, train = picked[:n_test], picked[n_test:n_test + ud.train_per_class]
             for split, sel in (("test", test), ("train", train)):
                 d = out / split / cls
@@ -85,6 +94,9 @@ class Ingest(Stage):
                         im.resize((size, size), Image.BILINEAR).save(d / f"{f.stem}.png")
             counts[cls] = {"test": len(test), "train": len(train)}
             ctx.log(f"{cls:16s} {len(files):7d} photos, test {len(test)}, train {len(train)}")
+            if 0 < len(test) < MIN_TEST:
+                ctx.log(f"WARNING: only {len(test)} test photos of {cls}: each one moves its score by "
+                        f"{100 / len(test):.0f} points")
         return {"counts": counts}
 
     def _count(self, ctx: Context) -> dict:
@@ -95,10 +107,14 @@ class Ingest(Stage):
         ud, size = ctx.spec.user_data, ctx.hardware.input_size
         label = ctx.job.stage_dir("label")
         verdicts = json.loads((label / "verdicts.json").read_text())
-        keys = sorted(k for k, v in verdicts.items() if v["assigned"] == "images")
-        random.Random(0).shuffle(keys)
+        src_dir = ctx.job.resolve_input(ud.raw)
+        # Ordered by photo content, not by name or folder: a photo lands on the same side in every job.
+        ck = {k: content_key(src_dir / k) for k, v in verdicts.items() if v["assigned"] == "images"}
+        held = held_out(ctx)
+        keys = sorted(ck, key=lambda k: (ck[k] in held, hashlib.sha256(f"split:{ck[k]}".encode()).hexdigest()))
         need = ud.test_per_class + ud.train_per_class
         n_test = min(ud.test_per_class, len(keys) // 2) if len(keys) < need else ud.test_per_class
+        n_test = min(n_test, sum(ck[k] not in held for k in keys))
         out = ctx.job.stage_dir(self.name)
         shutil.rmtree(out, ignore_errors=True)
         counts = {}
@@ -115,7 +131,10 @@ class Ingest(Stage):
                                 "key": key, "source": str(src.relative_to(ctx.job.root))}
             (out / split / "points.json").write_text(json.dumps(points, indent=1))
             counts[split] = {"photos": len(sel), "objects": sum(len(p["points"]) for p in points.values())}
-        ctx.log(f"{len(keys)} marked photos: test {counts['test']}, train {counts['train']}")
+        ctx.log(f"{len(keys)} marked photos ({len(held & set(ck.values()))} used for 3D, kept out of test): "
+                f"test {counts['test']}, train {counts['train']}")
+        if 0 < n_test < MIN_TEST:
+            ctx.log(f"WARNING: only {n_test} test photos: the score is noisy, add photos for a steadier one")
         return {"counts": counts}
 
     @staticmethod
@@ -124,3 +143,18 @@ class Ingest(Stage):
         if not src.is_dir():
             raise FileNotFoundError(f"user_data.{key}: {src} is not a folder")
         return src
+
+
+def held_out(ctx: Context) -> set[str]:
+    """Content keys of the photos 3D models were made from: a class's own photo folder, and the user's
+    photos that generate_assets picked (assets.photos = "user_data")."""
+    keys = set()
+    for c in ctx.spec.classes:
+        if c.assets and c.assets.photos and c.assets.photos != "user_data":
+            folder = ctx.job.resolve_input(c.assets.photos)
+            if folder.is_dir():
+                keys |= {content_key(f) for f in folder.rglob("*") if f.suffix.lower() in IMAGE_EXT}
+    manifest = ctx.job.stage_dir("generate_assets") / "manifest.json"
+    if manifest.exists():
+        keys |= {m["photo_key"] for m in json.loads(manifest.read_text()) if m.get("photo_key")}
+    return keys

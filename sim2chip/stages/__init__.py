@@ -16,7 +16,7 @@ from .qa_assets import QAAssets
 from .render import Render
 from .train import Train
 
-STAGES: list[Stage] = [Label(), Ingest(), GenerateAssets(), FetchAssets(), ConvertAssets(), PreviewAssets(),
+STAGES: list[Stage] = [Label(), GenerateAssets(), Ingest(), FetchAssets(), ConvertAssets(), PreviewAssets(),
                        QAAssets(), Render(), Crops(), Points(), Train(), Evaluate(), Export()]
 BY_NAME = {s.name: s for s in STAGES}
 

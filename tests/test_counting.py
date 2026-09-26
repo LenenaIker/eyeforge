@@ -170,3 +170,34 @@ def test_best_threshold_drops_weak_false_positives():
     g = grid({(1, 1): (1, 0.95), (4, 6): (1, 0.55)})  # one real pot, one weak blob that is not a pot
     t, s = counting.best_threshold([g], [[(1.5 / 8, 1.5 / 6, "pot")]], LABELS, grid=8)
     assert t > 0.55 and s["f1"] == 1.0
+
+
+def test_split_is_by_content_and_3d_photos_stay_out_of_test(tmp_path, monkeypatch):
+    """Same photos under other names in another job: same teacher answers (shared cache), same test side;
+    photos a 3D model was made from never land in test."""
+    monkeypatch.setattr(llm, "Client", FakeClient)
+    FakeClient.calls = []
+    FakeClient.answer = staticmethod(lambda text: json.dumps({"objects": [{"class": "pot", "box": [0, 0, 40, 20]}]}))
+    colors = [(20 * i, 5, 5) for i in range(10)]
+    three_d = tmp_path / "three_d"
+    three_d.mkdir()
+    Image.new("RGB", (400, 200), colors[0]).save(three_d / "model.png")
+    tests = []
+    for job, names in (("a", [f"p{i}.png" for i in range(10)]), ("b", [f"other_{9 - i}.png" for i in range(10)])):
+        raw = tmp_path / f"raw_{job}"
+        raw.mkdir()
+        for i, n in enumerate(names):
+            Image.new("RGB", (400, 200), colors[i]).save(raw / n)
+        spec = {**SPEC, "user_data": {"raw": "raw", "test_per_class": 3, "train_per_class": 10}}
+        spec["classes"] = [dict(SPEC["classes"][0], assets={**SPEC["classes"][0]["assets"], "photos": "three_d"}),
+                           SPEC["classes"][1]]
+        ctx = Context(from_dict(spec), open_job(tmp_path, job), Cache(tmp_path / "cache"))
+        link_input(ctx.job, "raw", raw)
+        link_input(ctx.job, "three_d", three_d)
+        Label().run(ctx)
+        Ingest().run(ctx)
+        table = json.loads((ctx.job.stage_dir("ingest") / "test" / "points.json").read_text())
+        tests.append(sorted(Image.open(raw / v["key"]).getpixel((0, 0)) for v in table.values()))
+    assert len(FakeClient.calls) == 10  # job b reused all ten answers
+    assert tests[0] == tests[1] and len(tests[0]) == 3
+    assert colors[0] not in tests[0]  # the 3D photo is in train
