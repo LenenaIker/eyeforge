@@ -42,7 +42,9 @@ def default_interviewer(home: Path):
     objaverse_dir = home / "cache" / "objaverse"
     cats = interview.CategoryIndex(cache_dir=objaverse_dir, live=interview.live_searcher(objaverse_dir))
     ranker = interview.photo_ranker(client, client.model_for("vision"))
-    return lambda: interview.Session(client, model, cats, scene_check=interview.check_scene, photo_ranker=ranker)
+    profiler = interview.scene_profiler(client, client.model_for("vision"))
+    return lambda: interview.Session(client, model, cats, scene_check=interview.check_scene, photo_ranker=ranker,
+                                     scene_profiler=profiler)
 
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,

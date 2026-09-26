@@ -1,6 +1,7 @@
 """Synthetic dataset: one target (or none) per frame, placed by the scene template from the spec, with the
-spec's background props scattered around it. For the count task, 0 to generation.max_targets targets per
-frame, spread around the point the camera looks at.
+spec's background props scattered around it. With scene.contexts, some frames are instead a building front,
+a balcony or a room (scenes/places.py) with the targets on its floors, railings and sills. For the count
+task, 0 to generation.max_targets targets per frame, spread around the point the camera looks at.
 
 The camera distance is derived from the (first) target's real size and the spec's target_fill, so it adapts
 to any object. Output: render/rgb_*.png, bounding_box_2d_tight_*.{npy,json}, render/labels.json
@@ -58,9 +59,17 @@ class Render(Stage):
 
         props = Props(stage, app)
         chosen = json.loads((ctx.job.stage_dir("fetch_assets") / "scene.json").read_text())
-        scene = scenes.load(spec.scene.template)(
-            stage, props, rng, skies=[str(ctx.cache.root / p) for p in chosen["skies"]],
-            distractors=spec.scene.distractors, ground=[str(ctx.cache.root / p) for p in chosen["ground"]])
+        kw = {}
+        if spec.scene.contexts:  # procedural places on top of the generic scene
+            from ..scenes.places import PlacesScene
+            make = PlacesScene
+            kw = {"walls": [str(ctx.cache.root / p) for p in chosen.get("walls", [])],
+                  "contexts": spec.scene.contexts, "railings": spec.scene.railings}
+        else:
+            make = scenes.load(spec.scene.template)
+        scene = make(stage, props, rng, skies=[str(ctx.cache.root / p) for p in chosen["skies"]],
+                     distractors=spec.scene.distractors, ground=[str(ctx.cache.root / p) for p in chosen["ground"]],
+                     **kw)
         scene.build()
         paint = Paint(stage)
 
@@ -110,48 +119,71 @@ class Render(Stage):
         classes = [c.id for c in spec.classes if c.id in targets]
         pool = [t for ts in targets.values() for t in ts]
         counting = spec.task == "count"
+        places = bool(spec.scene.contexts)
         visible, labels = [], []
         for f in range(gen.frames):
             scene.randomize(change_sky=f % 20 == 0)
+            kind = "ground"
+            if places:  # a new building and room every 20 frames, a context per frame by its share
+                if f and f % 20 == 0:
+                    scene.new_layout()
+                kind = scene.pick_context()
+                scene.show(None if kind == "ground" else kind)
             cls = spec.background_class if rng.random() < gen.empty_ratio else rng.choice(classes)
             shown, painted, a, radius, height = [], False, None, 0.0, 0.0
-            group = []
+            group, placed, hidden = [], [], 0.0
             if cls != spec.background_class:
                 if counting:  # several models at once, each prim at most once per frame
                     first = rng.choice(targets[cls])
                     rest = [t for t in pool if t is not first]
                     group = [first] + rng.sample(rest, min(len(rest), rng.randint(0, gen.n_targets - 1)))
-                a, prim, scale, size = group[0] if group else rng.choice(targets[cls])
-                target = scene.place_target(prim, scale)
-                painted = paint.apply(prim, rng, force=a.get("no_color", False))
-                shown.append(prim)
-                radius, height = math.hypot(*a["dims"][:2]) / 2 * scale, a["dims"][2] * scale
-                dist = camera_distance(size, rng.uniform(*cam_spec.target_fill), cam_spec.hfov_deg,
-                                       cam_spec.distance_m)
-                if len(group) > 1:
-                    # Spread over the ground seen around the first one; the props then keep out of the group.
-                    spread = min(0.9 * dist * math.tan(math.radians(cam_spec.hfov_deg) / 2), 0.8 * dist)
-                    radii = [math.hypot(*t[0]["dims"][:2]) / 2 * t[2] for t in group]
-                    for (ga, gprim, gscale, _), pos in zip(group[1:], cluster(target, radii, spread, rng)[1:]):
-                        if pos is not None:
-                            props.set_pose(gprim, pos, rng.uniform(0, 360), gscale)
-                            paint.apply(gprim, rng, force=ga.get("no_color", False))
-                            shown.append(gprim)
-                    radius = spread + max(radii)
-                group = [t[0]["uid"] for t in group if t[1] in shown]
+                else:
+                    group = [rng.choice(targets[cls])]
+            if kind != "ground":
+                # The place decides the camera (street, balcony, room) and the spots (floors, railings, sills).
+                items = [(math.hypot(*t[0]["dims"][:2]) / 2 * t[2], t[0]["dims"][2] * t[2]) for t in group]
+                spots, eye, look = scene.shot(kind, items, cam_spec.hfov_deg, w / h)
+                for (ga, gprim, gscale, _), pos in zip(group, spots):
+                    if pos is not None:
+                        props.set_pose(gprim, pos, rng.uniform(0, 360), gscale)
+                        painted = paint.apply(gprim, rng, force=ga.get("no_color", False)) or painted
+                        shown.append(gprim)
+                a = group[0][0] if group else None
+                look_at(cam.GetPrim(), eye, look)
+                dist, ch = math.dist(eye, look), eye[2]
             else:
-                target = (0.0, 0.0, 0.0)
-                lo, hi = cam_spec.distance_m
-                dist = rng.uniform(max(lo, 5.0), max(min(hi, 35.0), lo))  # background views at typical range
-            az = math.radians(rng.uniform(0, 360))
-            ch = rng.uniform(*cam_spec.height_m)
-            eye = (target[0] + dist * math.cos(az), target[1] + dist * math.sin(az), ch)
-            j = dist * 0.12
-            look_at(cam.GetPrim(), eye, (target[0] + rng.uniform(-j, j), target[1] + rng.uniform(-j, j),
-                                         rng.uniform(0.3, 1.2)))
-            shown += scene.place_distractors(eye)
-            placed, hidden = scatter.place(eye, target, radius, height, rng)
-            shown += placed
+                if group:
+                    a, prim, scale, size = group[0]
+                    target = scene.place_target(prim, scale)
+                    painted = paint.apply(prim, rng, force=a.get("no_color", False))
+                    shown.append(prim)
+                    radius, height = math.hypot(*a["dims"][:2]) / 2 * scale, a["dims"][2] * scale
+                    dist = camera_distance(size, rng.uniform(*cam_spec.target_fill), cam_spec.hfov_deg,
+                                           cam_spec.distance_m)
+                    if len(group) > 1:
+                        # Spread over the ground seen around the first one; the props then keep out of the group.
+                        spread = min(0.9 * dist * math.tan(math.radians(cam_spec.hfov_deg) / 2), 0.8 * dist)
+                        radii = [math.hypot(*t[0]["dims"][:2]) / 2 * t[2] for t in group]
+                        for (ga, gprim, gscale, _), pos in zip(group[1:], cluster(target, radii, spread, rng)[1:]):
+                            if pos is not None:
+                                props.set_pose(gprim, pos, rng.uniform(0, 360), gscale)
+                                paint.apply(gprim, rng, force=ga.get("no_color", False))
+                                shown.append(gprim)
+                        radius = spread + max(radii)
+                else:
+                    target = (0.0, 0.0, 0.0)
+                    lo, hi = cam_spec.distance_m
+                    dist = rng.uniform(max(lo, 5.0), max(min(hi, 35.0), lo))  # background views at typical range
+                az = math.radians(rng.uniform(0, 360))
+                ch = rng.uniform(*cam_spec.height_m)
+                eye = (target[0] + dist * math.cos(az), target[1] + dist * math.sin(az), ch)
+                j = dist * 0.12
+                look_at(cam.GetPrim(), eye, (target[0] + rng.uniform(-j, j), target[1] + rng.uniform(-j, j),
+                                             rng.uniform(0.3, 1.2)))
+                shown += scene.place_distractors(eye)
+                placed, hidden = scatter.place(eye, target, radius, height, rng)
+                shown += placed
+            group = [t[0]["uid"] for t in group if t[1] in shown]
             for pr in visible:
                 set_visible(pr, False)
             for pr in shown:
@@ -159,8 +191,8 @@ class Render(Stage):
             visible = shown
             rep.orchestrator.step(rt_subframes=4)
             labels.append({"frame": f, "class": cls, "uid": a["uid"] if a else None,
-                           **({"targets": group} if counting else {}), "cam_dist": round(dist, 2),
-                           "cam_h": round(ch, 2), "painted": painted,
+                           **({"targets": group} if counting else {}), **({"context": kind} if places else {}),
+                           "cam_dist": round(dist, 2), "cam_h": round(ch, 2), "painted": painted,
                            "props": len(placed), "hidden": round(hidden, 2)})
             if f % 200 == 0:
                 ctx.log(f"[{f}/{gen.frames}] {cls}")

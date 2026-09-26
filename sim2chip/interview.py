@@ -68,9 +68,15 @@ then ignored). Tags are checked when you send the spec.
 Weather options: {weather}. Distractors: "tree", "person" (nothing else); keep them only if they appear
 where the camera is, else set "distractors": [].
 ground_tags describe the floor under the objects (asphalt, tiles, grass...), never walls or roofs.
-Placement: synthetic scenes stand the objects on the ground, seen from camera.height_m. Objects on balconies,
-window sills, shelves, walls or ceilings are not simulated yet: say so plainly when the user describes such
-views, and tell them their real photos of those views matter most.
+Places: by default synthetic scenes stand the objects on open ground, seen from camera.height_m. The generic
+template can also build "scene.contexts": building fronts seen from the street ("facade": objects on balcony
+floors, railings, window sills and the pavement), balconies seen from close ("balcony"), rooms ("indoor":
+floor, furniture, window sill) and open ground ("ground"), each with a share of the images, plus "wall_tags"
+(brick, plaster, stone, concrete, wood) and "railings" (bars, solid). As soon as you have a folder of the
+user's photos, describe them: {{"describe_scene": {{"folder": "<folder>", "classes": "<what to find, in
+English>"}}}}. You get back what the photos show and the proposed fields: tell the user in one or two plain
+sentences what you saw and ask whether the images should look like that; then use the fields (the user may
+change the shares). Objects on walls or ceilings are not simulated: say so if that is what they need.
 Props: scenes with only the target look empty and the model then learns "anything in the picture is a target".
 Always propose 2 to 5 background props typical of the place ("props": a building site gets traffic cones,
 pallets, barriers, dirt piles; a forest gets rocks, logs, bushes), each with live search queries and a
@@ -102,7 +108,7 @@ When photos arrive or are chosen you are told their folder: use it in the spec (
 assets.photos plus an English "queries" name; "training": user_data.raw).
 
 Reply ONLY with one JSON object per turn: {{"say": "..."}}, {{"search": ["..."]}}, {{"photos": {{...}}}},
-{{"pick_photos": {{...}}}} or {{"spec": {{...}}}}."""
+{{"pick_photos": {{...}}}}, {{"describe_scene": {{...}}}} or {{"spec": {{...}}}}."""
 
 EXAMPLE = {"name": "example", "classes": [{"id": "cow", "description": "cows seen from the side or front",
                                            "size_m": {"measure": "length", "range": [2.0, 2.5]},
@@ -317,6 +323,10 @@ def summary(s: spec_mod.Spec) -> str:
     sc = s.scene
     lines.append(f"  camera: {s.camera.height_m[0]}-{s.camera.height_m[1]} m high, scene {sc.template}, "
                  f"weather {', '.join(sc.weather)}")
+    if sc.contexts:
+        lines.append("  places: " + ", ".join(f"{c.kind} {round(c.share * 100)}%" for c in sc.contexts) +
+                     (f"; walls {', '.join(sc.wall_tags)}" if sc.wall_tags else "") +
+                     (f"; railings {', '.join(sc.railings)}" if sc.railings else ""))
     if sc.sky_tags or sc.ground_tags:
         lines.append(f"  place: sky {', '.join(sc.sky_tags) or 'any'}, ground {', '.join(sc.ground_tags) or 'plain'}")
     extra = [f"distractors {', '.join(sc.distractors)}" if sc.distractors else "",
@@ -347,11 +357,12 @@ class Session:
     """One interview, driven one user message at a time (terminal, web or any other front end)."""
 
     def __init__(self, client, model: str, categories: CategoryIndex, max_turns: int = 60, scene_check=None,
-                 photo_ranker=None, uploads: Path | None = None):
+                 photo_ranker=None, uploads: Path | None = None, scene_profiler=None):
         self.client, self.model, self.categories, self.max_turns = client, model, categories, max_turns
         self.scene_check = scene_check  # scene -> error message or None (live Poly Haven check)
         self.photo_ranker = photo_ranker  # (folder, query) -> [{"file", "score", "reason"}], best first
         self.uploads = uploads            # where chosen photos are gathered
+        self.scene_profiler = scene_profiler  # (folder, classes) -> (scene fields, summary)
         self.candidates: list[dict] = []  # the last photos proposed to the user
         self.messages = [{"role": "system", "content": system_prompt()}]
         self.proposed: spec_mod.Spec | None = None
@@ -413,6 +424,26 @@ class Session:
         return Turn("pick", str(req.get("say") or f"Some of your photos could work for 3D models of {cls}:"),
                     request={"for": "3d", "class": cls, "query": query, "candidates": self.candidates})
 
+    def _describe(self, req: dict) -> None:
+        """Profile the user's photos and hand the proposed scene fields to the model."""
+        folder = Path(str(req.get("folder", ""))).expanduser()
+        if self.scene_profiler is None:
+            self._note("describe_scene is not available here; keep the default open ground scene.")
+        elif not folder.is_dir():
+            self._note(f"describe_scene: folder {folder} does not exist.")
+        else:
+            try:
+                fields, text = self.scene_profiler(str(folder), str(req.get("classes") or "the objects"))
+            except (OSError, ValueError, RuntimeError) as e:
+                self._note(f"describe_scene failed ({e}); keep the default open ground scene.")
+                return
+            if not fields.get("contexts"):
+                self._note("describe_scene: no photo could be described; keep the default open ground scene.")
+                return
+            self._note(f"[Scene profile of the user's photos] {text}\nProposed scene fields (template generic): "
+                       f"{json.dumps(fields)}. Tell the user what you saw and ask if the images should look like "
+                       "that before you use them.")
+
     def _advance(self) -> Turn:
         from .llm import parse_json
 
@@ -436,6 +467,9 @@ class Session:
                 turn = self._pick(action["pick_photos"])
                 if turn:
                     return turn
+                continue
+            if isinstance(action.get("describe_scene"), dict):
+                self._describe(action["describe_scene"])
                 continue
             if isinstance(action.get("photos"), dict):
                 req = action["photos"]
@@ -472,9 +506,10 @@ class Session:
 
 
 def run(client, model: str, categories: CategoryIndex, ask: Callable[[str], str], tell: Callable[[str], None],
-        max_turns: int = 60, scene_check=None, photo_ranker=None, uploads: Path | None = None) -> spec_mod.Spec | None:
+        max_turns: int = 60, scene_check=None, photo_ranker=None, uploads: Path | None = None,
+        scene_profiler=None) -> spec_mod.Spec | None:
     """Terminal front end: ask() gets the user's answer to a prompt, tell() shows text."""
-    session = Session(client, model, categories, max_turns, scene_check, photo_ranker, uploads)
+    session = Session(client, model, categories, max_turns, scene_check, photo_ranker, uploads, scene_profiler)
     turn = session.reply(ask(FIRST_QUESTION + "\n> "))
     while True:
         if turn.kind == "say":
@@ -506,3 +541,12 @@ def run(client, model: str, categories: CategoryIndex, ask: Callable[[str], str]
         else:
             tell(turn.text)
             return None
+
+
+def scene_profiler(client, model: str):
+    """(folder, classes) -> (proposed scene fields, summary) with a vision model."""
+    from . import scene_profile
+
+    def profile(folder: str, classes: str):
+        return scene_profile.profile_folder(Path(folder), classes, client, model)
+    return profile

@@ -4,7 +4,7 @@ Downloads go to the shared cache; the job only keeps a manifest. Models generate
 (generate_assets) are added to it.
 Output: fetch_assets/manifest.json  [{uid, class, category, name, license, author, source, glb, role?}]
         (role "prop" for background props: `class` is then the prop id)
-        fetch_assets/scene.json     {"skies": [...], "ground": [...]}  cache-relative paths
+        fetch_assets/scene.json     {"skies": [...], "ground": [...], "walls": [...]}  cache-relative paths
 """
 from __future__ import annotations
 
@@ -164,7 +164,14 @@ class FetchAssets(Stage):
                 raise ValueError(f"no Poly Haven texture matches ground_tags {sc.ground_tags}")
             ctx.log(f"ground textures for {sc.ground_tags}: {', '.join(ids)}")
             ground = [rel(polyhaven.download(i, "textures", ctx.cache.root / "textures")) for i in ids]
-        return {"skies": skies, "ground": ground}
+        out = {"skies": skies, "ground": ground}
+        if sc.wall_tags:  # buildings and rooms of scene.contexts: a few textures per wall material
+            cat, ids = polyhaven.catalog("textures"), []
+            for w in sc.wall_tags:
+                ids += polyhaven.pick_textures(cat, [w, "wall"], 4, seed)
+            ctx.log(f"wall textures for {sc.wall_tags}: {', '.join(ids)}")
+            out["walls"] = [rel(polyhaven.download(i, "textures", ctx.cache.root / "textures")) for i in ids]
+        return out
 
     def _road_skies(self, ctx: Context) -> list:
         """The curated skies of the road template (NVIDIA's bucket), as in the spike."""

@@ -5,6 +5,7 @@
     sim2chip status lora_alarm_traffic
     sim2chip stages specs/lora_alarm_traffic.json
     sim2chip interview
+    sim2chip describe-scene data/real/maceta --classes "flower pots"
     sim2chip serve --backend nebius
 """
 from __future__ import annotations
@@ -93,7 +94,8 @@ def cmd_interview(args) -> int:
     import uuid
     ranker = interview.photo_ranker(client, client.model_for("vision"))
     spec = interview.run(client, model, cats, ask=input, tell=print, scene_check=interview.check_scene,
-                         photo_ranker=ranker, uploads=home / "uploads" / f"cli-{uuid.uuid4().hex[:8]}")
+                         photo_ranker=ranker, uploads=home / "uploads" / f"cli-{uuid.uuid4().hex[:8]}",
+                         scene_profiler=interview.scene_profiler(client, client.model_for("vision")))
     if spec is None:
         return 1
     out = Path(args.out or f"specs/{spec.name}.json")
@@ -101,6 +103,17 @@ def cmd_interview(args) -> int:
         raise SystemExit(f"{out} exists, use --out or --overwrite")
     out.write_text(spec.to_json() + "\n")
     print(f"\nsaved {out}. Next: sim2chip run {out}")
+    return 0
+
+
+def cmd_describe_scene(args) -> int:
+    from . import scene_profile
+    from .llm import Client
+
+    client = Client(usage_log=Path(args.home) / "logs" / "llm_usage.jsonl")
+    prof, text = scene_profile.profile_folder(Path(args.folder), args.classes, client, client.model_for("vision"))
+    print(text)
+    print(json.dumps(prof, indent=2))
     return 0
 
 
@@ -143,6 +156,11 @@ def main(argv: list[str] | None = None) -> int:
     iv.add_argument("--out", help="where to save the spec (default specs/<name>.json)")
     iv.add_argument("--overwrite", action="store_true")
     iv.set_defaults(func=cmd_interview)
+
+    ds = sub.add_parser("describe-scene", help="propose scene.contexts, wall_tags and railings from photos")
+    ds.add_argument("folder")
+    ds.add_argument("--classes", required=True, help="what the camera looks for, e.g. \"flower pots\"")
+    ds.set_defaults(func=cmd_describe_scene)
 
     sv = sub.add_parser("serve", help="web UI and API: interview, photos, run, progress, download")
     sv.add_argument("--backend", default="local", choices=["local", "nebius"])

@@ -19,6 +19,14 @@ ASSET_SOURCES = ("objaverse_lvis", "search", "photos")
 TASKS = ("roi_classification", "count")
 DISTRACTORS = ("tree", "person")  # what the scene templates can place
 WEATHER = ("clear", "cloudy", "evening", "storm", "night")
+# Places the generic scene can build (scene.contexts): open ground, a building front seen from the street, a
+# balcony seen from inside, a room. Where objects can stand in them (ContextSpec.supports):
+CONTEXTS = {"ground": ("ground",),
+            "facade": ("balcony_floor", "railing", "window_sill", "ground"),
+            "balcony": ("balcony_floor", "railing"),
+            "indoor": ("floor", "furniture", "window_sill")}
+WALLS = ("brick", "plaster", "stone", "concrete", "wood")  # wall materials, as Poly Haven texture tags
+RAILINGS = ("bars", "solid")
 MEASURES = ("length", "width", "height")  # length and width: long and short side seen from above
 
 
@@ -91,6 +99,16 @@ class CameraSpec:
 
 
 @dataclass
+class ContextSpec:
+    """One kind of place in the synthetic scenes and its share of the frames. `distance_m` is the camera
+    distance to the objects there; `supports` where they stand (default: every support of the kind)."""
+    kind: str
+    share: float = 1.0
+    distance_m: tuple[float, float] | None = None
+    supports: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SceneSpec:
     """Where the targets are shown. "road" is a hand-built template; "generic" is built from data: a ground
     texture chosen by `ground_tags` and sky maps chosen by `sky_tags` (both Poly Haven tags, CC0) plus
@@ -100,6 +118,11 @@ class SceneSpec:
     distractors: list[str] = field(default_factory=lambda: ["tree", "person"])
     sky_tags: list[str] = field(default_factory=list)
     ground_tags: list[str] = field(default_factory=list)
+    # Generic template only. Empty contexts: objects on open ground, as always. Usually proposed from the
+    # user's photos (scene_profile.py). wall_tags and railings style the buildings of facade/balcony/indoor.
+    contexts: list[ContextSpec] = field(default_factory=list)
+    wall_tags: list[str] = field(default_factory=list)
+    railings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -226,7 +249,9 @@ def _build(cls, data: dict, where: str):
     kwargs = {}
     for k, v in data.items():
         t = known[k].type
-        if t in ("tuple[float, float]", "tuple[int, int]"):
+        if t == "tuple[float, float] | None" and v is None:
+            pass
+        elif t in ("tuple[float, float]", "tuple[int, int]", "tuple[float, float] | None"):
             if not (isinstance(v, (list, tuple)) and len(v) == 2):
                 raise SpecError(f"{where}.{k}: expected [min, max]")
             v = tuple(v)
@@ -256,6 +281,10 @@ def from_dict(data: dict) -> Spec:
             raise SpecError(f"{where}.size_m: required")
         props.append(_build(PropSpec, {**p, "size_m": _build(SizeSpec, p["size_m"], f"{where}.size_m")}, where))
     data["props"] = props
+    if isinstance(data.get("scene"), dict) and data["scene"].get("contexts"):
+        sc = dict(data["scene"])
+        sc["contexts"] = [_build(ContextSpec, c, f"scene.contexts[{i}]") for i, c in enumerate(sc["contexts"])]
+        data["scene"] = sc
     sections = {"camera": CameraSpec, "scene": SceneSpec, "user_data": UserData, "qa": QASpec,
                 "generation": GenerationSpec, "training": TrainingSpec}
     for key, cls in sections.items():
@@ -319,6 +348,7 @@ def validate(spec: Spec) -> None:
     for k, dirs in spec.user_data.class_map.items():
         if not dirs or any(not str(d).strip() for d in dirs):
             raise SpecError(f"user_data.class_map: '{k}' needs subfolder names; unsorted photos go in user_data.raw")
+    _validate_contexts(spec.scene)
     bad = [d for d in spec.scene.distractors if d not in DISTRACTORS]
     if bad:
         raise SpecError(f"scene.distractors {bad} are not available, only {list(DISTRACTORS)}")
@@ -341,6 +371,27 @@ def validate(spec: Spec) -> None:
         raise SpecError("generation.empty_ratio must be in [0, 1)")
     if not spec.training.seeds:
         raise SpecError("training.seeds cannot be empty")
+
+
+def _validate_contexts(sc: SceneSpec) -> None:
+    if sc.contexts and sc.template != "generic":
+        raise SpecError("scene.contexts need scene.template \"generic\"")
+    kinds = [c.kind for c in sc.contexts]
+    if len(set(kinds)) != len(kinds):
+        raise SpecError("scene.contexts: each kind at most once")
+    for c in sc.contexts:
+        if c.kind not in CONTEXTS:
+            raise SpecError(f"scene.contexts: kind must be one of {list(CONTEXTS)}")
+        if c.share <= 0:
+            raise SpecError(f"scene.contexts {c.kind}: share must be positive")
+        if c.distance_m and not 0 < c.distance_m[0] <= c.distance_m[1]:
+            raise SpecError(f"scene.contexts {c.kind}: distance_m must be 0 < min <= max")
+        bad = [x for x in c.supports if x not in CONTEXTS[c.kind]]
+        if bad:
+            raise SpecError(f"scene.contexts {c.kind}: supports {bad} not possible there, only {list(CONTEXTS[c.kind])}")
+    bad = [w for w in sc.wall_tags if w not in WALLS] + [r for r in sc.railings if r not in RAILINGS]
+    if bad:
+        raise SpecError(f"scene: unknown {bad}; wall_tags from {WALLS}, railings from {RAILINGS}")
 
 
 def load(path: str | Path) -> Spec:

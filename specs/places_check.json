@@ -1,0 +1,177 @@
+{
+  "name": "places_check",
+  "classes": [
+    {
+      "id": "maceta",
+      "description": "flower pots and planters (a container with a plant), on floors, balconies, railings and window sills",
+      "size_m": {
+        "measure": "length",
+        "range": [
+          0.1,
+          0.4
+        ]
+      },
+      "assets": {
+        "source": "search",
+        "categories": [],
+        "queries": [
+          "flower pot",
+          "maceta"
+        ],
+        "count": 30,
+        "photos": null,
+        "generate": null
+      }
+    }
+  ],
+  "props": [
+    {
+      "id": "barandilla",
+      "queries": [
+        "railings",
+        "barandilla"
+      ],
+      "size_m": {
+        "measure": "length",
+        "range": [
+          1,
+          2
+        ]
+      },
+      "description": "",
+      "count": 4,
+      "max_per_frame": 4
+    },
+    {
+      "id": "silla",
+      "queries": [
+        "small chair",
+        "silla plegable"
+      ],
+      "size_m": {
+        "measure": "length",
+        "range": [
+          0.5,
+          0.6
+        ]
+      },
+      "description": "",
+      "count": 4,
+      "max_per_frame": 4
+    },
+    {
+      "id": "mesa",
+      "queries": [
+        "auxiliary table",
+        "mesa auxiliar"
+      ],
+      "size_m": {
+        "measure": "length",
+        "range": [
+          0.8,
+          1.2
+        ]
+      },
+      "description": "",
+      "count": 4,
+      "max_per_frame": 4
+    }
+  ],
+  "hardware": "generic",
+  "task": "count",
+  "background_class": "empty",
+  "camera": {
+    "height_m": [
+      1.5,
+      2
+    ],
+    "hfov_deg": 70,
+    "resolution": [
+      640,
+      480
+    ],
+    "target_fill": [
+      0.05,
+      0.5
+    ],
+    "distance_m": [
+      0.5,
+      30
+    ]
+  },
+  "scene": {
+    "template": "generic",
+    "weather": [
+      "clear"
+    ],
+    "distractors": [],
+    "sky_tags": [
+      "outdoor",
+      "clear",
+      "natural light"
+    ],
+    "ground_tags": [
+      "tiles",
+      "concrete"
+    ],
+    "contexts": [
+      {
+        "kind": "facade",
+        "share": 0.45,
+        "distance_m": [
+          6,
+          25
+        ]
+      },
+      {
+        "kind": "balcony",
+        "share": 0.25
+      },
+      {
+        "kind": "indoor",
+        "share": 0.15
+      },
+      {
+        "kind": "ground",
+        "share": 0.15
+      }
+    ],
+    "wall_tags": [
+      "brick",
+      "plaster"
+    ],
+    "railings": [
+      "bars",
+      "solid"
+    ]
+  },
+  "user_data": {
+    "labeled": null,
+    "raw": "/home/lenena-iker/work/nvidia/data/real/maceta",
+    "test": null,
+    "label_min_confidence": 0.6,
+    "class_map": {},
+    "test_per_class": 400,
+    "train_per_class": 50,
+    "min_side_px": 32
+  },
+  "qa": {
+    "mode": "auto",
+    "strategy": "vision",
+    "exclude": null,
+    "class_override": null,
+    "no_color": null
+  },
+  "generation": {
+    "frames": 60,
+    "empty_ratio": 0.2,
+    "seed": 0
+  },
+  "training": {
+    "seeds": [
+      0
+    ],
+    "epochs": 3,
+    "real_weight": 4
+  }
+}
