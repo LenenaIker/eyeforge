@@ -126,3 +126,41 @@ def test_qa_describe_then_decide(tmp_path):
     info = QAAssets().run(ctx)
     assert info["kept"] == {"cow": 1, "dog": 1}
     assert FakeClient.calls.count("qa_describe") == 3 and FakeClient.calls.count("qa_decide") == 3
+
+
+def test_label_reuses_verdicts_and_applies_corrections(tmp_path):
+    from sim2chip import review
+    raw = tmp_path / "raw"
+    img(raw / "a.jpg")
+    img(raw / "sub" / "b.jpg")
+    FakeClient.answer = staticmethod(lambda text: json.dumps({"class": "cow", "confidence": 0.9, "reason": "r"}))
+    ctx = Context(from_dict({**SPEC, "user_data": {"raw": "raw"}}), open_job(tmp_path, "job"), Cache(tmp_path / "c"))
+    link_input(ctx.job, "raw", raw)
+    Label().run(ctx)
+    assert len(FakeClient.calls) == 2
+    # The user fixes one photo in review: the rerun asks the teacher nothing and the user's label wins.
+    assert review.apply(ctx.job, ctx.cache, {"sub/b.jpg": "dog"}, {}) == "label"
+    Label().run(ctx)
+    assert len(FakeClient.calls) == 2
+    out = ctx.job.stage_dir("label")
+    assert (out / "dog" / "sub_b.jpg").exists() and (out / "cow" / "a.jpg").exists()
+    v = json.loads((out / "verdicts.json").read_text())["sub/b.jpg"]
+    assert v["judge"] == "user" and v["teacher"] == "cow"
+    # A third run still reuses the teacher's verdict behind the correction.
+    Label().run(ctx)
+    assert len(FakeClient.calls) == 2
+    photos = review.gather(ctx.job, ctx.cache, ctx.spec.labels)["photos"]
+    assert {p["key"]: (p["label"], p["teacher"], p["image"] is not None) for p in photos} == {
+        "a.jpg": ("cow", "cow", True), "sub/b.jpg": ("dog", "cow", True)}
+
+
+def test_review_asset_decisions_go_to_the_knowledge_base(tmp_path):
+    from sim2chip import review
+    from sim2chip.asset_db import AssetDB
+    ctx = Context(from_dict(SPEC), open_job(tmp_path, "job"), Cache(tmp_path / "c"))
+    assets = [{"uid": "u1", "class": "cow", "category": "cow", "usd": "x.usd", "dims": [2, 1, 1]}]
+    (ctx.out("convert_assets") / "assets.json").write_text(json.dumps(assets))
+    assert review.apply(ctx.job, ctx.cache, {}, {"u1": "discard"}) == "qa_assets"
+    r = AssetDB(ctx.cache.db).lookup("u1", "cow")
+    assert r["decision"] == "discard" and r["judge"] == "user"
+    assert review.apply(ctx.job, ctx.cache, {}, {}) is None

@@ -63,6 +63,17 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
 .stat { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .stat b { display: block; font-size: 20px; }
 .stat span { color: var(--muted); font-size: 13px; }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.tabs button { background: transparent; color: var(--muted); border-color: var(--line); padding: 6px 12px; }
+.tabs button.on { color: var(--accent); border-color: var(--accent); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.card { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg); }
+.card.click { cursor: pointer; }
+.card img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--code); }
+.card .cap { padding: 6px 8px; font-size: 12px; display: flex; justify-content: space-between; gap: 6px; }
+.card.bad { border-color: var(--bad); } .card.good { border-color: var(--ok); }
+.card.changed { outline: 2px solid var(--warn); }
+.tag { font-weight: 600; } .tag.bad { color: var(--bad); } .tag.good { color: var(--ok); }
 .hidden { display: none; }
 .muted { color: var(--muted); }
 </style>
@@ -125,6 +136,18 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
       <a id="dl-h"><button class="ghost">model_data.h (Arduino / ESP-IDF)</button></a>
       <a id="dl-tflite"><button class="ghost">model_int8.tflite</button></a>
       <a id="dl-report"><button class="ghost">report.json</button></a>
+    </div>
+  </section>
+
+  <section id="s-review" class="hidden">
+    <h2><span class="step">5</span>Review</h2>
+    <p class="hint">What the models decided, for you to check. Fix only what looks wrong: click a photo to change
+      its label, or a 3D model to keep or drop it. Then apply to retrain.</p>
+    <div class="tabs" id="tabs"></div>
+    <div class="grid" id="grid"></div>
+    <div class="row" style="margin-top: 12px">
+      <button id="apply" disabled>Apply corrections and retrain</button>
+      <span class="muted" id="pending"></span>
     </div>
   </section>
 </main>
@@ -231,7 +254,10 @@ async function poll() {
   }
   $("log").textContent = s.log.join("\n");
   if (s.report) showResult(s);
-  if (!s.running && (s.report || s.stages.some((x) => x.state === "failed"))) clearInterval(timer);
+  if (!s.running && (s.report || s.stages.some((x) => x.state === "failed"))) {
+    clearInterval(timer);
+    loadReview(s.job);
+  }
   refreshTrain();
 }
 
@@ -253,6 +279,84 @@ function showResult(s) {
   $("s-result").classList.remove("hidden");
 }
 
+let review = null, tab = "photos", fixes = {labels: {}, assets: {}}, reviewedJob = null;
+
+async function loadReview(job) {
+  try { review = await api(`/api/jobs/${job}/review`); } catch (e) { return; }
+  reviewedJob = job;
+  fixes = {labels: {}, assets: {}};
+  const any = review.photos.length || review.assets.length || review.renders.length || review.test.length;
+  $("s-review").classList.toggle("hidden", !any);
+  drawReview();
+}
+
+function card(img, cap, cls, title, onclick) {
+  const d = document.createElement("div");
+  d.className = "card " + cls + (onclick ? " click" : "");
+  d.title = title || "";
+  d.innerHTML = (img ? `<img loading="lazy" src="/api/jobs/${reviewedJob}/media/${img}">` : "<img>") +
+                `<div class="cap">${cap}</div>`;
+  if (onclick) d.onclick = onclick;
+  return d;
+}
+
+function drawReview() {
+  const tabs = [["photos", `Your photos (${review.photos.length})`], ["assets", `3D models (${review.assets.length})`],
+                ["renders", "Synthetic images"], ["test", `Test (${review.test.length})`]];
+  $("tabs").innerHTML = "";
+  for (const [k, label] of tabs) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.className = k === tab ? "on" : "";
+    b.onclick = () => { tab = k; drawReview(); };
+    $("tabs").appendChild(b);
+  }
+  const g = $("grid");
+  g.innerHTML = "";
+  const choices = [...review.labels, "unsure"];
+  if (tab === "photos") for (const p of review.photos) {
+    const now = fixes.labels[p.key] || p.label;
+    const who = fixes.labels[p.key] || p.judge === "user" ? "you" : `teacher ${Math.round((p.confidence || 0) * 100)}%`;
+    g.appendChild(card(p.image, `<span class="tag">${now}</span><span class="muted">${who}</span>`,
+      fixes.labels[p.key] ? "changed" : "", p.reason, () => {
+        const next = choices[(choices.indexOf(now) + 1) % choices.length];
+        if (next === p.label && p.judge !== "user") delete fixes.labels[p.key]; else fixes.labels[p.key] = next;
+        drawReview();
+      }));
+  }
+  if (tab === "assets") for (const a of review.assets) {
+    const keep = a.uid in fixes.assets ? fixes.assets[a.uid] === "keep" : a.kept;
+    const what = `${a.class}${a.role === "prop" ? " (prop)" : ""}${a.generated ? ", from your photo" : ""}`;
+    g.appendChild(card(a.image, `<span class="tag ${keep ? "good" : "bad"}">${keep ? "kept" : "dropped"}</span>` +
+      `<span class="muted">${what}</span>`, (keep ? "good" : "bad") + (a.uid in fixes.assets ? " changed" : ""),
+      `${a.name || a.uid}: ${a.reason || ""}`, () => {
+        const next = keep ? "discard" : "keep";
+        if ((next === "keep") === a.kept) delete fixes.assets[a.uid]; else fixes.assets[a.uid] = next;
+        drawReview();
+      }));
+  }
+  if (tab === "renders") for (const r of review.renders) g.appendChild(card(r, "", "", r));
+  if (tab === "test") for (const t of review.test) {
+    const ok = t.truth === t.pred;
+    g.appendChild(card(t.image, `<span class="tag ${ok ? "good" : "bad"}">${t.pred}</span>` +
+      `<span class="muted">real: ${t.truth}</span>`, ok ? "good" : "bad", t.file));
+  }
+  const n = Object.keys(fixes.labels).length + Object.keys(fixes.assets).length;
+  $("pending").textContent = n ? `${n} correction(s) pending` : "";
+  $("apply").disabled = !n;
+}
+
+async function applyFixes() {
+  $("apply").disabled = true;
+  try {
+    const r = await api(`/api/jobs/${reviewedJob}/corrections`, {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(fixes)});
+    $("s-review").classList.add("hidden");
+    $("s-result").classList.add("hidden");
+    if (r.rerun_from) watch(reviewedJob);
+  } catch (e) { alert(e.message); $("apply").disabled = false; }
+}
+
 async function loadJobs() {
   const {jobs} = await api("/api/jobs");
   const sel = $("jobs");
@@ -270,6 +374,7 @@ $("drop").ondragover = (e) => { e.preventDefault(); $("drop").classList.add("ove
 $("drop").ondragleave = () => $("drop").classList.remove("over");
 $("drop").ondrop = (e) => { e.preventDefault(); $("drop").classList.remove("over"); addPhotos(e.dataTransfer.files); };
 $("train").onclick = train;
+$("apply").onclick = applyFixes;
 $("jobs").onchange = (e) => { if (e.target.value) watch(e.target.value); };
 
 api("/api/config").then((c) => {

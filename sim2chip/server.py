@@ -18,6 +18,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
+from . import review
 from . import spec as spec_mod
 from .pipeline import Pipeline
 from .workspace import Cache, Job, open_job
@@ -128,6 +129,36 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         proc = runs.get(job.name)
         return status(job, home, running=proc is not None and proc.poll() is None, backend=backend)
 
+    @app.get("/api/jobs/{name}/review")
+    def review_data(name: str):
+        job = job_of(name)
+        spec = spec_mod.load(job.spec_path if job.spec_path.exists() else job.root / "request.json")
+        return review.gather(job, Cache(home / "cache"), spec.labels)
+
+    @app.get("/api/jobs/{name}/media/{path:path}")
+    def media(name: str, path: str):
+        """A small JPEG of an image inside the job folder (only the folders review shows)."""
+        job = job_of(name)
+        src = (job.root / path).resolve()
+        if not src.is_relative_to(job.root.resolve()) or Path(path).parts[0] not in review.MEDIA_DIRS \
+                or src.suffix.lower() not in IMAGE_EXT or not src.is_file():
+            raise HTTPException(404, "no such image")
+        return FileResponse(thumbnail(job, src))
+
+    @app.post("/api/jobs/{name}/corrections")
+    def corrections(name: str, body: dict):
+        job = job_of(name)
+        if job.name in runs and runs[job.name].poll() is None:
+            raise HTTPException(409, f"job {job.name} is running")
+        start = review.apply(job, Cache(home / "cache"), body.get("labels") or {}, body.get("assets") or {})
+        if start is None:
+            return {"rerun_from": None}
+        request = job.root / "request.json"
+        if not request.exists():
+            request.write_text(job.spec_path.read_text())
+        runs[job.name] = launch(home, job, request, backend, max_usd, start=start)
+        return {"rerun_from": start}
+
     @app.get("/api/jobs/{name}/files/{file}")
     def download(name: str, file: str):
         if file not in DOWNLOADS:
@@ -140,14 +171,32 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     return app
 
 
-def _launch(home: Path, job: Job, request: Path, backend: str, max_usd: float | None) -> subprocess.Popen:
+def _launch(home: Path, job: Job, request: Path, backend: str, max_usd: float | None,
+            start: str | None = None) -> subprocess.Popen:
     cmd = [sys.executable, "-m", "sim2chip.cli", "--home", str(home), "run", str(request), "--job", job.name,
            "--backend", backend]
+    if start:
+        cmd += ["--from", start]
     if max_usd is not None:
         cmd += ["--max-usd", str(max_usd)]
     job.logs.mkdir(parents=True, exist_ok=True)
     log = open(job.logs / "pipeline.log", "a")
     return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=Path(__file__).resolve().parents[1])
+
+
+def thumbnail(job: Job, src: Path, size: int = 360) -> Path:
+    """Cached JPEG thumbnail, upright (phone photos carry their orientation in EXIF)."""
+    from PIL import Image, ImageOps
+
+    rel = src.relative_to(job.root.resolve())
+    out = job.root / "_thumbs" / rel.with_suffix(".jpg")
+    if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(src) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((size, size))
+            im.save(out, quality=85)
+    return out
 
 
 def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
