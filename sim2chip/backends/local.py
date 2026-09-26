@@ -3,6 +3,7 @@
 Interpreters come from environment variables, with defaults for the development machine:
     SIM2CHIP_ISAAC_PYTHON  Isaac Sim's python.sh
     SIM2CHIP_PYTHON        Python with TensorFlow and the asset tools (default: the current one)
+    SIM2CHIP_TRELLIS_PYTHON  Python of the image-to-3D environment (TRELLIS, torch, transformers)
 """
 from __future__ import annotations
 
@@ -16,6 +17,10 @@ from ..stages import Stage
 from ..workspace import REPO, Cache, Job
 
 ISAAC_PYTHON = "/opt/isaacsim/isaac-sim-5.1.0-20260318-clean/python.sh"
+TRELLIS_PYTHON = str(Path.home() / "miniforge3/envs/trellis2/bin/python")
+# Model weights of the image-to-3D runtime live on the data SSD, next to the TRELLIS checkout.
+TRELLIS_ENV = {"HF_HUB_CACHE": "/media/lenena-iker/Crucial/tools/hf_cache",
+               "TORCH_HOME": "/media/lenena-iker/Crucial/tools/torch_cache"}
 PREFIX = "[sim2chip]"
 
 
@@ -29,6 +34,11 @@ class LocalBackend:
             if not Path(exe).exists():
                 raise FileNotFoundError(f"Isaac Sim python not found at {exe}, set SIM2CHIP_ISAAC_PYTHON")
             return [exe]
+        if runtime == "trellis":
+            exe = os.environ.get("SIM2CHIP_TRELLIS_PYTHON", TRELLIS_PYTHON)
+            if not Path(exe).exists():
+                raise FileNotFoundError(f"image-to-3D python not found at {exe}, set SIM2CHIP_TRELLIS_PYTHON")
+            return [exe]
         return [os.environ.get("SIM2CHIP_PYTHON", sys.executable)]
 
     def run_stage(self, stage: Stage, job: Job, cache: Cache, fp: str) -> None:
@@ -36,6 +46,8 @@ class LocalBackend:
                                                  "--cache", str(cache.root), "--fingerprint", fp]
         env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH")])),
                "PYTHONUNBUFFERED": "1"}
+        if stage.runtime == "trellis":
+            env = {**{k: os.environ.get(k, v) for k, v in TRELLIS_ENV.items()}, **env}
         log_path = job.logs / f"{stage.name}.log"
         tail: deque[str] = deque(maxlen=40)
         with open(log_path, "w") as log, subprocess.Popen(cmd, env=env, cwd=REPO, stdout=subprocess.PIPE,

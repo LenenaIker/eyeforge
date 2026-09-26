@@ -71,6 +71,48 @@ def test_ingest_separate_test_folder(tmp_path):
     assert top[0] > 200 and bottom[2] > 200  # upright: red on top, blue at the bottom
 
 
+def test_generate_assets_from_user_photos(tmp_path, monkeypatch):
+    """TRELLIS is replaced by a fake: this checks photo selection, caching and the manifest."""
+    import sys
+    import types
+
+    from sim2chip.stages.generate_assets import GenerateAssets
+
+    calls = []
+
+    class FakeModel:
+        def detect(self, image, query):
+            from sim2chip.img2mesh import Detection
+            blue = image.getpixel((0, 0))[2] > 200  # blue photos "show" the object, red ones do not
+            return Detection(0.8 if blue else 0.01, [0, 0, 10, 10] if blue else None)
+
+        def generate(self, image, det, seed, glb_path):
+            calls.append(seed)
+            open(glb_path, "wb").write(b"glb")
+            return Image.new("RGBA", (8, 8))
+
+    fake = types.ModuleType("sim2chip.img2mesh")
+    fake.MIN_SCORE, fake.ImageTo3D = 0.1, FakeModel
+    from sim2chip import img2mesh
+    fake.Detection = img2mesh.Detection
+    monkeypatch.setitem(sys.modules, "sim2chip.img2mesh", fake)
+
+    photos = tmp_path / "photos"
+    img(photos / "vaca" / "a.jpg", color=(0, 0, 255))
+    img(photos / "vaca" / "b.jpg", color=(200, 10, 10))
+    classes = [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
+                "assets": {"source": "photos", "photos": "user_data", "generate": 3}}]
+    ctx = ctx_for(tmp_path, classes=classes, user_data={"labeled": "photos", "class_map": {"cow": ["vaca"]}})
+    link_input(ctx.job, "photos", photos)
+    info = GenerateAssets().run(ctx)
+    assert info["models"] == {"cow": 3} and calls == [1, 2, 3]  # one good photo, three seeds
+    manifest = json.loads((ctx.job.stage_dir("generate_assets") / "manifest.json").read_text())
+    assert {m["photo"] for m in manifest} == {"a.jpg"} and all(m["generated"] for m in manifest)
+    assert all((ctx.cache.root / m["glb"]).exists() for m in manifest)
+    GenerateAssets().run(ctx)
+    assert calls == [1, 2, 3]  # second run: everything from the cache
+
+
 def test_qa_manual(tmp_path):
     ctx = ctx_for(tmp_path, qa={"mode": "manual", "exclude": "r/ex.txt", "class_override": "r/ov.json",
                                 "no_color": "r/nc.json"})

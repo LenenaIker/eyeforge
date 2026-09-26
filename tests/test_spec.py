@@ -43,6 +43,18 @@ def test_invalid_specs(bad, msg):
         from_dict(minimal(**bad))
 
 
+def test_photo_assets():
+    photos = {"id": "cow", "size_m": {"measure": "length", "range": [2.0, 2.5]},
+              "assets": {"source": "photos", "photos": "user_data"}}
+    assert from_dict(minimal(classes=[photos])).cls("cow").assets.n_generate == 4
+    with pytest.raises(SpecError, match="photos folder"):
+        from_dict(minimal(classes=[{**photos, "assets": {"source": "photos"}}]))
+    with pytest.raises(SpecError, match="generate"):
+        from_dict(minimal(classes=[{**photos, "assets": {"source": "photos", "photos": "p", "generate": 0}}]))
+    # The new optional fields stay out of fingerprints until they are used.
+    assert set(from_dict(minimal()).section("classes")[0]["assets"]) == {"source", "categories", "count"}
+
+
 def test_assets_need_size():
     d = minimal()
     del d["classes"][0]["size_m"]

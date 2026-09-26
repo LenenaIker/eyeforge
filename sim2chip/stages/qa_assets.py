@@ -137,7 +137,8 @@ class QAAssets(Stage):
         per_class = {}
         capped = []
         for a in kept:
-            if per_class.get(a["class"], 0) < cap.get(a["class"], len(kept)):
+            # Models generated from the user's photos were not oversampled: they are never capped.
+            if a.get("generated") or per_class.get(a["class"], 0) < cap.get(a["class"], len(kept)):
                 per_class[a["class"]] = per_class.get(a["class"], 0) + 1
                 capped.append(a)
         kept = capped

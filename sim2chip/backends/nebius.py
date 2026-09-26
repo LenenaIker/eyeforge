@@ -201,6 +201,9 @@ class NebiusBackend:
         return self.store.url(bucket, "_code/sim2chip.tar.gz")
 
     def run_stage(self, stage: Stage, job: Job, cache: Cache, fp: str) -> None:
+        if stage.runtime not in RUNTIMES:
+            raise NotImplementedError(f"stage {stage.name} (runtime {stage.runtime}) has no cloud image yet: "
+                                      "run it with the local backend")
         timeout_h = stage.max_hours
         if self.spent_usd + timeout_h * USD_PER_HOUR > self.max_usd:
             raise RuntimeError(f"stage {stage.name} could cost up to ${timeout_h * USD_PER_HOUR:.2f} "

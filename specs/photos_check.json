@@ -1,0 +1,15 @@
+{
+  "name": "photos_check",
+  "hardware": "generic",
+  "classes": [
+    {"id": "wrench", "description": "adjustable wrenches on a workbench",
+     "size_m": {"measure": "length", "range": [0.15, 0.3]},
+     "assets": {"source": "photos", "photos": "photos/wrench", "queries": ["adjustable wrench"], "generate": 4}},
+    {"id": "security_camera", "description": "security cameras on walls",
+     "size_m": {"measure": "length", "range": [0.15, 0.3]},
+     "assets": {"source": "search", "queries": ["security camera", "cctv camera"], "count": 6,
+                "photos": "photos/security_camera", "generate": 4}}
+  ],
+  "scene": {"template": "generic", "sky_tags": ["indoor"], "ground_tags": ["concrete"]},
+  "qa": {"mode": "auto"}
+}

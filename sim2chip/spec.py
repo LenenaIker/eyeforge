@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
-ASSET_SOURCES = ("objaverse_lvis", "search")
+ASSET_SOURCES = ("objaverse_lvis", "search", "photos")
 WEATHER = ("clear", "cloudy", "evening", "storm", "night")
 MEASURES = ("length", "width", "height")  # length and width: long and short side seen from above
 
@@ -36,11 +36,21 @@ class AssetQuery:
     source "objaverse_lvis": curated Objaverse-LVIS `categories`, `count` split evenly across them.
     source "search": live text search (`queries`, e.g. ["wild boar", "boar"]) over Sketchfab, keeping
     models with an open license that the Objaverse mirror can serve; asset QA then filters them.
+    source "photos": only models generated from photos (below).
+    `photos` (any source): a folder of photos of this object, or "user_data" for the user's own photos of the
+    class, turned into 3D models with an image-to-3D model; up to `generate` models (default 4), best photos first.
+    Generated models go through the same asset QA as the others.
     """
     source: str = "objaverse_lvis"
     categories: list[str] = field(default_factory=list)
     queries: list[str] = field(default_factory=list)
     count: int = 12
+    photos: str | None = None
+    generate: int | None = None  # None keeps fingerprints of specs written before this field existed
+
+    @property
+    def n_generate(self) -> int:
+        return 4 if self.generate is None else self.generate
 
 
 @dataclass
@@ -268,6 +278,10 @@ def validate(spec: Spec) -> None:
                 raise SpecError(f"class {c.id}: search assets need queries")
             if c.assets.count < 1:
                 raise SpecError(f"class {c.id}: assets.count must be at least 1")
+            if c.assets.source == "photos" and not c.assets.photos:
+                raise SpecError(f"class {c.id}: photos assets need a photos folder (or \"user_data\")")
+            if c.assets.photos and c.assets.n_generate < 1:
+                raise SpecError(f"class {c.id}: assets.generate must be at least 1")
     pids = [p.id for p in spec.props]
     if len(set(pids)) != len(pids) or set(pids) & set(spec.labels):
         raise SpecError("props: ids must be unique and differ from the class ids and background_class")

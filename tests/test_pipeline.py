@@ -1,4 +1,6 @@
 """Pipeline planning, fingerprints and skipping, with fake in-process stages (no GPU)."""
+import json
+
 import pytest
 
 from sim2chip.pipeline import Pipeline, StageFailed
@@ -92,7 +94,8 @@ def test_real_stage_registry_plans(tmp_path):
     from sim2chip.stages import STAGES
     spec = {**SPEC, "user_data": {"labeled": "photos"}}
     pipe = Pipeline(from_dict(spec), open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
-    assert [p.stage.name for p in pipe.plan()] == [s.name for s in STAGES if s.name not in ("preview_assets", "label")]
+    assert [p.stage.name for p in pipe.plan()] == [s.name for s in STAGES
+                                                   if s.name not in ("preview_assets", "label", "generate_assets")]
     auto = Pipeline(from_dict({**spec, "qa": {"mode": "auto"}}), open_job(tmp_path, "j3"), Cache(tmp_path / "cache"))
     assert "preview_assets" in [p.stage.name for p in auto.plan()]
     no_photos = Pipeline(from_dict(SPEC), open_job(tmp_path, "j2"), Cache(tmp_path / "cache"))
@@ -103,3 +106,15 @@ def test_real_stage_registry_plans(tmp_path):
 def test_context_hardware(tmp_path):
     ctx = Context(from_dict(SPEC), open_job(tmp_path, "job"), Cache(tmp_path))
     assert ctx.hardware.input_size == 96
+
+
+def test_generated_assets_feed_fetch(tmp_path):
+    from sim2chip.stages import STAGES
+    spec = from_dict(SPEC)
+    plain = Pipeline(spec, open_job(tmp_path, "a"), Cache(tmp_path / "cache")).fingerprints()
+    photos = json.loads(json.dumps(SPEC))
+    photos["classes"][0]["assets"]["photos"] = "cow_photos"
+    fps = Pipeline(from_dict(photos), open_job(tmp_path, "b"), Cache(tmp_path / "cache")).fingerprints()
+    names = [s.name for s in STAGES]
+    assert "generate_assets" in fps and names.index("generate_assets") < names.index("fetch_assets")
+    assert "generate_assets" not in plain and fps["fetch_assets"] != plain["fetch_assets"]

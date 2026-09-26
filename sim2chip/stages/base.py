@@ -39,7 +39,7 @@ class Stage:
     depends on changed. Bump `version` when the stage code changes its output.
     """
     name: ClassVar[str]
-    runtime: ClassVar[str] = "cpu"          # "cpu" | "tf" | "isaac"
+    runtime: ClassVar[str] = "cpu"          # "cpu" | "tf" | "isaac" | "trellis"
     gpu: ClassVar[str | None] = None        # None | "any" | "rtx"
     uses: ClassVar[tuple[str, ...]] = ()
     after: ClassVar[tuple[str, ...]] = ()

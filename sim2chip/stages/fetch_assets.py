@@ -1,6 +1,7 @@
 """Find and download 3D models for each class, plus the sky maps of the scene.
 
-Downloads go to the shared cache; the job only keeps a manifest.
+Downloads go to the shared cache; the job only keeps a manifest. Models generated from photos
+(generate_assets) are added to it.
 Output: fetch_assets/manifest.json  [{uid, class, category, name, license, author, source, glb, role?}]
         (role "prop" for background props: `class` is then the prop id)
         fetch_assets/scene.json     {"skies": [...], "ground": [...]}  cache-relative paths
@@ -28,7 +29,10 @@ class FetchAssets(Stage):
     uses_cache = True
     uses_db = True
     uses = ("classes", "props", "scene")
-    version = "5"  # v2: glb paths relative to cache root; v3: search oversamples; v4: scene.json; v5: asset DB
+    after = ("generate_assets",)
+    # v2: glb paths relative to cache root; v3: search oversamples; v4: scene.json; v5: asset DB.
+    # Generated models need no bump: generate_assets only enters the fingerprint when it is enabled.
+    version = "5"
 
     def enabled(self, spec) -> bool:
         return any(c.assets for c in spec.classes)
@@ -46,6 +50,9 @@ class FetchAssets(Stage):
         lvis = self.objaverse_lvis(ctx)
         manifest = lvis + self.live_search(ctx, taken={m["uid"] for m in lvis})
         manifest = self.download(ctx, manifest)
+        generated = ctx.job.stage_dir("generate_assets") / "manifest.json"
+        if generated.exists():
+            manifest += json.loads(generated.read_text())
         scene = self.scene_assets(ctx)
         out = ctx.out(self.name)
         (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
