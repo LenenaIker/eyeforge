@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 ASSET_SOURCES = ("objaverse_lvis", "search", "photos")
+DISTRACTORS = ("tree", "person")  # what the scene templates can place
 WEATHER = ("clear", "cloudy", "evening", "storm", "night")
 MEASURES = ("length", "width", "height")  # length and width: long and short side seen from above
 
@@ -304,6 +305,12 @@ def validate(spec: Spec) -> None:
     for k in spec.user_data.class_map:
         if k not in spec.labels:
             raise SpecError(f"user_data.class_map: '{k}' is not a class of the spec")
+    for k, dirs in spec.user_data.class_map.items():
+        if not dirs or any(not str(d).strip() for d in dirs):
+            raise SpecError(f"user_data.class_map: '{k}' needs subfolder names; unsorted photos go in user_data.raw")
+    bad = [d for d in spec.scene.distractors if d not in DISTRACTORS]
+    if bad:
+        raise SpecError(f"scene.distractors {bad} are not available, only {list(DISTRACTORS)}")
     if spec.qa.mode not in ("none", "manual", "auto"):
         raise SpecError("qa.mode must be 'none', 'manual' or 'auto'")
     if spec.qa.strategy not in ("vision", "describe_then_decide"):

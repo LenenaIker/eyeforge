@@ -31,7 +31,10 @@ Find out:
 - Target hardware, one of these profiles:
 {hardware}
   If the user has no device, has not decided, or only wants to test on a phone or PC, use "generic".
-- Whether they have photos: labeled (one folder per class) or raw (unlabeled). Ask for the folder path.
+- Whether they have photos and the folder path. "labeled" ONLY when the folder has one subfolder per class
+  (class_map maps each class to its subfolder names). Unsorted photos, even if every photo shows the object,
+  are "raw": the teacher model labels them and also finds the ones without the object (background class).
+  Folder layouts are checked when you send the spec.
   A few real photos improve accuracy a lot compared with synthetic images only; say so. For an honest score,
   suggest a separate labeled test folder (user_data.test) with photos taken on another day or place.
 - Real-world size of each class (you propose typical sizes, the user confirms).
@@ -55,7 +58,12 @@ plane textured from Poly Haven by "ground_tags" and sky maps (which also give th
 {sky_tags}; ground categories include {ground_tags}; free tags also work, e.g. sky "forest", "farm", "city", "parking", "warehouse", ground
 "grass", "leaves", "dirt", "gravel", "mud", "asphalt", "tiles". Indoors, put "indoor" in sky_tags (weather is
 then ignored). Tags are checked when you send the spec.
-Weather options: {weather}. Distractors (optional): "tree", "person".
+Weather options: {weather}. Distractors: "tree", "person" (nothing else); keep them only if they appear
+where the camera is, else set "distractors": [].
+ground_tags describe the floor under the objects (asphalt, tiles, grass...), never walls or roofs.
+Placement: synthetic scenes stand the objects on the ground, seen from camera.height_m. Objects on balconies,
+window sills, shelves, walls or ceilings are not simulated yet: say so plainly when the user describes such
+views, and tell them their real photos of those views matter most.
 Props: scenes with only the target look empty and the model then learns "anything in the picture is a target".
 Always propose 2 to 5 background props typical of the place ("props": a building site gets traffic cones,
 pallets, barriers, dirt piles; a forest gets rocks, logs, bushes), each with live search queries and a
@@ -139,9 +147,15 @@ class CategoryIndex:
         return dict(sorted(hits.items(), key=lambda kv: -kv[1])[:limit])
 
 
+NOT_GROUND = {"wall", "walls", "roof", "roofs", "ceiling", "facade", "window", "windows"}
+
+
 def check_scene(scene) -> str | None:
     """Do the scene's Poly Haven tags find skies and ground textures? Checked live when a spec is proposed."""
     from . import polyhaven
+    wrong = [t for t in scene.ground_tags if t.lower() in NOT_GROUND]
+    if wrong:
+        return f"ground_tags {wrong} are not a floor: the ground texture goes under the objects"
     if scene.template == "road" and not scene.sky_tags:
         return None
     try:
@@ -151,6 +165,39 @@ def check_scene(scene) -> str | None:
             return f"no Poly Haven ground texture matches ground_tags {scene.ground_tags}; use fewer or other tags"
     except OSError:
         return None  # offline: the render stage will report it
+    return None
+
+
+def check_photos(s: spec_mod.Spec) -> str | None:
+    """Do the photo folders the spec names exist and have the layout it assumes? Only absolute paths are
+    checked (relative ones are uploads that live in the job folder)."""
+    from .stages.ingest import IMAGE_EXT
+    ud = s.user_data
+
+    def photos_in(d: Path) -> int:
+        return sum(1 for f in d.iterdir() if f.suffix.lower() in IMAGE_EXT) if d.is_dir() else 0
+
+    for key in ("labeled", "raw", "test"):
+        rel = getattr(ud, key)
+        if not rel or not Path(rel).is_absolute():
+            continue
+        d = Path(rel)
+        if not d.is_dir():
+            return f"user_data.{key}: folder {d} does not exist; ask the user for the right path"
+        if key in ("labeled", "test"):
+            subs = sorted(x.name for x in d.iterdir() if x.is_dir())
+            missing = [f for c in s.labels for f in ud.class_map.get(c, [c]) if not photos_in(d / f)]
+            if missing and photos_in(d):
+                return (f"user_data.{key}: {d} has {photos_in(d)} unsorted photos and subfolders {subs}; it is "
+                        f"not one subfolder per class (no photos for {missing}). Unsorted photos go in user_data.raw")
+            if len(missing) == len(s.labels):
+                return f"user_data.{key}: no photos for any class in {d} (subfolders {subs})"
+        elif not photos_in(d) and not any(x.is_dir() for x in d.iterdir()):
+            return f"user_data.raw: no photos in {d}"
+    for c in s.classes:
+        p = c.assets.photos if c.assets else None
+        if p and p != "user_data" and Path(p).is_absolute() and not photos_in(Path(p)):
+            return f"class {c.id}: assets.photos folder {p} has no photos"
     return None
 
 
@@ -187,12 +234,25 @@ def summary(s: spec_mod.Spec) -> str:
              f"  classes: {', '.join(s.labels)} (background: {s.background_class})"]
     for c in s.classes:
         size = f"{c.size_m.measure} {c.size_m.range[0]}-{c.size_m.range[1]} m" if c.size_m else "no 3D size"
-        cats = ", ".join(c.assets.categories) if c.assets else "no 3D models"
+        a = c.assets
+        cats = "no 3D models" if not a else ", ".join(a.categories) if a.source == "objaverse_lvis" else \
+            f"search {a.queries}" if a.source == "search" else f"made from photos ({a.queries[0] if a.queries else '?'})"
+        if a and a.photos and a.source != "photos":
+            cats += f" + made from photos ({a.queries[0]})"
         lines.append(f"  - {c.id}: {c.description} | {size} | models: {cats}")
-    lines.append(f"  camera: {s.camera.height_m[0]}-{s.camera.height_m[1]} m high, scene {s.scene.template}, "
-                 f"weather {', '.join(s.scene.weather)}")
+    sc = s.scene
+    lines.append(f"  camera: {s.camera.height_m[0]}-{s.camera.height_m[1]} m high, scene {sc.template}, "
+                 f"weather {', '.join(sc.weather)}")
+    if sc.sky_tags or sc.ground_tags:
+        lines.append(f"  place: sky {', '.join(sc.sky_tags) or 'any'}, ground {', '.join(sc.ground_tags) or 'plain'}")
+    extra = [f"distractors {', '.join(sc.distractors)}" if sc.distractors else "",
+             f"props {', '.join(p.id for p in s.props)}" if s.props else ""]
+    if any(extra):
+        lines.append("  also in the scene: " + "; ".join(e for e in extra if e))
     ud = s.user_data
-    photos = [f"labeled {ud.labeled}" if ud.labeled else "", f"raw {ud.raw}" if ud.raw else ""]
+    photos = [f"sorted by class {ud.labeled}" if ud.labeled else "",
+              f"unsorted {ud.raw} (the teacher model labels them)" if ud.raw else "",
+              f"test {ud.test}" if ud.test else ""]
     lines.append(f"  photos: {', '.join(p for p in photos if p) or 'none (synthetic only)'}")
     return "\n".join(lines)
 
@@ -261,7 +321,7 @@ class Session:
                                for cat in c.assets.categories if cat not in self.categories.counts]
                     if unknown:
                         raise spec_mod.SpecError(f"categories not found in Objaverse-LVIS: {unknown}, use search")
-                    problem = self.scene_check(s.scene) if self.scene_check else None
+                    problem = (self.scene_check(s.scene) if self.scene_check else None) or check_photos(s)
                     if problem:
                         raise spec_mod.SpecError(problem)
                 except spec_mod.SpecError as e:

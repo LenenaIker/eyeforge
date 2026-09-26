@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from sim2chip import interview
 
 
@@ -54,3 +56,30 @@ def test_scene_tags_are_checked():
     t = s.reply("cows in a forest")
     assert t.kind == "confirm" and t.spec.scene.sky_tags == ["forest"]
     assert "no Poly Haven sky matches" in client.seen[1]
+
+
+def test_photo_folders_are_checked(tmp_path):
+    from PIL import Image
+
+    from sim2chip.spec import SpecError, from_dict
+    unsorted = tmp_path / "unsorted"
+    unsorted.mkdir()
+    for i in range(3):
+        Image.new("RGB", (8, 8)).save(unsorted / f"{i}.jpg")
+    cls = [{"id": "pot", "size_m": {"measure": "height", "range": [0.3, 1]},
+            "assets": {"source": "search", "queries": ["flower pot"]}}]
+    # Unsorted photos passed as labeled: every class would get the whole folder or nothing.
+    labeled = from_dict({"name": "t", "classes": cls, "user_data": {"labeled": str(unsorted)}})
+    assert "user_data.raw" in interview.check_photos(labeled)
+    raw = from_dict({"name": "t", "classes": cls, "user_data": {"raw": str(unsorted)}})
+    assert interview.check_photos(raw) is None
+    missing = from_dict({"name": "t", "classes": cls, "user_data": {"raw": str(tmp_path / "nope")}})
+    assert "does not exist" in interview.check_photos(missing)
+    with pytest.raises(SpecError, match="subfolder names"):
+        from_dict({"name": "t", "classes": cls, "user_data": {"labeled": "x", "class_map": {"pot": [""]}}})
+
+
+def test_walls_are_not_ground():
+    from sim2chip.spec import from_dict
+    s = from_dict({"name": "t", "classes": [{"id": "pot"}], "scene": {"template": "generic", "ground_tags": ["wall"]}})
+    assert "not a floor" in interview.check_scene(s.scene)
