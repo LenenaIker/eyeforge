@@ -81,7 +81,7 @@ class Pipeline:
                 if only is None:
                     log(f"= {p.stage.name}: up to date")
                 continue
-            log(f"> {p.stage.name} ({p.stage.runtime}{', gpu ' + p.stage.gpu if p.stage.gpu else ''})")
+            log(f"> {p.stage.name} ({p.stage.powered_by(self.spec, getattr(backend, 'name', 'local'))})")
             self.job.clear_done(p.stage.name)
             backend.run_stage(p.stage, self.job, self.cache, p.fingerprint)
             done = self.job.done(p.stage.name)

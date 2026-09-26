@@ -118,3 +118,13 @@ def test_generated_assets_feed_fetch(tmp_path):
     names = [s.name for s in STAGES]
     assert "generate_assets" in fps and names.index("generate_assets") < names.index("fetch_assets")
     assert "generate_assets" not in plain and fps["fetch_assets"] != plain["fetch_assets"]
+
+
+def test_powered_by_says_where_it_really_runs():
+    from sim2chip.stages import BY_NAME
+    spec = from_dict({**SPEC, "qa": {"mode": "auto"}})
+    assert BY_NAME["render"].powered_by(spec, "local") == "NVIDIA Isaac Sim | local GPU"
+    assert BY_NAME["render"].powered_by(spec, "nebius") == "NVIDIA Isaac Sim | Nebius AI Cloud, L40S"
+    assert BY_NAME["qa_assets"].powered_by(spec, "local") == "Nebius Token Factory | local CPU"
+    # Without auto QA the stage makes no Token Factory call, so it must not claim one.
+    assert BY_NAME["qa_assets"].powered_by(from_dict(SPEC), "local") == "local CPU"

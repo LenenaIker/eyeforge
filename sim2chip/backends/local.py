@@ -25,6 +25,8 @@ PREFIX = "[sim2chip]"
 
 
 class LocalBackend:
+    name = "local"
+
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
 

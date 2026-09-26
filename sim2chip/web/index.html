@@ -225,7 +225,7 @@ async function poll() {
   $("stages").innerHTML = "";
   for (const st of s.stages) {
     const li = document.createElement("li");
-    li.innerHTML = `<span>${st.name} <span class="muted">(${st.runtime})</span></span>` +
+    li.innerHTML = `<span>${st.name} <span class="muted">(${st.powered_by || st.runtime})</span></span>` +
                    `<span class="state ${st.state}">${st.state}</span>`;
     $("stages").appendChild(li);
   }

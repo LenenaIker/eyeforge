@@ -94,6 +94,9 @@ class QAAssets(Stage):
     def enabled(self, spec) -> bool:
         return any(c.assets for c in spec.classes)
 
+    def calls_llm(self, spec) -> bool:
+        return spec.qa.mode == "auto"
+
     def run(self, ctx: Context) -> dict:
         assets = json.loads((ctx.job.stage_dir("convert_assets") / "assets.json").read_text())
         qa = ctx.spec.qa

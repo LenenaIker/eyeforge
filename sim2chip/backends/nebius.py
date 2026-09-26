@@ -163,6 +163,8 @@ class NebiusCLI:
 
 
 class NebiusBackend:
+    name = "nebius"
+
     def __init__(self, verbose: bool = False, dry_run: bool = False, max_usd: float | None = None,
                  cli: NebiusCLI | None = None, store=None, poll_s: float = 20.0):
         self.verbose, self.dry_run, self.poll_s = verbose, dry_run, poll_s

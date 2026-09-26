@@ -126,7 +126,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def job_status(name: str):
         job = job_of(name)
         proc = runs.get(job.name)
-        return status(job, home, running=proc is not None and proc.poll() is None)
+        return status(job, home, running=proc is not None and proc.poll() is None, backend=backend)
 
     @app.get("/api/jobs/{name}/files/{file}")
     def download(name: str, file: str):
@@ -150,7 +150,7 @@ def _launch(home: Path, job: Job, request: Path, backend: str, max_usd: float | 
     return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=Path(__file__).resolve().parents[1])
 
 
-def status(job: Job, home: Path, running: bool) -> dict:
+def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     # A relaunched job has a new request.json while spec.json is still the previous run's until the run
     # starts: read the newer one.
     paths = [p for p in (job.spec_path, job.root / "request.json") if p.exists()]
@@ -169,7 +169,8 @@ def status(job: Job, home: Path, running: bool) -> dict:
         state = "done" if p.action == "skip" else "pending"
         if state == "pending" and p.stage.name == current:
             state = "running" if running else ("failed" if failed else "pending")
-        stages.append({"name": p.stage.name, "runtime": p.stage.runtime, "state": state})
+        stages.append({"name": p.stage.name, "runtime": p.stage.runtime, "state": state,
+                       "powered_by": p.stage.powered_by(spec, backend)})
     usage = job.logs / "cloud_usage.jsonl"
     cost = sum(json.loads(l)["usd_estimate"] for l in usage.read_text().splitlines()) if usage.exists() else 0.0
     report = job.stage_dir("export") / "report.json"

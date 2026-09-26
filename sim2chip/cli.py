@@ -45,7 +45,7 @@ def cmd_run(args) -> int:
         pipe.job.spec_path.write_text(pipe.spec.to_json())
         for p in pipe.plan(args.start, args.only, args.force):
             if p.action == "run":
-                print(f"> {p.stage.name} ({p.stage.runtime})")
+                print(f"> {p.stage.name} ({p.stage.powered_by(pipe.spec, backend.name)})")
                 backend.run_stage(p.stage, pipe.job, pipe.cache, p.fingerprint)
         return 0
     try:

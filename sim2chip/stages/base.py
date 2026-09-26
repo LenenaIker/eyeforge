@@ -31,6 +31,9 @@ class Context:
         print(f"[sim2chip] {msg}", flush=True)
 
 
+RUNTIME_TECH = {"isaac": "NVIDIA Isaac Sim", "tf": "TensorFlow", "trellis": "TRELLIS"}
+
+
 class Stage:
     """A pipeline step. It reads and writes only inside the job folder (and the shared cache).
 
@@ -55,6 +58,18 @@ class Stage:
 
     def enabled(self, spec: Spec) -> bool:
         return True
+
+    def calls_llm(self, spec: Spec) -> bool:
+        """Whether this run of the stage calls Token Factory (some stages only do in some modes)."""
+        return self.needs_llm
+
+    def powered_by(self, spec: Spec, backend: str) -> str:
+        """What the stage runs on, as shown to the user: the technology and where it runs. Only what really
+        happens: a local run says local, never Nebius AI Cloud."""
+        tech = [t for t in (RUNTIME_TECH.get(self.runtime), "Nebius Token Factory" if self.calls_llm(spec) else None)
+                if t]
+        where = "Nebius AI Cloud, L40S" if backend == "nebius" else "local GPU" if self.gpu else "local CPU"
+        return f"{' + '.join(tech)} | {where}" if tech else where
 
     def run(self, ctx: Context) -> dict | None:
         """Do the work. The optional returned dict is stored in the stage's _done.json."""
