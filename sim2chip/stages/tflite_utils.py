@@ -32,8 +32,8 @@ def make_augment(size: int):
         crop = tf.cast(tf.random.uniform([], 0.8, 1.0) * size, tf.int32)  # off-center region of interest
         x = tf.image.resize(tf.image.random_crop(x, [crop, crop, 3]), [size, size])
         # Equalize effective resolution across classes: otherwise small (blurry) renders of one class
-        # teach the model "blurry = that class". Degrade everything to 20-64 px effective.
-        small = tf.cast(tf.random.uniform([], 20, 64), tf.int32)
+        # teach the model "blurry = that class". Degrade everything to 20-67% of the input (20-64 px at 96).
+        small = tf.cast(tf.random.uniform([], 0.2, 0.67) * size, tf.int32)
         x = tf.image.resize(tf.image.resize(x, [small, small], antialias=True), [size, size])
         x = x + tf.random.normal(tf.shape(x), 0, tf.random.uniform([], 0, 0.04))
         x = tf.image.random_jpeg_quality(tf.clip_by_value(x, 0, 1), 20, 90)
@@ -55,13 +55,16 @@ def build_model(n_classes: int, hw: Hardware):
     return tf.keras.Model(inp, out), base
 
 
-def to_int8(model, rep_x) -> bytes:
+def to_int8(model, rep_x, int8_io: bool = True) -> bytes:
+    """int8 weights and activations. int8_io=False keeps float32 input (RGB 0-255) and output
+    (probabilities), which is what phone apps and generic runtimes expect."""
     conv = tf.lite.TFLiteConverter.from_keras_model(model)
     conv.optimizations = [tf.lite.Optimize.DEFAULT]
     conv.representative_dataset = lambda: ([x[None].astype(np.float32)] for x in rep_x[:300])
     conv.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
-    conv.inference_input_type = tf.int8
-    conv.inference_output_type = tf.int8
+    if int8_io:
+        conv.inference_input_type = tf.int8
+        conv.inference_output_type = tf.int8
     return conv.convert()
 
 
@@ -86,7 +89,7 @@ def train(x, y, labels: list[str], hw: Hardware, epochs: int, seed: int):
     h = model.fit(ds, validation_data=dv, epochs=epochs, class_weight=cw, verbose=2,
                   callbacks=[tf.keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)])
     hist = {k: [float(v) for v in vs] for k, vs in h.history.items()}
-    return to_int8(model, xtr), hist
+    return to_int8(model, xtr), to_int8(model, xtr, int8_io=False), hist
 
 
 def predict_int8(blob: bytes, x) -> np.ndarray:

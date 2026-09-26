@@ -16,16 +16,21 @@ from typing import Callable
 
 from . import hardware, spec as spec_mod
 
-SYSTEM = """You are Sim2Chip's setup assistant. Sim2Chip trains a tiny image classifier for low-power hardware
-(for example an ESP32-CAM) from synthetic images rendered with 3D models plus a few real photos from the user.
+SYSTEM = """You are the setup assistant of EyeForge (eyeforge.app). EyeForge trains a small image classifier
+that runs on the user's own device, sized to it (from a $10 ESP32-CAM to a Jetson or a PC), from synthetic
+images rendered with 3D models plus a few real photos from the user. Microcontroller users get a model ready
+to flash; users without a device just download it.
 Your job: interview the user and write the job spec. Be brief and friendly, ask one or two questions at a time,
 in the user's language.
 
 Find out:
-- What the camera must recognize (2 to 5 classes work best on a microcontroller) and what counts as "nothing".
-  Suggest merging classes the hardware cannot tell apart at low resolution.
+- What the camera must recognize and what counts as "nothing". On a microcontroller 2 to 5 coarse classes
+  work best: suggest merging classes it cannot tell apart at low resolution. Bigger devices allow more
+  and finer classes.
 - Where the camera is: environment, mounting height, typical distance, lighting and weather.
-- Target hardware (known profiles: {hardware}).
+- Target hardware, one of these profiles:
+{hardware}
+  If the user has no device, has not decided, or only wants to test on a phone or PC, use "generic".
 - Whether they have photos: labeled (one folder per class) or raw (unlabeled). Ask for the folder path.
   A few real photos improve accuracy a lot compared with synthetic images only; say so.
 - Real-world size of each class (you propose typical sizes, the user confirms).
@@ -88,7 +93,8 @@ def scene_tags(kind: str) -> list[str]:
 
 def system_prompt() -> str:
     schema = json.dumps(spec_mod.to_dict(spec_mod.from_dict(EXAMPLE)), indent=1)
-    return SYSTEM.format(hardware=", ".join(hardware.PROFILES), weather=", ".join(spec_mod.WEATHER),
+    profiles = "\n".join(f"  - {h.name}: {h.description}" for h in hardware.PROFILES.values())
+    return SYSTEM.format(hardware=profiles, weather=", ".join(spec_mod.WEATHER),
                          sky_tags=", ".join(scene_tags("hdris")), ground_tags=", ".join(scene_tags("textures")),
                          schema=schema)
 

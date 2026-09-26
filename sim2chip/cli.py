@@ -87,7 +87,7 @@ def cmd_interview(args) -> int:
     home = Path(args.home)
     client = Client(usage_log=home / "logs" / "llm_usage.jsonl")
     model = client.model_for("text")
-    print(f"Sim2Chip interview with {model} (Nebius Token Factory). Ctrl+C to quit.\n")
+    print(f"EyeForge interview with {model} (Nebius Token Factory). Ctrl+C to quit.\n")
     objaverse_dir = home / "cache" / "objaverse"
     cats = interview.CategoryIndex(cache_dir=objaverse_dir, live=interview.live_searcher(objaverse_dir))
     spec = interview.run(client, model, cats, ask=input, tell=print, scene_check=interview.check_scene)
@@ -103,7 +103,7 @@ def cmd_interview(args) -> int:
 
 def cmd_serve(args) -> int:
     from .server import serve
-    print(f"Sim2Chip web on http://{args.host}:{args.port}  (backend {args.backend})")
+    print(f"EyeForge web on http://{args.host}:{args.port}  (backend {args.backend})")
     serve(Path(args.home), args.backend, args.host, args.port, args.max_usd)
     return 0
 

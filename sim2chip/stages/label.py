@@ -33,7 +33,7 @@ class Label(Stage):
         return bool(spec.user_data.raw)
 
     def run(self, ctx: Context) -> dict:
-        from PIL import Image
+        from PIL import Image, ImageOps
 
         from ..llm import Client, image_part, parse_json
 
@@ -59,7 +59,7 @@ class Label(Stage):
             # Downscale before sending: the model does not need more pixels than a cheap camera has.
             tmp = small / f"{i:06d}.jpg"
             with Image.open(f) as im:
-                im = im.convert("RGB")
+                im = ImageOps.exif_transpose(im).convert("RGB")
                 im.thumbnail((512, 512))
                 im.save(tmp, quality=90)
             msg = [{"role": "user", "content": [{"type": "text", "text": prompt}, image_part(tmp)]}]

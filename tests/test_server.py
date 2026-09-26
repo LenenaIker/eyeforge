@@ -85,4 +85,4 @@ def test_invalid_spec(app):
 
 
 def test_index(app):
-    assert "Sim2Chip" in app.get("/").text
+    assert "EyeForge" in app.get("/").text

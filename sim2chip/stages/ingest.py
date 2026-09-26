@@ -15,6 +15,7 @@ IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 class Ingest(Stage):
     name = "ingest"
+    version = "2"
     runtime = "cpu"
     reads_input = True
     uses = ("user_data", "hardware", "classes", "background_class")
@@ -24,7 +25,7 @@ class Ingest(Stage):
         return bool(spec.user_data.labeled or spec.user_data.raw)
 
     def run(self, ctx: Context) -> dict:
-        from PIL import Image
+        from PIL import Image, ImageOps
 
         ud = ctx.spec.user_data
         sources = []  # (folder, class map)
@@ -61,7 +62,9 @@ class Ingest(Stage):
                 d.mkdir(parents=True, exist_ok=True)
                 for f in sel:
                     with Image.open(f) as im:
-                        im.convert("RGB").resize((size, size), Image.BILINEAR).save(d / f"{f.stem}.png")
+                        # Phones store the orientation in EXIF instead of rotating the pixels.
+                        im = ImageOps.exif_transpose(im).convert("RGB")
+                        im.resize((size, size), Image.BILINEAR).save(d / f"{f.stem}.png")
             counts[cls] = {k: len(v) for k, v in splits.items()}
             ctx.log(f"{cls:16s} {len(files):7d} photos, test {counts[cls]['test']}, train {counts[cls]['train']}")
         return {"counts": counts}

@@ -1,9 +1,10 @@
 """Train the student model on synthetic crops plus the user's real photos, one model per seed.
 
 Model: the hardware profile's backbone (MobileNetV2 for microcontrollers), pretrained on ImageNet,
-quantized to int8 for TFLite Micro. Validation is a held-out 10% of the training mix; the real test
+quantized to int8: one model with int8 input and output for TFLite Micro, and the same with float32
+input and output for phones and PCs. Validation is a held-out 10% of the training mix; the real test
 set is never used here.
-Output: train/seed_<n>/{model_int8.tflite, history.json}, train/summary.json
+Output: train/seed_<n>/{model_int8.tflite, model_float_io.tflite, history.json}, train/summary.json
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from .base import Context, Stage
 
 class Train(Stage):
     name = "train"
+    version = "2"
     runtime = "tf"
     gpu = "any"
     max_hours = 2
@@ -51,8 +53,9 @@ class Train(Stage):
         for seed in ctx.spec.training.seeds:
             d = out / f"seed_{seed}"
             d.mkdir(parents=True)
-            blob, hist = tu.train(x, y, labels, ctx.hardware, ctx.spec.training.epochs, seed)
+            blob, blob_float_io, hist = tu.train(x, y, labels, ctx.hardware, ctx.spec.training.epochs, seed)
             (d / "model_int8.tflite").write_bytes(blob)
+            (d / "model_float_io.tflite").write_bytes(blob_float_io)
             (d / "history.json").write_text(json.dumps(hist))
             summary[seed] = {"val_acc": round(max(hist["val_accuracy"]), 4), "kb": round(len(blob) / 1024, 1)}
             ctx.log(f"seed {seed}: val acc {summary[seed]['val_acc']}, {summary[seed]['kb']} KB")

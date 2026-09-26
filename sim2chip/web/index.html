@@ -120,7 +120,9 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
     <h2><span class="step">4</span>Your model</h2>
     <div class="stats" id="stats"></div>
     <div class="row">
-      <a id="dl-h"><button>model_data.h (Arduino / ESP-IDF)</button></a>
+      <a id="dl-model"><button>model.tflite (phone, PC)</button></a>
+      <a id="dl-labels"><button class="ghost">labels.txt</button></a>
+      <a id="dl-h"><button class="ghost">model_data.h (Arduino / ESP-IDF)</button></a>
       <a id="dl-tflite"><button class="ghost">model_int8.tflite</button></a>
       <a id="dl-report"><button class="ghost">report.json</button></a>
     </div>
@@ -241,8 +243,13 @@ function showResult(s) {
     stat(`${(r.val_accuracy * 100).toFixed(1)}%`, "synthetic validation") +
     stat(`${r.model_kb} KB`, `int8, ${r.input[0]}x${r.input[1]} input`) +
     stat(r.hardware, r.labels.join(", "));
-  for (const [id, f] of [["dl-h", "model_data.h"], ["dl-tflite", "model_int8.tflite"], ["dl-report", "report.json"]])
+  for (const [id, f] of [["dl-model", "model.tflite"], ["dl-labels", "labels.txt"], ["dl-h", "model_data.h"],
+                         ["dl-tflite", "model_int8.tflite"], ["dl-report", "report.json"]])
     $(id).href = `/api/jobs/${s.job}/files/${f}`;
+  // The C array only exists for microcontroller profiles; older jobs have no portable model.
+  $("dl-h").classList.toggle("hidden", r.c_array_path === null);
+  $("dl-model").classList.toggle("hidden", !r.portable_model_path);
+  $("dl-labels").classList.toggle("hidden", !r.portable_model_path);
   $("s-result").classList.remove("hidden");
 }
 

@@ -96,11 +96,16 @@ def test_export_report_is_portable(tmp_path):
     seed = ctx.job.stage_dir("train") / "seed_0"
     seed.mkdir(parents=True)
     (seed / "model_int8.tflite").write_bytes(b"\x00" * 2048)
+    (seed / "model_float_io.tflite").write_bytes(b"\x01" * 1024)
     (ctx.job.stage_dir("train") / "summary.json").write_text(json.dumps({"0": {"val_acc": 0.9}}))
     Export().run(ctx)
-    report = json.loads((ctx.job.stage_dir("export") / "report.json").read_text())
+    out = ctx.job.stage_dir("export")
+    report = json.loads((out / "report.json").read_text())
     assert report["job"] == "t" and report["model_kb"] == 2.0
-    assert (ctx.job.stage_dir("export") / report["model_path"]).read_bytes() == b"\x00" * 2048
+    assert (out / report["model_path"]).read_bytes() == b"\x00" * 2048
+    assert (out / report["portable_model_path"]).read_bytes() == b"\x01" * 1024
+    assert (out / "labels.txt").read_text().split() == ctx.spec.labels
+    assert (out / "model_data.h").exists() == (ctx.hardware.runtime == "tflite-micro")
 
 
 def test_qa_caps_oversampled_search_classes(tmp_path):

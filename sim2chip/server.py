@@ -23,7 +23,7 @@ from .pipeline import Pipeline
 from .workspace import Cache, Job, open_job
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-DOWNLOADS = {"model_int8.tflite", "model_data.h", "report.json"}
+DOWNLOADS = {"model.tflite", "labels.txt", "model_int8.tflite", "model_data.h", "report.json"}
 WEB = Path(__file__).parent / "web"
 
 
@@ -47,7 +47,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                launcher=None):
     from .interview import FIRST_QUESTION
 
-    app = FastAPI(title="Sim2Chip")
+    app = FastAPI(title="EyeForge")
     sessions: dict[str, object] = {}
     runs: dict[str, subprocess.Popen] = {}
     new_session = interviewer
