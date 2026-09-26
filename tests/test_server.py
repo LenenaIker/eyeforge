@@ -86,3 +86,17 @@ def test_invalid_spec(app):
 
 def test_index(app):
     assert "EyeForge" in app.get("/").text
+
+
+def test_status_survives_stale_and_invalid_specs(app, tmp_path):
+    import os
+    job = tmp_path / "jobs" / "old_cam"
+    (job / "logs").mkdir(parents=True)
+    bad = {**GOOD, "scene": {"distractors": ["bicycle"]}}  # accepted by an older version, not by this one
+    (job / "spec.json").write_text(json.dumps(bad))
+    s = app.get("/api/jobs/old_cam")
+    assert s.status_code == 200 and s.json()["stages"] == [] and "distractors" in s.json()["log"][-1]
+    # Relaunched: the new request is newer than the previous run's spec.json, so it wins.
+    (job / "request.json").write_text(json.dumps(GOOD))
+    os.utime(job / "spec.json", (1, 1))
+    assert app.get("/api/jobs/old_cam").json()["stages"]

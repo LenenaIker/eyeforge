@@ -151,10 +151,17 @@ def _launch(home: Path, job: Job, request: Path, backend: str, max_usd: float | 
 
 
 def status(job: Job, home: Path, running: bool) -> dict:
-    spec_path = job.spec_path if job.spec_path.exists() else job.root / "request.json"
-    spec = spec_mod.load(spec_path)
+    # A relaunched job has a new request.json while spec.json is still the previous run's until the run
+    # starts: read the newer one.
+    paths = [p for p in (job.spec_path, job.root / "request.json") if p.exists()]
+    spec_path = max(paths, key=lambda p: p.stat().st_mtime)
     log_path = job.logs / "pipeline.log"
     log = log_path.read_text(errors="replace").splitlines() if log_path.exists() else []
+    try:
+        spec = spec_mod.load(spec_path)
+    except spec_mod.SpecError as e:  # e.g. an old job whose spec a newer version no longer accepts
+        return {"job": job.name, "spec": None, "running": running, "stages": [], "log": log[-30:] + [f"error: {e}"],
+                "cloud_usd": 0.0, "report": None}
     current = next((l[2:].split(" ")[0] for l in reversed(log) if l.startswith("> ")), None)
     failed = any(l.startswith("FAILED") or l.startswith("error:") for l in log[-5:])
     stages = []
