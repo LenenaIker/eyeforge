@@ -282,6 +282,9 @@ def validate(spec: Spec) -> None:
                 raise SpecError(f"class {c.id}: photos assets need a photos folder (or \"user_data\")")
             if c.assets.photos and c.assets.n_generate < 1:
                 raise SpecError(f"class {c.id}: assets.generate must be at least 1")
+            if c.assets.photos and not (c.assets.queries or c.assets.categories):
+                raise SpecError(f"class {c.id}: photo-made models need assets.queries, an English name of the "
+                                "object for the detector (e.g. [\"flower pot\"])")
     pids = [p.id for p in spec.props]
     if len(set(pids)) != len(pids) or set(pids) & set(spec.labels):
         raise SpecError("props: ids must be unique and differ from the class ids and background_class")

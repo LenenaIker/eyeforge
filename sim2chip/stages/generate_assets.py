@@ -2,7 +2,7 @@
 
 Every photo is scored by an open-vocabulary detector for the class; the best ones become 3D models (one per
 photo, cycling seeds when there are fewer photos than `generate`). Generated models are cached by photo
-content and seed, so rerunning a job or reusing the photos in another job costs nothing.
+content, query and seed, so rerunning a job or reusing the photos in another job costs nothing.
 
 Cache:  generated/<uid>.glb, generated/<photo hash>.json  (detection per query)
 Output: generate_assets/manifest.json  entries shaped like fetch_assets' manifest, plus "photo"
@@ -18,12 +18,22 @@ from .base import Context, Stage
 from .ingest import IMAGE_EXT
 
 GEN_VERSION = 1  # bump when the generation changes: cached models get new uids
+# These are photos OF the object: a box under 2% of the image is something else (a detector false positive).
+MIN_BOX = 0.02
+
+
+def box_share(box, path) -> float:
+    from PIL import Image, ImageOps
+
+    with Image.open(path) as im:
+        w, h = ImageOps.exif_transpose(im).size
+    return (box[2] - box[0]) * (box[3] - box[1]) / (w * h)
 
 
 def query_of(c) -> str:
-    """Short noun phrase for the detector."""
+    """Short English noun phrase for the detector (the spec requires one: class ids may be in any language)."""
     a = c.assets
-    return (a.queries or a.categories or [c.id.replace("_", " ")])[0]
+    return (a.queries or a.categories)[0]
 
 
 class GenerateAssets(Stage):
@@ -82,7 +92,7 @@ class GenerateAssets(Stage):
                     det_file.write_text(json.dumps(dets))
                 scored.append((dets[query]["score"], f, key, Detection(**dets[query])))
             scored.sort(key=lambda s: -s[0])
-            good = [s for s in scored if s[0] >= MIN_SCORE]
+            good = [s for s in scored if s[0] >= MIN_SCORE and s[3].box and box_share(s[3].box, s[1]) >= MIN_BOX]
             ctx.log(f"{c.id:16s} {len(files)} photos, {len(good)} show '{query}' (best score {scored[0][0]:.2f})")
             if not good:
                 ctx.log(f"WARNING: no photo of class {c.id} shows '{query}', no model generated")
@@ -91,7 +101,8 @@ class GenerateAssets(Stage):
             for k in range(c.assets.n_generate):
                 score, f, key, det = good[k % len(good)]
                 seed = 1 + k // len(good)
-                uid = f"gen-{hashlib.sha256(f'{key}:{seed}:{GEN_VERSION}'.encode()).hexdigest()[:16]}"
+                # The crop depends on the detection, so the query is part of the key (not only photo and seed).
+                uid = f"gen-{hashlib.sha256(f'{key}:{query}:{seed}:{GEN_VERSION}'.encode()).hexdigest()[:16]}"
                 glb = cache / f"{uid}.glb"
                 seen = out / c.id / f"{uid}.png"
                 if not glb.exists():

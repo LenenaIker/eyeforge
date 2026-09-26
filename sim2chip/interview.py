@@ -46,7 +46,8 @@ If an object still has too few models, or you would substitute it with something
 another class, say so plainly and ASK the user whether that matters for their goal (for some goals it is
 critical, for others irrelevant). Offer the options: merge classes, use a substitute, rely on their own
 real photos for that class, or build 3D models from their photos ("photos": "user_data", or a folder of
-photos of the object; add "source": "photos" when nothing else is found). Photo-made models work best for
+photos of the object; add "source": "photos" when nothing else is found; "queries" must then hold the
+object's English name, which the detector uses to find it in the photos). Photo-made models work best for
 rigid, compact objects shot whole on a plain background. Never merge or substitute silently.
 Scene: template "road" is a hand-built road with verges (traffic). For anything else use "generic": a ground
 plane textured from Poly Haven by "ground_tags" and sky maps (which also give the background) chosen by

@@ -84,6 +84,9 @@ def test_generate_assets_from_user_photos(tmp_path, monkeypatch):
         def detect(self, image, query):
             from sim2chip.img2mesh import Detection
             blue = image.getpixel((0, 0))[2] > 200  # blue photos "show" the object, red ones do not
+            green = image.getpixel((0, 0))[1] > 200  # green: confident but tiny box, a false positive
+            if green:
+                return Detection(0.9, [0, 0, 2, 2])
             return Detection(0.8 if blue else 0.01, [0, 0, 10, 10] if blue else None)
 
         def generate(self, image, det, seed, glb_path):
@@ -100,8 +103,9 @@ def test_generate_assets_from_user_photos(tmp_path, monkeypatch):
     photos = tmp_path / "photos"
     img(photos / "vaca" / "a.jpg", color=(0, 0, 255))
     img(photos / "vaca" / "b.jpg", color=(200, 10, 10))
+    img(photos / "vaca" / "c.jpg", color=(10, 250, 10))
     classes = [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
-                "assets": {"source": "photos", "photos": "user_data", "generate": 3}}]
+                "assets": {"source": "photos", "photos": "user_data", "generate": 3, "queries": ["cow"]}}]
     ctx = ctx_for(tmp_path, classes=classes, user_data={"labeled": "photos", "class_map": {"cow": ["vaca"]}})
     link_input(ctx.job, "photos", photos)
     info = GenerateAssets().run(ctx)
