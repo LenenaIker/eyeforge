@@ -42,6 +42,9 @@ def cmd_run(args) -> int:
     elif args.dry_run:
         raise SystemExit("--dry-run is only for the nebius backend")
     backend = backends.get(args.backend, verbose=args.verbose, **kw)
+    if args.dry_run and getattr(backend, "worker_mode", False):
+        backend.run_pipeline(pipe, start=args.start, only=args.only, force=args.force)
+        return 0
     if args.dry_run:
         pipe.job.spec_path.write_text(pipe.spec.to_json())
         for p in pipe.plan(args.start, args.only, args.force):
@@ -50,7 +53,10 @@ def cmd_run(args) -> int:
                 backend.run_stage(p.stage, pipe.job, pipe.cache, p.fingerprint)
         return 0
     try:
-        pipe.run(backend, start=args.start, only=args.only, force=args.force)
+        if getattr(backend, "worker_mode", False):  # the whole run in one cloud job
+            backend.run_pipeline(pipe, start=args.start, only=args.only, force=args.force)
+        else:
+            pipe.run(backend, start=args.start, only=args.only, force=args.force)
     except StageFailed as e:
         print(f"FAILED: {e}", file=sys.stderr)
         return 1

@@ -86,7 +86,9 @@ class S3Store:
             return 0
         have = self.listing(bucket, prefix + "/" if prefix else "") if changed_only else {}
         todo = []
-        for f in sorted(src.rglob("*")):
+        # os.walk with followlinks: job inputs are symlinks to the user's folders, which rglob does not enter.
+        files = sorted(Path(d) / n for d, _, names in os.walk(src, followlinks=True) for n in names)
+        for f in files:
             if f.is_file():
                 key = f"{prefix}/{f.relative_to(src).as_posix()}" if prefix else f.relative_to(src).as_posix()
                 if have.get(key) != f.stat().st_size:

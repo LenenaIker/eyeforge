@@ -161,3 +161,90 @@ def test_sync_pulls_what_the_stage_reads(tmp_path):
     assert got == ["cache/hdri/sky.hdr", "cache/usd/norm/u1_v2.usd", "cache/usd/raw/textures/u1_texture0.png",
                    "job/convert_assets/assets.json", "job/fetch_assets/manifest.json", "job/fetch_assets/scene.json",
                    "job/spec.json"]
+
+
+class _S3:
+    def __init__(self, store):
+        self.store = store
+
+    def download_file(self, bucket, key, path):
+        from pathlib import Path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(self.store.objects[(bucket, key)])
+
+
+class ListingStore(FakeStore):
+    def __init__(self):
+        super().__init__()
+        self.s3 = _S3(self)
+
+    def listing(self, bucket, prefix=""):
+        return {k: len(v) for (b, k), v in self.objects.items() if b == bucket and k.startswith(prefix)}
+
+
+def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
+    from sim2chip.pipeline import Pipeline
+    from sim2chip.spec import from_dict
+
+    monkeypatch.setenv("SIM2CHIP_NEBIUS_SECRET", "tf-key")
+    spec = from_dict({"name": "j", "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
+                                                "assets": {"categories": ["cow"]}}], "user_data": {"raw": "photos"}})
+    job = Job(tmp_path / "jobs" / "j")
+    (job.input / "photos").mkdir(parents=True)
+    (job.input / "photos" / "a.jpg").write_bytes(b"jpg")
+    pipe = Pipeline(spec, job, Cache(tmp_path / "cache"))
+    fps = pipe.fingerprints()
+    store = ListingStore()
+
+    class WorkerCLI(FakeCLI):
+        def create_job(self, name, runtime, env, script, timeout_h, env_secrets):
+            self.jobs.append({"name": name, "image": runtime.image, "script": script.read_text(), "secrets": env_secrets})
+            for st, fp in fps.items():  # the worker ran every stage and pushed its marker
+                store.objects[("sim2chip-j", f"{st}/{DONE}")] = json.dumps({"fingerprint": fp}).encode()
+            store.objects[("sim2chip-j", "logs/cloud_pipeline.log")] = b"> label (x)\n  label: done\nnoise\n"
+            store.objects[("sim2chip-j", "export/model.tflite")] = b"tflite"
+            store.objects[("sim2chip-j", "render/rgb_0001.png")] = b"png"
+            store.objects[("sim2chip-j", "render/bounding_box_2d_tight_labels_0001.json")] = b"{}"
+            store.objects[("sim2chip-j", "render/_done.json")] = json.dumps({"fingerprint": fps["render"]}).encode()
+            return "aijob-9"
+
+    be = NebiusBackend(dry_run=False, max_usd=10.0, cli=WorkerCLI(store), store=store, poll_s=0)
+    lines = []
+    be._follow = lambda job_id, job, bucket, log: (log("> label (x)"), "COMPLETED")[1]  # markers come only at the end
+    be.run_pipeline(pipe, log=lines.append)
+    assert len(be.cli.jobs) == 1 and be.cli.jobs[0]["image"].startswith("nvcr.io/nvidia/isaac-sim")
+    script = be.cli.jobs[0]["script"]
+    assert "sim2chip.cloud_worker" in script and "tensorflow[and-cuda]" in script and "SIM2CHIP_ISAAC_PYTHON" in script
+    assert "NEBIUS_API_KEY=tf-key" in be.cli.jobs[0]["secrets"]  # label calls Token Factory
+    assert "> label (x)" in lines and "noise" not in lines
+    assert all(job.done(st) for st in fps) and (job.root / "export" / "model.tflite").exists()
+    assert (job.root / "render" / "rgb_0001.png").exists()
+    assert not (job.root / "render" / "bounding_box_2d_tight_labels_0001.json").exists()
+    assert ("sim2chip-j", "input/photos/a.jpg") in store.objects  # the photos went up
+
+
+def test_upload_follows_symlinked_input_folders(tmp_path):
+    """--input links the user's folder into the job; the upload must go inside it."""
+    import os
+
+    from sim2chip.cloud_sync import S3Store
+
+    class Store(S3Store):
+        def __init__(self):
+            self.keys = []
+            outer = self
+
+            class S3:
+                def upload_file(self, f, bucket, key):
+                    outer.keys.append(key)
+            self.s3 = S3()
+
+        def listing(self, bucket, prefix=""):
+            return {}
+
+    (tmp_path / "photos").mkdir()
+    (tmp_path / "photos" / "a.jpg").write_bytes(b"x")
+    (tmp_path / "input").mkdir()
+    os.symlink(tmp_path / "photos", tmp_path / "input" / "maceta")
+    s = Store()
+    assert s.upload_dir("b", tmp_path / "input", "input") == 1 and s.keys == ["input/maceta/a.jpg"]

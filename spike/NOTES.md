@@ -169,3 +169,9 @@ Idea: entrenar marcando el núcleo de la caja (40% de ancho y alto) en vez de la
 | núcleo 40% | 0.304 | 4.9 | 0.37 | 4.3 |
 
 El núcleo de una maceta grande se rompe en varias manchas y cada una cuenta como un objeto: más aciertos de posición, peor conteo. Queda desactivado (`TRAIN_CORE = 0`); se conservan el tamaño de caja en los puntos y la métrica con núcleo. Reentrenado: F1 0.341 ± 0.017, error 4.3. El error de conteo grande viene sobre todo de las fachadas con 10-14 macetas donde encuentra 3-4: a 224 px son pocos píxeles; la palanca siguiente es la resolución (inferencia por trozos).
+
+## Nebius: todo el pipeline en un solo job (2026-09-27)
+
+`--backend nebius` lanza ahora un único job (modo worker, `cloud_worker.py`) con la imagen oficial de Isaac Sim; al arrancar instala con `uv` un Python 3.11 con TensorFlow y ejecuta el pipeline entero con el backend local. Sube progreso (log y marcadores) cada 20 s; al final baja el modelo, los JSON y lo que usa la review (48 frames de muestra). El modo antiguo (un job por etapa) queda con `SIM2CHIP_NEBIUS_MODE=stage`.
+
+Prueba con `specs/macetas_cloud.json` (macetas con fachadas, 2000 frames, 3 semillas): COMPLETED en 23.8 min, unos 0.61 $, F1 0.338 ± 0.021 (igual que en local). Antes: 55 min con un job por etapa; en local unos 40 min. Conseguir la GPU, bajar la imagen e instalar el entorno llevó menos de 6 min (un intento fallido por un bug costó 0.14 $). Fallos corregidos por el camino: la subida no entraba en carpetas enlazadas (`--input`), el log de la ejecución anterior se mostraba como progreso y el marcador de render no volvía.

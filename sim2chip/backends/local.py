@@ -25,10 +25,10 @@ PREFIX = "[sim2chip]"
 
 
 class LocalBackend:
-    name = "local"
-
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
+        # Inside a Nebius worker job this machine is Nebius AI Cloud: stage labels must say so.
+        self.name = os.environ.get("SIM2CHIP_RUNS_ON", "local")
 
     def interpreter(self, runtime: str) -> list[str]:
         if runtime == "isaac":
