@@ -6,7 +6,8 @@ model has seen them as 3D). With fewer than MIN_TEST test photos the score is no
 Output: ingest/{train,test}/<class>/*.png
 Count task: the teacher's (or the user's) points come along; the train_per_class and test_per_class limits
 then count photos. Output: ingest/{train,test}/images/*.png and ingest/{train,test}/points.json
-{image: {"points": [[x, y, class], ...], "key": photo path in the raw folder, "source": its label/ copy}}
+{image: {"points": [[x, y, class(, w, h)], ...], "key": photo in the raw folder, "source": its label/ copy}}
+(w, h: the teacher's box size; the user's own marks have none)
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ MIN_TEST = 20  # below this many test photos (per class) one photo moves the sco
 
 class Ingest(Stage):
     name = "ingest"
-    version = "4"  # v4: 3D source photos out of test; count split by photo content
+    version = "5"  # v4: 3D source photos out of test; count split by photo content. v5: box sizes
     runtime = "cpu"
     reads_input = True
     uses = ("user_data", "hardware", "classes", "background_class", "task")
@@ -127,7 +128,7 @@ class Ingest(Stage):
                 name = f"{Path(copy_name(key)).stem}.png"
                 with Image.open(src) as im:
                     ImageOps.exif_transpose(im).convert("RGB").resize((size, size), Image.BILINEAR).save(d / name)
-                points[name] = {"points": [[o["x"], o["y"], o["class"]] for o in verdicts[key]["objects"]],
+                points[name] = {"points": [point(o) for o in verdicts[key]["objects"]],
                                 "key": key, "source": str(src.relative_to(ctx.job.root))}
             (out / split / "points.json").write_text(json.dumps(points, indent=1))
             counts[split] = {"photos": len(sel), "objects": sum(len(p["points"]) for p in points.values())}
@@ -158,3 +159,9 @@ def held_out(ctx: Context) -> set[str]:
     if manifest.exists():
         keys |= {m["photo_key"] for m in json.loads(manifest.read_text()) if m.get("photo_key")}
     return keys
+
+
+def point(o: dict) -> list:
+    """[x, y, class], plus the box size when the mark has a box."""
+    b = o.get("box")
+    return [o["x"], o["y"], o["class"]] + ([round(b[2] - b[0], 4), round(b[3] - b[1], 4)] if b else [])

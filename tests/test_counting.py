@@ -98,7 +98,7 @@ def test_points_from_renders(tmp_path):
     info = Points().run(ctx)
     pts = json.loads((ctx.job.stage_dir("points") / "points.json").read_text())
     assert info == {"frames": 2, "objects": 2} and pts["00001.png"] == []
-    assert pts["00000.png"] == [[0.0938, 0.1667, "pot"], [0.9062, 0.1042, "cat"]]
+    assert pts["00000.png"] == [[0.0938, 0.1667, "pot", 0.125, 0.1667], [0.9062, 0.1042, "cat", 0.0625, 0.125]]
     assert Image.open(ctx.job.stage_dir("points") / "images" / "00000.png").size == (96, 96)
 
 
@@ -201,3 +201,9 @@ def test_split_is_by_content_and_3d_photos_stay_out_of_test(tmp_path, monkeypatc
     assert len(FakeClient.calls) == 10  # job b reused all ten answers
     assert tests[0] == tests[1] and len(tests[0]) == 3
     assert colors[0] not in tests[0]  # the 3D photo is in train
+
+
+def test_big_objects_match_within_their_core():
+    big = (0.5, 0.5, "pot", 0.6, 0.8)  # a pot filling most of the picture
+    assert counting.match([(0.6, 0.62, "pot")], [big], radius=2 / 28) == (1, 0, 0)
+    assert counting.match([(0.6, 0.62, "pot")], [big[:3]], radius=2 / 28) == (0, 1, 1)  # a bare point is strict

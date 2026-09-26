@@ -5,6 +5,10 @@ STRIDE pixels of the input, background first. A blob of neighbouring cells whose
 background is one object: its probability-weighted centre is the object's point. Points are (x, y, class)
 with x and y in 0..1 of the image width and height, so they survive any resize of the image.
 The same decoding runs in evaluate, in review and in any app that uses the exported model.
+True points may carry the object's box size, (x, y, class, w, h) in 0..1: a prediction anywhere in the box's
+core (CORE of its width and height) counts as found, which is fair to big objects close to the camera.
+Training could mark that core instead of one cell (TRAIN_CORE); on the pots test it split big pots into
+several blobs (count error 4.3 -> 4.9 per photo), so it is off.
 """
 from __future__ import annotations
 
@@ -13,7 +17,9 @@ from collections import Counter
 STRIDE = 8          # input pixels per output cell
 THRESHOLD = 0.5     # a cell is an object when its best non-background class reaches this probability
 THRESHOLDS = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)  # candidates; training picks the best on validation
-MATCH_CELLS = 2.0   # a prediction matches a true point within this many cells
+MATCH_CELLS = 2.0   # a prediction matches a true point within this many cells (or within its core)
+CORE = 0.4          # share of an object's box width and height where a prediction matches it
+TRAIN_CORE = 0.0    # share marked as the object in training; 0: only the centre cell
 
 
 def grid_size(input_size: int) -> int:
@@ -48,12 +54,14 @@ def decode(probs, labels: list[str], threshold: float = THRESHOLD) -> list[tuple
 
 
 def match(pred: list, truth: list, radius: float) -> tuple[int, int, int]:
-    """Greedy nearest matching of points of the same class. Returns (true pos, false pos, false neg)."""
+    """Greedy nearest matching of points of the same class. Returns (true pos, false pos, false neg).
+    A true point with a box size also matches anywhere within its core."""
+    reach = [max(radius, CORE / 2 * max(t[3], t[4])) if len(t) >= 5 else radius for t in truth]
     pairs = sorted(((abs(p[0] - t[0]) ** 2 + abs(p[1] - t[1]) ** 2) ** 0.5, i, k)
                    for i, p in enumerate(pred) for k, t in enumerate(truth) if p[2] == t[2])
     used_p, used_t = set(), set()
     for d, i, k in pairs:
-        if d <= radius and i not in used_p and k not in used_t:
+        if d <= reach[k] and i not in used_p and k not in used_t:
             used_p.add(i)
             used_t.add(k)
     return len(used_p), len(pred) - len(used_p), len(truth) - len(used_t)

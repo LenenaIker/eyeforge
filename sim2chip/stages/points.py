@@ -3,7 +3,7 @@
 The centre is that of the tight (visible part) bounding box, in 0..1 of the image, so it stays right after
 the frame is resized to the square model input. Targets hidden almost completely are left out: the camera
 could not count them either.
-Output: points/images/*.png, points/points.json {image: [[x, y, class], ...]}
+Output: points/images/*.png, points/points.json {image: [[x, y, class, w, h], ...]} (w, h: box size in 0..1)
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ MAX_OCCLUSION = 0.85  # fraction hidden by other things
 
 class Points(Stage):
     name = "points"
+    version = "2"  # v2: box size with every point
     runtime = "cpu"
     uses = ("hardware", "classes", "task")
     after = ("render",)
@@ -50,7 +51,8 @@ class Points(Stage):
                     x0, y0, x1, y1 = float(r["x_min"]), float(r["y_min"]), float(r["x_max"]), float(r["y_max"])
                     hidden = float(r["occlusionRatio"]) if "occlusionRatio" in (bb.dtype.names or ()) else 0.0
                     if cls in classes and min(x1 - x0, y1 - y0) >= MIN_SIDE and hidden <= MAX_OCCLUSION:
-                        pts.append([round((x0 + x1) / 2 / W, 4), round((y0 + y1) / 2 / H, 4), cls])
+                        pts.append([round((x0 + x1) / 2 / W, 4), round((y0 + y1) / 2 / H, 4), cls,
+                                    round((x1 - x0) / W, 4), round((y1 - y0) / H, 4)])
             name = f"{f:05d}.png"
             img.resize((size, size), Image.BILINEAR).save(out / "images" / name)
             points[name] = pts

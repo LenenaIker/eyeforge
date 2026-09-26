@@ -113,8 +113,9 @@ OBJECT_WEIGHT = 20.0
 
 
 def load_points(d: Path, labels: list[str], size: int):
-    """Images of d/images with their points (d/points.json). Returns x, point maps (class index at each
-    point's pixel, 0 elsewhere), the file names and the points."""
+    """Images of d/images with their points (d/points.json). Returns x, point maps (class index on each
+    object's box core, or its single pixel without a box size; 0 elsewhere), the file names and the points."""
+    from ..counting import TRAIN_CORE
     import json
 
     table = json.loads((d / "points.json").read_text())
@@ -124,8 +125,13 @@ def load_points(d: Path, labels: list[str], size: int):
         p = table[n]["points"] if isinstance(table[n], dict) else table[n]
         xs.append(np.asarray(tf.keras.utils.load_img(d / "images" / n, target_size=(size, size)), dtype=np.uint8))
         m = np.zeros((size, size), np.uint8)
-        for x, y, c in p:
-            m[min(int(y * size), size - 1), min(int(x * size), size - 1)] = labels.index(c)
+        for q in p:
+            x, y, c = q[:3]
+            cy, cx = min(int(y * size), size - 1), min(int(x * size), size - 1)
+            m[cy, cx] = labels.index(c)
+            if len(q) >= 5 and TRAIN_CORE > 0:
+                hw, hh = q[3] * TRAIN_CORE * size / 2, q[4] * TRAIN_CORE * size / 2
+                m[max(0, int(cy - hh)):int(cy + hh) + 1, max(0, int(cx - hw)):int(cx + hw) + 1] = labels.index(c)
         maps.append(m)
         pts.append([tuple(q) for q in p])
     if not xs:

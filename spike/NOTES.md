@@ -158,3 +158,14 @@ Las respuestas del profesor van a una caché compartida (`cache/labels/<prompt>/
 | `macetas_places` (fachada, balcón, interior) | 0.336 ± 0.008 | 4.28 | 11% |
 
 Las escenas desde las fotos suben el F1 10 puntos y lo hacen más estable entre semillas, pero el error de conteo no mejora (algo peor): acierta más macetas en su sitio y a la vez se equivoca en el número total en las fotos con muchas. 18 fotos siguen siendo pocas: una foto mueve el F1 unos 5 puntos.
+
+## Macetas grandes de cerca: marcar el núcleo de la caja (2026-09-27, resultado negativo)
+
+Idea: entrenar marcando el núcleo de la caja (40% de ancho y alto) en vez de la celda central, para que las macetas grandes se aprendan como región. Mismo test (18 fotos, 103 macetas), 3 semillas, métrica nueva (acierto dentro del núcleo, más justa con los objetos grandes):
+
+| entrenamiento | F1 | error de conteo | 5 fotos cercanas: F1 | error |
+|---|---|---|---|---|
+| celda central | 0.345 | 4.3 | 0.32 | 1.8 |
+| núcleo 40% | 0.304 | 4.9 | 0.37 | 4.3 |
+
+El núcleo de una maceta grande se rompe en varias manchas y cada una cuenta como un objeto: más aciertos de posición, peor conteo. Queda desactivado (`TRAIN_CORE = 0`); se conservan el tamaño de caja en los puntos y la métrica con núcleo. Reentrenado: F1 0.341 ± 0.017, error 4.3. El error de conteo grande viene sobre todo de las fachadas con 10-14 macetas donde encuentra 3-4: a 224 px son pocos píxeles; la palanca siguiente es la resolución (inferencia por trozos).
