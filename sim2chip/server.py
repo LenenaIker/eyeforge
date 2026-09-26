@@ -41,7 +41,8 @@ def default_interviewer(home: Path):
     model = client.model_for("text")
     objaverse_dir = home / "cache" / "objaverse"
     cats = interview.CategoryIndex(cache_dir=objaverse_dir, live=interview.live_searcher(objaverse_dir))
-    return lambda: interview.Session(client, model, cats, scene_check=interview.check_scene)
+    ranker = interview.photo_ranker(client, client.model_for("vision"))
+    return lambda: interview.Session(client, model, cats, scene_check=interview.check_scene, photo_ranker=ranker)
 
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,
@@ -75,7 +76,18 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             new_session = default_interviewer(home)
         sid = uuid.uuid4().hex
         sessions[sid] = new_session()
+        sessions[sid].uploads = home / "uploads" / sid
         return {"session": sid, "text": FIRST_QUESTION}
+
+    def turn_out(sid: str, turn) -> dict:
+        out = {"kind": turn.kind, "text": turn.text}
+        if turn.spec is not None:
+            out["spec"] = json.loads(turn.spec.to_json())
+        if turn.request is not None:
+            out["request"] = turn.request
+        if turn.kind in ("done", "failed"):
+            sessions.pop(sid, None)
+        return out
 
     @app.post("/api/interview/{sid}")
     def interview_reply(sid: str, body: dict):
@@ -86,12 +98,50 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             turn = session.reply(str(body.get("text", "")))
         except RuntimeError as e:
             raise HTTPException(409, str(e))
-        out = {"kind": turn.kind, "text": turn.text}
-        if turn.spec is not None:
-            out["spec"] = json.loads(turn.spec.to_json())
-        if turn.kind in ("done", "failed"):
-            sessions.pop(sid, None)
-        return out
+        return turn_out(sid, turn)
+
+    @app.post("/api/interview/{sid}/photos")
+    async def interview_photos(sid: str, purpose: str = Form("training"), cls: str = Form(""),
+                               photos: list[UploadFile] = File(...)):
+        """Photos uploaded in the chat, asked for by the interview or not. They wait in uploads/<session>
+        until a job adopts them."""
+        session = sessions.get(sid)
+        if session is None:
+            raise HTTPException(404, "unknown interview session")
+        purpose = "3d" if purpose == "3d" else "training"
+        folder = home / "uploads" / sid / (f"3d_{slug(cls)}" if purpose == "3d" and cls else purpose)
+        folder.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for p in photos:
+            if Path(p.filename or "").suffix.lower() in IMAGE_EXT:
+                (folder / Path(p.filename).name).write_bytes(await p.read())
+                n += 1
+        if not n:
+            raise HTTPException(400, "no images among the files")
+        try:
+            turn = session.add_photos(str(folder), n, purpose, cls or None)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+        return {**turn_out(sid, turn), "photos": n}
+
+    @app.get("/api/interview/{sid}/thumb")
+    def interview_thumb(sid: str, file: str):
+        """Thumbnail of a photo the interview is proposing (only those: the path comes from the user)."""
+        session = sessions.get(sid)
+        if session is None or file not in {c["file"] for c in session.candidates}:
+            raise HTTPException(404, "not a proposed photo")
+        return FileResponse(photo_thumb(home / "uploads" / sid / "_thumbs", Path(file)))
+
+    @app.post("/api/interview/{sid}/pick")
+    def interview_pick(sid: str, body: dict):
+        session = sessions.get(sid)
+        if session is None:
+            raise HTTPException(404, "unknown interview session")
+        try:
+            turn = session.choose([str(f) for f in body.get("files") or []], str(body.get("class", "")))
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+        return turn_out(sid, turn)
 
     @app.post("/api/jobs")
     async def create_job(spec: str = Form(...), photos: list[UploadFile] = File(default=[])):
@@ -107,6 +157,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if name in runs and runs[name].poll() is None:
             raise HTTPException(409, f"job {name} is already running")
         job = open_job(home, name)
+        parsed = adopt_uploads(parsed, home / "uploads", job)
         request = job.root / "request.json"
         request.write_text(parsed.to_json())
         folder = job.input / "photos"
@@ -184,12 +235,46 @@ def _launch(home: Path, job: Job, request: Path, backend: str, max_usd: float | 
     return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=Path(__file__).resolve().parents[1])
 
 
+def adopt_uploads(spec: spec_mod.Spec, uploads: Path, job: Job) -> spec_mod.Spec:
+    """Move chat uploads the spec points to into the job's input folder and make the paths relative, so
+    the photos travel with the job (to Nebius too) and outlive the interview session."""
+    import shutil
+
+    def adopt(path: str | None) -> str | None:
+        if not path or not Path(path).is_absolute() or not Path(path).resolve().is_relative_to(uploads.resolve()):
+            return path
+        src = Path(path)
+        name = f"{src.parent.name}_{src.name}"  # <session>_<purpose>: unique per job
+        dst = job.input / name
+        if src.is_dir():
+            shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(src, dst)
+        return name
+
+    data = json.loads(spec.to_json())
+    ud = data["user_data"]
+    for k in ("raw", "labeled", "test"):
+        ud[k] = adopt(ud.get(k))
+    for c in data["classes"]:
+        if c.get("assets"):
+            c["assets"]["photos"] = adopt(c["assets"].get("photos"))
+    return spec_mod.from_dict(data)
+
+
 def thumbnail(job: Job, src: Path, size: int = 360) -> Path:
+    """Cached JPEG thumbnail of an image in the job folder."""
+    rel = src.relative_to(job.root.resolve())
+    return photo_thumb(job.root / "_thumbs", src, rel.with_suffix(".jpg"), size)
+
+
+def photo_thumb(cache: Path, src: Path, rel: Path | None = None, size: int = 360) -> Path:
     """Cached JPEG thumbnail, upright (phone photos carry their orientation in EXIF)."""
+    import hashlib
+
     from PIL import Image, ImageOps
 
-    rel = src.relative_to(job.root.resolve())
-    out = job.root / "_thumbs" / rel.with_suffix(".jpg")
+    rel = rel or Path(hashlib.sha256(str(src).encode()).hexdigest()[:16] + ".jpg")
+    out = cache / rel
     if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:
         out.parent.mkdir(parents=True, exist_ok=True)
         with Image.open(src) as im:

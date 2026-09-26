@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -83,3 +84,39 @@ def test_walls_are_not_ground():
     from sim2chip.spec import from_dict
     s = from_dict({"name": "t", "classes": [{"id": "pot"}], "scene": {"template": "generic", "ground_tags": ["wall"]}})
     assert "not a floor" in interview.check_scene(s.scene)
+
+
+def test_interview_proposes_the_users_own_photos_for_3d(tmp_path):
+    from PIL import Image
+    photos = tmp_path / "phone"
+    photos.mkdir()
+    for n in ("close.jpg", "street.jpg", "blurry.jpg"):
+        Image.new("RGB", (8, 8)).save(photos / n)
+    scores = {"close.jpg": 0.9, "street.jpg": 0.2, "blurry.jpg": 0.7}
+
+    def ranker(folder, query):
+        return sorted(({"file": str(p), "score": scores[p.name], "reason": "r"} for p in Path(folder).iterdir()),
+                      key=lambda c: -c["score"])
+    pick = {"pick_photos": {"class": "pot", "query": "flower pot", "folder": str(photos), "say": "These?"}}
+    client = Scripted([pick, {"say": "Thanks, anything else?"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), photo_ranker=ranker,
+                          uploads=tmp_path / "up")
+    t = s.reply("pots on my terrace, photos in " + str(photos))
+    assert t.kind == "pick" and [Path(c["file"]).name for c in t.request["candidates"]] == ["close.jpg", "blurry.jpg"]
+    # The user leaves one out; only proposed files are accepted.
+    t = s.choose([str(photos / "close.jpg"), "/etc/passwd"], "pot")
+    assert t.kind == "say" and [f.name for f in (tmp_path / "up" / "3d_pot").iterdir()] == ["close.jpg"]
+    assert "1 photos to build 3D models of class pot" in client.seen[-1]
+
+
+def test_interview_asks_for_photos_when_none_fit(tmp_path):
+    (tmp_path / "phone").mkdir()
+    pick = {"pick_photos": {"class": "pot", "query": "flower pot", "folder": str(tmp_path / "phone")}}
+    ask = {"photos": {"for": "3d", "class": "pot", "say": "Do you have a clear photo of the pot?"}}
+    client = Scripted([pick, ask, {"say": "ok"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), photo_ranker=lambda f, q: [])
+    t = s.reply("pots")
+    assert t.kind == "photos" and t.request == {"for": "3d", "class": "pot"}
+    assert "none of the 0 photos" in client.seen[1]
+    t = s.add_photos(str(tmp_path / "phone"), 3, "3d", "pot")
+    assert t.kind == "say" and "3 photos to build 3D models of class pot" in client.seen[-1]

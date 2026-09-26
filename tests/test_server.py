@@ -1,5 +1,6 @@
 """Web API with a scripted interview and a fake launcher: no LLM, no pipeline run."""
 import json
+from pathlib import Path
 
 import pytest
 
@@ -120,3 +121,17 @@ def test_review_corrections_relaunch_and_media_is_fenced(app, tmp_path):
     assert r.json() == {"rerun_from": "label"} and app.launched[-1][3] == "label"
     # The relaunched job is still running (FakeProc never ends): no second relaunch on top of it.
     assert app.post("/api/jobs/barn_cam/corrections", json={}).status_code == 409
+
+
+def test_chat_photos_travel_with_the_job(app, tmp_path):
+    sid = app.post("/api/interview").json()["session"]
+    files = [("photos", ("a.jpg", b"jpg", "image/jpeg")), ("photos", ("b.jpg", b"jpg", "image/jpeg"))]
+    r = app.post(f"/api/interview/{sid}/photos", data={"purpose": "training"}, files=files)
+    assert r.status_code == 200 and r.json()["photos"] == 2 and r.json()["kind"] == "say"
+    upload = tmp_path / "uploads" / sid / "training"
+    spec = {**GOOD, "user_data": {"raw": str(upload)}}
+    assert app.post("/api/jobs", data={"spec": json.dumps(spec)}).status_code == 200
+    job = tmp_path / "jobs" / "barn_cam"
+    raw = json.loads((job / "request.json").read_text())["user_data"]["raw"]
+    assert not Path(raw).is_absolute() and (job / "input" / raw / "a.jpg").exists()
+    assert app.get(f"/api/interview/{sid}/thumb", params={"file": str(upload / "a.jpg")}).status_code == 404

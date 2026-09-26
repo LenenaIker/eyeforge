@@ -46,11 +46,16 @@ button { font: inherit; border: 1px solid var(--accent); background: var(--accen
 button.ghost { background: transparent; color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: default; }
 details summary { cursor: pointer; color: var(--muted); margin: 10px 0 6px; }
-#drop { border: 2px dashed var(--line); border-radius: 10px; padding: 22px; text-align: center; color: var(--muted);
-        cursor: pointer; }
+#drop { border: 2px dashed var(--accent); border-radius: 10px; padding: 22px; text-align: center; color: var(--accent);
+        cursor: pointer; margin-bottom: 10px; }
 #drop.over { border-color: var(--accent); color: var(--accent); }
-#thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-#thumbs img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.msg .thumbs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.msg .thumbs img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; }
+.pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin: 8px 0; }
+.pick label { cursor: pointer; font-size: 12px; color: var(--muted); }
+.pick img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; border: 3px solid transparent; }
+.pick input { display: none; }
+.pick input:checked + img { border-color: var(--ok); }
 ol.stages { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
 ol.stages li { display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px; border-radius: 8px;
                background: var(--bg); border: 1px solid var(--line); }
@@ -86,10 +91,13 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
 <main>
   <section id="s-describe">
     <h2><span class="step">1</span>Describe</h2>
-    <p class="hint">Chat with Nemotron (Nebius Token Factory). It asks about your objects, camera and hardware, and
-      writes the spec.</p>
+    <p class="hint">Chat with Nemotron (Nebius Token Factory). It asks about your objects, camera and hardware,
+      asks for photos when they help, and writes the spec. You can also add photos at any time.</p>
     <div id="chat"></div>
+    <div id="drop" class="hidden">Drop photos here or click to choose</div>
+    <input type="file" id="files" accept="image/*" multiple class="hidden">
     <div class="row" id="chat-input">
+      <button class="ghost" id="attach" title="Add photos">+ Photos</button>
       <input type="text" id="say" placeholder="e.g. cows and horses passing a gate, camera on a post 3 m high"
              autocomplete="off">
       <button id="send">Send</button>
@@ -104,17 +112,8 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
     </details>
   </section>
 
-  <section id="s-photos">
-    <h2><span class="step">2</span>Photos <span class="muted">(optional)</span></h2>
-    <p class="hint">A few real photos from your camera help a lot. No need to label them: a vision model does it,
-      and doubtful ones are set aside.</p>
-    <div id="drop">Drop images here or click to choose</div>
-    <input type="file" id="files" accept="image/*" multiple class="hidden">
-    <div id="thumbs"></div>
-  </section>
-
   <section id="s-run">
-    <h2><span class="step">3</span>Train</h2>
+    <h2><span class="step">2</span>Train</h2>
     <p class="hint">Renders synthetic images with Isaac Sim, trains, quantizes to int8 and exports for the chip.</p>
     <div class="row">
       <button id="train" disabled>Train my model</button>
@@ -128,7 +127,7 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
   </section>
 
   <section id="s-result" class="hidden">
-    <h2><span class="step">4</span>Your model</h2>
+    <h2><span class="step">3</span>Your model</h2>
     <div class="stats" id="stats"></div>
     <div class="row">
       <a id="dl-model"><button>model.tflite (phone, PC)</button></a>
@@ -140,7 +139,7 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
   </section>
 
   <section id="s-review" class="hidden">
-    <h2><span class="step">5</span>Review</h2>
+    <h2><span class="step">4</span>Review</h2>
     <p class="hint">What the models decided, for you to check. Fix only what looks wrong: click a photo to change
       its label, or a 3D model to keep or drop it. Then apply to retrain.</p>
     <div class="tabs" id="tabs"></div>
@@ -153,7 +152,7 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
-let session = null, photos = [], currentJob = null, timer = null;
+let session = null, currentJob = null, timer = null, photoRequest = null;
 
 function add(kind, text) {
   const d = document.createElement("div");
@@ -181,23 +180,11 @@ async function send(text) {
   $("confirm").classList.add("hidden");
   add("sys", "thinking...");
   try {
-    if (!session) session = (await api("/api/interview", {method: "POST"})).session;
+    await ensureSession();
     const t = await api(`/api/interview/${session}`, {method: "POST", headers: {"Content-Type": "application/json"},
                                                       body: JSON.stringify({text})});
     $("chat").lastChild.remove();
-    if (t.kind === "say") add("bot", t.text);
-    if (t.kind === "confirm") {
-      add("bot", t.text);
-      $("spec").value = JSON.stringify(t.spec, null, 2);
-      $("confirm").classList.remove("hidden");
-    }
-    if (t.kind === "done") {
-      add("sys", "Spec ready. Add photos if you have them, then train.");
-      $("spec").value = JSON.stringify(t.spec, null, 2);
-      $("chat-input").classList.add("hidden");
-      session = null;
-    }
-    if (t.kind === "failed") { add("sys", t.text); session = null; }
+    showTurn(t);
   } catch (e) {
     $("chat").lastChild.remove();
     add("sys", "Error: " + e.message);
@@ -206,15 +193,99 @@ async function send(text) {
   refreshTrain();
 }
 
-function addPhotos(list) {
-  for (const f of list) {
-    if (!f.type.startsWith("image/")) continue;
-    photos.push(f);
+async function ensureSession() {
+  if (!session) session = (await api("/api/interview", {method: "POST"})).session;
+}
+
+function showTurn(t) {
+    photoRequest = null;
+    $("drop").classList.add("hidden");
+    if (t.kind === "say") add("bot", t.text);
+    if (t.kind === "pick") {
+      add("bot", t.text);
+      const box = document.createElement("div");
+      box.className = "msg bot";
+      box.innerHTML = '<div class="muted">Proposed photos (click to leave one out):</div><div class="pick"></div>';
+      for (const c of t.request.candidates) {
+        const l = document.createElement("label");
+        l.title = c.reason;
+        l.innerHTML = `<input type="checkbox" checked value="${c.file}">` +
+          `<img src="/api/interview/${session}/thumb?file=${encodeURIComponent(c.file)}">${Math.round(c.score * 100)}%`;
+        box.querySelector(".pick").appendChild(l);
+      }
+      const b = document.createElement("button");
+      b.textContent = "Use selected";
+      b.onclick = async () => {
+        const files = [...box.querySelectorAll("input:checked")].map((i) => i.value);
+        b.disabled = true;
+        add("me", `${files.length} photo(s) chosen for 3D models`);
+        add("sys", "thinking...");
+        try {
+          const r = await api(`/api/interview/${session}/pick`, {method: "POST",
+            headers: {"Content-Type": "application/json"}, body: JSON.stringify({files, class: t.request.class})});
+          $("chat").lastChild.remove();
+          showTurn(r);
+        } catch (e) { $("chat").lastChild.remove(); add("sys", "Error: " + e.message); }
+        refreshTrain();
+      };
+      box.appendChild(b);
+      $("chat").appendChild(box);
+      $("chat").scrollTop = $("chat").scrollHeight;
+    }
+    if (t.kind === "photos") {
+      add("bot", t.text);
+      photoRequest = t.request;
+      $("drop").textContent = t.request.for === "3d"
+        ? `Drop clear photos of ${t.request.class || "the object"} here, or answer in the box below`
+        : "Drop photos from your camera here, or answer in the box below";
+      $("drop").classList.remove("hidden");
+    }
+    if (t.kind === "confirm") {
+      add("bot", t.text);
+      $("spec").value = JSON.stringify(t.spec, null, 2);
+      $("confirm").classList.remove("hidden");
+    }
+    if (t.kind === "done") {
+      add("sys", "Spec ready. Train it below.");
+      $("spec").value = JSON.stringify(t.spec, null, 2);
+      $("chat-input").classList.add("hidden");
+      session = null;
+    }
+    if (t.kind === "failed") { add("sys", t.text); session = null; }
+}
+
+async function addPhotos(list) {
+  const files = [...list].filter((f) => f.type.startsWith("image/"));
+  if (!files.length) return;
+  const req = photoRequest || {for: "training", class: null};
+  const d = document.createElement("div");
+  d.className = "msg me";
+  d.textContent = `${files.length} photo(s)` + (req.for === "3d" ? ` of ${req.class || "the object"} for 3D models` : "");
+  const strip = document.createElement("div");
+  strip.className = "thumbs";
+  for (const f of files.slice(0, 12)) {
     const img = document.createElement("img");
     img.src = URL.createObjectURL(f);
-    $("thumbs").appendChild(img);
+    strip.appendChild(img);
   }
-  $("drop").textContent = `${photos.length} photo(s) selected. Drop more or click to add.`;
+  d.appendChild(strip);
+  $("chat").appendChild(d);
+  $("drop").classList.add("hidden");
+  add("sys", "uploading and thinking...");
+  const form = new FormData();
+  form.append("purpose", req.for);
+  form.append("cls", req.class || "");
+  files.forEach((f) => form.append("photos", f, f.name));
+  try {
+    await ensureSession();
+    const t = await api(`/api/interview/${session}/photos`, {method: "POST", body: form});
+    $("chat").lastChild.remove();
+    showTurn(t);
+  } catch (e) {
+    $("chat").lastChild.remove();
+    add("sys", "Error: " + e.message);
+  }
+  refreshTrain();
 }
 
 async function train() {
@@ -222,7 +293,6 @@ async function train() {
   try { spec = JSON.parse(specText()); } catch (e) { alert("The spec is not valid JSON: " + e.message); return; }
   const form = new FormData();
   form.append("spec", JSON.stringify(spec));
-  photos.forEach((f) => form.append("photos", f, f.name));
   $("train").disabled = true;
   try {
     const r = await api("/api/jobs", {method: "POST", body: form});
@@ -369,10 +439,11 @@ $("say").onkeydown = (e) => { if (e.key === "Enter") send($("say").value.trim())
 $("yes").onclick = () => send("yes");
 $("spec").oninput = refreshTrain;
 $("drop").onclick = () => $("files").click();
-$("files").onchange = (e) => addPhotos(e.target.files);
+$("files").onchange = (e) => { addPhotos(e.target.files); e.target.value = ""; };
 $("drop").ondragover = (e) => { e.preventDefault(); $("drop").classList.add("over"); };
 $("drop").ondragleave = () => $("drop").classList.remove("over");
 $("drop").ondrop = (e) => { e.preventDefault(); $("drop").classList.remove("over"); addPhotos(e.dataTransfer.files); };
+$("attach").onclick = () => $("files").click();
 $("train").onclick = train;
 $("apply").onclick = applyFixes;
 $("jobs").onchange = (e) => { if (e.target.value) watch(e.target.value); };
