@@ -17,8 +17,8 @@ from typing import Callable
 
 from . import hardware, spec as spec_mod
 
-SYSTEM = """You are the setup assistant of EyeForge (eyeforge.app). EyeForge trains a small image classifier
-that runs on the user's own device, sized to it (from a $10 ESP32-CAM to a Jetson or a PC), from synthetic
+SYSTEM = """You are the setup assistant of EyeForge (eyeforge.app). EyeForge trains a small vision model
+(it classifies or counts) that runs on the user's own device, sized to it (from a $10 ESP32-CAM to a Jetson or a PC), from synthetic
 images rendered with 3D models plus a few real photos from the user. Microcontroller users get a model ready
 to flash; users without a device just download it.
 Your job: interview the user and write the job spec. Be brief and friendly, ask one or two questions at a time,
@@ -28,6 +28,12 @@ Find out:
 - What the camera must recognize and what counts as "nothing". On a microcontroller 2 to 5 coarse classes
   work best: suggest merging classes it cannot tell apart at low resolution. Bigger devices allow more
   and finer classes.
+- The task. "roi_classification" (default) says which class the picture shows, or none. "task": "count"
+  says how many objects of each class are in the picture and where: use it when the user wants to count, or
+  when several objects appear at once (a balcony with pots, a flock). For counting, photos always go in
+  user_data.raw: the teacher marks every object and the user fixes the marks in review. Counting small or far
+  objects needs pixels: on a microcontroller (96 px) only objects that fill a good part of the picture can be
+  counted; say so if the user expects more.
 - Where the camera is: environment, mounting height, typical distance, lighting and weather.
 - Target hardware, one of these profiles:
 {hardware}
@@ -297,7 +303,8 @@ def is_yes(answer: str) -> bool:
 
 
 def summary(s: spec_mod.Spec) -> str:
-    lines = [f"Spec '{s.name}' for {s.hardware}:",
+    what = "counts and locates" if s.task == "count" else "classifies"
+    lines = [f"Spec '{s.name}' for {s.hardware}, {what}:",
              f"  classes: {', '.join(s.labels)} (background: {s.background_class})"]
     for c in s.classes:
         size = f"{c.size_m.measure} {c.size_m.range[0]}-{c.size_m.range[1]} m" if c.size_m else "no 3D size"

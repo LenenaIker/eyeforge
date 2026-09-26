@@ -115,3 +115,29 @@ Objetivo: generar assets 3D a partir de fotos cuando la búsqueda en internet no
 - Coste en la 3090: unos 7-9 s de generación + 8-11 s de exportación por modelo, ~10 GB de VRAM.
 - 10 fotos de Wikimedia Commons (licencias en `data/img2mesh_test/inputs/SOURCES.txt`): llaves inglesas 3/3 muy buenas (fotos de producto, fondo liso); cámaras de seguridad 2 buenas, 1 con flecos largos en el soporte (objeto diminuto en la foto) y 1 fallida (contrapicado, sale tumbada sobre una lámina); abejas 1 fallida (láminas planas aunque el recorte era limpio), 2 aceptables (alas pobres).
 - Lectura: objetos rígidos y compactos salen muy bien; lo fino u orgánico y los objetos pequeños en la foto, peor. Los fallos son evidentes a la vista: los puede filtrar la QA con visión existente, y repetir con otra semilla cuesta ~17 s.
+
+## Prueba del usuario: macetas desde la web (2026-09-26)
+
+Primera prueba de principio a fin como usuario real: entrevista en la web, 37 fotos del móvil sin ordenar (terrazas, interiores, fachadas y calles; 6 de ellas para sacar 3D), perfil `generic`. Trabajo `data/jobs/maceta_counter`. Resultado: 64.7 ± 4.8% en 17 fotos reales de test (semillas 70.6 / 58.8 / 64.7), validación sintética 100%.
+
+Hallazgos, por impacto:
+1. Tarea mal planteada para este caso: el alumno entrena con recortes centrados en la maceta (`roi_classification`), pero las fotos reales entran enteras y en muchas la maceta es pequeña. Falla justo las macetas pequeñas en escenas amplias (garaje, muro). Para "¿hay una maceta en la foto?" hace falta otra tarea: imagen entera, por trozos o detector.
+2. La clase de fondo sintética es trivial: los recortes "empty" son trozos de suelo liso, sin nada. En la realidad las fotos sin maceta están llenas de cosas (fregona y cubos, árboles, fachadas): el modelo aprende "hay un objeto = maceta" y da falsos positivos. Por eso la validación da 100% y no sirve para elegir modelo.
+3. Etiquetas del profesor ambiguas: su prompt pide la clase del objeto PRINCIPAL, así que las fachadas con macetas pequeñas salen "empty" casi siempre, pero no siempre (etiquetado inconsistente en el límite). La definición de la clase tiene que venir del usuario (¿cuenta una maceta pequeña al fondo?) y la entrevista debe preguntarlo.
+4. Fuga leve: 2 de las 6 fotos usadas para generar el 3D acabaron en test (ambas aciertan). Las fotos de `assets.photos` no deberían ir a test.
+5. Render: props con escala mal (una "barandilla" de madera gigante), sillas de oficina como props de terraza, macetas generadas algo oscuras en los recortes.
+
+Lo que sí funcionó: la entrevista corregida (fotos crudas al profesor, consulta en inglés, suelo de baldosa), el profesor (21 maceta / 14 empty / 2 dudosas) y los 6 modelos 3D desde las fotos del usuario.
+
+## Tarea de conteo: primera prueba con las macetas (2026-09-26)
+
+Nueva tarea `task: "count"` (contar y localizar, estilo FOMO): MobileNetV2 cortada a paso 8 (`block_6_expand_relu`) y cabeza 1x1, salida en rejilla (28x28 a 224 px, 12x12 a 96 px), 133 KB en `generic`, 58 KB en `esp32cam`. En datos de juguete (cuadrados rojos) F1 0.98-1.0 en int8, así que el modelo, la cuantización y la decodificación funcionan.
+
+- Profesor: GLM-5.3-Flash da cajas en PÍXELES de la imagen que recibe aunque se le pidan coordenadas 0-1000 (con 0-1000 salen desplazadas). Con píxeles y la imagen a 1024 px marca muy bien, incluso macetas de fachada lejanas: 213 macetas en 37 fotos, 0 fallos. Errores típicos: alguna caja en fachadas donde no se distingue nada y plantas grandes encuadradas enteras. Tarda 5-40 s por foto.
+- Render: 0-6 macetas por frame repartidas alrededor del punto al que mira la cámara, cajas por instancia con `occlusionRatio` de Replicator. Funciona.
+- Peso de las celdas con objeto: con 100 (el de FOMO) el modelo dispara en todas partes (19 macetas por foto para 5 reales, incluso en el cielo). Con 20 el error de conteo baja de 14.9 a 3.7 por foto; con 5 apenas detecta. El umbral se elige ahora en validación (sale 0.6).
+- Resultado real (18 fotos de test): F1 de puntos 0.25 ± 0.03, error de conteo 3.7 por foto; validación (sintético + reales repetidos) F1 0.59-0.63. El límite ya no es el modelo sino el dominio y la resolución: el sintético no tiene fachadas ni balcones y a 224 px una maceta de fachada ocupa 2-5 px. Siguiente: escenas desde las fotos del usuario (fachada procedural) y más resolución o inferencia por trozos en el móvil.
+
+## Nebius: arranque de 4 jobs en paralelo (2026-09-26)
+
+`scripts/nebius_parallel_probe.py --jobs 4` (imagen de Isaac Sim, L40S en eu-north1, on-demand). Resultado: los 4 estuvieron ~25 min en PROVISIONING; 3 acabaron en ERROR "NotEnoughResources: VM schedule timeout, most likely due to insufficient hardware resources" y 1 arrancó (imagen descargada en ~2.5 min). La cuota (32 L40S) no garantiza capacidad: en eu-north1 no hay L40S on-demand libres de forma fiable. Repartir el render en muchas GPUs no es viable así; hay que mirar reservas, otras regiones o plataformas, o un worker caliente que se quede con una GPU una vez conseguida.

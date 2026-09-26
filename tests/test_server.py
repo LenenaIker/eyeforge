@@ -136,3 +136,25 @@ def test_chat_photos_travel_with_the_job(app, tmp_path):
     raw = json.loads((job / "request.json").read_text())["user_data"]["raw"]
     assert not Path(raw).is_absolute() and (job / "input" / raw / "a.jpg").exists()
     assert app.get(f"/api/interview/{sid}/thumb", params={"file": str(upload / "a.jpg")}).status_code == 404
+
+
+def test_count_review_points_and_big_thumbnail(app, tmp_path):
+    from PIL import Image
+    spec = {**GOOD, "task": "count", "user_data": {"raw": "photos"}}
+    job = tmp_path / "jobs" / "barn_cam"
+    (job / "label" / "images").mkdir(parents=True)
+    (job / "logs").mkdir()
+    (job / "request.json").write_text(json.dumps(spec))
+    Image.new("RGB", (1600, 1200)).save(job / "label" / "images" / "a.jpg")
+    (job / "label" / "verdicts.json").write_text(json.dumps(
+        {"a.jpg": {"objects": [{"x": 0.5, "y": 0.5, "class": "cow", "box": [0.4, 0.4, 0.6, 0.6]}],
+                   "assigned": "images"}}))
+    r = app.get("/api/jobs/barn_cam/review").json()
+    assert r["task"] == "count" and r["photos"][0]["points"] == [[0.5, 0.5, "cow"]]
+    small = app.get("/api/jobs/barn_cam/media/label/images/a.jpg")
+    big = app.get("/api/jobs/barn_cam/media/label/images/a.jpg?size=1024")
+    assert len(big.content) > len(small.content)
+    r = app.post("/api/jobs/barn_cam/corrections", json={"points": {"a.jpg": [[0.1, 0.2, "cow"], [0.5, 0.5, "cow"]]}})
+    assert r.json() == {"rerun_from": "label"}
+    saved = json.loads((job / "input" / "corrections.json").read_text())
+    assert saved["points"] == {"a.jpg": [[0.1, 0.2, "cow"], [0.5, 0.5, "cow"]]}

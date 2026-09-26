@@ -19,12 +19,14 @@ class Export(Stage):
     results = ("*",)
     version = "3"
     after = ("train", "evaluate", "qa_assets")
-    uses = ("hardware", "classes", "background_class")
+    uses = ("hardware", "classes", "background_class", "task")
 
     def run(self, ctx: Context) -> dict:
         hw = ctx.hardware
         summary = json.loads((ctx.job.stage_dir("train") / "summary.json").read_text())
-        seed = max(summary, key=lambda s: summary[s]["val_acc"])
+        counting = ctx.spec.task == "count"
+        val = "val_f1" if counting else "val_acc"
+        seed = max(summary, key=lambda s: summary[s][val])
         src = ctx.job.stage_dir("train") / f"seed_{seed}"
         blob = (src / "model_int8.tflite").read_bytes()
         out = ctx.job.stage_dir(self.name)
@@ -49,8 +51,10 @@ class Export(Stage):
             # model.tflite: float32 RGB 0-255 in (no normalization, the model does it), probabilities out.
             "portable_model_path": "model.tflite", "portable_input": "float32 RGB 0-255, no normalization",
             "c_array_path": "model_data.h" if hw.runtime == "tflite-micro" else None,
-            "seed": int(seed), "val_accuracy": summary[seed]["val_acc"],
+            "seed": int(seed), "task": ctx.spec.task, "metric": "f1" if counting else "accuracy",
+            "val_score": summary[seed][val], "val_accuracy": None if counting else summary[seed]["val_acc"],
             "real_accuracy": json.loads(ev.read_text()) if ev.exists() else None,
+            **({"output": count_output(hw.input_size, summary[seed].get("threshold"))} if counting else {}),
             "asset_credits": [{"name": n, "author": a, "license": lic, "source": s} for n, a, lic, s in credits],
         }
         (out / "report.json").write_text(json.dumps(report, indent=2))
@@ -68,3 +72,12 @@ def c_array(blob: bytes, labels: list[str], size: int) -> str:
         f"static const char *const sim2chip_labels[] = {{{names}}};\n"
         f"alignas(16) static const uint8_t sim2chip_model[{len(blob)}] = {{\n  " + ",\n  ".join(rows) + "\n};\n"
     )
+
+
+def count_output(size: int, threshold: float | None) -> dict:
+    from ..counting import STRIDE, THRESHOLD, grid_size
+    g, th = grid_size(size), threshold or THRESHOLD
+    return {"shape": [g, g, "classes"], "stride_px": STRIDE, "threshold": th,
+            "how_to_read": f"A {g}x{g} grid of class probabilities, labels.txt order, background first. A cell is "
+                           f"an object when its best other class reaches {th}; neighbouring object cells of "
+                           "the same class are one object, at their centre. The number of blobs is the count."}

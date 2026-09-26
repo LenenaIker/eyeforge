@@ -22,7 +22,7 @@ class Crops(Stage):
     after = ("render",)
 
     def enabled(self, spec) -> bool:
-        return any(c.assets for c in spec.classes)
+        return spec.task == "roi_classification" and any(c.assets for c in spec.classes)
 
     def run(self, ctx: Context) -> dict:
         import numpy as np

@@ -80,3 +80,22 @@ class PropScatter:
                         shown.append(prim)
                         break
         return shown, hidden
+
+
+def cluster(center, radii: list[float], spread: float, rng, gap: float = 0.1, tries: int = 30) -> list:
+    """Ground positions for a group of objects (count task): the first at `center`, the others at random
+    within `spread` meters of it, never overlapping (footprint radii plus `gap`). None where no free spot
+    was found in `tries` attempts."""
+    placed = [(center[0], center[1], radii[0])] if radii else []
+    out = [tuple(center)] if radii else []
+    for r in radii[1:]:
+        pos = None
+        for _ in range(tries):
+            a, d = rng.uniform(0, 2 * math.pi), spread * math.sqrt(rng.random())
+            x, y = center[0] + d * math.cos(a), center[1] + d * math.sin(a)
+            if all(math.hypot(x - ox, y - oy) > r + orad + gap for ox, oy, orad in placed):
+                pos = (x, y, center[2])
+                placed.append((x, y, r))
+                break
+        out.append(pos)
+    return out

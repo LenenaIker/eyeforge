@@ -10,13 +10,14 @@ from .fetch_assets import FetchAssets
 from .generate_assets import GenerateAssets
 from .ingest import Ingest
 from .label import Label
+from .points import Points
 from .preview_assets import PreviewAssets
 from .qa_assets import QAAssets
 from .render import Render
 from .train import Train
 
 STAGES: list[Stage] = [Label(), Ingest(), GenerateAssets(), FetchAssets(), ConvertAssets(), PreviewAssets(),
-                       QAAssets(), Render(), Crops(), Train(), Evaluate(), Export()]
+                       QAAssets(), Render(), Crops(), Points(), Train(), Evaluate(), Export()]
 BY_NAME = {s.name: s for s in STAGES}
 
 __all__ = ["Context", "Stage", "STAGES", "BY_NAME"]

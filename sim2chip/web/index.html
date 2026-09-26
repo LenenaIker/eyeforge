@@ -79,6 +79,15 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
 .card.bad { border-color: var(--bad); } .card.good { border-color: var(--ok); }
 .card.changed { outline: 2px solid var(--warn); }
 .tag { font-weight: 600; } .tag.bad { color: var(--bad); } .tag.good { color: var(--ok); }
+.card.free img { aspect-ratio: auto; object-fit: fill; }
+.pts { position: relative; line-height: 0; }
+.dot { position: absolute; width: 10px; height: 10px; border-radius: 50%; transform: translate(-50%, -50%);
+       border: 2px solid #fff; box-shadow: 0 0 0 1px #0008; pointer-events: none; }
+.dot.truth { background: transparent !important; border: 2px solid var(--ok); width: 18px; height: 18px; }
+#editor { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+#editor .pts { cursor: crosshair; max-width: 100%; }
+#editor .pts img { width: 100%; max-height: 70vh; object-fit: contain; }
+#editor .dot { width: 14px; height: 14px; pointer-events: auto; cursor: pointer; }
 .hidden { display: none; }
 .muted { color: var(--muted); }
 </style>
@@ -141,8 +150,9 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
   <section id="s-review" class="hidden">
     <h2><span class="step">4</span>Review</h2>
     <p class="hint">What the models decided, for you to check. Fix only what looks wrong: click a photo to change
-      its label, or a 3D model to keep or drop it. Then apply to retrain.</p>
+      its label (or, when counting, to fix its marks), or a 3D model to keep or drop it. Then apply to retrain.</p>
     <div class="tabs" id="tabs"></div>
+    <div id="editor" class="hidden"></div>
     <div class="grid" id="grid"></div>
     <div class="row" style="margin-top: 12px">
       <button id="apply" disabled>Apply corrections and retrain</button>
@@ -332,11 +342,14 @@ async function poll() {
 }
 
 function showResult(s) {
-  const r = s.report;
-  const acc = r.real_accuracy ? `${(r.real_accuracy.mean * 100).toFixed(1)}%` : "n/a";
+  const r = s.report, ra = r.real_accuracy, counting = r.task === "count";
+  const pct = (v) => `${(v * 100).toFixed(1)}%`;
   const stat = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
-  $("stats").innerHTML = stat(acc, "accuracy on your real photos") +
-    stat(`${(r.val_accuracy * 100).toFixed(1)}%`, "synthetic validation") +
+  $("stats").innerHTML = (counting
+      ? stat(ra ? pct(ra.mean) : "n/a", "objects found right on your real photos (F1)") +
+        stat(ra ? ra.count_mae.toFixed(2) : "n/a", `counting error per photo (${ra ? pct(ra.exact) : "?"} exact)`)
+      : stat(ra ? pct(ra.mean) : "n/a", "accuracy on your real photos")) +
+    stat(pct(r.val_score ?? r.val_accuracy), counting ? "synthetic validation (F1)" : "synthetic validation") +
     stat(`${r.model_kb} KB`, `int8, ${r.input[0]}x${r.input[1]} input`) +
     stat(r.hardware, r.labels.join(", "));
   for (const [id, f] of [["dl-model", "model.tflite"], ["dl-labels", "labels.txt"], ["dl-h", "model_data.h"],
@@ -349,12 +362,13 @@ function showResult(s) {
   $("s-result").classList.remove("hidden");
 }
 
-let review = null, tab = "photos", fixes = {labels: {}, assets: {}}, reviewedJob = null;
+let review = null, tab = "photos", fixes = {labels: {}, assets: {}, points: {}}, reviewedJob = null, editing = null;
 
 async function loadReview(job) {
   try { review = await api(`/api/jobs/${job}/review`); } catch (e) { return; }
   reviewedJob = job;
-  fixes = {labels: {}, assets: {}};
+  fixes = {labels: {}, assets: {}, points: {}};
+  editing = null;
   const any = review.photos.length || review.assets.length || review.renders.length || review.test.length;
   $("s-review").classList.toggle("hidden", !any);
   drawReview();
@@ -368,6 +382,67 @@ function card(img, cap, cls, title, onclick) {
                 `<div class="cap">${cap}</div>`;
   if (onclick) d.onclick = onclick;
   return d;
+}
+
+// Count task: points [x, y, class] in 0..1 of the image, drawn over it. Filled dots are marks (the teacher's,
+// yours or the model's prediction), rings are the truth next to a prediction.
+const hue = (c) => (review.labels.indexOf(c) * 137) % 360;
+function dots(points, kind) {
+  return points.map((p, i) => `<i class="dot ${kind}" data-i="${i}" title="${p[2]}" ` +
+    `style="left:${p[0] * 100}%;top:${p[1] * 100}%;background:hsl(${hue(p[2])} 85% 50%)"></i>`).join("");
+}
+function pointCard(img, pts, cap, cls, title, onclick) {
+  const d = document.createElement("div");
+  d.className = "card free " + cls + (onclick ? " click" : "");
+  d.title = title || "";
+  d.innerHTML = `<div class="pts">${img ? `<img loading="lazy" src="/api/jobs/${reviewedJob}/media/${img}">` : "<img>"}` +
+                `${pts}</div><div class="cap">${cap}</div>`;
+  if (onclick) d.onclick = onclick;
+  return d;
+}
+function marksOf(key) {
+  const p = review.photos.find((x) => x.key === key);
+  return fixes.points[key] || (p ? p.points : []);
+}
+function openEditor(key, image, title) {
+  editing = {key, image, title, points: marksOf(key).map((p) => [...p])};
+  drawEditor();
+  $("editor").scrollIntoView({behavior: "smooth", block: "nearest"});
+}
+function drawEditor() {
+  const e = $("editor");
+  if (!editing) { e.classList.add("hidden"); return; }
+  const classes = review.labels.slice(1);
+  e.classList.remove("hidden");
+  e.innerHTML = `<p class="muted">${editing.title}. Click where an object is missing to add it; click a mark to ` +
+    `remove it. ${editing.points.length} marked.</p>` +
+    `<div class="pts"><img src="/api/jobs/${reviewedJob}/media/${editing.image}?size=1024">` +
+    `${dots(editing.points, "")}</div><div class="row" style="margin-top:8px">` +
+    (classes.length > 1 ? `<select id="ed-class">${classes.map((c) => `<option>${c}</option>`).join("")}</select>` : "") +
+    `<button id="ed-done">Done</button><button class="ghost" id="ed-teacher">Back to the teacher's marks</button>` +
+    `<button class="ghost" id="ed-cancel">Cancel</button></div>`;
+  const box = e.querySelector(".pts"), img = box.querySelector("img");
+  img.onclick = (ev) => {
+    const r = img.getBoundingClientRect();
+    const cls = $("ed-class") ? $("ed-class").value : classes[0];
+    editing.points.push([+((ev.clientX - r.left) / r.width).toFixed(4), +((ev.clientY - r.top) / r.height).toFixed(4), cls]);
+    drawEditor();
+  };
+  box.querySelectorAll(".dot").forEach((d) => d.onclick = () => { editing.points.splice(+d.dataset.i, 1); drawEditor(); });
+  $("ed-cancel").onclick = () => { editing = null; drawEditor(); };
+  $("ed-teacher").onclick = () => {
+    const p = review.photos.find((x) => x.key === editing.key);
+    editing.points = (p ? p.teacher_points : []).map((q) => [...q]);
+    drawEditor();
+  };
+  $("ed-done").onclick = () => {
+    const p = review.photos.find((x) => x.key === editing.key);
+    const same = p && JSON.stringify(editing.points) === JSON.stringify(p.points);
+    if (same) delete fixes.points[editing.key]; else fixes.points[editing.key] = editing.points;
+    editing = null;
+    drawEditor();
+    drawReview();
+  };
 }
 
 function drawReview() {
@@ -384,7 +459,15 @@ function drawReview() {
   const g = $("grid");
   g.innerHTML = "";
   const choices = [...review.labels, "unsure"];
-  if (tab === "photos") for (const p of review.photos) {
+  const counting = review.task === "count";
+  if (tab === "photos" && counting) for (const p of review.photos) {
+    const pts = marksOf(p.key), mine = p.key in fixes.points || p.judge === "user";
+    const cap = p.unsure && !(p.key in fixes.points) ? `<span class="tag bad">teacher failed</span><span class="muted">mark them</span>`
+      : `<span class="tag">${pts.length} marked</span><span class="muted">${mine ? "you" : "teacher"}</span>`;
+    g.appendChild(pointCard(p.image, dots(pts, ""), cap, p.key in fixes.points ? "changed" : "", p.key,
+      () => openEditor(p.key, p.image, p.key)));
+  }
+  if (tab === "photos" && !counting) for (const p of review.photos) {
     const now = fixes.labels[p.key] || p.label;
     const who = fixes.labels[p.key] || p.judge === "user" ? "you" : `teacher ${Math.round((p.confidence || 0) * 100)}%`;
     g.appendChild(card(p.image, `<span class="tag">${now}</span><span class="muted">${who}</span>`,
@@ -406,12 +489,21 @@ function drawReview() {
       }));
   }
   if (tab === "renders") for (const r of review.renders) g.appendChild(card(r, "", "", r));
-  if (tab === "test") for (const t of review.test) {
+  if (tab === "test" && counting) for (const t of review.test) {
+    const ok = t.pred.length === t.truth.length;
+    const truth = t.key in fixes.points ? fixes.points[t.key] : t.truth;
+    g.appendChild(pointCard(t.image, dots(truth, "truth") + dots(t.pred, ""),
+      `<span class="tag ${ok ? "good" : "bad"}">found ${t.pred.length}</span><span class="muted">real ${t.truth.length}</span>`,
+      (ok ? "good" : "bad") + (t.key in fixes.points ? " changed" : ""),
+      "dots: the model; rings: the marks it is scored against. Click to fix the marks.",
+      () => openEditor(t.key, t.image, `${t.key}: fix the marks the model is scored against`)));
+  }
+  if (tab === "test" && !counting) for (const t of review.test) {
     const ok = t.truth === t.pred;
     g.appendChild(card(t.image, `<span class="tag ${ok ? "good" : "bad"}">${t.pred}</span>` +
       `<span class="muted">real: ${t.truth}</span>`, ok ? "good" : "bad", t.file));
   }
-  const n = Object.keys(fixes.labels).length + Object.keys(fixes.assets).length;
+  const n = Object.keys(fixes.labels).length + Object.keys(fixes.assets).length + Object.keys(fixes.points).length;
   $("pending").textContent = n ? `${n} correction(s) pending` : "";
   $("apply").disabled = !n;
 }

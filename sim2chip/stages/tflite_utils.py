@@ -104,3 +104,128 @@ def predict_int8(blob: bytes, x) -> np.ndarray:
         it.invoke()
         preds.append(int(np.argmax(it.get_tensor(out["index"])[0])))
     return np.array(preds)
+
+
+# Count task: a grid of class probabilities (background first), one cell per counting.STRIDE input pixels.
+# Few cells hold an object, so their cross-entropy weighs OBJECT_WEIGHT times more. FOMO uses 100; on the
+# pots test that made the model fire everywhere (19 found per photo for 5 real), 20 fixed it and 5 missed most.
+OBJECT_WEIGHT = 20.0
+
+
+def load_points(d: Path, labels: list[str], size: int):
+    """Images of d/images with their points (d/points.json). Returns x, point maps (class index at each
+    point's pixel, 0 elsewhere), the file names and the points."""
+    import json
+
+    table = json.loads((d / "points.json").read_text())
+    names = sorted(table)
+    xs, maps, pts = [], [], []
+    for n in names:
+        p = table[n]["points"] if isinstance(table[n], dict) else table[n]
+        xs.append(np.asarray(tf.keras.utils.load_img(d / "images" / n, target_size=(size, size)), dtype=np.uint8))
+        m = np.zeros((size, size), np.uint8)
+        for x, y, c in p:
+            m[min(int(y * size), size - 1), min(int(x * size), size - 1)] = labels.index(c)
+        maps.append(m)
+        pts.append([tuple(q) for q in p])
+    if not xs:
+        return np.zeros((0, size, size, 3), np.uint8), np.zeros((0, size, size), np.uint8), [], []
+    return np.stack(xs), np.stack(maps), names, pts
+
+
+def count_target(p, n_classes: int):
+    """Point map (size, size, 1) -> one-hot grid (size/STRIDE, size/STRIDE, n_classes), background first."""
+    from ..counting import STRIDE
+    onehot = tf.one_hot(tf.cast(p[..., 0], tf.int32), n_classes)
+    cells = tf.nn.max_pool2d(onehot[None, ..., 1:], STRIDE, STRIDE, "VALID")[0]
+    y = tf.concat([1.0 - tf.reduce_max(cells, -1, keepdims=True), cells], -1)
+    return y / tf.reduce_sum(y, -1, keepdims=True)
+
+
+def make_count_augment(size: int, n_classes: int):
+    def augment(x, p):
+        """Same camera degradations as classification, with flips and crops applied to the points too."""
+        x = tf.cast(x, tf.float32) / 255.0
+        p = tf.cast(p[..., None], tf.float32)
+        if tf.random.uniform([]) < 0.5:
+            x, p = tf.image.flip_left_right(x), tf.image.flip_left_right(p)
+        crop = tf.cast(tf.random.uniform([], 0.8, 1.0) * size, tf.int32)
+        oy = tf.random.uniform([], 0, size - crop + 1, tf.int32)
+        ox = tf.random.uniform([], 0, size - crop + 1, tf.int32)
+        x = tf.image.resize(x[oy:oy + crop, ox:ox + crop], [size, size])
+        p = tf.image.resize(p[oy:oy + crop, ox:ox + crop], [size, size], method="nearest")  # upscale: no point lost
+        x = tf.image.random_brightness(x, 0.25)
+        x = tf.image.random_contrast(x, 0.6, 1.4)
+        x = tf.image.random_saturation(x, 0.3, 1.3)
+        x = tf.image.random_hue(x, 0.05)
+        # Milder than for classification: small objects are what this task is about.
+        small = tf.cast(tf.random.uniform([], 0.5, 1.0) * size, tf.int32)
+        x = tf.image.resize(tf.image.resize(x, [small, small], antialias=True), [size, size])
+        x = x + tf.random.normal(tf.shape(x), 0, tf.random.uniform([], 0, 0.03))
+        x = tf.image.random_jpeg_quality(tf.clip_by_value(x, 0, 1), 30, 95)
+        return x * 255.0, count_target(p, n_classes)
+    return augment
+
+
+def build_count_model(n_classes: int, hw: Hardware):
+    """MobileNetV2 cut at stride 8 (block_6_expand) plus a 1x1 head: small, int8 friendly, fits a microcontroller
+    at 96 px and keeps enough resolution to separate objects that stand close."""
+    if hw.backbone != "mobilenetv2":
+        raise ValueError(f"backbone {hw.backbone} not supported")
+    size = hw.input_size
+    base = tf.keras.applications.MobileNetV2(input_shape=(size, size, 3), alpha=hw.alpha, include_top=False,
+                                             weights="imagenet")
+    trunk = tf.keras.Model(base.input, base.get_layer("block_6_expand_relu").output)
+    inp = tf.keras.Input((size, size, 3))
+    x = trunk(tf.keras.applications.mobilenet_v2.preprocess_input(inp))
+    x = tf.keras.layers.Conv2D(32, 1, activation="relu")(x)
+    out = tf.keras.layers.Conv2D(n_classes, 1, activation="softmax")(x)
+    return tf.keras.Model(inp, out), trunk
+
+
+def weighted_ce(y, p):
+    w = 1.0 + (OBJECT_WEIGHT - 1.0) * (1.0 - y[..., 0])
+    return tf.reduce_mean(w * -tf.reduce_sum(y * tf.math.log(tf.clip_by_value(p, 1e-7, 1.0)), -1))
+
+
+def train_count(x, pmap, pts, labels: list[str], hw: Hardware, epochs: int, seed: int):
+    from .. import counting
+
+    tf.keras.utils.set_random_seed(seed)
+    n, size = len(labels), hw.input_size
+    idx = np.random.default_rng(seed).permutation(len(x))
+    nv = max(1, len(x) // 10)
+    vi, ti = idx[:nv], idx[nv:]
+    target = lambda xx, pp: (tf.cast(xx, tf.float32), count_target(tf.cast(pp[..., None], tf.float32), n))  # noqa: E731
+    ds = (tf.data.Dataset.from_tensor_slices((x[ti], pmap[ti])).shuffle(len(ti))
+          .map(make_count_augment(size, n), tf.data.AUTOTUNE).batch(32).prefetch(tf.data.AUTOTUNE))
+    dv = tf.data.Dataset.from_tensor_slices((x[vi], pmap[vi])).map(target).batch(64)
+    model, trunk = build_count_model(n, hw)
+    trunk.trainable = False
+    model.compile(tf.keras.optimizers.Adam(1e-3), weighted_ce)
+    model.fit(ds, validation_data=dv, epochs=5, verbose=2)
+    trunk.trainable = True
+    model.compile(tf.keras.optimizers.Adam(1e-4), weighted_ce)
+    h = model.fit(ds, validation_data=dv, epochs=epochs, verbose=2,
+                  callbacks=[tf.keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)])
+    hist = {k: [float(v) for v in vs] for k, vs in h.history.items()}
+    probs = model.predict(x[vi].astype(np.float32), batch_size=64, verbose=0)
+    hist["threshold"], hist["val_count"] = counting.best_threshold(probs, [pts[i] for i in vi], labels,
+                                                                   counting.grid_size(size))
+    return to_int8(model, x[ti]), to_int8(model, x[ti], int8_io=False), hist
+
+
+def predict_int8_grid(blob: bytes, x) -> list[np.ndarray]:
+    """Dequantized output grids of an int8 count model."""
+    it = tf.lite.Interpreter(model_content=blob)
+    it.allocate_tensors()
+    inp, out = it.get_input_details()[0], it.get_output_details()[0]
+    s, z = inp["quantization"]
+    so, zo = out["quantization"]
+    grids = []
+    for img in x:
+        q = np.clip(np.round(img.astype(np.float32) / s + z), -128, 127).astype(np.int8)
+        it.set_tensor(inp["index"], q[None])
+        it.invoke()
+        grids.append((it.get_tensor(out["index"])[0].astype(np.float32) - zo) * so)
+    return grids

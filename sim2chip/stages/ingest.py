@@ -3,11 +3,16 @@ resize to the model input and split train/test. With `user_data.test`, the test 
 that folder and all the others go to training.
 
 Output: ingest/{train,test}/<class>/*.png
+Count task: the teacher's (or the user's) points come along; the train_per_class and test_per_class limits
+then count photos. Output: ingest/{train,test}/images/*.png and ingest/{train,test}/points.json
+{image: {"points": [[x, y, class], ...], "key": photo path in the raw folder, "source": its label/ copy}}
 """
 from __future__ import annotations
 
+import json
 import random
 import shutil
+from pathlib import Path
 
 from .base import Context, Stage
 
@@ -19,7 +24,7 @@ class Ingest(Stage):
     version = "3"
     runtime = "cpu"
     reads_input = True
-    uses = ("user_data", "hardware", "classes", "background_class")
+    uses = ("user_data", "hardware", "classes", "background_class", "task")
     after = ("label",)
 
     def enabled(self, spec) -> bool:
@@ -30,6 +35,8 @@ class Ingest(Stage):
         from PIL import Image, ImageOps
 
         ud = ctx.spec.user_data
+        if ctx.spec.task == "count":
+            return self._count(ctx)
         sources = []  # (folder, class map)
         if ud.labeled:
             sources.append((self._folder(ctx, "labeled", ud.labeled), ud.class_map))
@@ -78,6 +85,37 @@ class Ingest(Stage):
                         im.resize((size, size), Image.BILINEAR).save(d / f"{f.stem}.png")
             counts[cls] = {"test": len(test), "train": len(train)}
             ctx.log(f"{cls:16s} {len(files):7d} photos, test {len(test)}, train {len(train)}")
+        return {"counts": counts}
+
+    def _count(self, ctx: Context) -> dict:
+        from PIL import Image, ImageOps
+
+        from .label import copy_name
+
+        ud, size = ctx.spec.user_data, ctx.hardware.input_size
+        label = ctx.job.stage_dir("label")
+        verdicts = json.loads((label / "verdicts.json").read_text())
+        keys = sorted(k for k, v in verdicts.items() if v["assigned"] == "images")
+        random.Random(0).shuffle(keys)
+        need = ud.test_per_class + ud.train_per_class
+        n_test = min(ud.test_per_class, len(keys) // 2) if len(keys) < need else ud.test_per_class
+        out = ctx.job.stage_dir(self.name)
+        shutil.rmtree(out, ignore_errors=True)
+        counts = {}
+        for split, sel in (("test", keys[:n_test]), ("train", keys[n_test:n_test + ud.train_per_class])):
+            d = out / split / "images"
+            d.mkdir(parents=True)
+            points = {}
+            for key in sel:
+                src = label / "images" / copy_name(key)
+                name = f"{Path(copy_name(key)).stem}.png"
+                with Image.open(src) as im:
+                    ImageOps.exif_transpose(im).convert("RGB").resize((size, size), Image.BILINEAR).save(d / name)
+                points[name] = {"points": [[o["x"], o["y"], o["class"]] for o in verdicts[key]["objects"]],
+                                "key": key, "source": str(src.relative_to(ctx.job.root))}
+            (out / split / "points.json").write_text(json.dumps(points, indent=1))
+            counts[split] = {"photos": len(sel), "objects": sum(len(p["points"]) for p in points.values())}
+        ctx.log(f"{len(keys)} marked photos: test {counts['test']}, train {counts['train']}")
         return {"counts": counts}
 
     @staticmethod

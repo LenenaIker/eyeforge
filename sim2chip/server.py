@@ -188,24 +188,26 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def review_data(name: str):
         job = job_of(name)
         spec = spec_mod.load(job.spec_path if job.spec_path.exists() else job.root / "request.json")
-        return review.gather(job, Cache(home / "cache"), spec.labels)
+        return review.gather(job, Cache(home / "cache"), spec.labels, task=spec.task)
 
     @app.get("/api/jobs/{name}/media/{path:path}")
-    def media(name: str, path: str):
-        """A small JPEG of an image inside the job folder (only the folders review shows)."""
+    def media(name: str, path: str, size: int = 360):
+        """A small JPEG of an image inside the job folder (only the folders review shows); size 1024 for the
+        point editor."""
         job = job_of(name)
         src = (job.root / path).resolve()
         if not src.is_relative_to(job.root.resolve()) or Path(path).parts[0] not in review.MEDIA_DIRS \
                 or src.suffix.lower() not in IMAGE_EXT or not src.is_file():
             raise HTTPException(404, "no such image")
-        return FileResponse(thumbnail(job, src))
+        return FileResponse(thumbnail(job, src, 1024 if size > 360 else 360))
 
     @app.post("/api/jobs/{name}/corrections")
     def corrections(name: str, body: dict):
         job = job_of(name)
         if job.name in runs and runs[job.name].poll() is None:
             raise HTTPException(409, f"job {job.name} is running")
-        start = review.apply(job, Cache(home / "cache"), body.get("labels") or {}, body.get("assets") or {})
+        start = review.apply(job, Cache(home / "cache"), body.get("labels") or {}, body.get("assets") or {},
+                             body.get("points") or {})
         if start is None:
             return {"rerun_from": None}
         request = job.root / "request.json"
@@ -268,7 +270,7 @@ def adopt_uploads(spec: spec_mod.Spec, uploads: Path, job: Job) -> spec_mod.Spec
 def thumbnail(job: Job, src: Path, size: int = 360) -> Path:
     """Cached JPEG thumbnail of an image in the job folder."""
     rel = src.relative_to(job.root.resolve())
-    return photo_thumb(job.root / "_thumbs", src, rel.with_suffix(".jpg"), size)
+    return photo_thumb(job.root / "_thumbs", src, rel.with_suffix(".jpg" if size == 360 else f".{size}.jpg"), size)
 
 
 def photo_thumb(cache: Path, src: Path, rel: Path | None = None, size: int = 360) -> Path:

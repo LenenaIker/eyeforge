@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Any
 
 ASSET_SOURCES = ("objaverse_lvis", "search", "photos")
+# roi_classification: one class per image (the object filling most of it, or none).
+# count: how many objects of each class are in the image and where (a point per object).
+TASKS = ("roi_classification", "count")
 DISTRACTORS = ("tree", "person")  # what the scene templates can place
 WEATHER = ("clear", "cloudy", "evening", "storm", "night")
 MEASURES = ("length", "width", "height")  # length and width: long and short side seen from above
@@ -131,6 +134,11 @@ class GenerationSpec:
     frames: int = 2000
     empty_ratio: float = 0.2
     seed: int = 0
+    max_targets: int | None = None  # count task: up to this many targets per frame (default 6)
+
+    @property
+    def n_targets(self) -> int:
+        return 6 if self.max_targets is None else self.max_targets
 
 
 @dataclass
@@ -175,7 +183,10 @@ class Spec:
 
     def section(self, name: str) -> Any:
         """A spec section as it enters stage fingerprints: empty values (None, [], {}) are left out, so
-        adding an optional field later does not invalidate existing jobs."""
+        adding an optional field later does not invalidate existing jobs. The default task counts as empty
+        for the same reason: stages that learned about tasks later keep their fingerprints."""
+        if name == "task" and self.task == "roi_classification":
+            return None
         return _prune(to_dict(getattr(self, name)))
 
     def to_json(self) -> str:
@@ -311,6 +322,14 @@ def validate(spec: Spec) -> None:
     bad = [d for d in spec.scene.distractors if d not in DISTRACTORS]
     if bad:
         raise SpecError(f"scene.distractors {bad} are not available, only {list(DISTRACTORS)}")
+    if spec.task not in TASKS:
+        raise SpecError(f"task must be one of {TASKS}")
+    if spec.task == "count":
+        if spec.user_data.labeled or spec.user_data.test:
+            raise SpecError("task count: put the photos in user_data.raw; the teacher marks every object and "
+                            "you fix its marks in review (class folders cannot say where the objects are)")
+        if spec.generation.n_targets < 1:
+            raise SpecError("generation.max_targets must be at least 1")
     if spec.qa.mode not in ("none", "manual", "auto"):
         raise SpecError("qa.mode must be 'none', 'manual' or 'auto'")
     if spec.qa.strategy not in ("vision", "describe_then_decide"):

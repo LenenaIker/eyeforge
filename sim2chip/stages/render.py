@@ -1,8 +1,9 @@
 """Synthetic dataset: one target (or none) per frame, placed by the scene template from the spec, with the
-spec's background props scattered around it.
+spec's background props scattered around it. For the count task, 0 to generation.max_targets targets per
+frame, spread around the point the camera looks at.
 
-The camera distance is derived from the target's real size and the spec's target_fill, so it adapts to
-any object. Output: render/rgb_*.png, bounding_box_2d_tight_*.{npy,json}, render/labels.json
+The camera distance is derived from the (first) target's real size and the spec's target_fill, so it adapts
+to any object. Output: render/rgb_*.png, bounding_box_2d_tight_*.{npy,json}, render/labels.json
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ class Render(Stage):
     uses_cache = True
     gpu = "rtx"
     max_hours = 2
-    uses = ("scene", "camera", "generation", "classes", "props", "background_class")
+    uses = ("scene", "camera", "generation", "classes", "props", "background_class", "task")
     after = ("qa_assets", "fetch_assets")  # fetch_assets: scene.json with skies and ground textures
 
     def enabled(self, spec) -> bool:
@@ -37,7 +38,7 @@ class Render(Stage):
 
         from .. import scenes
         from ..scenes.common import Paint, Props, look_at, set_visible
-        from ..scenes.scatter import PropScatter
+        from ..scenes.scatter import PropScatter, cluster
 
         spec, cam_spec, gen = ctx.spec, ctx.spec.camera, ctx.spec.generation
         out = ctx.job.stage_dir(self.name)
@@ -107,19 +108,37 @@ class Render(Stage):
         writer.attach([rp])
 
         classes = [c.id for c in spec.classes if c.id in targets]
+        pool = [t for ts in targets.values() for t in ts]
+        counting = spec.task == "count"
         visible, labels = [], []
         for f in range(gen.frames):
             scene.randomize(change_sky=f % 20 == 0)
             cls = spec.background_class if rng.random() < gen.empty_ratio else rng.choice(classes)
             shown, painted, a, radius, height = [], False, None, 0.0, 0.0
+            group = []
             if cls != spec.background_class:
-                a, prim, scale, size = rng.choice(targets[cls])
+                if counting:  # several models at once, each prim at most once per frame
+                    first = rng.choice(targets[cls])
+                    rest = [t for t in pool if t is not first]
+                    group = [first] + rng.sample(rest, min(len(rest), rng.randint(0, gen.n_targets - 1)))
+                a, prim, scale, size = group[0] if group else rng.choice(targets[cls])
                 target = scene.place_target(prim, scale)
                 painted = paint.apply(prim, rng, force=a.get("no_color", False))
                 shown.append(prim)
                 radius, height = math.hypot(*a["dims"][:2]) / 2 * scale, a["dims"][2] * scale
                 dist = camera_distance(size, rng.uniform(*cam_spec.target_fill), cam_spec.hfov_deg,
                                        cam_spec.distance_m)
+                if len(group) > 1:
+                    # Spread over the ground seen around the first one; the props then keep out of the group.
+                    spread = min(0.9 * dist * math.tan(math.radians(cam_spec.hfov_deg) / 2), 0.8 * dist)
+                    radii = [math.hypot(*t[0]["dims"][:2]) / 2 * t[2] for t in group]
+                    for (ga, gprim, gscale, _), pos in zip(group[1:], cluster(target, radii, spread, rng)[1:]):
+                        if pos is not None:
+                            props.set_pose(gprim, pos, rng.uniform(0, 360), gscale)
+                            paint.apply(gprim, rng, force=ga.get("no_color", False))
+                            shown.append(gprim)
+                    radius = spread + max(radii)
+                group = [t[0]["uid"] for t in group if t[1] in shown]
             else:
                 target = (0.0, 0.0, 0.0)
                 lo, hi = cam_spec.distance_m
@@ -139,7 +158,8 @@ class Render(Stage):
                 set_visible(pr, True)
             visible = shown
             rep.orchestrator.step(rt_subframes=4)
-            labels.append({"frame": f, "class": cls, "uid": a["uid"] if a else None, "cam_dist": round(dist, 2),
+            labels.append({"frame": f, "class": cls, "uid": a["uid"] if a else None,
+                           **({"targets": group} if counting else {}), "cam_dist": round(dist, 2),
                            "cam_h": round(ch, 2), "painted": painted,
                            "props": len(placed), "hidden": round(hidden, 2)})
             if f % 200 == 0:
