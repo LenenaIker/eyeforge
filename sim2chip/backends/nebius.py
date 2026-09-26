@@ -118,6 +118,23 @@ def bootstrap(stage: Stage, fp: str) -> str:
     return "\n".join(l for l in lines if l) + "\n"
 
 
+def print_timeline(job: Job, log=print, since: float | None = None) -> None:
+    """Where the time of the last run went, longest first."""
+    f = job.logs / "timeline.jsonl"
+    if not f.exists():
+        return
+    recs = [json.loads(line) for line in f.read_text().splitlines() if line.strip()]
+    if since is not None:
+        recs = [r for r in recs if r["t"] >= since]
+    if not recs:
+        return
+    # Steps nest (the job's running state holds every stage): shares are of the wall time, not of the sum.
+    total = max(r["t"] for r in recs) - min(r["t"] - r["seconds"] for r in recs) or 1
+    log(f"  where the time went ({total / 60:.1f} min in all):")
+    for r in sorted(recs, key=lambda r: -r["seconds"]):
+        log(f"    {r['seconds'] / 60:5.1f} min  {100 * r['seconds'] / total:3.0f}%  {r['step']} ({r['where']})")
+
+
 def worker_script(job_name: str, plan_args: list[str]) -> str:
     """Shell script for the worker job, in the stock Isaac Sim image: the code from a presigned URL, a Python
     with TensorFlow next to Isaac's own (uv, a couple of minutes), then the whole pipeline."""
@@ -127,6 +144,7 @@ def worker_script(job_name: str, plan_args: list[str]) -> str:
     lines = [
         "#!/bin/bash",
         "set -eo pipefail",
+        "S2C_T0=$(date +%s)",
         "mkdir -p /tmp/s2c/code /tmp/s2c/bin /tmp/s2c/home",
         f'{fetch} "$S2C_CODE_URL" /tmp/s2c/code.tgz',
         "tar xzf /tmp/s2c/code.tgz -C /tmp/s2c/code",
@@ -136,7 +154,7 @@ def worker_script(job_name: str, plan_args: list[str]) -> str:
         "/tmp/s2c/bin/uv venv -q --python 3.11 /tmp/s2c/py",
         f"/tmp/s2c/bin/uv pip install -q --python {py} " + " ".join(shlex.quote(d) for d in WORKER_DEPS),
         f"export PYTHONUNBUFFERED=1 SIM2CHIP_ISAAC_PYTHON={isaac} SIM2CHIP_PYTHON={py} PYTHONPATH=/tmp/s2c/code "
-        "SIM2CHIP_RUNS_ON=nebius",
+        "SIM2CHIP_RUNS_ON=nebius S2C_SETUP_S=$(( $(date +%s) - S2C_T0 ))",
         f"{py} -m sim2chip.cloud_worker --home /tmp/s2c/home --job {shlex.quote(job_name)} "
         + " ".join(shlex.quote(a) for a in plan_args),
     ]
@@ -260,13 +278,15 @@ class NebiusBackend:
                                f"{WORKER_HOURS} h): over the cap of ${self.max_usd:.2f} (SIM2CHIP_MAX_USD)")
         job.spec_path.write_text(pipe.spec.to_json())
         job_bucket, cache_bucket = self.buckets(job)
+        t_up = time.time()
         code_url = self._upload_job(job, cache, job_bucket, cache_bucket)
         if not self.dry_run:
             self.store.upload_dir(cache_bucket, cache.root / "labels", "labels")  # teacher answers known here
             for st in todo:  # stale markers must not pass as success
                 self.store.delete(job_bucket, f"{st.name}/{DONE}")
                 job.clear_done(st.name)
-            self.store.delete(job_bucket, "logs/cloud_pipeline.log")  # nor an old run's log as progress
+            for old in ("logs/cloud_pipeline.log", "logs/timeline.jsonl"):  # nor an old run's log as progress
+                self.store.delete(job_bucket, old)
             (job.logs / "cloud_pipeline.log").unlink(missing_ok=True)
         plan_args = [a for flag, v in (("--from", start), ("--only", only)) if v for a in (flag, v)]
         plan_args += ["--force"] if force else []
@@ -276,6 +296,7 @@ class NebiusBackend:
         secrets = self._secrets(any(st.needs_llm for st in todo))
         env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url}
         name = f"s2c-{job.name}-run".lower().replace("_", "-")[:63]
+        job.timeline("upload job", time.time() - t_up, "local")
         t0 = time.time()
         job_id = self.cli.create_job(name, RUNTIMES["isaac"], env, script, WORKER_HOURS, secrets)
         if self.dry_run:
@@ -286,7 +307,10 @@ class NebiusBackend:
         self.spent_usd += hours * USD_PER_HOUR
         self._record(job, "run", job_id, state, hours)
         (job.logs / "worker.job.log").write_text(self.cli.job_logs(job_id))
+        t1 = time.time()
         self._fetch_results(job, cache, job_bucket, cache_bucket)
+        job.timeline("download results", time.time() - t1, "local")
+        print_timeline(job, log, since=t_up)
         log(f"  {state} after {hours * 60:.1f} min, about ${hours * USD_PER_HOUR:.2f}")
         missing = [st.name for st in todo if not job.done(st.name)]
         if missing:
@@ -296,12 +320,15 @@ class NebiusBackend:
     def _follow(self, job_id: str, job: Job, bucket: str, log) -> str:
         """Waits for the job, echoing new lines of the cloud pipeline log (the web reads them from the local
         log) and bringing done markers back as stages finish."""
-        seen, last = 0, None
+        seen, last, since = 0, None, time.time()
         while True:
             state = self.cli.job_state(job_id)
             if state != last:
+                now = time.time()
+                if last is not None:  # how long the job stayed in each state: queue, image pull, run
+                    job.timeline(f"nebius job: {last.lower()}", now - since, "nebius")
                 log(f"  state {state}")
-                last = state
+                last, since = state, now
             try:
                 self.store.download(bucket, "logs", job.logs, ("cloud_pipeline.log",))
                 for key in self.store.listing(bucket):
@@ -326,7 +353,7 @@ class NebiusBackend:
         import random
 
         keys = list(self.store.listing(bucket))
-        want = [k for k in keys if any(fnmatch.fnmatch(k, p) for p in WORKER_RESULTS)
+        want = [k for k in keys if any(fnmatch.fnmatch(k, p) for p in WORKER_RESULTS) and k != "logs/timeline.jsonl"
                 and (not k.startswith("render/") or k in ("render/labels.json", f"render/{DONE}"))]  # not 2 json per frame
         frames = sorted(k for k in keys if k.startswith("render/rgb_"))
         want += random.Random(0).sample(frames, min(RENDER_SAMPLE, len(frames)))  # for review
@@ -334,6 +361,10 @@ class NebiusBackend:
             out = job.root / key
             out.parent.mkdir(parents=True, exist_ok=True)
             self.store.s3.download_file(bucket, key, str(out))
+        if "logs/timeline.jsonl" in keys:  # the cloud's steps go after this machine's
+            cloud = self.store.s3.get_object(Bucket=bucket, Key="logs/timeline.jsonl")["Body"].read().decode()
+            with open(job.logs / "timeline.jsonl", "a") as f:
+                f.write(cloud)
         for prefix in ("db", "labels"):  # what the run learned, for later runs here
             self.store.download(cache_bucket, prefix, cache.root / prefix, ("*",), overwrite=False)
 

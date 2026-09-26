@@ -1,6 +1,7 @@
 """Builds the stage list for a spec and runs it through a backend, skipping stages already done."""
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -81,13 +82,18 @@ class Pipeline:
                 if only is None:
                     log(f"= {p.stage.name}: up to date")
                 continue
-            log(f"> {p.stage.name} ({p.stage.powered_by(self.spec, getattr(backend, 'name', 'local'))})")
+            where = getattr(backend, "name", "local")
+            log(f"> {p.stage.name} ({p.stage.powered_by(self.spec, where)})")
             self.job.clear_done(p.stage.name)
+            t0 = time.time()
             backend.run_stage(p.stage, self.job, self.cache, p.fingerprint)
+            seconds = time.time() - t0
             done = self.job.done(p.stage.name)
             if not done or done.get("fingerprint") != p.fingerprint:
+                self.job.timeline(p.stage.name, seconds, where, failed=True)
                 raise StageFailed(f"stage {p.stage.name} did not finish, see {self.job.logs / (p.stage.name + '.log')}")
-            log(f"  {p.stage.name}: done")
+            self.job.timeline(p.stage.name, seconds, where)
+            log(f"  {p.stage.name}: done in {seconds:.0f} s")
 
 
 def _deps(stages: list[Stage], name: str) -> set[str]:

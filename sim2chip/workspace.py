@@ -95,6 +95,15 @@ class Job:
     def clear_done(self, stage: str) -> None:
         (self.stage_dir(stage) / DONE).unlink(missing_ok=True)
 
+    def timeline(self, step: str, seconds: float, where: str, **extra) -> None:
+        """Appends how long a step took to logs/timeline.jsonl: stages, and the cloud's own phases (waiting
+        for a GPU, pulling the image, setting up, moving data), to see where a run's time goes."""
+        import time
+        self.logs.mkdir(parents=True, exist_ok=True)
+        rec = {"t": round(time.time(), 1), "step": step, "seconds": round(seconds, 1), "where": where, **extra}
+        with open(self.logs / "timeline.jsonl", "a") as f:
+            f.write(json.dumps(rec) + "\n")
+
 
 def open_job(home: Path, name: str) -> Job:
     job = Job(home / "jobs" / name)

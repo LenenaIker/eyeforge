@@ -175,3 +175,16 @@ El núcleo de una maceta grande se rompe en varias manchas y cada una cuenta com
 `--backend nebius` lanza ahora un único job (modo worker, `cloud_worker.py`) con la imagen oficial de Isaac Sim; al arrancar instala con `uv` un Python 3.11 con TensorFlow y ejecuta el pipeline entero con el backend local. Sube progreso (log y marcadores) cada 20 s; al final baja el modelo, los JSON y lo que usa la review (48 frames de muestra). El modo antiguo (un job por etapa) queda con `SIM2CHIP_NEBIUS_MODE=stage`.
 
 Prueba con `specs/macetas_cloud.json` (macetas con fachadas, 2000 frames, 3 semillas): COMPLETED en 23.8 min, unos 0.61 $, F1 0.338 ± 0.021 (igual que en local). Antes: 55 min con un job por etapa; en local unos 40 min. Conseguir la GPU, bajar la imagen e instalar el entorno llevó menos de 6 min (un intento fallido por un bug costó 0.14 $). Fallos corregidos por el camino: la subida no entraba en carpetas enlazadas (`--input`), el log de la ejecución anterior se mostraba como progreso y el marcador de render no volvía.
+
+## Telemetría: a dónde van los 26 min de una ejecución en Nebius (2026-09-27)
+
+`logs/timeline.jsonl` guarda ahora la duración de cada etapa, de las fases del worker y de cada estado del job de Nebius; al final se imprime un desglose. Ejecución completa (`--force`) de `specs/macetas_cloud.json`: 25.8 min, 0.65 $, F1 0.344.
+
+- train 8.4 min (3 semillas en serie)
+- convert_assets 4.9 min: se repite entera cada vez porque el worker solo baja `db/` y `labels/` de la caché, no las conversiones USD ya hechas que están en el bucket
+- esperar GPU + arrancar + bajar imagen 4.0 min (1.1 + 0.7 + 2.2)
+- render 3.6 min (2000 frames a 640x480 en L40S)
+- instalar el entorno con uv 1.6 min; bajar datos del job 0.8 min (10.200 ficheros, incluidos resultados viejos que `--force` va a rehacer)
+- points 0.9 min; el resto (profesor con caché, ingest, QA, evaluate, export) menos de 1 min
+
+Arreglos baratos, unos 26 -> 13 min: bajar las conversiones USD de los assets del job, semillas en paralelo en la misma GPU (o una sola en modo rápido), no bajar lo que se va a rehacer. Con worker ya encendido e imagen propia con el entorno: unos 7-8 min.

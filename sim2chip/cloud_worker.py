@@ -16,9 +16,11 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from .cloud_sync import S3Store
+from .workspace import Job
 
 PROGRESS_S = 20
 LOG = "logs/cloud_pipeline.log"
@@ -27,7 +29,7 @@ SHARED = ("db/", "labels/")  # small, append-only knowledge shared by all jobs
 
 def sync_progress(store: S3Store, bucket: str, job: Path) -> None:
     """Log and done markers only: cheap enough to send often."""
-    for f in [job / LOG] + sorted(job.glob("*/_done.json")):
+    for f in [job / LOG, job / "logs" / "timeline.jsonl"] + sorted(job.glob("*/_done.json")):
         if f.exists():
             store.s3.upload_file(str(f), bucket, f.relative_to(job).as_posix())
 
@@ -43,9 +45,15 @@ def main() -> int:
     job_bucket, cache_bucket = os.environ["S2C_JOB_BUCKET"], os.environ["S2C_CACHE_BUCKET"]
     store = S3Store()
     job, cache = args.home / "jobs" / args.job, args.home / "cache"
+    t0 = time.time()
     n = store.pull(job_bucket, [k for k in store.listing(job_bucket) if not k.startswith("_code/")], job)
     m = store.pull(cache_bucket, [k for k in store.listing(cache_bucket) if k.startswith(SHARED)], cache)
     print(f"[sim2chip] worker: pulled {n} job files and {m} shared cache files", flush=True)
+    timeline = Job(job).timeline
+    setup = os.environ.get("S2C_SETUP_S")
+    if setup:  # code download and Python environment, measured by the job script
+        timeline("cloud: set up environment", float(setup), "nebius")
+    timeline("cloud: pull job data", time.time() - t0, "nebius", files=n + m)
 
     cmd = [sys.executable, "-m", "sim2chip.cli", "--home", str(args.home), "run", str(job / "spec.json"),
            "--job", args.job, "--backend", "local"]
@@ -71,8 +79,10 @@ def main() -> int:
     stop.set()
     t.join()
     print((job / LOG).read_text(errors="replace")[-3000:], flush=True)
-    n = store.upload_dir(job_bucket, job, "")
+    t0 = time.time()
     m = store.upload_dir(cache_bucket, cache, "")
+    timeline("cloud: push cache", time.time() - t0, "nebius", files=m)
+    n = store.upload_dir(job_bucket, job, "")
     sync_progress(store, job_bucket, job)
     print(f"[sim2chip] worker: pushed {n} job files and {m} cache files, exit {code}", flush=True)
     return code

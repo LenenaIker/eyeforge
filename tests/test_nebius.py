@@ -248,3 +248,12 @@ def test_upload_follows_symlinked_input_folders(tmp_path):
     os.symlink(tmp_path / "photos", tmp_path / "input" / "maceta")
     s = Store()
     assert s.upload_dir("b", tmp_path / "input", "input") == 1 and s.keys == ["input/maceta/a.jpg"]
+
+
+def test_timeline_breakdown(tmp_path):
+    j = Job(tmp_path / "j")
+    j.timeline("render", 300, "nebius")
+    j.timeline("train", 120, "nebius")
+    lines = []
+    nebius.print_timeline(j, lines.append)
+    assert "render (nebius)" in lines[1] and "train" in lines[2]
