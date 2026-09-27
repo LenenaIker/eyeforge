@@ -81,6 +81,15 @@ sim2chip run specs/lora_alarm_traffic.json --from train   # retrain without rend
 sim2chip run specs/lora_alarm_traffic.json --only render  # one stage (upstream must be done)
 ```
 
+To let others use it (judges, testers), serve it in public mode: every visitor needs the access link, specs
+may only use photos uploaded through the web, runs are limited in number and by a 24 h cloud budget.
+
+```bash
+sim2chip serve --backend nebius --public --host 0.0.0.0     # needs SIM2CHIP_WEB_KEY and SIM2CHIP_HOME
+docker build -t eyeforge . && docker run -p 8000:8000 --env-file .env -v eyeforge-data:/data \
+    -v ~/.nebius:/root/.nebius eyeforge                       # the same in a container (no GPU needed)
+```
+
 The result lands in `<SIM2CHIP_HOME>/jobs/<name>/export/`: `model_int8.tflite`, `model_data.h` and
 `report.json` (the score on the real test photos and credits for the 3D models used).
 
