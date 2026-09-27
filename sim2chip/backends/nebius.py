@@ -32,6 +32,7 @@ import tarfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from secrets import token_hex
 
 from .. import config
 from ..cloud_sync import REGION, S3Store
@@ -288,8 +289,17 @@ class NebiusBackend:
         return self._store
 
     def buckets(self, job: Job) -> tuple[str, str]:
-        name = f"{self.prefix}-{job.name}".lower().replace("_", "-")[:63]
-        return name, f"{self.prefix}-cache"
+        """The job's own bucket and the shared cache. A job name can come back (another server, a wiped
+        home), so a new job adds a random id kept in its folder; jobs that already ran in the cloud keep
+        their old name, and their files in it."""
+        id_file = job.root / "cloud_id"
+        if not id_file.exists() and not (job.logs / "cloud_usage.jsonl").exists():
+            id_file.parent.mkdir(parents=True, exist_ok=True)
+            id_file.write_text(token_hex(4))
+        cloud_id = id_file.read_text().strip() if id_file.exists() else ""
+        suffix = f"-{cloud_id}" if cloud_id else ""
+        base = f"{self.prefix}-{job.name}".lower().replace("_", "-")[:63 - len(suffix)]
+        return base + suffix, f"{self.prefix}-cache"
 
     def _upload_job(self, job: Job, cache: Cache, bucket: str, cache_bucket: str) -> str:
         """Buckets, code, spec and input (once per run). Returns the code's presigned URL."""
@@ -303,6 +313,12 @@ class NebiusBackend:
             if job.input.exists():
                 n = self.store.upload_dir(bucket, job.input, "input")
                 print(f"  uploaded {n} input files to s3://{bucket}", flush=True)
+            # Input the job no longer has must not reach the worker (it would label and train on it).
+            local = {str(f.relative_to(job.root)) for f in job.input.rglob("*") if f.is_file()} \
+                if job.input.exists() else set()
+            for key in self.store.listing(bucket, "input/"):
+                if key not in local:
+                    self.store.delete(bucket, key)
             self.store.upload_dir(cache_bucket, cache.db, "db")  # share what this machine learned about assets
             self._ready.add(bucket)
         self.store.put(bucket, "spec.json", job.spec_path.read_bytes())

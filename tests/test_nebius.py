@@ -51,6 +51,9 @@ class FakeStore:
             self.objects[(bucket, f"{prefix}/{f.relative_to(src).as_posix()}")] = f.read_bytes()
         return len(files)
 
+    def listing(self, bucket, prefix=""):
+        return {k: len(v) for (b, k), v in self.objects.items() if b == bucket and k.startswith(prefix)}
+
     def delete(self, bucket, key):
         self.objects.pop((bucket, key), None)
 
@@ -72,6 +75,7 @@ def job(tmp_path):
     (j.input / "photos").mkdir(parents=True)
     (j.input / "photos" / "a.jpg").write_bytes(b"jpg")
     j.spec_path.write_text("{}")
+    (j.root / "cloud_id").write_text("")  # keep the plain bucket name the tests expect
     return j
 
 
@@ -193,6 +197,7 @@ def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
     job = Job(tmp_path / "jobs" / "j")
     (job.input / "photos").mkdir(parents=True)
     (job.input / "photos" / "a.jpg").write_bytes(b"jpg")
+    (job.root / "cloud_id").write_text("")
     pipe = Pipeline(spec, job, Cache(tmp_path / "cache"))
     fps = pipe.fingerprints()
     store = ListingStore()
@@ -290,3 +295,23 @@ def test_photo_made_models_fall_back_to_search_before_the_gpu():
     a = out.classes[0].assets
     assert (a.source, a.photos, a.queries) == ("search", None, ["flower pot"])
     assert "not available on Nebius" in said[0]
+
+
+def test_new_jobs_get_their_own_bucket_and_stale_input_is_removed(tmp_path):
+    fresh, old = Job(tmp_path / "macetas"), Job(tmp_path / "old")
+    (old.logs).mkdir(parents=True)
+    (old.logs / "cloud_usage.jsonl").write_text("{}\n")  # ran in the cloud before ids existed
+    be = backend(FakeStore())
+    name = be.buckets(fresh)[0]
+    assert name.startswith("sim2chip-macetas-") and name == be.buckets(fresh)[0]
+    assert be.buckets(old)[0] == "sim2chip-old"
+    store = FakeStore()
+    store.objects[("sim2chip-j", "input/photos/someone_else.jpg")] = b"x"
+    j = Job(tmp_path / "j")
+    (j.input / "photos").mkdir(parents=True)
+    (j.input / "photos" / "a.jpg").write_bytes(b"jpg")
+    (j.root / "cloud_id").write_text("")
+    j.spec_path.write_text("{}")
+    backend(store)._upload_job(j, Cache(tmp_path / "cache"), "sim2chip-j", "sim2chip-cache")
+    assert ("sim2chip-j", "input/photos/someone_else.jpg") not in store.objects
+    assert ("sim2chip-j", "input/photos/a.jpg") in store.objects
