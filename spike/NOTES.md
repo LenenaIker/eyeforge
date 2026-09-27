@@ -188,3 +188,21 @@ Prueba con `specs/macetas_cloud.json` (macetas con fachadas, 2000 frames, 3 semi
 - points 0.9 min; el resto (profesor con caché, ingest, QA, evaluate, export) menos de 1 min
 
 Arreglos baratos, unos 26 -> 13 min: bajar las conversiones USD de los assets del job, semillas en paralelo en la misma GPU (o una sola en modo rápido), no bajar lo que se va a rehacer. Con worker ya encendido e imagen propia con el entorno: unos 7-8 min.
+
+## Recorte de la ejecución en Nebius: primeras medidas (2026-09-27)
+
+- `convert_assets` (4.9 min en la nube) no es lento por convertir: 190 s son el primer arranque de Isaac Sim en un contenedor nuevo (compila los shaders del renderizador; los arranques siguientes tardan 3 s) y 85 s la conversión de 41 modelos (unos 2 s cada uno). Traer del bucket los USD ya convertidos ahorra esos 85 s; el arranque en frío se pagaría igual en la siguiente etapa de Isaac. Por eso el worker guarda ahora las cachés de shaders (`~/.cache/ov/shaders`, `~/.nv/ComputeCache`, `~/.cache/nvidia/GLCache`) en el bucket de caché (`gpu/`) y las recupera al arrancar. Sin verificar en Nebius todavía.
+- El worker planifica antes de bajar nada y solo trae lo que leen las etapas que van a correr (sus `after`, la entrada y lo que la etapa relee de sí misma, `rereads`, p. ej. los veredictos de `label` con las correcciones del usuario). Con `--force` en `macetas_cloud`: 38 ficheros en vez de 10.200.
+- Semillas en paralelo (`SIM2CHIP_PARALLEL_SEEDS`, 3 por defecto), cada una en su proceso en la misma GPU. En la 3090 con 8 núcleos (`taskset`): 194 s en serie, 140 s en paralelo.
+- El entrenamiento de conteo está limitado por CPU (aumento de datos imagen a imagen en `tf.data`): paso de 18 ms con 8 núcleos, 28 ms con 4, 72 ms con 2. En la L40S (8 vCPU) fue de 45 ms, así que allí las semillas en paralelo compiten por la misma CPU y ganarán menos. La palanca de verdad es hacer el aumento en la GPU por lote (recortes con `crop_and_resize`, color, ruido); el JPEG aleatorio solo existe en CPU. Cambia el entrenamiento: medir con 3 semillas antes de adoptarlo.
+
+## Conversor GLB -> USD sin Isaac: `scripts/glb2usd.py` (2026-09-27)
+
+Script del usuario con usd-core + trimesh, solo CPU y en varios procesos. Materiales glTF a UsdPreviewSurface, texturas en `<modelo>_textures/`, stage Z-up en metros. No soporta mallas con compresión Draco/meshopt ni animaciones.
+
+- Velocidad: los 41 modelos de `macetas_cloud` en 1,4 s con 8 procesos (Isaac: ~85 s más el arranque de Kit). Los 536 GLB de la caché en 21 s con 16 procesos, 0 errores.
+- Geometría: mismos triángulos y el mismo número de texturas en los 41. Isaac escribe en centímetros (`metersPerUnit` 0.01) y glb2usd en metros; no importa porque el render reescala cada modelo a su tamaño real del spec. Tras corregir la unidad, las medidas de `normalize()` coinciden en 38 de 41; las otras: una urna que Isaac deforma (sale tumbada; con glb2usd sale bien), una maceta (3%) y una silla (5%).
+- Aspecto: `preview_assets` con los dos (mismo suelo, cielo, sol y vistas). Diferencia media por píxel menor de 3 en 35 de 41; las mayores son la urna de Isaac y giros distintos sobre el eje vertical (irrelevantes: el render gira los modelos al azar). Materiales, texturas y transparencias de hojas iguales a la vista.
+- Efecto en el modelo (trabajos `cmp_glb2usd` y `cmp_isaac`, copias de `macetas_places`; mismo render, semillas y test de 18 fotos, en la 3090): F1 de puntos int8 0.348 ± 0.020 con glb2usd frente a 0.339 ± 0.023 con Isaac; error de conteo 4.6 frente a 4.2 por foto. Dentro del ruido: el conversor no cambia el resultado. Render 202 s frente a 204 s.
+- Conclusión: glb2usd puede sustituir al Asset Converter de Isaac en `convert_assets`, que pasa a ser una etapa de CPU de segundos. Queda de respaldo Isaac para los GLB que trimesh no lea (Draco/meshopt).
+- Integrado (2026-09-27): el script vive ahora en `sim2chip/glb2usd.py` (también `python -m sim2chip.glb2usd`). `convert_assets` es una etapa de CPU: glb2usd en paralelo a `usd/glb2usd/`, normalización también en paralelo (`_v3`), y el Asset Converter de Isaac (`sim2chip/isaac_convert.py`, en su propio proceso) solo para lo que glb2usd no lea y no esté ya convertido. Los 41 modelos desde una caché vacía: 3.6 s con 24 núcleos, 5.4 s con 8 (antes 296 s en Nebius).

@@ -41,7 +41,8 @@ from ..workspace import DONE, REPO, Cache, Job
 PLATFORM, PRESET = "gpu-l40s-a", "1gpu-8vcpu-32gb"
 WORKER_HOURS = 3        # timeout of a whole run in one job
 UV_URL = "https://github.com/astral-sh/uv/releases/download/0.8.22/uv-x86_64-unknown-linux-gnu.tar.gz"
-WORKER_DEPS = ["tensorflow[and-cuda]==2.18.1", "numpy<2.1", "pillow", "objaverse", "boto3"]
+WORKER_DEPS = ["tensorflow[and-cuda]==2.18.1", "numpy<2.1", "pillow", "objaverse", "boto3", "usd-core==26.8",
+               "trimesh==5.1.0"]  # the last two convert models (glb2usd)
 # Brought back for the web (status, report, review) after a worker run; the rest stays in the bucket.
 WORKER_RESULTS = ("*.json", "export/*", "label/*", "ingest/test/*", "qa_assets/sheets/*", "preview_assets/*_0.png",
                   "generate_assets/*", "logs/*")
@@ -64,7 +65,8 @@ RUNTIMES = {
     "isaac": Runtime("nvcr.io/nvidia/isaac-sim:5.1.0", "/isaac-sim/python.sh",
                      env={"ACCEPT_EULA": "Y", "PRIVACY_CONSENT": "Y"}),
     "tf": Runtime("tensorflow/tensorflow:2.18.0-gpu", "python3", "pip install -q pillow"),
-    "cpu": Runtime("tensorflow/tensorflow:2.18.0-gpu", "python3", "pip install -q objaverse pillow numpy"),
+    "cpu": Runtime("tensorflow/tensorflow:2.18.0-gpu", "python3",
+                   "pip install -q objaverse pillow numpy usd-core==26.8 trimesh==5.1.0"),
 }
 TERMINAL = {"COMPLETED", "SUCCEEDED", "FAILED", "ERROR", "CANCELLED", "CANCELED", "STOPPED", "DELETED"}
 

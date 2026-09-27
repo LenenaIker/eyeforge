@@ -42,6 +42,10 @@ class Cache:
         return self.root / "usd" / "raw"
 
     @property
+    def usd_glb2usd(self) -> Path:
+        return self.root / "usd" / "glb2usd"
+
+    @property
     def usd_norm(self) -> Path:
         return self.root / "usd" / "norm"
 

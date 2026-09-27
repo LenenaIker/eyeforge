@@ -3,23 +3,39 @@
 Conversion is class independent: the real-world scale is applied at render time from the spec, so a
 reclassified asset needs no reconversion and the cache is shared by every job.
 
-Cache:  usd/raw/<uid>.usd            converter output
-        usd/norm/<uid>_v<N>.usd      wrapper that references ../raw/<uid>.usd with an upright transform
-        usd/norm/<uid>_v<N>.json     {"dims": [length, width, height]} in the asset's own units
+The converter is glb2usd (usd-core and trimesh, CPU only, one process per core): 536 models in 21 s where
+Isaac Sim's Asset Converter needed about 2 s per model plus Kit's start, and the same renders and trained
+model (spike/NOTES.md, 2026-09-27). Models it cannot read (Draco or meshopt compression) go to the Asset
+Converter in an Isaac Sim process, when there is one.
+
+Cache:  usd/glb2usd/<uid>.usd (+ <uid>_textures/)   glb2usd output, in meters
+        usd/raw/<uid>.usd                         Asset Converter output (fallback), in centimeters
+        usd/norm/<uid>_v<N>.usd      wrapper that references the converted file with an upright transform
+        usd/norm/<uid>_v<N>.json     {"dims": [length, width, height]} in the converted file's own units
 Output: convert_assets/assets.json   manifest entries + usd (cache relative) + dims
 """
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 from .base import Context, Stage
 
-NORM_VERSION = 2  # bump when normalize() changes
+NORM_VERSION = 3  # bump when normalize() or the converter changes
+
+
+def converted(cache, uid: str) -> Path | None:
+    """The converted file of an asset: glb2usd's, else the Asset Converter's, else None."""
+    for p in (cache.usd_glb2usd / f"{uid}.usd", cache.usd_raw / f"{uid}.usd"):
+        if p.exists():
+            return p
+    return None
 
 
 class ConvertAssets(Stage):
     name = "convert_assets"
-    runtime = "isaac"
+    runtime = "cpu"
     uses_cache = True
     after = ("fetch_assets",)
     version = str(NORM_VERSION)
@@ -28,56 +44,107 @@ class ConvertAssets(Stage):
         return any(c.assets for c in spec.classes)
 
     def run(self, ctx: Context) -> dict:
-        import asyncio
-
         manifest = json.loads((ctx.job.stage_dir("fetch_assets") / "manifest.json").read_text())
-        ctx.cache.usd_raw.mkdir(parents=True, exist_ok=True)
-        ctx.cache.usd_norm.mkdir(parents=True, exist_ok=True)
-        loop = asyncio.get_event_loop()
-        done, skipped = [], []
-        for i, m in enumerate(manifest):
-            raw = ctx.cache.usd_raw / f"{m['uid']}.usd"
-            norm = ctx.cache.usd_norm / f"{m['uid']}_v{NORM_VERSION}.usd"
-            meta = norm.with_suffix(".json")
+        for d in (ctx.cache.usd_glb2usd, ctx.cache.usd_raw, ctx.cache.usd_norm):
+            d.mkdir(parents=True, exist_ok=True)
+        skipped = []
+        todo = []
+        for m in manifest:
+            if (ctx.cache.usd_glb2usd / f"{m['uid']}.usd").exists():
+                continue
             glb = ctx.cache.root / m["glb"]
-            if not raw.exists() and (not glb.exists() or glb.stat().st_size == 0):
-                ctx.log(f"missing or empty download {m['glb']}")  # the converter would crash on it
+            if glb.exists() and glb.stat().st_size > 0:
+                todo.append((glb, m["uid"]))
+            elif not converted(ctx.cache, m["uid"]):
+                ctx.log(f"missing or empty download {m['glb']}")
                 skipped.append(m["uid"])
-                continue
-            if not raw.exists() and not loop.run_until_complete(_convert(str(glb), str(raw))):
-                skipped.append(m["uid"])
-                continue
-            if not meta.exists():
-                dims = normalize(raw, norm)
-                if dims is None:
+        # Asset Converter only for what glb2usd cannot read and it has not converted before.
+        failed = [(g, u) for g, u in _glb2usd(ctx, todo) if not converted(ctx.cache, u)]
+        if failed:
+            _asset_converter(ctx, failed)
+        ready = []  # (manifest entry, converted file, wrapper)
+        for m in manifest:
+            raw = converted(ctx.cache, m["uid"])
+            if raw is None:
+                if m["uid"] not in skipped:
                     skipped.append(m["uid"])
-                    continue
-                meta.write_text(json.dumps({"dims": dims}))
+                continue
+            ready.append((m, raw, ctx.cache.usd_norm / f"{m['uid']}_v{NORM_VERSION}.usd"))
+        _normalize_all(ctx, [(raw, norm) for _, raw, norm in ready if not norm.with_suffix(".json").exists()])
+        done = []
+        for m, raw, norm in ready:
+            meta = norm.with_suffix(".json")
+            if not meta.exists():
+                skipped.append(m["uid"])
+                continue
             dims = json.loads(meta.read_text())["dims"]
             done.append({**m, "usd": str(norm.relative_to(ctx.cache.root)), "dims": dims})
-            if (i + 1) % 25 == 0:
-                ctx.log(f"[{i + 1}/{len(manifest)}]")
         if not done:
             raise RuntimeError(f"no asset could be converted ({len(skipped)} failed), see the log above")
         (ctx.out(self.name) / "assets.json").write_text(json.dumps(done, indent=1))
-        ctx.log(f"{len(done)} assets ready, {len(skipped)} failed")
-        return {"assets": len(done), "failed": skipped}
+        ctx.log(f"{len(done)} assets ready ({len(todo)} converted now), {len(skipped)} failed")
+        return {"assets": len(done), "converted": len(todo), "failed": skipped}
 
 
-async def _convert(src: str, dst: str) -> bool:
-    import omni.kit.asset_converter as converter
+def _glb2usd(ctx: Context, todo: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
+    """Converts in parallel; returns the models glb2usd could not read."""
+    if not todo:
+        return []
+    import time
+    from concurrent.futures import ProcessPoolExecutor
 
-    c = converter.AssetConverterContext()
-    c.ignore_materials = False
-    c.ignore_animations = True
-    c.ignore_camera = True
-    c.ignore_light = True
-    c.embed_textures = True
-    task = converter.get_instance().create_converter_task(src, dst, None, c)
-    ok = await task.wait_until_finished()
-    if not ok:
-        print("[sim2chip] conversion error", src, task.get_error_message(), flush=True)
-    return ok
+    from .. import glb2usd
+
+    opts = glb2usd.default_options()
+    jobs = [(glb, ctx.cache.usd_glb2usd / f"{uid}.usd", opts) for glb, uid in todo]
+    t0 = time.time()
+    with ProcessPoolExecutor(max(1, min(os.cpu_count() or 1, len(jobs)))) as pool:
+        results = list(pool.map(glb2usd._job, jobs))
+    failed = []
+    for (glb, uid), (res, err) in zip(todo, results):
+        if err:
+            ctx.log(f"glb2usd could not convert {glb.name}: {err[1].strip().splitlines()[-1]}")
+            failed.append((glb, uid))
+    ctx.log(f"glb2usd: {len(todo) - len(failed)} of {len(todo)} models converted in {time.time() - t0:.1f} s")
+    return failed
+
+
+def _normalize_one(raw_norm: tuple[Path, Path]) -> None:
+    raw, norm = raw_norm
+    dims = normalize(raw, norm)
+    if dims is not None:
+        norm.with_suffix(".json").write_text(json.dumps({"dims": dims}))
+
+
+def _normalize_all(ctx: Context, todo: list[tuple[Path, Path]]) -> None:
+    """Upright wrappers and sizes, one process per core: big meshes take seconds each."""
+    if not todo:
+        return
+    import time
+    from concurrent.futures import ProcessPoolExecutor
+
+    t0 = time.time()
+    with ProcessPoolExecutor(max(1, min(os.cpu_count() or 1, len(todo)))) as pool:
+        list(pool.map(_normalize_one, todo))
+    ctx.log(f"normalized {len(todo)} models in {time.time() - t0:.1f} s")
+
+
+def _asset_converter(ctx: Context, todo: list[tuple[Path, str]]) -> None:
+    """Isaac Sim's Asset Converter for what glb2usd cannot read, in its own Isaac Sim process."""
+    import subprocess
+
+    from ..backends.local import LocalBackend
+    from ..workspace import REPO
+
+    try:
+        exe = LocalBackend().interpreter("isaac")
+    except FileNotFoundError as e:
+        ctx.log(f"{len(todo)} models left out: {e}")
+        return
+    pairs = [[str(glb), str(ctx.cache.usd_raw / f"{uid}.usd")] for glb, uid in todo]
+    ctx.log(f"{len(pairs)} models to Isaac Sim's Asset Converter")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH")]))}
+    subprocess.run(exe + ["-m", "sim2chip.isaac_convert", json.dumps(pairs)], env=env, cwd=REPO)
 
 
 def world_points(stage, max_pts: int = 60000):
@@ -179,7 +246,7 @@ def normalize(raw_usd, out_usd) -> list[float] | None:
     stage.SetDefaultPrim(root.GetPrim())
     geo = UsdGeom.Xform.Define(stage, "/Asset/Geo")
     # Relative reference: the cache can be moved or mounted elsewhere (Nebius) without rewriting files.
-    geo.GetPrim().GetReferences().AddReference(f"../raw/{raw_usd.name}")
+    geo.GetPrim().GetReferences().AddReference(os.path.relpath(raw_usd, Path(out_usd).parent))
     xf = UsdGeom.Xformable(geo)
     xf.ClearXformOpOrder()
     xf.AddTransformOp().Set(m_local)

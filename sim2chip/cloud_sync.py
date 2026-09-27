@@ -111,7 +111,7 @@ def asset_cache_keys(listing: dict[str, int], job: Path) -> list[str]:
     scene = json.loads(scene_file.read_text()) if scene_file.exists() else {}
     listed = {k for k in scene.values() if isinstance(k, str)} | {
         k for v in scene.values() if isinstance(v, list) for k in v if isinstance(k, str)}
-    converted = {u for u in uids if f"usd/raw/{u}.usd" in listing}
+    converted = {u for u in uids if f"usd/glb2usd/{u}.usd" in listing}
     keys = []
     for k in listing:
         if k in listed:
