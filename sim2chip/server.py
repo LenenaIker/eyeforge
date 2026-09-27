@@ -33,7 +33,7 @@ def slug(name: str) -> str:
     return s[:48] or "job"
 
 
-def default_interviewer(home: Path):
+def default_interviewer(home: Path, backend: str = "local"):
     from . import interview
     from .llm import Client
 
@@ -44,7 +44,7 @@ def default_interviewer(home: Path):
     ranker = interview.photo_ranker(client, client.model_for("vision"))
     profiler = interview.scene_profiler(client, client.model_for("vision"))
     return lambda: interview.Session(client, model, cats, scene_check=interview.check_scene, photo_ranker=ranker,
-                                     scene_profiler=profiler)
+                                     scene_profiler=profiler, photo_models=backend != "nebius")
 
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,
@@ -75,7 +75,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def interview_start():
         nonlocal new_session
         if new_session is None:
-            new_session = default_interviewer(home)
+            new_session = default_interviewer(home, backend)
         sid = uuid.uuid4().hex
         sessions[sid] = new_session()
         sessions[sid].uploads = home / "uploads" / sid

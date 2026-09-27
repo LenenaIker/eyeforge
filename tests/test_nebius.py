@@ -275,3 +275,17 @@ def test_local_folders_in_the_spec_travel_as_input(tmp_path):
     assert not out.user_data.raw.startswith("/")
     assert (job.input / out.user_data.raw / "a.jpg").read_bytes() == b"jpg"
     assert portable_spec(out, job).user_data.raw == out.user_data.raw  # already portable: unchanged
+
+
+def test_photo_made_models_fall_back_to_search_before_the_gpu():
+    from sim2chip import spec as spec_mod
+    from sim2chip.backends.nebius import cloud_spec
+
+    s = spec_mod.from_dict({"name": "p", "classes": [{"id": "pot", "description": "pots",
+                            "size_m": {"measure": "length", "range": [0.1, 0.4]},
+                            "assets": {"source": "photos", "photos": "/x", "queries": ["flower pot"]}}]})
+    said = []
+    out = cloud_spec(s, log=said.append)
+    a = out.classes[0].assets
+    assert (a.source, a.photos, a.queries) == ("search", None, ["flower pot"])
+    assert "not available on Nebius" in said[0]

@@ -302,6 +302,11 @@ YES = {"y", "yes", "yeah", "yep", "ok", "okay", "sure", "correct", "right", "s",
 NO = {"no", "not", "but", "pero", "cambia", "change", "falta", "missing"}
 
 
+NO_PHOTO_MODELS = """
+On this server 3D models cannot be made from the user's photos yet: never set assets.photos, never use
+"source": "photos" or pick_photos; find models with "search" (English queries). The user's photos still
+train and test the model (user_data)."""
+
 ENGLISH_PROMPT = """These are search terms for 3D models and for an English-only object detector. Translate
 each term into the English words a 3D model site would use, keeping every detail the term gives (kind, place,
 size) and never a shorter, more generic word: "maceta" -> "flower pot", "silla de terraza" -> "patio chair",
@@ -368,14 +373,16 @@ class Session:
     """One interview, driven one user message at a time (terminal, web or any other front end)."""
 
     def __init__(self, client, model: str, categories: CategoryIndex, max_turns: int = 60, scene_check=None,
-                 photo_ranker=None, uploads: Path | None = None, scene_profiler=None):
+                 photo_ranker=None, uploads: Path | None = None, scene_profiler=None, photo_models: bool = True):
         self.client, self.model, self.categories, self.max_turns = client, model, categories, max_turns
+        # False where 3D models cannot be made from photos (the Nebius backend has no TRELLIS runtime yet).
+        self.photo_models = photo_models
         self.scene_check = scene_check  # scene -> error message or None (live Poly Haven check)
         self.photo_ranker = photo_ranker  # (folder, query) -> [{"file", "score", "reason"}], best first
         self.uploads = uploads            # where chosen photos are gathered
         self.scene_profiler = scene_profiler  # (folder, classes) -> (scene fields, summary)
         self.candidates: list[dict] = []  # the last photos proposed to the user
-        self.messages = [{"role": "system", "content": system_prompt()}]
+        self.messages = [{"role": "system", "content": system_prompt() + ("" if photo_models else NO_PHOTO_MODELS)}]
         self.proposed: spec_mod.Spec | None = None
         self.transcript: Path | None = None  # set by the server: logs/interviews/<session>.json
         self.finished = False
@@ -420,6 +427,9 @@ class Session:
 
     def _pick(self, req: dict) -> Turn | None:
         """Rank the user's photos for 3D; a Turn for the user, or None after telling the model why not."""
+        if not self.photo_models:
+            self._note(NO_PHOTO_MODELS.strip())
+            return None
         folder, query, cls = Path(str(req.get("folder", ""))).expanduser(), req.get("query"), req.get("class")
         if self.photo_ranker is None or not query or not cls:
             self._note("pick_photos needs class, query and folder, and a photo ranker; ask for photos instead.")
@@ -505,6 +515,8 @@ class Session:
                     if unknown:
                         raise spec_mod.SpecError(f"categories not found in Objaverse-LVIS: {unknown}, use search")
                     problem = (self.scene_check(s.scene) if self.scene_check else None) or check_photos(s)
+                    if not self.photo_models and any(c.assets and c.assets.photos for c in s.classes):
+                        problem = problem or NO_PHOTO_MODELS.strip()
                     if problem:
                         raise spec_mod.SpecError(problem)
                 except spec_mod.SpecError as e:

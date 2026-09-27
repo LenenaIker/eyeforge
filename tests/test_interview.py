@@ -138,3 +138,16 @@ def test_endless_rejections_end_the_interview():
     client = Scripted([{"spec": bad}] * (interview.MAX_INVALID_SPECS * 2))
     t = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62})).reply("unicorns")
     assert t.kind == "failed" and "unicorn" in t.text
+
+
+def test_no_photo_models_on_a_server_without_them():
+    photos = {**GOOD, "classes": [{**GOOD["classes"][0], "assets": {"source": "photos", "photos": "user_data",
+                                                                     "queries": ["cow"]}}], "user_data": {"raw": "x"}}
+    client = Scripted([{"pick_photos": {"class": "cow", "query": "cow", "folder": "/tmp"}}, {"spec": photos},
+                       {"cow": "cow"}, {"spec": GOOD}])  # the third answers the English query check
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}), photo_models=False)
+    t = s.reply("cows, here are my photos")
+    assert t.kind == "confirm" and t.spec.classes[0].assets.photos is None
+    assert "cannot be made from the user's photos" in client.seen[1]  # pick_photos refused
+    assert "cannot be made from the user's photos" in client.seen[3]  # photo-made spec refused
+    assert "cannot be made from the user's photos" in s.messages[0]["content"]

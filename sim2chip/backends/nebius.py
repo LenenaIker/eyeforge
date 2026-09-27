@@ -137,6 +137,26 @@ def print_timeline(job: Job, log=print, since: float | None = None) -> None:
         log(f"    {r['seconds'] / 60:5.1f} min  {100 * r['seconds'] / total:3.0f}%  {r['step']} ({r['where']})")
 
 
+def cloud_spec(spec, log=print):
+    """The spec without what the cloud cannot run yet, decided before asking for a GPU: 3D models from the
+    user's photos need the TRELLIS runtime, which only exists locally (2026-09-27: a run found out inside the
+    job, with the GPU already paid). Those classes use the 3D model search instead, and the log says so."""
+    from .. import spec as spec_mod
+
+    data = json.loads(spec.to_json())
+    for c in data.get("classes") or []:
+        a = c.get("assets")
+        if not a or not a.get("photos"):
+            continue
+        a["photos"] = None
+        if a.get("source") == "photos":
+            a["source"] = "search"
+            a["queries"] = a.get("queries") or [c["id"]]
+        log(f"WARNING: 3D models from photos are not available on Nebius yet: class {c['id']} uses the "
+            f"3D model search ({', '.join(a.get('queries') or a.get('categories') or [])})")
+    return spec_mod.from_dict(data)
+
+
 def portable_spec(spec, job: Job):
     """The spec with every local file or folder it names (user photos, QA lists) linked into the job's input/
     and named relative to it: input/ is uploaded, and absolute paths of this machine mean nothing on Nebius.
