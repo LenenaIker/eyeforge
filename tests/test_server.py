@@ -158,3 +158,34 @@ def test_count_review_points_and_big_thumbnail(app, tmp_path):
     assert r.json() == {"rerun_from": "label"}
     saved = json.loads((job / "input" / "corrections.json").read_text())
     assert saved["points"] == {"a.jpg": [[0.1, 0.2, "cow"], [0.5, 0.5, "cow"]]}
+
+
+def test_public_server_needs_the_key_and_uploaded_photos_only(tmp_path):
+    def launcher(home, job, request, backend, max_usd, start=None):
+        (job.logs / "pipeline.log").write_text("job x\n")
+        return FakeProc()
+
+    app = create_app(tmp_path, backend="nebius", launcher=launcher, public=True, key="s3cret", max_runs=1)
+    client = TestClient(app)
+    assert client.get("/").status_code == 401
+    assert client.get("/api/jobs").status_code == 401
+    assert client.get("/?key=s3cret").status_code == 200  # sets the cookie for the next requests
+    assert client.get("/api/jobs").status_code == 200
+    # A server path in the spec is refused: it would be read and uploaded to the job bucket.
+    spec = {**GOOD, "user_data": {"raw": str(Path.home())}}
+    r = client.post("/api/jobs", data={"spec": json.dumps(spec)})
+    assert r.status_code == 400 and "uploaded" in r.json()["detail"]
+    files = [("photos", ("a.jpg", b"x", "image/jpeg"))]
+    assert client.post("/api/jobs", data={"spec": json.dumps(GOOD)}, files=files).status_code == 200
+    r = client.post("/api/jobs", data={"spec": json.dumps(GOOD)}, files=files)
+    assert r.status_code == 429  # one run at a time
+
+
+def test_uploads_only_interview_never_reads_server_folders(tmp_path):
+    cats = interview.CategoryIndex(counts={"cow": 62})
+    s = interview.Session(Scripted([{"describe_scene": {"folder": str(tmp_path), "classes": "cows"}},
+                                    {"say": "ok"}]), "m", cats, uploads=tmp_path / "uploads" / "sid",
+                          scene_profiler=lambda folder, classes: pytest.fail("read a server folder"),
+                          uploads_only=True)
+    assert "no access to folders" in s.messages[0]["content"]
+    assert s.reply("my photos are in that folder").text == "ok"

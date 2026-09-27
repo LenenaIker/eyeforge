@@ -127,9 +127,17 @@ def cmd_describe_scene(args) -> int:
 
 
 def cmd_serve(args) -> int:
+    from .config import env
     from .server import serve
-    print(f"EyeForge web on http://{args.host}:{args.port}  (backend {args.backend})")
-    serve(Path(args.home), args.backend, args.host, args.port, args.max_usd)
+    key = env("SIM2CHIP_WEB_KEY") if args.public else None
+    if args.public and not key:
+        raise SystemExit("--public needs an access key: set SIM2CHIP_WEB_KEY (environment or .env)")
+    if not args.public and args.host not in ("127.0.0.1", "localhost"):
+        raise SystemExit(f"serving on {args.host} lets others in: add --public (access key, uploads only)")
+    url = f"http://{args.host}:{args.port}" + ("/?key=<SIM2CHIP_WEB_KEY>" if key else "")
+    print(f"EyeForge web on {url}  (backend {args.backend}{', public' if args.public else ''})")
+    serve(Path(args.home), args.backend, args.host, args.port, args.max_usd, public=args.public, key=key,
+          max_runs=args.max_runs)
     return 0
 
 
@@ -175,6 +183,9 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--backend", default="local", choices=["local", "nebius"])
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
+    sv.add_argument("--public", action="store_true",
+                    help="for a server others reach: access key (SIM2CHIP_WEB_KEY), uploaded photos only, run limit")
+    sv.add_argument("--max-runs", type=int, default=2, help="--public: runs at the same time (GPU quota)")
     sv.add_argument("--max-usd", type=float, help="nebius: spend cap per run")
     sv.set_defaults(func=cmd_serve)
 

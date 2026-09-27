@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -33,7 +34,7 @@ def slug(name: str) -> str:
     return s[:48] or "job"
 
 
-def default_interviewer(home: Path, backend: str = "local"):
+def default_interviewer(home: Path, backend: str = "local", public: bool = False):
     from . import interview
     from .llm import Client
 
@@ -44,16 +45,44 @@ def default_interviewer(home: Path, backend: str = "local"):
     ranker = interview.photo_ranker(client, client.model_for("vision"))
     profiler = interview.scene_profiler(client, client.model_for("vision"))
     return lambda: interview.Session(client, model, cats, scene_check=interview.check_scene, photo_ranker=ranker,
-                                     scene_profiler=profiler, photo_models=backend != "nebius")
+                                     scene_profiler=profiler, photo_models=backend != "nebius", uploads_only=public)
+
+
+MAX_PHOTOS = 400  # per upload on a public server
+SESSION_HOURS = 6  # an interview left open longer is dropped
 
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,
-               launcher=None):
-    from .interview import FIRST_QUESTION
+               launcher=None, public: bool = False, key: str | None = None, max_runs: int = 2):
+    """public: a server others can reach. Specs may only use photos uploaded through it (no server paths),
+    at most `max_runs` runs at a time, and, with `key`, every request needs it (a link with ?key=... sets a
+    cookie)."""
+    import hmac
+
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    from .interview import FIRST_QUESTION, spec_paths
 
     app = FastAPI(title="EyeForge")
+
+    if key:
+        @app.middleware("http")
+        async def require_key(request: Request, call_next):
+            given = request.query_params.get("key") or request.cookies.get("eyeforge_key") or \
+                request.headers.get("x-eyeforge-key") or ""
+            if not hmac.compare_digest(given, key):
+                if request.url.path.startswith("/api/"):
+                    return JSONResponse({"detail": "this server needs the access link"}, status_code=401)
+                return HTMLResponse("<p>EyeForge: open the link with the access key you were given.</p>", 401)
+            response = await call_next(request)
+            if request.query_params.get("key"):
+                response.set_cookie("eyeforge_key", key, httponly=True, samesite="strict", max_age=14 * 86400)
+            return response
+
     sessions: dict[str, object] = {}
     runs: dict[str, subprocess.Popen] = {}
+    started: dict[str, float] = {}  # interview session -> start time
     new_session = interviewer
     launch = launcher or _launch
 
@@ -75,8 +104,12 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def interview_start():
         nonlocal new_session
         if new_session is None:
-            new_session = default_interviewer(home, backend)
+            new_session = default_interviewer(home, backend, public)
+        now = time.time()
+        for old in [k for k, t in started.items() if now - t > SESSION_HOURS * 3600]:  # abandoned chats
+            sessions.pop(old, None), started.pop(old, None), locks.pop(old, None)
         sid = uuid.uuid4().hex
+        started[sid] = now
         sessions[sid] = new_session()
         sessions[sid].uploads = home / "uploads" / sid
         sessions[sid].transcript = home / "logs" / "interviews" / f"{sid}.json"
@@ -152,7 +185,12 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                                      str(body.get("class", ""))))
 
     @app.post("/api/jobs")
-    async def create_job(spec: str = Form(...), photos: list[UploadFile] = File(default=[])):
+    def create_job(spec: str = Form(...), photos: list[UploadFile] = File(default=[])):
+        if public:
+            if sum(p.poll() is None for p in runs.values()) >= max_runs:
+                raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
+            if len(photos) > MAX_PHOTOS:
+                raise HTTPException(413, f"at most {MAX_PHOTOS} photos per run")
         try:
             data = json.loads(spec)
             images = [p for p in photos if Path(p.filename or "").suffix.lower() in IMAGE_EXT]
@@ -161,6 +199,12 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             parsed = spec_mod.from_dict(data)
         except (json.JSONDecodeError, spec_mod.SpecError) as e:
             raise HTTPException(400, f"invalid spec: {e}")
+        if public:  # only what was uploaded here: a path would let a spec read (and upload) any server file
+            uploads = (home / "uploads").resolve()
+            bad = [p for p in spec_paths(parsed) if p != "photos" and not (
+                Path(p).is_absolute() and Path(p).resolve().is_relative_to(uploads))]
+            if bad:
+                raise HTTPException(400, f"invalid spec: only photos uploaded here can be used, not {bad}")
         # A new request never reuses an existing job folder: it would overwrite that job's results and pick
         # up its review corrections. Reruns of a job go through the corrections endpoint instead.
         base = name = slug(parsed.name)
@@ -360,6 +404,7 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
             "report": json.loads(report.read_text()) if fresh and report.exists() else None}
 
 
-def serve(home: Path, backend: str, host: str, port: int, max_usd: float | None) -> None:
+def serve(home: Path, backend: str, host: str, port: int, max_usd: float | None, public: bool = False,
+          key: str | None = None, max_runs: int = 2) -> None:
     import uvicorn
-    uvicorn.run(create_app(home, backend, max_usd), host=host, port=port)
+    uvicorn.run(create_app(home, backend, max_usd, public=public, key=key, max_runs=max_runs), host=host, port=port)

@@ -304,6 +304,20 @@ YES = {"y", "yes", "yeah", "yep", "ok", "okay", "sure", "correct", "right", "s",
 NO = {"no", "not", "but", "pero", "cambia", "change", "falta", "missing"}
 
 
+UPLOADS_ONLY = """
+Photos: the user can only upload photos in this chat (the photos action); there is no access to folders on
+any disk, so never ask for a folder path and use only the folders you are told after an upload.
+"""
+
+
+def spec_paths(spec: spec_mod.Spec) -> list[str]:
+    """Every folder or file path a spec names (user photos, 3D photos, QA lists)."""
+    ud, qa = spec.user_data, spec.qa
+    paths = [ud.raw, ud.labeled, ud.test, qa.exclude, qa.class_override, qa.no_color]
+    paths += [c.assets.photos for c in spec.classes if c.assets]
+    return [p for p in paths if p]
+
+
 NO_PHOTO_MODELS = """
 On this server 3D models cannot be made from the user's photos yet: never set assets.photos, never use
 "source": "photos" or pick_photos; find models with "search" (English queries). The user's photos still
@@ -375,16 +389,20 @@ class Session:
     """One interview, driven one user message at a time (terminal, web or any other front end)."""
 
     def __init__(self, client, model: str, categories: CategoryIndex, max_turns: int = 60, scene_check=None,
-                 photo_ranker=None, uploads: Path | None = None, scene_profiler=None, photo_models: bool = True):
+                 photo_ranker=None, uploads: Path | None = None, scene_profiler=None, photo_models: bool = True,
+                 uploads_only: bool = False):
         self.client, self.model, self.categories, self.max_turns = client, model, categories, max_turns
         # False where 3D models cannot be made from photos (the Nebius backend has no TRELLIS runtime yet).
         self.photo_models = photo_models
+        # True on a public server: only photos uploaded in this chat, never a folder of the server's disk.
+        self.uploads_only = uploads_only
         self.scene_check = scene_check  # scene -> error message or None (live Poly Haven check)
         self.photo_ranker = photo_ranker  # (folder, query) -> [{"file", "score", "reason"}], best first
         self.uploads = uploads            # where chosen photos are gathered
         self.scene_profiler = scene_profiler  # (folder, classes) -> (scene fields, summary)
         self.candidates: list[dict] = []  # the last photos proposed to the user
-        self.messages = [{"role": "system", "content": system_prompt() + ("" if photo_models else NO_PHOTO_MODELS)}]
+        self.messages = [{"role": "system", "content": system_prompt() + ("" if photo_models else NO_PHOTO_MODELS)
+                          + (UPLOADS_ONLY if uploads_only else "")}]
         self.proposed: spec_mod.Spec | None = None
         self.transcript: Path | None = None  # set by the server: logs/interviews/<session>.json
         self.finished = False
@@ -427,6 +445,13 @@ class Session:
         self.candidates = []
         return self.add_photos(str(dest.resolve()), len(chosen), "3d", cls)
 
+    def _foreign(self, folder: Path | str | None) -> bool:
+        """A folder this session may not read: on a public server, anything outside its own uploads."""
+        if not self.uploads_only or not folder:
+            return False
+        root = (self.uploads or Path("uploads")).resolve()
+        return not Path(folder).expanduser().resolve().is_relative_to(root)
+
     def _pick(self, req: dict) -> Turn | None:
         """Rank the user's photos for 3D; a Turn for the user, or None after telling the model why not."""
         if not self.photo_models:
@@ -435,6 +460,9 @@ class Session:
         folder, query, cls = Path(str(req.get("folder", ""))).expanduser(), req.get("query"), req.get("class")
         if self.photo_ranker is None or not query or not cls:
             self._note("pick_photos needs class, query and folder, and a photo ranker; ask for photos instead.")
+            return None
+        if self._foreign(folder):
+            self._note(UPLOADS_ONLY.strip())
             return None
         if not folder.is_dir():
             self._note(f"pick_photos: folder {folder} does not exist. Ask the user where the photos are.")
@@ -453,6 +481,8 @@ class Session:
         folder = Path(str(req.get("folder", ""))).expanduser()
         if self.scene_profiler is None:
             self._note("describe_scene is not available here; keep the default open ground scene.")
+        elif self._foreign(folder):
+            self._note(UPLOADS_ONLY.strip())
         elif not folder.is_dir():
             self._note(f"describe_scene: folder {folder} does not exist.")
         else:
@@ -516,7 +546,10 @@ class Session:
                                for cat in c.assets.categories if cat not in self.categories.counts]
                     if unknown:
                         raise spec_mod.SpecError(f"categories not found in Objaverse-LVIS: {unknown}, use search")
-                    problem = (self.scene_check(s.scene) if self.scene_check else None) or check_photos(s)
+                    foreign = [f for f in spec_paths(s) if Path(f).is_absolute() and self._foreign(f)]
+                    problem = (f"these folders are not photos uploaded in this chat: {foreign}. "
+                               + UPLOADS_ONLY.strip()) if foreign else None
+                    problem = problem or (self.scene_check(s.scene) if self.scene_check else None) or check_photos(s)
                     if not self.photo_models and any(c.assets and c.assets.photos for c in s.classes):
                         problem = problem or NO_PHOTO_MODELS.strip()
                     if problem:
