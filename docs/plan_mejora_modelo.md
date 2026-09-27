@@ -1,5 +1,7 @@
 # Plan: mejorar un modelo ya entrenado (fotos nuevas, captura en vivo, versiones, retocar el spec)
 
+Estado (2026-09-28): las 6 fases están hechas y probadas en local. Falta la prueba en Nebius (verificación 5). Detalle en `TODO.md` 2c-ter.
+
 ## Contexto
 
 El primer modelo de un usuario probablemente no será bueno o será "decente pero no suficiente". Ejemplo: el robot de GreatScott! falla en las calvas secas del césped. El flujo buscado es:

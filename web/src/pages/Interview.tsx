@@ -1,8 +1,8 @@
 import { ArrowUp, Check, ImagePlus, Pencil, Sparkles, Upload } from "lucide-react";
 import { useEffect, useRef, useState, type DragEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import * as API from "../api";
-import type { Spec, Turn } from "../api";
+import type { RevisePlan, Spec, Turn } from "../api";
 import { Button, Card, Notice, Spinner, cx } from "../components/ui";
 import { prepareImages } from "../images";
 import { SpecSummary } from "./SpecSummary";
@@ -14,6 +14,8 @@ let nextId = 0;
 export default function Interview() {
   const { config, refreshJobs } = useApp();
   const navigate = useNavigate();
+  const revising = useSearchParams()[0].get("revise");  // a trained job whose setup the user wants to change
+  const [plan, setPlan] = useState<RevisePlan | null>(null);  // what a revision would run again
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState<string | null>(null);  // what we are waiting for, shown as a typing bubble
@@ -28,11 +30,23 @@ export default function Interview() {
   const bottom = useRef<HTMLDivElement>(null);
 
   const push = (m: Omit<Msg, "id">) => setMsgs((all) => [...all, { ...m, id: nextId++ }]);
-  useEffect(() => { if (config && msgs.length === 0) push({ from: "bot", text: config.first_question }); }, [config]);
+  useEffect(() => {
+    if (!config || msgs.length) return;
+    if (!revising) { push({ from: "bot", text: config.first_question }); return; }
+    setBusy("Reading your model's setup");
+    API.startInterview(revising)
+      .then((r) => { session.current = r.session; push({ from: "bot", text: r.text }); })
+      .catch((e) => push({ from: "sys", text: `Cannot open that model: ${(e as Error).message}` }))
+      .finally(() => setBusy(null));
+  }, [config]);
+  useEffect(() => {  // before retraining, say which steps run again (and that the rest is reused)
+    setPlan(null);
+    if (revising && spec) API.reviseJob(revising, spec, true).then(setPlan).catch(() => {});
+  }, [revising, spec]);
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [msgs, busy]);
 
   const ensureSession = async () => {
-    if (!session.current) session.current = (await API.startInterview()).session;
+    if (!session.current) session.current = (await API.startInterview(revising)).session;
     return session.current;
   };
 
@@ -89,6 +103,11 @@ export default function Interview() {
     starting.current = true;
     setTrainError(null);
     try {
+      if (revising) {
+        await API.reviseJob(revising, s);
+        navigate(`/app/job/${revising}`);
+        return;
+      }
       const r = await API.createJob(s);
       refreshJobs();
       navigate(`/app/job/${r.job}`);
@@ -108,6 +127,7 @@ export default function Interview() {
     <div className={cx("relative flex flex-1 flex-col", dragging && "after:absolute after:inset-0 after:rounded-2xl after:border-2 after:border-dashed after:border-brand-500 after:bg-brand-50/60")}
          onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
       <div className="flex-1 space-y-4 py-6">
+        {revising && <Notice>Changing the setup of <b>{revising.replace(/_/g, " ")}</b>. Only the steps your change affects run again.</Notice>}
         {msgs.map((m) => (
           <Message key={m.id} m={m} session={session.current}
                    onPick={(files, cls) => {
@@ -116,7 +136,7 @@ export default function Interview() {
                    }}
                    onAddPhotos={() => fileInput.current?.click()}
                    confirm={m.id === lastConfirm && spec ? {
-                     spec, blocked, onYes: confirm,
+                     spec, blocked, onYes: confirm, plan: revising ? plan : undefined,
                      onChange: () => { textInput.current?.focus(); setText(""); },
                    } : undefined} />
         ))}
@@ -140,7 +160,7 @@ export default function Interview() {
           </button>
           <textarea ref={textInput} rows={1} value={text} onChange={(e) => setText(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                    placeholder="e.g. count the flower pots on balconies, camera on a street lamp"
+                    placeholder={revising ? "e.g. run it on an ESP32-CAM, or the camera is 5 m high" : "e.g. count the flower pots on balconies, camera on a street lamp"}
                     className="max-h-40 min-h-11 flex-1 resize-none bg-transparent px-1 py-2.5 text-[16px] outline-none placeholder:text-stone-400" />
           <Button onClick={() => send()} disabled={!text.trim() || !!busy} className="h-11 w-11 shrink-0 px-0" aria-label="Send">
             <ArrowUp className="h-5 w-5" />
@@ -160,7 +180,7 @@ function BotAvatar() {
   </div>;
 }
 
-type Confirm = { spec: Spec; blocked: string | null; onYes: () => void; onChange: () => void };
+type Confirm = { spec: Spec; blocked: string | null; onYes: () => void; onChange: () => void; plan?: RevisePlan | null };
 
 function Message({ m, session, onPick, onAddPhotos, confirm }: {
   m: Msg; session: string | null; onPick: (files: string[], cls: string) => void; onAddPhotos: () => void;
@@ -228,16 +248,25 @@ function PickPhotos({ turn, session, onPick }: { turn: Turn; session: string; on
   );
 }
 
-function ConfirmCard({ spec, blocked, onYes, onChange }: Confirm) {
+function ConfirmCard({ spec, blocked, onYes, onChange, plan }: Confirm) {
   const [sent, setSent] = useState(false);
+  const revise = plan !== undefined;
+  const nothing = plan && plan.stages.length === 0;
   return (
     <Card className="overflow-hidden">
       <SpecSummary spec={spec} />
       <div className="space-y-3 border-t border-line bg-stone-50 p-4">
         {blocked && <Notice>{blocked}</Notice>}
+        {plan && (nothing ? <Notice>That is the setup your model already has: nothing to retrain.</Notice> : (
+          <p className="text-sm text-muted">
+            {plan.changed.length > 0 && <>Changes: <span className="text-ink">{plan.changed.join(", ")}</span>. </>}
+            Runs again: <span className="text-ink">{plan.stages.map((s) => STEP[s] ?? s).filter((s, i, a) => a.indexOf(s) === i).join(", ")}</span>.
+            {!plan.stages.includes("render") && " The synthetic images are reused."} The current model is kept as a version.
+          </p>
+        ))}
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Button className="flex-1" disabled={sent || !!blocked} onClick={() => { setSent(true); onYes(); }}>
-            <Check className="h-4 w-4" /> Looks good, train it
+          <Button className="flex-1" disabled={sent || !!blocked || !!nothing || (revise && !plan)} onClick={() => { setSent(true); onYes(); }}>
+            <Check className="h-4 w-4" /> {revise ? "Looks good, retrain it" : "Looks good, train it"}
           </Button>
           <Button variant="secondary" disabled={sent} onClick={onChange}><Pencil className="h-4 w-4" /> Change something</Button>
         </div>
@@ -245,6 +274,13 @@ function ConfirmCard({ spec, blocked, onYes, onChange }: Confirm) {
     </Card>
   );
 }
+
+const STEP: Record<string, string> = {
+  label: "reading your photos", generate_assets: "3D models from photos", ingest: "sorting photos",
+  fetch_assets: "finding 3D models", convert_assets: "preparing models", preview_assets: "checking models",
+  qa_assets: "checking models", render: "synthetic images", points: "training data", crops: "training data",
+  train: "training", evaluate: "testing", export: "packing",
+};
 
 // For people who know the spec format: see, edit or paste the JSON and train it directly.
 function AdvancedSpec({ spec, onTrain }: { spec: Spec | null; onTrain: (s: Spec) => void }) {

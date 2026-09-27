@@ -84,7 +84,9 @@ const json = (body: unknown): RequestInit => ({
 });
 
 export const getConfig = () => api<Config>("/api/config");
-export const startInterview = () => api<{ session: string; text: string }>("/api/interview", { method: "POST" });
+// With a job: an interview that starts from that job's spec, to change something and retrain it.
+export const startInterview = (job?: string | null) =>
+  api<{ session: string; text: string; job?: string }>(`/api/interview${job ? `?job=${encodeURIComponent(job)}` : ""}`, { method: "POST" });
 export const reply = (sid: string, text: string) => api<Turn>(`/api/interview/${sid}`, json({ text }));
 export const pick = (sid: string, files: string[], cls: string) =>
   api<Turn>(`/api/interview/${sid}/pick`, json({ files, class: cls }));
@@ -102,6 +104,14 @@ export function createJob(spec: Spec) {
   const form = new FormData();
   form.append("spec", JSON.stringify(spec));
   return api<{ job: string; photos: number; already_running?: boolean }>("/api/jobs", { method: "POST", body: form });
+}
+
+export type RevisePlan = { stages: string[]; changed: string[]; rerun_from: string | null };
+export function reviseJob(job: string, spec: Spec, dry = false) {
+  const form = new FormData();
+  form.append("spec", JSON.stringify(spec));
+  form.append("dry", String(dry));
+  return api<RevisePlan>(`/api/jobs/${job}/revise`, { method: "POST", body: form });
 }
 
 export function addPhotos(job: string, files: File[], note: string) {

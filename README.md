@@ -27,7 +27,14 @@ interview ──► spec.json ──► label ──► ingest ──► fetch_a
 - **One spec drives everything**: classes, real-world sizes, scene, camera, target hardware and the
   user's photos. No stage hardcodes a class or an environment. See `specs/`.
 - **Stages** read and write only inside the job folder, so each one can run on a different machine.
-  A stage reruns only when the spec sections it uses or its upstream stages change.
+  A stage reruns only when the spec sections it uses or its upstream stages change; `--from X` reruns X
+  and what depends on it, nothing else.
+- **A first model is rarely the last.** On the job page, *Make it better* takes photos of what the model gets
+  wrong (picked, shot, or saved with the flag button in the live test). The teacher marks them, half join
+  the test set and half the training set, the old photos keep their side, and only the real-photo steps run
+  again: the synthetic data is reused. *Change the setup* reopens the interview from the job's spec and
+  reruns what the change affects. Each earlier model stays as a version (`versions/v<n>/`), and the new
+  report scores the previous model on the same test photos (`report.json`, `previous`).
 - **Backends** decide where stages run. `local` runs each stage as a subprocess with the right
   interpreter (Isaac Sim's Python for rendering, a TensorFlow environment for training). `nebius` runs
   the whole pipeline in one Serverless AI job on an L40S GPU in Nebius AI Cloud and brings the results

@@ -1,4 +1,4 @@
-import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, DollarSign, ImagePlus, Loader2, Sparkles, Square, X, Zap } from "lucide-react";
+import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, DollarSign, ImagePlus, Loader2, Pencil, Sparkles, Square, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { enterCameraMode, isHandheld } from "../live/device";
@@ -285,7 +285,11 @@ function Improve({ job, counting, onRerun }: { job: string; counting: boolean; o
       <div className="mt-3 flex flex-wrap gap-2">
         {isHandheld() && <Button variant="secondary" size="sm" onClick={() => camera.current?.click()}><Camera className="h-4 w-4" /> Take photos</Button>}
         <Button variant="secondary" size="sm" onClick={() => gallery.current?.click()}><ImagePlus className="h-4 w-4" /> Choose photos</Button>
-        <Button size="sm" onClick={send} disabled={!total || busy}>
+        <Link to={`/app?revise=${job}`}
+              className="inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-control)] px-3 text-sm font-medium text-muted hover:bg-stone-100 hover:text-ink">
+          <Pencil className="h-4 w-4" /> Change the setup
+        </Link>
+        <Button size="sm" className="sm:ml-auto" onClick={send} disabled={!total || busy}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} {total ? `Add ${total} photo${total > 1 ? "s" : ""} and retrain` : "Add photos and retrain"}
         </Button>
       </div>

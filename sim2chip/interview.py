@@ -433,6 +433,7 @@ class Session:
         self.translation_error: str | None = None  # why the last English translation of queries failed
         self.goal = ""  # the user's first message: what the photo analysis looks for
         self.analysed: set[str] = set()  # folders already analysed
+        self.settled: list[list[str]] = []  # query lists of the job being revised (see revise)
 
     def reply(self, user_text: str) -> Turn:
         if self.finished:
@@ -453,6 +454,8 @@ class Session:
         """Start from a trained job's spec instead of from scratch: the model sees it as its own accepted
         proposal, and the user's next message says what to change."""
         self.goal = "; ".join(f"{c.id}: {c.description}" for c in spec.classes)[:400]
+        self.settled = [c.assets.queries for c in spec.classes if c.assets and c.assets.queries] + \
+            [p.queries for p in spec.props if p.queries]
         self.messages.append({"role": "user", "content": (
             "[The user already trained a model with the spec below and wants to change something. Ask nothing "
             "that the spec already answers. When they say what to change, change only that, keep everything "
@@ -648,6 +651,9 @@ class Session:
                  and isinstance(a.get("queries"), list)]
         lists += [p["queries"] for p in spec.get("props") or [] if isinstance(p, dict)
                   and isinstance(p.get("queries"), list)]
+        # Revising a job: lists kept as they were are already settled. Rewording them (railings -> railing)
+        # would change the spec and send the job back to searching 3D models and rendering for nothing.
+        lists = [qs for qs in lists if qs not in self.settled]
         terms = sorted({q for qs in lists for q in qs if isinstance(q, str) and q.strip()})
         if not terms:
             return

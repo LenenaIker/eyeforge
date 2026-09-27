@@ -174,3 +174,16 @@ def test_revise_starts_from_the_trained_spec():
     turn = s.reply("run it on a Jetson instead")
     assert turn.kind == "confirm" and turn.spec.hardware == "jetson_nano" and turn.spec.name == "barn"
     assert '"hardware"' in s.messages[-3]["content"] and "keep everything" in s.messages[-4]["content"]
+
+
+def test_revise_does_not_reword_settled_queries():
+    from sim2chip import spec as spec_mod
+    base = {**GOOD, "classes": [{**GOOD["classes"][0], "assets": {"source": "search", "queries": ["cow", "vaca"]}}],
+            "props": [{"id": "fence", "queries": ["railings"], "size_m": {"measure": "length", "range": [1, 2]}}]}
+    base = json.loads(spec_mod.from_dict(base).to_json())
+    client = Scripted([{"spec": {**base, "hardware": "jetson_nano"}}])  # no second answer: no translation call
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}))
+    s.revise(spec_mod.from_dict(base))
+    turn = s.reply("on a Jetson")
+    assert turn.kind == "confirm" and len(client.seen) == 1
+    assert turn.spec.props[0].queries == ["railings"] and turn.spec.classes[0].assets.queries == ["cow", "vaca"]
