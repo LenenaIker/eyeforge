@@ -32,7 +32,7 @@ def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str =
     """Everything a reviewer looks at, with image paths relative to the job folder. For the count task, photos
     and test predictions carry points [x, y, class] in 0..1 of the (upright) image."""
     rel = lambda p: str(Path(p).relative_to(job.root))  # noqa: E731
-    from .stages.label import copy_name
+    from .workspace import copy_name
     fixes = load_corrections(job)
     out: dict = {"task": task, "labels": labels, "photos": [], "assets": [], "renders": [], "test": []}
 
@@ -53,7 +53,7 @@ def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str =
                                   "image": rel(path) if path.exists() else None})
 
     from .asset_db import AssetDB
-    from .stages.qa_assets import concept_of
+    from .asset_db import concept_of
     converted = job.stage_dir("convert_assets") / "assets.json"
     if converted.exists():
         db = AssetDB(cache.db)
@@ -103,7 +103,7 @@ def apply(job: Job, cache: Cache, labels: dict[str, str], assets: dict[str, str]
     (job.input / CORRECTIONS).write_text(json.dumps(fixes, indent=1))
     if assets and share:
         from .asset_db import AssetDB
-        from .stages.qa_assets import concept_of
+        from .asset_db import concept_of
         by_uid = {a["uid"]: a for a in json.loads((job.stage_dir("convert_assets") / "assets.json").read_text())}
         AssetDB(cache.db).add([{**by_uid[u], "concept": concept_of(by_uid[u]), "decision": d, "judge": "user",
                                 "reason": "set by the user in review"}

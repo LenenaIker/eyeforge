@@ -68,3 +68,8 @@ class AssetDB:
                 f.write(json.dumps(rec) + "\n")
                 self.records[(rec["uid"], rec["concept"])] = rec
         return out
+
+
+def concept_of(asset: dict) -> str:
+    """What the asset was found for: its Objaverse-LVIS category or live search query."""
+    return asset.get("category") or asset["class"]

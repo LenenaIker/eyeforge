@@ -18,9 +18,8 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import review
-from ..workspace import content_key
+from ..workspace import IMAGE_EXT, content_key, copy_name
 from .base import Context, Stage
-from .ingest import IMAGE_EXT
 
 PROMPT = """You label photos for training a small camera classifier. Classes:
 {classes}
@@ -38,12 +37,6 @@ separately, even when several stand side by side.
 
 Answer only with JSON: {{"objects": [{{"class": "<one of: {ids}>", "box": [x0, y0, x1, y1]}}]}} with each box
 in pixel coordinates of this image, which is {w} x {h} pixels. Use an empty list when there are none."""
-
-
-def copy_name(key: str) -> str:
-    """Name of a photo's copy in label/<class>/: subfolder names are kept as a prefix."""
-    p = key.split("/")
-    return p[-1] if len(p) == 1 else f"{p[-2]}_{p[-1]}"
 
 
 class Label(Stage):

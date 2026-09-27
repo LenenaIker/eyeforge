@@ -130,3 +130,9 @@ def link_input(job: Job, name: str, src: Path) -> None:
             return
         raise FileExistsError(f"{dst} already exists and points elsewhere")
     dst.symlink_to(src, target_is_directory=src.is_dir())
+
+
+def copy_name(key: str) -> str:
+    """Name of a photo's copy in label/<class>/: subfolder names are kept as a prefix."""
+    p = key.split("/")
+    return p[-1] if len(p) == 1 else f"{p[-2]}_{p[-1]}"

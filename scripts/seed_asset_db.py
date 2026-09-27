@@ -15,7 +15,7 @@ from pathlib import Path
 
 from sim2chip import spec as spec_mod
 from sim2chip.asset_db import AssetDB
-from sim2chip.stages.qa_assets import concept_of
+from sim2chip.asset_db import concept_of
 from sim2chip.workspace import Cache, Job, default_home
 
 

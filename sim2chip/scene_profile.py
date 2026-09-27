@@ -113,7 +113,7 @@ def summary(profile: dict, n_photos: int) -> str:
 
 
 def profile_folder(folder: Path, classes: str, client, model: str) -> tuple[dict, str]:
-    from .stages.ingest import IMAGE_EXT
+    from .workspace import IMAGE_EXT
     photos = [f for f in Path(folder).rglob("*") if f.suffix.lower() in IMAGE_EXT]
     if not photos:
         raise FileNotFoundError(f"no photos in {folder}")

@@ -70,7 +70,7 @@ class PreviewAssets(Stage):
         cam.CreateFocalLengthAttr(18.0)
 
         from ..asset_db import AssetDB
-        from .qa_assets import concept_of
+        from ..asset_db import concept_of
 
         assets = json.loads((ctx.job.stage_dir("convert_assets") / "assets.json").read_text())
         db = AssetDB(ctx.cache.db)

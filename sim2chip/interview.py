@@ -221,7 +221,7 @@ def photo_ranker(client, model: str, limit: int = 80, workers: int = 8):
     from PIL import Image, ImageOps
 
     from .llm import image_part, parse_json
-    from .stages.ingest import IMAGE_EXT
+    from .workspace import IMAGE_EXT
 
     def rank(folder: str, query: str) -> list[dict]:
         files = sorted(f for f in Path(folder).rglob("*") if f.suffix.lower() in IMAGE_EXT)[:limit]
@@ -249,14 +249,14 @@ def photo_ranker(client, model: str, limit: int = 80, workers: int = 8):
 
 
 def count_photos(folder: Path) -> int:
-    from .stages.ingest import IMAGE_EXT
+    from .workspace import IMAGE_EXT
     return sum(1 for f in folder.rglob("*") if f.suffix.lower() in IMAGE_EXT)
 
 
 def check_photos(s: spec_mod.Spec) -> str | None:
     """Do the photo folders the spec names exist and have the layout it assumes? Only absolute paths are
     checked (relative ones are uploads that live in the job folder)."""
-    from .stages.ingest import IMAGE_EXT
+    from .workspace import IMAGE_EXT
     ud = s.user_data
 
     def photos_in(d: Path) -> int:

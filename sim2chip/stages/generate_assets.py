@@ -14,8 +14,8 @@ import hashlib
 import json
 import shutil
 
+from ..workspace import IMAGE_EXT, content_key
 from .base import Context, Stage
-from .ingest import IMAGE_EXT
 
 GEN_VERSION = 1  # bump when the generation changes: cached models get new uids
 # These are photos OF the object: a box under 2% of the image is something else (a detector false positive).
@@ -82,7 +82,7 @@ class GenerateAssets(Stage):
             model = model or ImageTo3D()
             scored = []
             for f in files:
-                key = hashlib.sha256(f.read_bytes()).hexdigest()[:16]
+                key = content_key(f)
                 det_file = cache / f"{key}.json"
                 dets = json.loads(det_file.read_text()) if det_file.exists() else {}
                 if query not in dets:

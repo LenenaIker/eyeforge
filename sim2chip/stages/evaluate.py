@@ -34,7 +34,7 @@ class Evaluate(Stage):
         labels = ctx.spec.labels
         test_dir = ctx.job.stage_dir("ingest") / "test"
         xt, yt = tu.load_dir(test_dir, labels, ctx.hardware.input_size)
-        names = [f.name for c in labels for f in sorted((test_dir / c).glob("*.png"))]  # load_dir's order
+        names = [f.name for f, _ in tu.list_dir(test_dir, labels)]
         if not len(xt):
             raise ValueError("no real test photos")
         out = ctx.out(self.name)

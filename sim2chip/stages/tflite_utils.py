@@ -9,15 +9,17 @@ import tensorflow as tf
 from ..hardware import Hardware
 
 
+def list_dir(d: Path, labels: list[str]) -> list[tuple[Path, int]]:
+    """The images of a <class>/*.png folder with their label index, in the order load_dir returns them."""
+    return [(f, i) for i, c in enumerate(labels) for f in sorted((d / c).glob("*.png"))]
+
+
 def load_dir(d: Path, labels: list[str], size: int):
-    xs, ys = [], []
-    for i, c in enumerate(labels):
-        for f in sorted((d / c).glob("*.png")):
-            xs.append(np.asarray(tf.keras.utils.load_img(f, target_size=(size, size)), dtype=np.uint8))
-            ys.append(i)
-    if not xs:
+    items = list_dir(d, labels)
+    if not items:
         return np.zeros((0, size, size, 3), np.uint8), np.zeros((0,), int)
-    return np.stack(xs), np.array(ys)
+    xs = [np.asarray(tf.keras.utils.load_img(f, target_size=(size, size)), dtype=np.uint8) for f, _ in items]
+    return np.stack(xs), np.array([i for _, i in items])
 
 
 def make_augment(hw: Hardware):

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 
+from ..asset_db import concept_of
 from .base import Context, Stage
 
 PROBLEMS = ["plinth_or_base", "diorama_or_scene", "multiple_objects", "part_only", "not_upright", "wrong_object",
@@ -75,11 +76,6 @@ Decide if the model is usable as an example of a class, as seen by a low-resolut
 Answer only with JSON:
 {{"decision": "keep" | "discard", "class": "<one of: {ids}>", "problems": [subset of {problems}],
   "no_color": true | false, "reason": "<one short sentence>"}}"""
-
-
-def concept_of(asset: dict) -> str:
-    """What the asset was found for: its Objaverse-LVIS category or live search query."""
-    return asset.get("category") or asset["class"]
 
 
 class QAAssets(Stage):

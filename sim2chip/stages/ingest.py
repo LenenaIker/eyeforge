@@ -102,7 +102,7 @@ class Ingest(Stage):
     def _count(self, ctx: Context) -> dict:
         from PIL import Image, ImageOps
 
-        from .label import copy_name
+        from ..workspace import copy_name
 
         ud, size = ctx.spec.user_data, ctx.hardware.input_size
         label = ctx.job.stage_dir("label")
