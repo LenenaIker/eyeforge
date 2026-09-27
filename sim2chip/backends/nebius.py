@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -317,8 +318,10 @@ class NebiusBackend:
                 n = self.store.upload_dir(bucket, job.input, "input")
                 print(f"  uploaded {n} input files to s3://{bucket}", flush=True)
             # Input the job no longer has must not reach the worker (it would label and train on it).
-            local = {str(f.relative_to(job.root)) for f in job.input.rglob("*") if f.is_file()} \
-                if job.input.exists() else set()
+            # Walked as upload_dir walks it: input folders are symlinks, which rglob does not enter (it found
+            # nothing there and deleted every photo just uploaded, 2026-09-27).
+            local = {(Path(d) / n).relative_to(job.root).as_posix()
+                     for d, _, names in os.walk(job.input, followlinks=True) for n in names}
             for key in self.store.listing(bucket, "input/"):
                 if key not in local:
                     self.store.delete(bucket, key)

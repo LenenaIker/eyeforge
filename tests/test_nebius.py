@@ -2,6 +2,7 @@
 import io
 import json
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -46,7 +47,8 @@ class FakeStore:
         self.objects[(bucket, key)] = data
 
     def upload_dir(self, bucket, src, prefix):
-        files = [f for f in src.rglob("*") if f.is_file()]
+        import os
+        files = [Path(d) / n for d, _, names in os.walk(src, followlinks=True) for n in names]  # as S3Store
         for f in files:
             self.objects[(bucket, f"{prefix}/{f.relative_to(src).as_posix()}")] = f.read_bytes()
         return len(files)
@@ -310,8 +312,12 @@ def test_new_jobs_get_their_own_bucket_and_stale_input_is_removed(tmp_path):
     j = Job(tmp_path / "j")
     (j.input / "photos").mkdir(parents=True)
     (j.input / "photos" / "a.jpg").write_bytes(b"jpg")
+    (tmp_path / "user_photos").mkdir()
+    (tmp_path / "user_photos" / "b.jpg").write_bytes(b"jpg")
+    (j.input / "linked").symlink_to(tmp_path / "user_photos")  # as portable_spec links the user's folders
     (j.root / "cloud_id").write_text("")
     j.spec_path.write_text("{}")
     backend(store)._upload_job(j, Cache(tmp_path / "cache"), "sim2chip-j", "sim2chip-cache")
     assert ("sim2chip-j", "input/photos/someone_else.jpg") not in store.objects
     assert ("sim2chip-j", "input/photos/a.jpg") in store.objects
+    assert ("sim2chip-j", "input/linked/b.jpg") in store.objects  # a linked folder is not pruned
