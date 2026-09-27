@@ -223,3 +223,60 @@ def test_the_same_setup_sent_twice_runs_once(app):
     first = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()
     again = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()
     assert again["job"] == first["job"] and again["already_running"] and len(app.launched) == 1
+
+
+def test_timing_estimates_the_time_left_from_earlier_runs(app, tmp_path):
+    import time
+    old = tmp_path / "jobs" / "old" / "logs"
+    old.mkdir(parents=True)
+    t = time.time() - 3600
+    steps = [("upload job", 10, "local"), ("nebius job: provisioning", 60, "nebius"), ("label", 100, "nebius"),
+             ("fetch_assets", 200, "nebius"), ("render", 300, "local")]  # a local render is not a cloud one
+    (old / "timeline.jsonl").write_text("".join(json.dumps({"t": t, "step": s, "seconds": sec, "where": w}) + "\n"
+                                                for s, sec, w in steps))
+    job = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"]
+    s = app.get(f"/api/jobs/{job}").json()
+    assert s["timing"]["elapsed_s"] < 5
+    # Nothing ran yet: upload, the GPU wait and fetch_assets (running, just started) are left; render never
+    # ran on Nebius, so it adds nothing.
+    assert 265 <= s["timing"]["eta_s"] <= 270
+    logs = tmp_path / "jobs" / job / "logs"
+    (logs / "timeline.jsonl").write_text(json.dumps({"t": time.time(), "step": "upload job", "seconds": 8,
+                                                     "where": "local"}) + "\n")
+    assert 255 <= app.get(f"/api/jobs/{job}").json()["timing"]["eta_s"] <= 260
+
+
+def test_public_visitors_only_see_their_own_jobs(tmp_path):
+    def launcher(home, job, request, backend, max_usd, start=None):
+        (job.logs / "pipeline.log").write_text("job x\n")
+        return FakeProc()
+
+    app = create_app(tmp_path, backend="nebius", launcher=launcher, public=True, max_runs=5)
+    alice, bob = TestClient(app), TestClient(app)
+    job = alice.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"]
+    assert alice.get("/api/jobs").json() == {"jobs": [job]} and alice.get(f"/api/jobs/{job}").status_code == 200
+    assert bob.get("/api/jobs").json() == {"jobs": []}
+    for path in (f"/api/jobs/{job}", f"/api/jobs/{job}/review", f"/api/jobs/{job}/files/report.json"):
+        assert bob.get(path).status_code == 404
+    assert bob.post(f"/api/jobs/{job}/cancel").status_code == 404
+    # The same setup from another visitor is their own run, not a link to someone else's.
+    assert bob.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"] != job
+    cfg = bob.get("/api/config").json()
+    assert cfg["public"] and not cfg["busy"] and cfg["max_runs"] == 5
+
+
+def test_app_routes_serve_the_build_or_the_old_page(tmp_path, monkeypatch):
+    from sim2chip import server
+    client = TestClient(create_app(tmp_path, launcher=lambda *a, **k: FakeProc()))
+    monkeypatch.setattr(server, "DIST", tmp_path / "missing")
+    assert "EyeForge" in client.get("/app/job/x").text  # no build: the old page
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<div id=root></div>")
+    (dist / "assets" / "app.js").write_text("console.log(1)")
+    monkeypatch.setattr(server, "DIST", dist)
+    assert client.get("/").text == "<div id=root></div>"
+    assert client.get("/app/job/x").text == "<div id=root></div>"  # the app routes itself
+    assert client.get("/assets/app.js").text == "console.log(1)"
+    assert client.get("/api/nothing").status_code == 404
+    assert client.get("/../../etc/passwd").text == "<div id=root></div>"

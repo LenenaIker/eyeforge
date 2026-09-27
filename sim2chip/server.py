@@ -1,6 +1,9 @@
-"""Web API and a minimal UI: interview, photo upload, run, progress and download.
+"""Web API and the web app: interview, photo upload, run, progress, review and download.
 
     sim2chip serve [--backend local|nebius] [--host 127.0.0.1] [--port 8000]
+
+The app is a React build in web/dist (from the repo's web/ folder, `npm run build`); without it the server
+falls back to the old single page, web/legacy.html. Any path outside /api serves the app, which routes itself.
 
 Each run is a `sim2chip run` subprocess writing to the job's logs/pipeline.log, so the server never
 blocks on the pipeline and the command line stays the single way to run a job. Progress is read back
@@ -17,7 +20,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
 from . import review
@@ -27,6 +30,9 @@ from .workspace import IMAGE_EXT, Cache, Job, open_job
 
 DOWNLOADS = {"model.tflite", "labels.txt", "model_int8.tflite", "model_data.h", "report.json"}
 WEB = Path(__file__).parent / "web"
+DIST = WEB / "dist"
+OWNER = "owner"  # file in a public server's job folder: the visitor who started it
+VISITOR = "eyeforge_visitor"  # cookie: one per browser, so visitors of a public server only see their own jobs
 
 
 def slug(name: str) -> str:
@@ -59,15 +65,26 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                daily_usd: float | None = None):
     """public: a server others can reach. Specs may only use photos uploaded through it (no server paths),
     at most `max_runs` runs at a time, and, with `key`, every request needs it (a link with ?key=... sets a
-    cookie). daily_usd: no new run when the cloud GPU spent in the last 24 h plus one more run could pass it."""
+    cookie). Each browser gets a visitor cookie and only sees the jobs it started. daily_usd: no new run when
+    the cloud GPU spent in the last 24 h plus one more run could pass it."""
     import hmac
 
-    from fastapi import Request
     from fastapi.responses import JSONResponse
 
     from .interview import FIRST_QUESTION, spec_paths
 
     app = FastAPI(title="EyeForge")
+
+    if public:  # added before the key check, so it runs after it (the last middleware added runs first)
+        @app.middleware("http")
+        async def visitor_cookie(request: Request, call_next):
+            given = request.cookies.get(VISITOR, "")
+            request.state.visitor = given if re.fullmatch(r"[0-9a-f]{32}", given) else uuid.uuid4().hex
+            response = await call_next(request)
+            if given != request.state.visitor:
+                response.set_cookie(VISITOR, request.state.visitor, httponly=True, samesite="strict",
+                                    max_age=30 * 86400)
+            return response
 
     if key:
         @app.middleware("http")
@@ -89,19 +106,48 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     new_session = interviewer
     launch = launcher or _launch
 
-    def job_of(name: str) -> Job:
+    def visitor(request: Request) -> str | None:
+        return getattr(request.state, "visitor", None) if public else None
+
+    def mine(job: Job, request: Request) -> bool:
+        if not public:
+            return True
+        owner = job.root / OWNER
+        return owner.exists() and owner.read_text().strip() == visitor(request)
+
+    def job_of(name: str, request: Request) -> Job:
         job = Job(home / "jobs" / slug(name))
-        if not job.spec_path.exists() and not (job.root / "request.json").exists():
+        if not job.spec_path.exists() and not (job.root / "request.json").exists() or not mine(job, request):
             raise HTTPException(404, f"no job {name}")
         return job
 
-    @app.get("/", response_class=HTMLResponse)
+    def start_run(job: Job, request: Path, start: str | None = None):
+        (job.logs / "launched_at").write_text(f"{time.time():.3f}")
+        runs[job.name] = launch(home, job, request, backend, max_usd, start=start)
+
+    def busy() -> bool:
+        return public and sum(p.poll() is None for p in runs.values()) >= max_runs
+
+    @app.get("/", include_in_schema=False)
     def index():
-        return (WEB / "index.html").read_text()
+        page = DIST / "index.html"
+        return HTMLResponse((page if page.exists() else WEB / "legacy.html").read_text())
+
+    @app.get("/legacy", include_in_schema=False)
+    def legacy():
+        return HTMLResponse((WEB / "legacy.html").read_text())
 
     @app.get("/api/config")
     def config():
-        return {"backend": backend, "first_question": FIRST_QUESTION}
+        """What the app shows before a run: can this server start one now, and what is left of today's budget."""
+        budget = None
+        if daily_usd is not None and backend == "nebius":
+            from .backends.nebius import USD_PER_HOUR, WORKER_HOURS
+            spent = cloud_spent(home)
+            budget = {"daily_usd": daily_usd, "spent_usd": round(spent, 2),
+                      "can_run": spent + WORKER_HOURS * USD_PER_HOUR <= daily_usd}
+        return {"backend": backend, "first_question": FIRST_QUESTION, "public": public, "busy": busy(),
+                "max_runs": max_runs if public else None, "budget": budget}
 
     @app.post("/api/interview")
     def interview_start():
@@ -197,10 +243,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                                      "try again tomorrow")
 
     @app.post("/api/jobs")
-    def create_job(spec: str = Form(...), photos: list[UploadFile] = File(default=[])):
+    def create_job(request: Request, spec: str = Form(...), photos: list[UploadFile] = File(default=[])):
         budget_left()
         if public:
-            if sum(p.poll() is None for p in runs.values()) >= max_runs:
+            if busy():
                 raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
             if len(photos) > MAX_PHOTOS:
                 raise HTTPException(413, f"at most {MAX_PHOTOS} photos per run")
@@ -222,7 +268,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         same = json.loads(parsed.to_json())
         for other, proc in runs.items():
             req = home / "jobs" / other / "request.json"
-            if proc.poll() is None and req.exists() and {**json.loads(req.read_text()), "name": same["name"]} == same:
+            if proc.poll() is None and req.exists() and {**json.loads(req.read_text()), "name": same["name"]} == same \
+                    and mine(Job(home / "jobs" / other), request):
                 return {"job": other, "photos": 0, "already_running": True}
         # A new request never reuses an existing job folder: it would overwrite that job's results and pick
         # up its review corrections. Reruns of a job go through the corrections endpoint instead.
@@ -232,39 +279,41 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             n += 1
             name = f"{base}_{n}"
         job = open_job(home, name)
+        if public:
+            (job.root / OWNER).write_text(visitor(request))
         parsed = adopt_uploads(parsed, home / "uploads", job)
-        request = job.root / "request.json"
-        request.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
+        req = job.root / "request.json"
+        req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         folder = job.input / "photos"
         for p in images:
             folder.mkdir(parents=True, exist_ok=True)
             (folder / Path(p.filename).name).write_bytes(p.file.read())
-        runs[name] = launch(home, job, request, backend, max_usd)
+        start_run(job, req)
         return {"job": name, "photos": len(images)}
 
     @app.get("/api/jobs")
-    def list_jobs():
+    def list_jobs(request: Request):
         root = home / "jobs"
-        names = sorted(d.name for d in root.iterdir() if (d / "spec.json").exists() or (d / "request.json").exists()) \
-            if root.exists() else []
+        names = sorted(d.name for d in root.iterdir() if ((d / "spec.json").exists() or (d / "request.json").exists())
+                       and mine(Job(d), request)) if root.exists() else []
         return {"jobs": names}
 
     @app.get("/api/jobs/{name}")
-    def job_status(name: str):
-        job = job_of(name)
+    def job_status(name: str, request: Request):
+        job = job_of(name, request)
         return status(job, home, running=running(job), backend=backend)
 
     @app.get("/api/jobs/{name}/review")
-    def review_data(name: str):
-        job = job_of(name)
+    def review_data(name: str, request: Request):
+        job = job_of(name, request)
         spec = spec_mod.load(job.spec_path if job.spec_path.exists() else job.root / "request.json")
         return review.gather(job, Cache(home / "cache"), spec.labels, task=spec.task)
 
     @app.get("/api/jobs/{name}/media/{path:path}")
-    def media(name: str, path: str, size: int = 360):
+    def media(name: str, path: str, request: Request, size: int = 360):
         """A small JPEG of an image inside the job folder (only the folders review shows); size 1024 for the
         point editor."""
-        job = job_of(name)
+        job = job_of(name, request)
         src = (job.root / path).resolve()
         if not src.is_relative_to(job.root.resolve()) or Path(path).parts[0] not in review.MEDIA_DIRS \
                 or src.suffix.lower() not in IMAGE_EXT or not src.is_file():
@@ -277,9 +326,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return (proc is not None and proc.poll() is None) or cloud_job(job) is not None
 
     @app.post("/api/jobs/{name}/cancel")
-    def cancel(name: str):
+    def cancel(name: str, request: Request):
         """Stops the run: the local process and, on Nebius, the cloud job (which bills until it ends)."""
-        job = job_of(name)
+        job = job_of(name, request)
         proc = runs.get(job.name)
         if proc is not None and proc.poll() is None:
             proc.terminate()
@@ -293,8 +342,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return {"cancelled": True, "cloud_job": cj["id"] if cj else None}
 
     @app.post("/api/jobs/{name}/corrections")
-    def corrections(name: str, body: dict):
-        job = job_of(name)
+    def corrections(name: str, body: dict, request: Request):
+        job = job_of(name, request)
         if running(job):
             raise HTTPException(409, f"job {job.name} is running")
         budget_left()
@@ -302,20 +351,32 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                              body.get("points") or {}, share=not public)
         if start is None:
             return {"rerun_from": None}
-        request = job.root / "request.json"
-        if not request.exists():
-            request.write_text(job.spec_path.read_text())
-        runs[job.name] = launch(home, job, request, backend, max_usd, start=start)
+        req = job.root / "request.json"
+        if not req.exists():
+            req.write_text(job.spec_path.read_text())
+        start_run(job, req, start)
         return {"rerun_from": start}
 
     @app.get("/api/jobs/{name}/files/{file}")
-    def download(name: str, file: str):
+    def download(name: str, file: str, request: Request):
         if file not in DOWNLOADS:
             raise HTTPException(404, "not a downloadable file")
-        path = job_of(name).stage_dir("export") / file
+        job = job_of(name, request)
+        path = job.stage_dir("export") / file
         if not path.exists():
             raise HTTPException(404, "not ready")
-        return FileResponse(path, filename=f"{job_of(name).name}_{file}")
+        return FileResponse(path, filename=f"{job.name}_{file}")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def app_files(path: str):
+        """The app's own files (scripts, icons, manifest, service worker); any other path is a page of the
+        app, which routes itself."""
+        if path.startswith("api/"):
+            raise HTTPException(404, "no such endpoint")
+        f = (DIST / path).resolve()
+        if f.is_file() and f.is_relative_to(DIST.resolve()):
+            return FileResponse(f)
+        return index()
 
     return app
 
@@ -439,6 +500,64 @@ def phase(log: list[str], running: bool) -> str | None:
     return "Starting the run"
 
 
+LOCAL_STEPS = ("upload job", "download results")
+
+
+def read_timeline(job: Job) -> list[dict]:
+    f = job.logs / "timeline.jsonl"
+    try:
+        return [json.loads(line) for line in f.read_text().splitlines() if line.strip()]
+    except (OSError, ValueError):
+        return []
+
+
+def launched_at(job: Job) -> float | None:
+    """When this server last started a run of the job (request.json's time for runs started elsewhere)."""
+    for f in (job.logs / "launched_at", job.root / "request.json"):
+        try:
+            return float(f.read_text()) if f.name == "launched_at" else f.stat().st_mtime
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def typical_seconds(home: Path, where: str) -> dict[str, float]:
+    """How long each step took the last time any job ran it on this backend: the stages and, on Nebius, the
+    cloud's own steps (waiting for a GPU, pulling the image). Good enough to say "about 12 min left"."""
+    out: dict[str, tuple[float, float]] = {}
+    for f in (home / "jobs").glob("*/logs/timeline.jsonl"):
+        for rec in read_timeline(Job(f.parents[1])):
+            here = rec.get("where") == where or rec["step"] in LOCAL_STEPS  # the server's side of a cloud run
+            if here and not rec.get("failed") and rec["t"] > out.get(rec["step"], (0, 0))[0]:
+                out[rec["step"]] = (rec["t"], rec["seconds"])
+    return {k: v[1] for k, v in out.items()}
+
+
+def timing(job: Job, home: Path, stages: list[dict], running: bool, backend: str) -> dict:
+    """Seconds per finished stage of the current run and, while it runs, the time so far and an estimate of
+    the time left from earlier runs (the cloud's start-up steps included until they happen)."""
+    started = launched_at(job)
+    this_run = [r for r in read_timeline(job) if started is None or r["t"] >= started]
+    took = {r["step"]: r["seconds"] for r in this_run}
+    for st in stages:
+        st["seconds"] = took.get(st["name"]) if st["state"] == "done" else None
+    if not running or started is None:
+        return {"started_at": started, "elapsed_s": None, "eta_s": None}
+    now = time.time()
+    typical = typical_seconds(home, backend)
+    names = {st["name"] for st in stages}
+    left = sum(sec for step, sec in typical.items() if step not in names and step not in took and (
+        step.startswith("nebius job:") and step != "nebius job: running" or step.startswith("cloud:")
+        or step in LOCAL_STEPS))
+    since = max([r["t"] for r in this_run], default=started)  # the current stage started when the last step ended
+    for st in stages:
+        if st["state"] == "running":
+            left += max(typical.get(st["name"], 0) - (now - since), 0)
+        elif st["state"] == "pending":
+            left += typical.get(st["name"], 0)
+    return {"started_at": round(started, 1), "elapsed_s": round(now - started), "eta_s": round(left)}
+
+
 def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     # A relaunched job has a new request.json while spec.json is still the previous run's until the run
     # starts: read the newer one.
@@ -450,7 +569,7 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
         spec = spec_mod.load(spec_path)
     except spec_mod.SpecError as e:  # e.g. an old job whose spec a newer version no longer accepts
         return {"job": job.name, "spec": None, "running": running, "stages": [], "log": log[-30:] + [f"error: {e}"],
-                "cloud_usd": 0.0, "report": None}
+                "cloud_usd": 0.0, "report": None, "timing": None}
     current = next((l[2:].split(" ")[0] for l in reversed(log) if l.startswith("> ")), None)
     failed = any(l.startswith("FAILED") or l.startswith("error:") for l in log[-5:])
     # Token Factory model each stage really called (the usage log records it per call, by stage name).
@@ -470,6 +589,7 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     fresh = any(st["name"] == "export" and st["state"] == "done" for st in stages)  # not a stale model
     return {"job": job.name, "spec": json.loads(spec.to_json()), "running": running,
             "stages": stages, "log": log[-30:], "cloud_usd": round(cost, 2), "phase": phase(log, running),
+            "timing": timing(job, home, stages, running, backend),
             "report": json.loads(report.read_text()) if fresh and report.exists() else None}
 
 

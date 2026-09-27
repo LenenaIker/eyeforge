@@ -27,7 +27,7 @@ sim2chip = "sim2chip.cli:main"
 include = ["sim2chip*"]
 
 [tool.setuptools.package-data]
-sim2chip = ["web/*"]
+sim2chip = ["web/*", "web/dist/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
