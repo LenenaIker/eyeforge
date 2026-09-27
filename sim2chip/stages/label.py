@@ -61,7 +61,7 @@ class Label(Stage):
     def run(self, ctx: Context) -> dict:
         from PIL import Image, ImageOps
 
-        from ..llm import Client, LLMError, image_part, parse_json
+        from ..llm import Client, LLMError, ask_json, image_part
 
         ud, spec = ctx.spec.user_data, ctx.spec
         src = ctx.job.resolve_input(ud.raw)
@@ -114,17 +114,12 @@ class Label(Stage):
                 w, h = im.size
             text = prompt.replace("{w}", str(w)).replace("{h}", str(h))
             msg = [{"role": "user", "content": [{"type": "text", "text": text}, image_part(tmp)]}]
-            for _ in range(2):
-                try:
-                    v = parse_json(client.chat(msg, model, purpose="label", temperature=0.0,
-                                               max_tokens=8192 if counting else 2048))
-                    if counting:
-                        return {"objects": objects_from(v, ids, w, h)}
-                    if v.get("class") in spec.labels + ["unsure"]:
-                        return v
-                except (ValueError, TypeError, KeyError, AttributeError):
-                    pass
-            return None
+            if counting:
+                v = ask_json(client, msg, model, "label", lambda v: objects_from(v, ids, w, h) is not None,
+                             temperature=0.0, max_tokens=8192)
+                return {"objects": objects_from(v, ids, w, h)} if v else None
+            return ask_json(client, msg, model, "label", lambda v: v.get("class") in spec.labels + ["unsure"],
+                            temperature=0.0, max_tokens=2048)
 
         def one(item):
             i, f = item

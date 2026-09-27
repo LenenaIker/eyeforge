@@ -17,10 +17,9 @@ import random
 import shutil
 from pathlib import Path
 
-from ..workspace import content_key
+from ..workspace import IMAGE_EXT, content_key
 from .base import Context, Stage
 
-IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 MIN_TEST = 20  # below this many test photos (per class) one photo moves the score by 5 points or more
 
 

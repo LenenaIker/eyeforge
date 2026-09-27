@@ -68,8 +68,8 @@ def cmd_run(args) -> int:
     if fresh and report.exists():
         r = json.loads(report.read_text())
         print(f"model: {report.parent / r['model_path']}  ({r['model_kb']} KB)")
-        if r.get("real_accuracy"):
-            a = r["real_accuracy"]
+        if r.get("real_test") or r.get("real_accuracy"):  # real_accuracy: reports before 2026-09-27
+            a = r.get("real_test") or r["real_accuracy"]
             print(f"real test accuracy (int8): {a['mean']:.3f} +/- {a['std']:.3f} over seeds {a['seeds']}")
     return 0
 

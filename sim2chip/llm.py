@@ -55,6 +55,19 @@ def image_part(path: Path | str, detail: str = "auto") -> dict:
     return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}", "detail": detail}}
 
 
+def ask_json(client, msg: list, model: str, purpose: str, check=lambda v: True, tries: int = 2, **kw) -> dict | None:
+    """A JSON object from the model that passes `check`, asking again on a bad answer; None if none came.
+    Model errors (LLMError) are not bad answers: they propagate."""
+    for _ in range(tries):
+        try:
+            v = parse_json(client.chat(msg, model, purpose=purpose, **kw))
+            if isinstance(v, dict) and check(v):
+                return v
+        except (ValueError, TypeError, KeyError, AttributeError):
+            pass
+    return None
+
+
 def parse_json(text: str):
     """JSON from a model answer: drops reasoning blocks and code fences, takes the outermost object."""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()

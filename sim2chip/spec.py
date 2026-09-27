@@ -2,7 +2,7 @@
 
 Everything that depends on the user's problem (classes, sizes, scene, camera, hardware, real data)
 lives here. Stages read the spec and never hardcode a class or an environment.
-The spec is written by hand for now; the Nemotron interview will produce it later.
+The Nemotron interview writes it (interview.py); it can also be written by hand.
 """
 from __future__ import annotations
 

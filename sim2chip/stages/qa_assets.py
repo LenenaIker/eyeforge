@@ -190,7 +190,7 @@ class QAAssets(Stage):
     def judge(self, ctx: Context, assets: list[dict]) -> dict:
         from PIL import Image
 
-        from ..llm import Client, LLMError, image_part, parse_json
+        from ..llm import Client, LLMError, ask_json, image_part
 
         prev = ctx.job.stage_dir("preview_assets")
         views = json.loads((prev / "views.json").read_text())
@@ -229,14 +229,7 @@ class QAAssets(Stage):
             return path
 
         def ask(msg, mdl, purpose, check):
-            for _ in range(2):
-                try:
-                    v = parse_json(client.chat(msg, mdl, purpose=purpose, temperature=0.0, max_tokens=4096))
-                    if isinstance(v, dict) and check(v):
-                        return v
-                except (ValueError, TypeError, KeyError, AttributeError):
-                    pass
-            return None
+            return ask_json(client, msg, mdl, purpose, check, temperature=0.0, max_tokens=4096)
 
         errors = []
 

@@ -22,9 +22,8 @@ from fastapi.responses import FileResponse, HTMLResponse
 from . import review
 from . import spec as spec_mod
 from .pipeline import Pipeline
-from .workspace import Cache, Job, open_job
+from .workspace import IMAGE_EXT, Cache, Job, open_job
 
-IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DOWNLOADS = {"model.tflite", "labels.txt", "model_int8.tflite", "model_data.h", "report.json"}
 WEB = Path(__file__).parent / "web"
 

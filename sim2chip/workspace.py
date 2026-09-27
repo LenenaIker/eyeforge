@@ -1,7 +1,7 @@
 """Job folders and the shared asset cache.
 
-Stages only see plain folders. Locally they live under the data root; on Nebius the job bucket is
-mounted at the same layout, so stage code does not change.
+Stages only see plain folders. Locally they live under the data root; on Nebius the worker copies the job
+bucket to a local folder with the same layout (cloud_worker.py), so stage code does not change.
 
     <home>/jobs/<job>/spec.json, input/, logs/, <stage>/..., <stage>/_done.json
     <home>/cache/objaverse, cache/usd/{raw,norm}, cache/hdri, cache/textures   (disposable files)
@@ -17,6 +17,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 DONE = "_done.json"
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}  # photos the user can give
 
 
 def content_key(path: Path) -> str:

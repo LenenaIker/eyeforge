@@ -53,7 +53,7 @@ class Export(Stage):
             "c_array_path": "model_data.h" if hw.runtime == "tflite-micro" else None,
             "seed": int(seed), "task": ctx.spec.task, "metric": "f1" if counting else "accuracy",
             "val_score": summary[seed][val], "val_accuracy": None if counting else summary[seed]["val_acc"],
-            "real_accuracy": json.loads(ev.read_text()) if ev.exists() else None,
+            "real_test": json.loads(ev.read_text()) if ev.exists() else None,
             **({"output": count_output(hw.input_size, summary[seed].get("threshold"))} if counting else {}),
             "asset_credits": [{"name": n, "author": a, "license": lic, "source": s} for n, a, lic, s in credits],
         }

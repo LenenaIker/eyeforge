@@ -10,6 +10,7 @@ wall_tags, railings) that the user confirms or corrects in the interview, before
 from __future__ import annotations
 
 import random
+import shutil
 import tempfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -37,7 +38,7 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
     """One description per sampled photo (photos without a valid answer are skipped)."""
     from PIL import Image, ImageOps
 
-    from .llm import image_part, parse_json
+    from .llm import ask_json, image_part
 
     sample = sorted(photos)
     random.Random(seed).shuffle(sample)
@@ -53,17 +54,15 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
             im.save(small, quality=88)
         msg = [{"role": "user", "content": [{"type": "text", "text": PROMPT.format(classes=classes)},
                                             image_part(small)]}]
-        for _ in range(2):
-            try:
-                v = parse_json(client.chat(msg, model, purpose="scene_profile", temperature=0.0, max_tokens=4096))
-                if v.get("context") in CONTEXTS:
-                    return {**v, "photo": f.name}
-            except ValueError:
-                pass
-        return None
+        v = ask_json(client, msg, model, "scene_profile", lambda v: v.get("context") in CONTEXTS,
+                     temperature=0.0, max_tokens=4096)
+        return {**v, "photo": f.name} if v else None
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        return [d for d in pool.map(one, enumerate(sample)) if d]
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            return [d for d in pool.map(one, enumerate(sample)) if d]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def aggregate(descriptions: list[dict]) -> dict:

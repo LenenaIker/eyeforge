@@ -370,7 +370,7 @@ async function poll() {
 }
 
 function showResult(s) {
-  const r = s.report, ra = r.real_accuracy, counting = r.task === "count";
+  const r = s.report, ra = r.real_test || r.real_accuracy, counting = r.task === "count";
   const pct = (v) => `${(v * 100).toFixed(1)}%`;
   const stat = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
   $("stats").innerHTML = (counting
