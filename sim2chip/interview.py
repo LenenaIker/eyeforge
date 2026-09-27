@@ -89,6 +89,8 @@ Spec format (JSON, defaults shown; omit a field to keep its default):
 {schema}
 Notes: size_m.measure is "length" (long side from above), "width" (short side from above) or "height";
 choose the one that varies least across the class. assets.count is the number of models per class.
+classes lists only the objects to find: the background class ("empty", no object) is added by itself, never
+list it as a class or ask the user about it.
 repaint (0-1) is how often a model is painted a random solid color: set it (e.g. 0.35) only when real
 instances of the class come in many colors (cars), with metallic [0.2, 0.8] for shiny paint; omit both otherwise.
 user_data.labeled / user_data.raw / user_data.test are folder paths; class_map maps each class id to the subfolder names of
@@ -309,6 +311,14 @@ UPLOADS_ONLY = """
 Photos: the user can only upload photos in this chat (the photos action); there is no access to folders on
 any disk, so never ask for a folder path and use only the folders you are told after an upload.
 """
+
+
+def _drop_background_class(spec: dict) -> None:
+    """The model sometimes lists the background ("empty") as one more class (2026-09-27); the pipeline adds it by
+    itself, so drop it instead of rejecting the whole spec."""
+    bg = spec.get("background_class") or "empty"
+    if isinstance(spec.get("classes"), list):
+        spec["classes"] = [c for c in spec["classes"] if not (isinstance(c, dict) and c.get("id") == bg)]
 
 
 def spec_paths(spec: spec_mod.Spec) -> list[str]:
@@ -545,6 +555,7 @@ class Session:
                 try:
                     if isinstance(action["spec"], dict):
                         self._english_queries(action["spec"])
+                        _drop_background_class(action["spec"])
                     s = spec_mod.from_dict(action["spec"])
                     unknown = [cat for c in s.classes if c.assets and c.assets.source == "objaverse_lvis"
                                for cat in c.assets.categories if cat not in self.categories.counts]

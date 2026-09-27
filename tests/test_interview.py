@@ -156,7 +156,8 @@ def test_no_photo_models_on_a_server_without_them():
 def test_spec_sent_with_text_is_proposed():
     cats = interview.CategoryIndex(counts={"cow": 62})
     good = {"name": "barn", "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
-                                         "assets": {"categories": ["cow"], "count": 4}}]}
+                                         "assets": {"categories": ["cow"], "count": 4}},
+                                        {"id": "empty", "description": "no cow"}]}  # background listed too
     s = interview.Session(Scripted([{"say": "Here is the setup, check it.", "spec": good}]), "m", cats)
     turn = s.reply("go")
-    assert turn.kind == "confirm" and turn.spec.name == "barn"
+    assert turn.kind == "confirm" and turn.spec.name == "barn" and turn.spec.labels == ["empty", "cow"]
