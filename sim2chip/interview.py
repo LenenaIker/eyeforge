@@ -204,6 +204,7 @@ whole (not cut by the frame), big in the frame, sharp, on a background that does
 Answer only with JSON: {{"shows": true|false, "whole": true|false, "big": true|false, "clean_background":
 true|false, "score": <0 to 1, how good for a 3D model>, "reason": "<short>"}}"""
 PICK_MIN_SCORE = 0.6
+MAX_INVALID_SPECS = 4  # rejected proposals in a row before the model must ask the user instead
 PICK_MAX = 8
 
 
@@ -373,6 +374,7 @@ class Session:
         self.candidates: list[dict] = []  # the last photos proposed to the user
         self.messages = [{"role": "system", "content": system_prompt()}]
         self.proposed: spec_mod.Spec | None = None
+        self.transcript: Path | None = None  # set by the server: logs/interviews/<session>.json
         self.finished = False
 
     def reply(self, user_text: str) -> Turn:
@@ -454,9 +456,11 @@ class Session:
     def _advance(self) -> Turn:
         from .llm import parse_json
 
+        invalid = 0  # spec proposals rejected in a row
         for _ in range(self.max_turns):
             text = self.client.chat(self.messages, self.model, purpose="interview", temperature=0.3, max_tokens=4096)
             self.messages.append({"role": "assistant", "content": text})
+            self._save()
             try:
                 action = parse_json(text)
             except ValueError:
@@ -501,7 +505,17 @@ class Session:
                     if problem:
                         raise spec_mod.SpecError(problem)
                 except spec_mod.SpecError as e:
-                    self._note(f"The spec is invalid: {e}. Fix it and send it again.")
+                    # Seen 2026-09-27: 25 rejected proposals in a row, 4 minutes of "thinking" for the user.
+                    invalid += 1
+                    if invalid >= MAX_INVALID_SPECS * 2:
+                        self.finished = True
+                        return Turn("failed", f"The interview could not produce a valid setup: {e}")
+                    if invalid >= MAX_INVALID_SPECS:
+                        self._note(f"The spec is invalid again: {e}. Stop proposing it: tell the user, in their "
+                                   "language and in plain words, what is missing or wrong and ask how to fix it "
+                                   "(say action).")
+                    else:
+                        self._note(f"The spec is invalid: {e}. Fix it and send it again.")
                     continue
                 self.proposed = s
                 return Turn("confirm", summary(s), s)
@@ -542,6 +556,13 @@ class Session:
 
     def _note(self, text: str) -> None:
         self.messages.append({"role": "user", "content": text})
+        self._save()
+
+    def _save(self) -> None:
+        """The whole conversation with the model, rejections included, to see afterwards why a turn took long."""
+        if self.transcript is not None:
+            self.transcript.parent.mkdir(parents=True, exist_ok=True)
+            self.transcript.write_text(json.dumps(self.messages, ensure_ascii=False, indent=1))
 
 
 def run(client, model: str, categories: CategoryIndex, ask: Callable[[str], str], tell: Callable[[str], None],

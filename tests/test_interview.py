@@ -120,3 +120,21 @@ def test_interview_asks_for_photos_when_none_fit(tmp_path):
     assert "none of the 0 photos" in client.seen[1]
     t = s.add_photos(str(tmp_path / "phone"), 3, "3d", "pot")
     assert t.kind == "say" and "3 photos to build 3D models of class pot" in client.seen[-1]
+
+
+def test_rejected_specs_stop_and_ask_the_user(tmp_path):
+    bad = {**GOOD, "classes": [{**GOOD["classes"][0], "assets": {"categories": ["unicorn"]}}]}
+    client = Scripted([{"spec": bad}] * interview.MAX_INVALID_SPECS + [{"say": "No encuentro unicornios, ¿vale un caballo?"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}))
+    s.transcript = tmp_path / "t.json"
+    t = s.reply("unicorns")
+    assert t.kind == "say" and "caballo" in t.text
+    assert "Stop proposing it" in client.seen[-1]
+    assert "not found in Objaverse-LVIS" in s.transcript.read_text()  # rejections are kept for later
+
+
+def test_endless_rejections_end_the_interview():
+    bad = {**GOOD, "classes": [{**GOOD["classes"][0], "assets": {"categories": ["unicorn"]}}]}
+    client = Scripted([{"spec": bad}] * (interview.MAX_INVALID_SPECS * 2))
+    t = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62})).reply("unicorns")
+    assert t.kind == "failed" and "unicorn" in t.text
