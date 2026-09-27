@@ -6,6 +6,8 @@
   "classes": [
     {
       "id": "small_vehicle",
+      "repaint": 0.35,
+      "metallic": [0.2, 0.8],
       "description": "cars, taxis, jeeps, minivans, pickups",
       "size_m": {
         "measure": "width",
@@ -29,6 +31,8 @@
     },
     {
       "id": "large_vehicle",
+      "repaint": 0.35,
+      "metallic": [0.2, 0.8],
       "description": "trucks, buses, campers",
       "size_m": {
         "measure": "width",
@@ -52,6 +56,8 @@
     },
     {
       "id": "motorcycle",
+      "repaint": 0.35,
+      "metallic": [0.2, 0.8],
       "description": "motorcycles and scooters",
       "size_m": {
         "measure": "length",
@@ -71,6 +77,8 @@
     },
     {
       "id": "bicycle",
+      "repaint": 0.35,
+      "metallic": [0.2, 0.8],
       "description": "bicycles",
       "size_m": {
         "measure": "length",

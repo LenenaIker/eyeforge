@@ -39,6 +39,7 @@ def test_defaults_and_labels():
     ({"background_class": "cow"}, "background_class"),
     # Specs come from an LLM: wrong types and names must be SpecErrors, not crashes later on.
     ({"hardware": "esp8266"}, "hardware"),
+    ({"scene": {"weather": ["night"]}}, "sky_tags"),
     ({"generation": {"frames": "many"}}, "generation.frames"),
     ({"classes": ["cow"]}, "classes"),
     ({"classes": [{"id": "cow", "size_m": {"measure": "length", "range": ["a", 2]}}]}, "range"),

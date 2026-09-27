@@ -8,13 +8,8 @@ import math
 
 from pxr import Gf, UsdGeom, UsdLux
 
-from .common import NVIDIA_ASSETS, make_quad
+from .common import PEOPLE, TREES, VERGES, make_quad
 
-TREES = [f"{NVIDIA_ASSETS}/Vegetation/Trees/{n}.usd"
-         for n in ["American_Beech", "Black_Oak", "Norway_Spruce", "Red_Maple", "White_Pine"]]
-PEOPLE = [f"{NVIDIA_ASSETS}/Isaac/5.1/Isaac/People/Characters/{n}/{n}.usd"
-          for n in ["male_adult_construction_01_new", "female_adult_police_01_new", "F_Business_02", "M_Medical_01"]]
-VERGES = [(0.18, 0.28, 0.10), (0.30, 0.25, 0.16), (0.35, 0.33, 0.30), (0.22, 0.30, 0.14)]  # grass, dirt, gravel
 
 
 class RoadScene:

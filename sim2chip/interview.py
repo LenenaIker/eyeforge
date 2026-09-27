@@ -89,6 +89,8 @@ Spec format (JSON, defaults shown; omit a field to keep its default):
 {schema}
 Notes: size_m.measure is "length" (long side from above), "width" (short side from above) or "height";
 choose the one that varies least across the class. assets.count is the number of models per class.
+repaint (0-1) is how often a model is painted a random solid color: set it (e.g. 0.35) only when real
+instances of the class come in many colors (cars), with metallic [0.2, 0.8] for shiny paint; omit both otherwise.
 user_data.labeled / user_data.raw / user_data.test are folder paths; class_map maps each class id to the subfolder names of
 the labeled folder. Keep qa.mode "auto".
 

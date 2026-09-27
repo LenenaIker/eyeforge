@@ -18,6 +18,7 @@ from .base import Context, Stage
 
 class Render(Stage):
     name = "render"
+    version = "2"  # paint, empty-frame distance and camera aim from the spec instead of road values
     runtime = "isaac"
     uses_cache = True
     gpu = "rtx"
@@ -119,6 +120,12 @@ class Render(Stage):
         classes = [c.id for c in spec.classes if c.id in targets]
         pool = [t for ts in targets.values() for t in ts]
         counting = spec.task == "count"
+        by_id = {c.id: c for c in spec.classes}
+
+        def paint_as(a, prim) -> bool:
+            c = by_id[a["class"]]
+            return paint.apply(prim, rng, force=a.get("no_color", False), p=c.repaint_p, metallic=c.metallic_range)
+
         places = bool(spec.scene.contexts)
         visible, labels = [], []
         for f in range(gen.frames):
@@ -146,7 +153,7 @@ class Render(Stage):
                 for (ga, gprim, gscale, _), pos in zip(group, spots):
                     if pos is not None:
                         props.set_pose(gprim, pos, rng.uniform(0, 360), gscale)
-                        painted = paint.apply(gprim, rng, force=ga.get("no_color", False)) or painted
+                        painted = paint_as(ga, gprim) or painted
                         shown.append(gprim)
                 a = group[0][0] if group else None
                 look_at(cam.GetPrim(), eye, look)
@@ -155,9 +162,10 @@ class Render(Stage):
                 if group:
                     a, prim, scale, size = group[0]
                     target = scene.place_target(prim, scale)
-                    painted = paint.apply(prim, rng, force=a.get("no_color", False))
+                    painted = paint_as(a, prim)
                     shown.append(prim)
                     radius, height = math.hypot(*a["dims"][:2]) / 2 * scale, a["dims"][2] * scale
+                    aim_h = height
                     dist = camera_distance(size, rng.uniform(*cam_spec.target_fill), cam_spec.hfov_deg,
                                            cam_spec.distance_m)
                     if len(group) > 1:
@@ -167,19 +175,23 @@ class Render(Stage):
                         for (ga, gprim, gscale, _), pos in zip(group[1:], cluster(target, radii, spread, rng)[1:]):
                             if pos is not None:
                                 props.set_pose(gprim, pos, rng.uniform(0, 360), gscale)
-                                paint.apply(gprim, rng, force=ga.get("no_color", False))
+                                paint_as(ga, gprim)
                                 shown.append(gprim)
                         radius = spread + max(radii)
                 else:
+                    # Background views from where a target frame would be shot, so distance tells nothing.
                     target = (0.0, 0.0, 0.0)
-                    lo, hi = cam_spec.distance_m
-                    dist = rng.uniform(max(lo, 5.0), max(min(hi, 35.0), lo))  # background views at typical range
+                    ea, _, escale, size = rng.choice(pool)
+                    aim_h = ea["dims"][2] * escale
+                    dist = camera_distance(size, rng.uniform(*cam_spec.target_fill), cam_spec.hfov_deg,
+                                           cam_spec.distance_m)
                 az = math.radians(rng.uniform(0, 360))
                 ch = rng.uniform(*cam_spec.height_m)
                 eye = (target[0] + dist * math.cos(az), target[1] + dist * math.sin(az), ch)
                 j = dist * 0.12
+                # Aim at the body of the object (a car's doors, a pot's middle), not a fixed height.
                 look_at(cam.GetPrim(), eye, (target[0] + rng.uniform(-j, j), target[1] + rng.uniform(-j, j),
-                                             rng.uniform(0.3, 1.2)))
+                                             rng.uniform(0.2, 0.8) * aim_h))
                 shown += scene.place_distractors(eye)
                 placed, hidden = scatter.place(eye, target, radius, height, rng)
                 shown += placed

@@ -5,6 +5,13 @@ from pxr import Gf, Sdf, Semantics, UsdGeom, UsdShade
 
 NVIDIA_ASSETS = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets"
 
+# Distractors and ground colors shared by the outdoor templates (road, generic).
+TREES = [f"{NVIDIA_ASSETS}/Vegetation/Trees/{n}.usd"
+         for n in ["American_Beech", "Black_Oak", "Norway_Spruce", "Red_Maple", "White_Pine"]]
+PEOPLE = [f"{NVIDIA_ASSETS}/Isaac/5.1/Isaac/People/Characters/{n}/{n}.usd"
+          for n in ["male_adult_construction_01_new", "female_adult_police_01_new", "F_Business_02", "M_Medical_01"]]
+VERGES = [(0.18, 0.28, 0.10), (0.30, 0.25, 0.16), (0.35, 0.33, 0.30), (0.22, 0.30, 0.14)]  # grass, dirt, gravel
+
 
 class Props:
     """Referenced props (targets and distractors) with a base scale each, shown and moved per frame."""
@@ -107,10 +114,11 @@ def make_quad(stage, path: str, sx: float, sy: float, z: float):
 
 
 class Paint:
-    """Random solid paint for targets (always for models without color, sometimes for the rest).
+    """Random solid paint for targets: always for models without color, with the class's `repaint`
+    chance for the rest (see ClassSpec).
 
-    Bound with strongerThanDescendants to override the model's own materials. Wheels and windows take
-    the same color: at the model's input resolution this matters little.
+    Bound with strongerThanDescendants to override the model's own materials. Every part takes the same
+    color (a car's wheels and windows too): at the model's input resolution this matters little.
     """
     COLORS = [(0.85, 0.85, 0.85), (0.03, 0.03, 0.03), (0.55, 0.56, 0.58), (0.25, 0.26, 0.28), (0.55, 0.04, 0.03),
               (0.04, 0.12, 0.45), (0.05, 0.22, 0.10), (0.75, 0.55, 0.05), (0.55, 0.47, 0.35), (0.35, 0.08, 0.08)]
@@ -124,7 +132,7 @@ class Paint:
         self.metal = sh.CreateInput("metallic", Sdf.ValueTypeNames.Float)
         self.mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
 
-    def apply(self, prim, rng, force: bool, p: float = 0.35) -> bool:
+    def apply(self, prim, rng, force: bool, p: float = 0.0, metallic: tuple[float, float] = (0.0, 0.15)) -> bool:
         api = UsdShade.MaterialBindingAPI.Apply(prim)
         if not force and rng.random() > p:
             api.UnbindDirectBinding()
@@ -132,7 +140,7 @@ class Paint:
         base = rng.choice(self.COLORS)
         self.color.Set(Gf.Vec3f(*(min(1.0, max(0.0, c * rng.uniform(0.8, 1.2))) for c in base)))
         self.rough.Set(rng.uniform(0.2, 0.55))
-        self.metal.Set(rng.uniform(0.2, 0.8))
+        self.metal.Set(rng.uniform(*metallic))
         api.Bind(self.mat, UsdShade.Tokens.strongerThanDescendants)
         return True
 

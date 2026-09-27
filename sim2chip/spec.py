@@ -71,6 +71,18 @@ class ClassSpec:
     description: str = ""
     size_m: SizeSpec | None = None
     assets: AssetQuery | None = None
+    # Solid paint over the model's own colors, for classes whose real instances come in many colors (cars):
+    # the chance per frame (None: never; models without color are always painted) and the metallic range.
+    repaint: float | None = None
+    metallic: tuple[float, float] | None = None
+
+    @property
+    def repaint_p(self) -> float:
+        return self.repaint or 0.0
+
+    @property
+    def metallic_range(self) -> tuple[float, float]:
+        return self.metallic or (0.0, 0.15)
 
 
 @dataclass
@@ -101,11 +113,18 @@ class CameraSpec:
 @dataclass
 class ContextSpec:
     """One kind of place in the synthetic scenes and its share of the frames. `distance_m` is the camera
-    distance to the objects there; `supports` where they stand (default: every support of the kind)."""
+    distance to the objects there (facade only, default 6-25 m); `height_m` the camera height above the
+    floor it stands on (default a person holding a phone, 1.3-1.8 m; higher for a wall-mounted camera);
+    `supports` where the objects stand (default: every support of the kind)."""
     kind: str
     share: float = 1.0
     distance_m: tuple[float, float] | None = None
     supports: list[str] = field(default_factory=list)
+    height_m: tuple[float, float] | None = None
+
+    @property
+    def eye_height(self) -> tuple[float, float]:
+        return self.height_m or (1.3, 1.8)
 
 
 @dataclass
@@ -345,6 +364,10 @@ def validate(spec: Spec) -> None:
     if spec.background_class in ids:
         raise SpecError("background_class cannot also be a class")
     for c in spec.classes:
+        if c.repaint is not None and not 0 <= c.repaint <= 1:
+            raise SpecError(f"class {c.id}: repaint must be between 0 and 1")
+        if c.metallic is not None and not 0 <= c.metallic[0] <= c.metallic[1] <= 1:
+            raise SpecError(f"class {c.id}: metallic must be [min, max] within 0..1")
         if c.size_m:
             if c.size_m.measure not in MEASURES:
                 raise SpecError(f"class {c.id}: size_m.measure must be one of {MEASURES}")
@@ -385,6 +408,11 @@ def validate(spec: Spec) -> None:
     bad = [w for w in spec.scene.weather if w not in WEATHER]
     if bad or not spec.scene.weather:
         raise SpecError(f"scene.weather must be a non-empty subset of {WEATHER}")
+    if spec.scene.template == "road" and not spec.scene.sky_tags:
+        from .scenes.skies import SKIES
+        if not {s.weather for s in SKIES} & set(spec.scene.weather):
+            raise SpecError(f"scene.weather {spec.scene.weather}: the road template's own skies have none of "
+                            "these; add scene.sky_tags to take skies from Poly Haven")
     for k in spec.user_data.class_map:
         if k not in spec.labels:
             raise SpecError(f"user_data.class_map: '{k}' is not a class of the spec")

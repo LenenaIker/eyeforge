@@ -82,11 +82,12 @@ class PlacesScene(GenericScene):
         supports = list(c.supports) or list(CONTEXTS[kind])
         shot = None
         if kind == "balcony":
-            shot = pl.balcony_shot(self.building, supports, rng)
+            shot = pl.balcony_shot(self.building, supports, rng, c.eye_height)
         elif kind == "indoor":
-            shot = pl.room_shot(self.room, supports, rng)
+            shot = pl.room_shot(self.room, supports, rng, c.eye_height)
         if shot is None:  # facade, or a building without balconies
-            shot = pl.facade_shot(self.building, supports, c.distance_m or (6.0, 25.0), hfov, aspect, rng)
+            shot = pl.facade_shot(self.building, supports, c.distance_m or (6.0, 25.0), hfov, aspect, rng,
+                                  c.eye_height)
         eye, look, surfaces = shot
         lit = kind in ("balcony", "indoor") or (kind == "facade" and rng.random() < 0.2)
         UsdGeom.Xformable(self.fill).GetOrderedXformOps()[0].Set(Gf.Vec3d(eye[0], eye[1], eye[2] + 0.8))

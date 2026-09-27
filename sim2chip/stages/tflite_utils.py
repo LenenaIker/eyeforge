@@ -20,7 +20,10 @@ def load_dir(d: Path, labels: list[str], size: int):
     return np.stack(xs), np.array(ys)
 
 
-def make_augment(size: int):
+def make_augment(hw: Hardware):
+    size = hw.input_size
+    lo, hi = hw.sharpness
+
     def augment(x, y):
         """Pull clean renders towards a cheap camera: color, framing, blur, noise and JPEG artifacts."""
         x = tf.cast(x, tf.float32) / 255.0
@@ -32,8 +35,8 @@ def make_augment(size: int):
         crop = tf.cast(tf.random.uniform([], 0.8, 1.0) * size, tf.int32)  # off-center region of interest
         x = tf.image.resize(tf.image.random_crop(x, [crop, crop, 3]), [size, size])
         # Equalize effective resolution across classes: otherwise small (blurry) renders of one class
-        # teach the model "blurry = that class". Degrade everything to 20-67% of the input (20-64 px at 96).
-        small = tf.cast(tf.random.uniform([], 0.2, 0.67) * size, tf.int32)
+        # teach the model "blurry = that class". Degrade everything to the camera's sharpness range.
+        small = tf.cast(tf.random.uniform([], lo, hi) * size, tf.int32)
         x = tf.image.resize(tf.image.resize(x, [small, small], antialias=True), [size, size])
         x = x + tf.random.normal(tf.shape(x), 0, tf.random.uniform([], 0, 0.04))
         x = tf.image.random_jpeg_quality(tf.clip_by_value(x, 0, 1), 20, 90)
@@ -75,7 +78,7 @@ def train(x, y, labels: list[str], hw: Hardware, epochs: int, seed: int):
     nv = len(x) // 10
     xv, yv, xtr, ytr = x[idx[:nv]], y[idx[:nv]], x[idx[nv:]], y[idx[nv:]]
     weights = len(ytr) / (n * np.maximum(np.bincount(ytr, minlength=n), 1))
-    ds = (tf.data.Dataset.from_tensor_slices((xtr, ytr)).shuffle(len(xtr)).map(make_augment(hw.input_size),
+    ds = (tf.data.Dataset.from_tensor_slices((xtr, ytr)).shuffle(len(xtr)).map(make_augment(hw),
                                                                                  tf.data.AUTOTUNE)
           .batch(64).prefetch(tf.data.AUTOTUNE))
     dv = tf.data.Dataset.from_tensor_slices((xv.astype(np.float32), yv)).batch(128)
@@ -148,7 +151,10 @@ def count_target(p, n_classes: int):
     return y / tf.reduce_sum(y, -1, keepdims=True)
 
 
-def make_count_augment(size: int, n_classes: int):
+def make_count_augment(hw: Hardware, n_classes: int):
+    size = hw.input_size
+    lo = max(hw.sharpness[0], 0.5)
+
     def augment(x, p):
         """Same camera degradations as classification, with flips and crops applied to the points too."""
         x = tf.cast(x, tf.float32) / 255.0
@@ -165,7 +171,7 @@ def make_count_augment(size: int, n_classes: int):
         x = tf.image.random_saturation(x, 0.3, 1.3)
         x = tf.image.random_hue(x, 0.05)
         # Milder than for classification: small objects are what this task is about.
-        small = tf.cast(tf.random.uniform([], 0.5, 1.0) * size, tf.int32)
+        small = tf.cast(tf.random.uniform([], lo, 1.0) * size, tf.int32)
         x = tf.image.resize(tf.image.resize(x, [small, small], antialias=True), [size, size])
         x = x + tf.random.normal(tf.shape(x), 0, tf.random.uniform([], 0, 0.03))
         x = tf.image.random_jpeg_quality(tf.clip_by_value(x, 0, 1), 30, 95)
@@ -204,7 +210,7 @@ def train_count(x, pmap, pts, labels: list[str], hw: Hardware, epochs: int, seed
     vi, ti = idx[:nv], idx[nv:]
     target = lambda xx, pp: (tf.cast(xx, tf.float32), count_target(tf.cast(pp[..., None], tf.float32), n))  # noqa: E731
     ds = (tf.data.Dataset.from_tensor_slices((x[ti], pmap[ti])).shuffle(len(ti))
-          .map(make_count_augment(size, n), tf.data.AUTOTUNE).batch(32).prefetch(tf.data.AUTOTUNE))
+          .map(make_count_augment(hw, n), tf.data.AUTOTUNE).batch(32).prefetch(tf.data.AUTOTUNE))
     dv = tf.data.Dataset.from_tensor_slices((x[vi], pmap[vi])).map(target).batch(64)
     model, trunk = build_count_model(n, hw)
     trunk.trainable = False

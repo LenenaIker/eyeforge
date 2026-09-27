@@ -11,8 +11,7 @@ import math
 
 from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdShade
 
-from .common import make_quad
-from .road import PEOPLE, TREES, VERGES
+from .common import PEOPLE, TREES, VERGES, make_quad
 
 HALF = 300.0   # ground half size (m)
 TILE = 2.0     # texture repeat (m) at scale 1

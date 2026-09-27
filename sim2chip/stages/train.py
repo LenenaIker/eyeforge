@@ -28,7 +28,7 @@ DATA_FILE = "_train_set.pkl"  # the training arrays, handed to the seed processe
 
 class Train(Stage):
     name = "train"
-    version = "2"
+    version = "3"  # blur range from the hardware profile (sharpness), not tuned for 96 px only
     runtime = "tf"
     gpu = "any"
     max_hours = 2
@@ -133,6 +133,8 @@ def _pretrained_weights(hardware: str) -> None:
 
     from ..hardware import get as get_hardware
     hw = get_hardware(hardware)
+    if hw.backbone != "mobilenetv2":  # build_model says what is missing
+        return
     tf.keras.applications.MobileNetV2(input_shape=(hw.input_size, hw.input_size, 3), alpha=hw.alpha,
                                       include_top=False, weights="imagenet")
 

@@ -172,26 +172,27 @@ def place(surfaces: list[Surface], items: list[tuple[float, float]], rng, tries:
     return out
 
 
-def facade_shot(lay: Layout, supports: list[str], distance: tuple[float, float], hfov: float, aspect: float, rng):
+def facade_shot(lay: Layout, supports: list[str], distance: tuple[float, float], hfov: float, aspect: float, rng,
+                eye_h: tuple[float, float] = (1.3, 1.8)):
     """Camera on the street looking at a spot of the building front. Returns eye, look and the surfaces in
     view (of the wanted supports), the one looked at first."""
     cands = [s for s in lay.surfaces if s.kind in supports] or lay.surfaces
     focus = rng.choice(cands)
     fx, fy, fz = (focus.x[0] + focus.x[1]) / 2, (focus.y[0] + focus.y[1]) / 2, focus.z
     d = rng.uniform(*distance)
-    eye = (fx + rng.uniform(-0.4, 0.4) * d, fy - d, rng.uniform(1.4, 1.8))
+    eye = (fx + rng.uniform(-0.4, 0.4) * d, fy - d, rng.uniform(*eye_h))
     look = (fx + rng.uniform(-0.5, 0.5), 0.0, fz + rng.uniform(-0.5, 0.8))
     seen = [s for s in cands if s is not focus and in_view(eye, look, _mid(s), hfov, aspect)]
     return eye, look, [focus] + seen
 
 
-def balcony_shot(lay: Layout, supports: list[str], rng):
+def balcony_shot(lay: Layout, supports: list[str], rng, eye_h: tuple[float, float] = (1.3, 1.8)):
     """Camera standing on a balcony, looking out to its railing and floor (or along it)."""
     if not lay.balconies:
         return None
     i = rng.randrange(len(lay.balconies))
     b = lay.balconies[i]
-    eye = (b["x"] + rng.uniform(-0.3, 0.3) * b["w"], -0.35, b["z"] + rng.uniform(1.3, 1.7))
+    eye = (b["x"] + rng.uniform(-0.3, 0.3) * b["w"], -0.35, b["z"] + rng.uniform(*eye_h))
     if rng.random() < 0.7:
         look = (b["x"] + rng.uniform(-0.3, 0.3) * b["w"], -b["d"], b["z"] + rng.uniform(0.0, 0.6))
     else:
@@ -201,13 +202,13 @@ def balcony_shot(lay: Layout, supports: list[str], rng):
     return eye, look, surf
 
 
-def room_shot(lay: Layout, supports: list[str], rng):
+def room_shot(lay: Layout, supports: list[str], rng, eye_h: tuple[float, float] = (1.3, 1.8)):
     """Camera standing in the room near the open side, looking at a spot of the wanted supports."""
     ox, oy = ROOM_AT
     sx, sy = lay.size
     cands = [s for s in lay.surfaces if s.kind in supports] or lay.surfaces
     focus = rng.choice(cands)
-    eye = (ox + rng.uniform(-0.35, 0.35) * sx, oy - sy / 2 + rng.uniform(0.1, 0.8), rng.uniform(1.3, 1.7))
+    eye = (ox + rng.uniform(-0.35, 0.35) * sx, oy - sy / 2 + rng.uniform(0.1, 0.8), rng.uniform(*eye_h))
     look = ((focus.x[0] + focus.x[1]) / 2, (focus.y[0] + focus.y[1]) / 2, focus.z)
     return eye, look, [focus] + [s for s in cands if s is not focus]
 

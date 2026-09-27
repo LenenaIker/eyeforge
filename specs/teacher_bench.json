@@ -6,18 +6,26 @@
   "classes": [
     {
       "id": "small_vehicle",
+      "repaint": 0.35,
+      "metallic": [0.2, 0.8],
       "description": "cars, taxis, jeeps, minivans, pickups"
     },
     {
       "id": "large_vehicle",
+      "repaint": 0.35,
+      "metallic": [0.2, 0.8],
       "description": "trucks, buses, campers"
     },
     {
       "id": "motorcycle",
+      "repaint": 0.35,
+      "metallic": [0.2, 0.8],
       "description": "motorcycles and scooters"
     },
     {
       "id": "bicycle",
+      "repaint": 0.35,
+      "metallic": [0.2, 0.8],
       "description": "bicycles"
     }
   ],
