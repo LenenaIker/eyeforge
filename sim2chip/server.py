@@ -233,8 +233,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     @app.get("/api/jobs/{name}")
     def job_status(name: str):
         job = job_of(name)
-        proc = runs.get(job.name)
-        return status(job, home, running=proc is not None and proc.poll() is None, backend=backend)
+        return status(job, home, running=running(job), backend=backend)
 
     @app.get("/api/jobs/{name}/review")
     def review_data(name: str):
@@ -253,10 +252,31 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             raise HTTPException(404, "no such image")
         return FileResponse(thumbnail(job, src, 1024 if size > 360 else 360))
 
+    def running(job: Job) -> bool:
+        """This server's run process, or a cloud job left by an earlier server process (still in time)."""
+        proc = runs.get(job.name)
+        return (proc is not None and proc.poll() is None) or cloud_job(job) is not None
+
+    @app.post("/api/jobs/{name}/cancel")
+    def cancel(name: str):
+        """Stops the run: the local process and, on Nebius, the cloud job (which bills until it ends)."""
+        job = job_of(name)
+        proc = runs.get(job.name)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+        cj = cloud_job(job)
+        if cj:
+            from .backends.nebius import NebiusCLI
+            NebiusCLI().cancel(cj["id"])
+            (job.logs / "cloud_job.json").unlink(missing_ok=True)
+        with open(job.logs / "pipeline.log", "a") as f:
+            f.write("FAILED: cancelled by the user\n")
+        return {"cancelled": True, "cloud_job": cj["id"] if cj else None}
+
     @app.post("/api/jobs/{name}/corrections")
     def corrections(name: str, body: dict):
         job = job_of(name)
-        if job.name in runs and runs[job.name].poll() is None:
+        if running(job):
             raise HTTPException(409, f"job {job.name} is running")
         start = review.apply(job, Cache(home / "cache"), body.get("labels") or {}, body.get("assets") or {},
                              body.get("points") or {})
@@ -291,6 +311,16 @@ def _launch(home: Path, job: Job, request: Path, backend: str, max_usd: float | 
     job.logs.mkdir(parents=True, exist_ok=True)
     log = open(job.logs / "pipeline.log", "a")
     return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=Path(__file__).resolve().parents[1])
+
+
+def cloud_job(job: Job) -> dict | None:
+    """The Nebius job a run left running, while it can still be running (its timeout plus the queue)."""
+    f = job.logs / "cloud_job.json"
+    try:
+        cj = json.loads(f.read_text())
+    except (OSError, ValueError):
+        return None
+    return cj if time.time() - cj["started"] < cj["hours"] * 3600 else None
 
 
 def adopt_uploads(spec: spec_mod.Spec, uploads: Path, job: Job) -> spec_mod.Spec:

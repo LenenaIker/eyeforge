@@ -189,3 +189,21 @@ def test_uploads_only_interview_never_reads_server_folders(tmp_path):
                           uploads_only=True)
     assert "no access to folders" in s.messages[0]["content"]
     assert s.reply("my photos are in that folder").text == "ok"
+
+
+def test_cloud_job_left_running_shows_and_can_be_cancelled(app, tmp_path, monkeypatch):
+    import time
+
+    from sim2chip.backends import nebius
+    cancelled = []
+    monkeypatch.setattr(nebius.NebiusCLI, "cancel", lambda self, job_id: cancelled.append(job_id))
+    job = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"]
+    logs = tmp_path / "jobs" / job / "logs"
+    app.launched.clear()
+    # A server restart forgets its processes; the marker the run left says a cloud job may still bill.
+    (logs / "cloud_job.json").write_text(json.dumps({"id": "aijob-1", "started": time.time(), "hours": 4}))
+    monkeypatch.setattr(FakeProc, "poll", lambda self: 0)
+    assert app.get(f"/api/jobs/{job}").json()["running"]
+    assert app.post(f"/api/jobs/{job}/corrections", json={"labels": {"x": "cow"}}).status_code == 409
+    assert app.post(f"/api/jobs/{job}/cancel").json()["cloud_job"] == "aijob-1"
+    assert cancelled == ["aijob-1"] and not app.get(f"/api/jobs/{job}").json()["running"]

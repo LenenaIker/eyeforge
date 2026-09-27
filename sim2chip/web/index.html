@@ -131,6 +131,7 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
     <div id="progress" class="hidden">
       <p class="muted" id="job-line"></p>
       <p id="phase" class="hidden"></p>
+      <button id="cancel" class="hidden">Stop this run</button>
       <ol class="stages" id="stages"></ol>
       <details><summary>Log</summary><pre class="log" id="log"></pre></details>
     </div>
@@ -353,6 +354,7 @@ async function poll() {
     (s.cloud_usd ? `, about $${s.cloud_usd.toFixed(2)} of cloud GPU` : "") + (s.running ? ", running" : "");
   $("phase").textContent = s.phase || "";
   $("phase").classList.toggle("hidden", !s.phase);
+  $("cancel").classList.toggle("hidden", !s.running);
   $("stages").innerHTML = "";
   for (const st of s.stages) {
     const li = document.createElement("li");
@@ -557,6 +559,11 @@ async function loadJobs() {
 $("send").onclick = () => send($("say").value.trim());
 $("say").onkeydown = (e) => { if (e.key === "Enter") send($("say").value.trim()); };
 $("yes").onclick = confirmSpec;
+$("cancel").onclick = async () => {
+  if (!confirm("Stop this run? The cloud GPU is released and the stages done so far are kept.")) return;
+  await api(`/api/jobs/${currentJob}/cancel`, {method: "POST"});
+  poll();
+};
 $("spec").oninput = refreshTrain;
 $("drop").onclick = () => $("files").click();
 $("files").onchange = (e) => { addPhotos(e.target.files); e.target.value = ""; };

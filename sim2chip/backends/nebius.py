@@ -53,6 +53,7 @@ WORKER_RESULTS = ("*.json", "export/*", "label/*", "ingest/test/*", "qa_assets/s
                   "generate_assets/*", "logs/*")
 RENDER_SAMPLE = 48
 JOB_DIR, CACHE_DIR = "/tmp/s2c/job", "/tmp/s2c/cache"
+CLOUD_JOB = "cloud_job.json"  # in logs/: the Nebius job of a run in progress
 PREFIX = "[sim2chip]"
 
 
@@ -265,6 +266,9 @@ class NebiusCLI:
                 return line.split(":", 1)[1].strip()
         return "UNKNOWN"
 
+    def cancel(self, job_id: str) -> None:
+        self("ai", "job", "cancel", job_id, check=False)
+
     def job_logs(self, job_id: str) -> str:
         return self("ai", "job", "logs", job_id, check=False)
 
@@ -371,7 +375,12 @@ class NebiusBackend:
         if self.dry_run:
             return
         log(f"  nebius job {job_id} ({PLATFORM}, {PRESET}), whole pipeline in one job")
-        state = self._follow(job_id, job, job_bucket, log)
+        # While this file exists a cloud job may be running and billing: the web reads it (and can cancel the
+        # job) even when the process that launched it is gone.
+        marker = job.logs / CLOUD_JOB
+        marker.write_text(json.dumps({"id": job_id, "started": time.time(), "hours": WORKER_HOURS + 1}))
+        state = self._follow(job_id, job, job_bucket, log)  # if this fails the marker stays, to find the job
+        marker.unlink(missing_ok=True)
         hours = (time.time() - t0) / 3600
         self.spent_usd += hours * USD_PER_HOUR
         self._record(job, "run", job_id, state, hours)
