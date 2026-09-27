@@ -60,14 +60,9 @@ class Render(Stage):
 
         props = Props(stage, app)
         chosen = json.loads((ctx.job.stage_dir("fetch_assets") / "scene.json").read_text())
-        kw = {}
-        if spec.scene.contexts:  # procedural places on top of the generic scene
-            from ..scenes.places import PlacesScene
-            make = PlacesScene
-            kw = {"walls": [str(ctx.cache.root / p) for p in chosen.get("walls", [])],
-                  "contexts": spec.scene.contexts, "railings": spec.scene.railings}
-        else:
-            make = scenes.load(spec.scene.template)
+        make = scenes.load(scenes.template_for(spec.scene))
+        kw = {"walls": [str(ctx.cache.root / p) for p in chosen.get("walls", [])], "contexts": spec.scene.contexts,
+              "railings": spec.scene.railings} if spec.scene.contexts else {}
         scene = make(stage, props, rng, skies=[str(ctx.cache.root / p) for p in chosen["skies"]],
                      distractors=spec.scene.distractors, ground=[str(ctx.cache.root / p) for p in chosen["ground"]],
                      **kw)

@@ -8,6 +8,7 @@ from ..hardware import Hardware
 from ..hardware import get as get_hardware
 from ..spec import Spec
 from ..workspace import Cache, Job
+from ..workspace import say
 
 
 @dataclass
@@ -28,7 +29,7 @@ class Context:
     @staticmethod
     def log(msg: str) -> None:
         # Prefixed so the local backend can show our lines and hide Isaac Sim's noise.
-        print(f"[sim2chip] {msg}", flush=True)
+        say(msg)
 
 
 RUNTIME_TECH = {"isaac": "NVIDIA Isaac Sim", "tf": "TensorFlow", "trellis": "TRELLIS"}

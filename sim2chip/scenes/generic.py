@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import math
 
-from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdShade
+from pxr import Gf, Sdf, UsdGeom, UsdShade
 
-from .common import PEOPLE, TREES, VERGES, make_quad
+from .common import VERGES, OutdoorScene, make_quad
 
 HALF = 300.0   # ground half size (m)
 TILE = 2.0     # texture repeat (m) at scale 1
@@ -54,12 +54,8 @@ def make_textured_ground(stage, path: str, half: float, tile: float):
     return file_in, scale_in, mesh.GetPrim()
 
 
-class GenericScene:
-    def __init__(self, stage, props, rng, skies: list[str], distractors: list[str], ground: list[str] = ()):
-        self.stage, self.props, self.rng = stage, props, rng
-        self.skies, self.ground = list(skies), list(ground)
-        self.want = set(distractors)
-        self.trees, self.people = [], []
+class GenericScene(OutdoorScene):
+    SUN_SHARE = 0.6  # the sky map already lights the scene: an extra sun only sometimes
 
     def build(self) -> None:
         if self.ground:
@@ -67,18 +63,7 @@ class GenericScene:
                 self.stage, "/World/Ground", HALF, TILE)
         else:
             self.ground_color, self.ground_prim = make_quad(self.stage, "/World/Ground", HALF, HALF, 0.0)
-        self.dome = UsdLux.DomeLight.Define(self.stage, "/World/Sky")
-        UsdGeom.Xformable(self.dome).AddRotateZOp()
-        self.sun = UsdLux.DistantLight.Define(self.stage, "/World/Sun")
-        UsdGeom.Xformable(self.sun).AddRotateXYZOp()
-        if "tree" in self.want:
-            self.trees = [self.props.add(f"/World/Distractors/tree{i}", u) for i, u in enumerate(TREES)]
-        if "person" in self.want:
-            self.people = [self.props.add(f"/World/Distractors/person{i}", u) for i, u in enumerate(PEOPLE)]
-
-    def after_load(self) -> None:
-        self.trees = self.props.fit_height(self.trees, (6, 16), self.rng)
-        self.people = self.props.fit_height(self.people, (1.6, 1.9), self.rng)
+        self.build_sky_and_distractors()
 
     def randomize(self, change_sky: bool) -> None:
         rng = self.rng
@@ -94,14 +79,7 @@ class GenericScene:
         else:
             k = rng.uniform(0.6, 1.4)
             self.ground_color.Set(Gf.Vec3f(*(c * k for c in rng.choice(VERGES))))
-        if change_sky:
-            self.dome.CreateTextureFileAttr().Set(rng.choice(self.skies))
-        self.dome.CreateIntensityAttr().Set(rng.uniform(400, 1500))
-        UsdGeom.Xformable(self.dome).GetOrderedXformOps()[0].Set(rng.uniform(0, 360))
-        # The sky map already lights the scene; an extra sun only sometimes (never strong indoors-looking).
-        self.sun.CreateIntensityAttr().Set(rng.uniform(0, 3000) if rng.random() < 0.6 else 0.0)
-        UsdGeom.Xformable(self.sun).GetOrderedXformOps()[0].Set(
-            Gf.Vec3f(rng.uniform(-70, 70), rng.uniform(-70, 70), 0))
+        self.randomize_light(change_sky)
 
     def place_target(self, prim, scale: float):
         """On the ground at the origin, facing any direction. Returns its position."""

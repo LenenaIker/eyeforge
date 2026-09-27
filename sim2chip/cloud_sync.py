@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import config
+from .workspace import say
 
 SHARED = ("db/", "labels/")  # small, append-only knowledge shared by all jobs (assets, teacher answers)
 REGION = config.env("SIM2CHIP_REGION", "eu-north1")  # the project's region; the worker gets it from the job
@@ -148,7 +149,7 @@ def pull(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_b
     if stage.uses_cache:
         m = store.pull(cache_bucket, asset_cache_keys(store.listing(cache_bucket), job), cache)
     m += store.pull(cache_bucket, [k for k in store.listing(cache_bucket) if k.startswith(SHARED)], cache)
-    print(f"[sim2chip] pulled {n} job files and {m} cache files", flush=True)
+    say(f"pulled {n} job files and {m} cache files")
 
 
 def push(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_bucket: str) -> None:
@@ -158,7 +159,7 @@ def push(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_b
     m = store.upload_dir(cache_bucket, cache, "") if stage.uses_cache else 0
     if not stage.uses_cache:  # the shared knowledge (asset verdicts, teacher answers) is append-only: new files
         m += sum(store.upload_dir(cache_bucket, cache / p.rstrip("/"), p.rstrip("/")) for p in SHARED)
-    print(f"[sim2chip] pushed {n} job files and {m} cache files", flush=True)
+    say(f"pushed {n} job files and {m} cache files")
 
 
 def main() -> int:

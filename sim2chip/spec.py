@@ -403,8 +403,9 @@ def validate(spec: Spec) -> None:
         if p.count < 1 or p.max_per_frame < 1:
             raise SpecError(f"prop {p.id}: count and max_per_frame must be at least 1")
     from .scenes import TEMPLATES
-    if spec.scene.template not in TEMPLATES:
-        raise SpecError(f"scene.template must be one of {sorted(TEMPLATES)}")
+    named = sorted(set(TEMPLATES) - {"places"})  # places is chosen by scene.contexts, not by name
+    if spec.scene.template not in named:
+        raise SpecError(f"scene.template must be one of {named}")
     bad = [w for w in spec.scene.weather if w not in WEATHER]
     if bad or not spec.scene.weather:
         raise SpecError(f"scene.weather must be a non-empty subset of {WEATHER}")

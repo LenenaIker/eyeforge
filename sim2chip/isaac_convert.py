@@ -8,6 +8,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from .workspace import say
 
 
 async def convert(src: str, dst: str) -> bool:
@@ -22,7 +23,7 @@ async def convert(src: str, dst: str) -> bool:
     task = converter.get_instance().create_converter_task(src, dst, None, c)
     ok = await task.wait_until_finished()
     if not ok:
-        print("[sim2chip] conversion error", src, task.get_error_message(), flush=True)
+        say(f"conversion error {src} {task.get_error_message()}")
     return ok
 
 
@@ -33,7 +34,7 @@ def main() -> int:
         loop = asyncio.get_event_loop()
         pairs = json.loads(Path(sys.argv[1]).read_text())
         ok = sum(loop.run_until_complete(convert(src, dst)) for src, dst in pairs)
-        print(f"[sim2chip] Asset Converter: {ok} of {len(pairs)} models converted", flush=True)
+        say(f"Asset Converter: {ok} of {len(pairs)} models converted")
     finally:
         app.close()
     return 0

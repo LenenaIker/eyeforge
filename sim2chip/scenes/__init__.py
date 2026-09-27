@@ -2,7 +2,14 @@
 distractors. The spec picks one by name (scene.template)."""
 from __future__ import annotations
 
-TEMPLATES = {"road": "sim2chip.scenes.road:RoadScene", "generic": "sim2chip.scenes.generic:GenericScene"}
+TEMPLATES = {"road": "sim2chip.scenes.road:RoadScene", "generic": "sim2chip.scenes.generic:GenericScene",
+             "places": "sim2chip.scenes.places:PlacesScene"}
+
+
+def template_for(scene) -> str:
+    """The template a spec's scene section needs: contexts (balconies, rooms...) are built by "places", on top of
+    the generic scene."""
+    return "places" if scene.contexts else scene.template
 
 
 def load(name: str):

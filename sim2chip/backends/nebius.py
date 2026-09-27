@@ -37,7 +37,7 @@ from secrets import token_hex
 from .. import config
 from ..cloud_sync import REGION, S3Store
 from ..stages import Stage
-from ..workspace import DONE, REPO, Cache, Job
+from ..workspace import DONE, LOG_PREFIX as PREFIX, REPO, Cache, Job
 
 # The GPU and its price go together: set all three to try another platform (for instance when eu-north1 has
 # no L40S left). Isaac Sim needs a GPU with RT cores (L40S yes, H100/H200 no).
@@ -54,7 +54,6 @@ WORKER_RESULTS = ("*.json", "export/*", "label/*", "ingest/test/*", "qa_assets/s
 RENDER_SAMPLE = 48
 JOB_DIR, CACHE_DIR = "/tmp/s2c/job", "/tmp/s2c/cache"
 CLOUD_JOB = "cloud_job.json"  # in logs/: the Nebius job of a run in progress
-PREFIX = "[sim2chip]"
 
 
 @dataclass(frozen=True)

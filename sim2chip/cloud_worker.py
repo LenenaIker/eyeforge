@@ -28,6 +28,7 @@ from .backends.local import LocalBackend
 from .cloud_sync import SHARED, S3Store, asset_cache_keys, wanted
 from .pipeline import Pipeline, StageFailed
 from .workspace import DONE, Cache, Job
+from .workspace import say
 
 PROGRESS_S = 20
 LOG = "logs/cloud_pipeline.log"
@@ -56,7 +57,7 @@ def probe_caches() -> None:
                     mb = sum(f.stat().st_size for f in sub.rglob("*") if f.is_file()) / 1e6
                 except OSError:  # unreadable folders must not stop the run
                     continue
-                print(f"[sim2chip] cache probe {sub}: {mb:.0f} MB", flush=True)
+                say(f"cache probe {sub}: {mb:.0f} MB")
 
 
 def sync_progress(store: S3Store, bucket: str, job: Path) -> None:
@@ -87,8 +88,7 @@ def main() -> int:
     listing = store.listing(cache_bucket, "gpu/")
     g = sum(store.pull(cache_bucket, [k for k in listing if k.startswith(prefix + "/")], gpu_cache(local),
                        strip=prefix) for prefix, local in GPU_CACHES.items())
-    print(f"[sim2chip] worker: pulled {n} job files, {m} shared cache files and {g} GPU cache files, "
-          f"{len(todo)} stages to run", flush=True)
+    say(f"worker: pulled {n} job files, {m} shared cache files and {g} GPU cache files, {len(todo)} stages to run")
     setup = os.environ.get("S2C_SETUP_S")
     if setup:  # code download and Python environment, measured by the job script
         job.timeline("cloud: set up environment", float(setup), "nebius")
@@ -110,7 +110,7 @@ def main() -> int:
             try:
                 sync_progress(store, job_bucket, job.root)
             except Exception as e:  # a failed progress upload must not kill the run
-                print(f"[sim2chip] progress upload failed: {e}", flush=True)
+                say(f"progress upload failed: {e}")
     t = threading.Thread(target=progress, daemon=True)
     t.start()
     code = 1
@@ -133,7 +133,7 @@ def main() -> int:
     job.timeline("cloud: push cache", time.time() - t0, "nebius", files=m)
     n = store.upload_dir(job_bucket, job.root, "")
     sync_progress(store, job_bucket, job.root)
-    print(f"[sim2chip] worker: pushed {n} job files and {m} cache files, exit {code}", flush=True)
+    say(f"worker: pushed {n} job files and {m} cache files, exit {code}")
     return code
 
 

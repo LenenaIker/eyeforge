@@ -1,7 +1,9 @@
 """USD helpers shared by scene templates. Import only inside a running Isaac Sim app."""
 from __future__ import annotations
 
-from pxr import Gf, Sdf, Semantics, UsdGeom, UsdShade
+from pxr import Gf, Sdf, Semantics, UsdGeom, UsdLux, UsdShade
+
+from ..workspace import say
 
 NVIDIA_ASSETS = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets"
 
@@ -75,7 +77,7 @@ class Props:
                     break
                 self.app.update()
             if h <= 0:
-                print(f"[sim2chip] prop dropped, no geometry: {prim.GetPath()}", flush=True)
+                say(f"prop dropped, no geometry: {prim.GetPath()}")
                 continue
             self.base_scale[str(prim.GetPath())] = rng.uniform(*h_range) / h
             ok.append(prim)
@@ -144,3 +146,41 @@ class Paint:
         api.Bind(self.mat, UsdShade.Tokens.strongerThanDescendants)
         return True
 
+
+class OutdoorScene:
+    """What the outdoor templates share: a sky map with a sun, trees and bystanders as distractors.
+
+    A template adds its ground in build() and its layout in randomize(); the interface render uses is
+    build, after_load, randomize(change_sky), place_target(prim, scale) and place_distractors(eye)."""
+    SUN_SHARE = 1.0  # frames with a sun besides the sky map's own light
+
+    def __init__(self, stage, props, rng, skies: list[str], distractors: list[str], ground: list[str] = ()):
+        self.stage, self.props, self.rng = stage, props, rng
+        self.skies, self.ground = list(skies), list(ground)
+        self.want = set(distractors)
+        self.trees, self.people = [], []
+
+    def build_sky_and_distractors(self) -> None:
+        self.dome = UsdLux.DomeLight.Define(self.stage, "/World/Sky")
+        UsdGeom.Xformable(self.dome).AddRotateZOp()
+        self.sun = UsdLux.DistantLight.Define(self.stage, "/World/Sun")
+        UsdGeom.Xformable(self.sun).AddRotateXYZOp()
+        if "tree" in self.want:
+            self.trees = [self.props.add(f"/World/Distractors/tree{i}", u) for i, u in enumerate(TREES)]
+        if "person" in self.want:
+            self.people = [self.props.add(f"/World/Distractors/person{i}", u) for i, u in enumerate(PEOPLE)]
+
+    def after_load(self) -> None:
+        self.trees = self.props.fit_height(self.trees, (6, 16), self.rng)
+        self.people = self.props.fit_height(self.people, (1.6, 1.9), self.rng)
+
+    def randomize_light(self, change_sky: bool) -> None:
+        rng = self.rng
+        if change_sky:
+            self.dome.CreateTextureFileAttr().Set(rng.choice(self.skies))
+        self.dome.CreateIntensityAttr().Set(rng.uniform(400, 1500))
+        UsdGeom.Xformable(self.dome).GetOrderedXformOps()[0].Set(rng.uniform(0, 360))
+        sun = rng.uniform(0, 3000) if self.SUN_SHARE >= 1 or rng.random() < self.SUN_SHARE else 0.0
+        self.sun.CreateIntensityAttr().Set(sun)
+        UsdGeom.Xformable(self.sun).GetOrderedXformOps()[0].Set(
+            Gf.Vec3f(rng.uniform(-70, 70), rng.uniform(-70, 70), 0))

@@ -15,14 +15,13 @@ from pathlib import Path
 
 from .. import config
 from ..stages import Stage
-from ..workspace import REPO, Cache, Job
+from ..workspace import LOG_PREFIX as PREFIX, REPO, Cache, Job
 
 # Where this machine keeps the other runtimes: environment or .env (see README). Isaac Sim's default is the
 # standard install folder; the image-to-3D runtime has no default. Its model weights go wherever HF_HUB_CACHE
 # and TORCH_HOME point (set them in .env to keep the weights off the system disk).
 ISAAC_PYTHON = str(Path.home() / "isaacsim" / "python.sh")
 TRELLIS_ENV = ("HF_HUB_CACHE", "TORCH_HOME")
-PREFIX = "[sim2chip]"
 
 
 class LocalBackend:

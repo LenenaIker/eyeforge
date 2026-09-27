@@ -18,6 +18,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 DONE = "_done.json"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}  # photos the user can give
+LOG_PREFIX = "[sim2chip]"  # marks our lines in the noisy output of Isaac Sim and TensorFlow; backends keep only these
 
 
 def content_key(path: Path) -> str:
@@ -144,3 +145,8 @@ def objaverse_at(folder: Path):
     objaverse.BASE_PATH = str(folder)
     objaverse._VERSIONED_PATH = str(Path(folder) / "hf-objaverse-v1")
     return objaverse
+
+
+def say(msg: str) -> None:
+    """A progress line for the logs (see LOG_PREFIX)."""
+    print(f"{LOG_PREFIX} {msg}", flush=True)

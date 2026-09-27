@@ -6,35 +6,19 @@ from __future__ import annotations
 
 import math
 
-from pxr import Gf, UsdGeom, UsdLux
+from pxr import Gf, UsdGeom
 
-from .common import PEOPLE, TREES, VERGES, make_quad
+from .common import VERGES, OutdoorScene, make_quad
 
 
-
-class RoadScene:
-    def __init__(self, stage, props, rng, skies: list[str], distractors: list[str], ground: list[str] = ()):
-        # ground textures are not used: the road template paints its verges with plain colors
-        self.stage, self.props, self.rng, self.skies = stage, props, rng, skies
-        self.want = set(distractors)
-        self.trees, self.people = [], []
-        self.yaw, self.half_w = 0.0, 3.0
+class RoadScene(OutdoorScene):
+    # Ground textures are not used: the road template paints its verges with plain colors.
+    yaw, half_w = 0.0, 3.0
 
     def build(self) -> None:
         self.ground_color, _ = make_quad(self.stage, "/World/Ground", 400, 400, 0.0)
         self.road_color, self.road = make_quad(self.stage, "/World/Road", 400, 1, 0.02)
-        self.dome = UsdLux.DomeLight.Define(self.stage, "/World/Sky")
-        UsdGeom.Xformable(self.dome).AddRotateZOp()
-        self.sun = UsdLux.DistantLight.Define(self.stage, "/World/Sun")
-        UsdGeom.Xformable(self.sun).AddRotateXYZOp()
-        if "tree" in self.want:
-            self.trees = [self.props.add(f"/World/Distractors/tree{i}", u) for i, u in enumerate(TREES)]
-        if "person" in self.want:
-            self.people = [self.props.add(f"/World/Distractors/person{i}", u) for i, u in enumerate(PEOPLE)]
-
-    def after_load(self) -> None:
-        self.trees = self.props.fit_height(self.trees, (6, 16), self.rng)
-        self.people = self.props.fit_height(self.people, (1.6, 1.9), self.rng)
+        self.build_sky_and_distractors()
 
     def randomize(self, change_sky: bool) -> None:
         rng = self.rng
@@ -47,13 +31,7 @@ class RoadScene:
         ops = UsdGeom.Xformable(self.road).GetOrderedXformOps()
         ops[0].Set(self.yaw)
         ops[1].Set(Gf.Vec3f(1, self.half_w, 1))
-        if change_sky:
-            self.dome.CreateTextureFileAttr().Set(rng.choice(self.skies))
-        self.dome.CreateIntensityAttr().Set(rng.uniform(400, 1500))
-        UsdGeom.Xformable(self.dome).GetOrderedXformOps()[0].Set(rng.uniform(0, 360))
-        self.sun.CreateIntensityAttr().Set(rng.uniform(0, 3000))
-        UsdGeom.Xformable(self.sun).GetOrderedXformOps()[0].Set(
-            Gf.Vec3f(rng.uniform(-70, 70), rng.uniform(-70, 70), 0))
+        self.randomize_light(change_sky)
 
     def _on_road(self, t: float, lat: float):
         """Point t meters along the road and lat meters from its axis."""
