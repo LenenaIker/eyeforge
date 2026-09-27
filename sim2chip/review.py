@@ -86,9 +86,11 @@ def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str =
 
 
 def apply(job: Job, cache: Cache, labels: dict[str, str], assets: dict[str, str],
-          points: dict[str, list] | None = None) -> str | None:
+          points: dict[str, list] | None = None, share: bool = True) -> str | None:
     """Save corrections and return the stage to rerun from (None when nothing changed). `points` maps a photo
-    to all its objects as [x, y, class] (the photo's full, corrected list)."""
+    to all its objects as [x, y, class] (the photo's full, corrected list). Asset decisions always apply to
+    this job; with `share` they also go to the shared asset knowledge base, which every later job trusts
+    (off on a public server, where one visitor must not decide for the others)."""
     fixes = load_corrections(job)
     changed_labels = {k: v for k, v in labels.items() if fixes["labels"].get(k) != v}
     fixes["labels"] |= changed_labels
@@ -99,7 +101,7 @@ def apply(job: Job, cache: Cache, labels: dict[str, str], assets: dict[str, str]
     fixes["assets"] |= assets
     job.input.mkdir(parents=True, exist_ok=True)
     (job.input / CORRECTIONS).write_text(json.dumps(fixes, indent=1))
-    if assets:
+    if assets and share:
         from .asset_db import AssetDB
         from .stages.qa_assets import concept_of
         by_uid = {a["uid"]: a for a in json.loads((job.stage_dir("convert_assets") / "assets.json").read_text())}

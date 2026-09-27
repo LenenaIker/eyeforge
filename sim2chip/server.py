@@ -279,7 +279,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if running(job):
             raise HTTPException(409, f"job {job.name} is running")
         start = review.apply(job, Cache(home / "cache"), body.get("labels") or {}, body.get("assets") or {},
-                             body.get("points") or {})
+                             body.get("points") or {}, share=not public)
         if start is None:
             return {"rerun_from": None}
         request = job.root / "request.json"

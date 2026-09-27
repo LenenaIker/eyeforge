@@ -160,10 +160,14 @@ class QAAssets(Stage):
         New verdicts go back into the knowledge base."""
         from ..asset_db import AssetDB
 
+        from .. import review as review_mod
+
         db = AssetDB(ctx.cache.db)
+        mine = review_mod.load_corrections(ctx.job)["assets"]  # this job's review wins over the shared base
         verdicts, todo = {}, []
         for a in assets:
-            r = db.lookup(a["uid"], concept_of(a))
+            r = {"decision": mine[a["uid"]], "reason": "set by the user in review"} if a["uid"] in mine \
+                else db.lookup(a["uid"], concept_of(a))
             if r:
                 verdicts[a["uid"]] = {"decision": r["decision"], "no_color": r.get("no_color", False),
                                       "reason": r.get("reason", ""), "from_db": True}
