@@ -21,17 +21,24 @@ from .spec import CONTEXTS, RAILINGS, WALLS
 SAMPLE = 16         # photos looked at
 MIN_SHARE = 0.1     # contexts seen in fewer photos than this are left out
 
+# What each context of spec.CONTEXTS looks like in a photo (a new context needs its words here).
+CONTEXT_WORDS = {"facade": "a building front seen from the street", "balcony": "on a balcony or terrace, seen from close",
+                 "indoor": "inside a room", "ground": "outdoors on open ground: street, garden, yard, field"}
+
+
+def _quoted(items) -> str:
+    return ", ".join(f'"{i}"' for i in items)
+
+
 PROMPT = """This photo comes from a user who wants a small camera model for: {classes}.
 We will rebuild places like this one in 3D to make training images, so describe where those objects are.
 
 Answer only with JSON:
-{{"context": "facade" (a building front seen from the street) | "balcony" (on a balcony or terrace, seen from
-  close) | "indoor" (inside a room) | "ground" (outdoors on open ground: street, garden, yard, field),
+{{"context": """ + " | ".join(f'"{k}" ({CONTEXT_WORDS[k]})' for k in CONTEXTS) + """,
  "distance_m": <typical camera distance to the objects, meters>,
- "supports": [where the objects stand, from "ground", "balcony_floor", "railing", "window_sill", "floor",
-  "furniture"],
- "wall": "brick" | "plaster" | "stone" | "concrete" | "wood" | "none" (the main wall material in view),
- "railing": "bars" | "glass" | "solid" | "none"}}"""
+ "supports": [where the objects stand, from """ + _quoted(dict.fromkeys(s for v in CONTEXTS.values() for s in v)) + """],
+ "wall": """ + " | ".join(f'"{w}"' for w in (*WALLS, "none")) + """ (the main wall material in view),
+ "railing": """ + " | ".join(f'"{r}"' for r in (*RAILINGS, "none")) + """}}"""
 
 
 def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0) -> list[dict]:
