@@ -1,7 +1,7 @@
 import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, DollarSign, Loader2, Square, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { isHandheld } from "../live/device";
+import { enterCameraMode, isHandheld } from "../live/device";
 import * as API from "../api";
 import type { Report, Stage, Status } from "../api";
 import { Badge, Button, Card, Notice, cx } from "../components/ui";
@@ -152,7 +152,7 @@ function Result({ job, r, usd }: { job: string; r: Report; usd: number }) {
       <Card className="p-6">
         <Badge tone="good"><Check className="h-3 w-3" /> Ready</Badge>
         {isHandheld() && r.portable_model_path && (
-          <Link to={`/app/job/${job}/live`}
+          <Link to={`/app/job/${job}/live`} onClick={() => { enterCameraMode(); }}
                 className="mt-4 flex h-14 w-full items-center justify-center gap-2 rounded-[var(--radius-control)] bg-ink text-base font-semibold text-white shadow-sm">
             <Camera className="h-5 w-5" /> Try it live with your camera
           </Link>

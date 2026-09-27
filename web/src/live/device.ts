@@ -7,3 +7,13 @@ export function isHandheld(): boolean {
   const ipad = /macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1;
   return coarse || mobileUa || ipad;
 }
+
+/** Full screen and portrait lock, like a camera app. Browsers only allow it from a user gesture, so it is called
+ * from the tap that opens the live test. Where it is refused (iOS, some browsers), the live page still works:
+ * it fills the screen anyway and turns the frame by the gravity sensor. */
+export async function enterCameraMode() {
+  try {
+    if (!document.fullscreenElement) await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+    await (screen.orientation as any).lock?.("portrait-primary");
+  } catch { /* not supported here */ }
+}
