@@ -10,7 +10,7 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web ./
-RUN npx tsc -b && npx vite build --outDir /dist
+RUN npm run build -- --outDir /dist
 
 FROM python:3.11-slim
 

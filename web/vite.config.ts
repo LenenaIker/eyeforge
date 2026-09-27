@@ -32,7 +32,10 @@ export default defineConfig({
       workbox: {
         globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
         // Fonts load by unicode range: the browser fetches other alphabets only when a page uses them.
-        globIgnores: ["**/inter-{cyrillic,cyrillic-ext,greek,greek-ext,vietnamese}-*"],
+        globIgnores: ["**/inter-{cyrillic,cyrillic-ext,greek,greek-ext,vietnamese}-*", "litert/**"],
+        // The model runtime (9 MB of WebAssembly) is fetched the first time someone tests a model live, then
+        // kept for offline use; it is not part of the app's first download.
+        runtimeCaching: [{ urlPattern: /\/litert\//, handler: "CacheFirst", options: { cacheName: "litert-runtime" } }],
         navigateFallback: "/index.html",
         navigateFallbackDenylist: [/^\/api\//],
       },

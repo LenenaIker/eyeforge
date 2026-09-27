@@ -9,3 +9,4 @@ runs
 web/node_modules/
 sim2chip/web/dist/
 web/*.tsbuildinfo
+web/public/litert/

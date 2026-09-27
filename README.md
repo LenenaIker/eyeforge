@@ -66,6 +66,9 @@ The web app is React + Vite + Tailwind in `web/` and installs as an app on phone
 run `sim2chip serve` and, in `web/`, `npm run dev`: it serves the app with live reload and forwards `/api`
 to the server. Design notes in `web/DESIGN.md`.
 
+On a phone or tablet, a finished model can be tried live with the camera ("Try it live"): it runs in the
+browser with LiteRT.js, on the device, and keeps working offline once opened.
+
 For the Nebius backend: install the `nebius` CLI and log in (a service account on a server), create an
 object storage key and two MysteryBox secrets (the storage key for the jobs, `SIM2CHIP_S3_SECRET`, and the
 Token Factory key, `SIM2CHIP_NEBIUS_SECRET`), and set `SIM2CHIP_NEBIUS_PROJECT`. Nothing else is installed

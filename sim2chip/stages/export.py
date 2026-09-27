@@ -3,21 +3,24 @@
 
 The shipped model is the seed with the best validation accuracy (the real test set does not choose it).
 The report lists the 3D models used and their authors, as their CC-BY licenses require.
+Both .tflite files get a fixed batch of 1: Keras exports a dynamic one (-1), which runtimes that cannot resize
+inputs, such as LiteRT.js in the web app's live test, refuse.
 Output: export/{model_int8.tflite, model.tflite, labels.txt, report.json}, export/model_data.h (TFLite Micro)
 """
 from __future__ import annotations
 
 import json
 import shutil
+import struct
 
 from .base import Context, Stage
 
 
 class Export(Stage):
     name = "export"
+    version = "4"  # fixed batch 1 in the .tflite files (live test in the browser)
     runtime = "cpu"
     results = ("*",)
-    version = "3"
     after = ("train", "evaluate", "qa_assets")
     uses = ("hardware", "classes", "background_class", "task")
 
@@ -28,12 +31,12 @@ class Export(Stage):
         val = "val_f1" if counting else "val_acc"
         seed = max(summary, key=lambda s: summary[s][val])
         src = ctx.job.stage_dir("train") / f"seed_{seed}"
-        blob = (src / "model_int8.tflite").read_bytes()
+        blob = fixed_batch((src / "model_int8.tflite").read_bytes())
         out = ctx.job.stage_dir(self.name)
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
         (out / "model_int8.tflite").write_bytes(blob)
-        shutil.copy2(src / "model_float_io.tflite", out / "model.tflite")
+        (out / "model.tflite").write_bytes(fixed_batch((src / "model_float_io.tflite").read_bytes()))
         (out / "labels.txt").write_text("\n".join(ctx.spec.labels) + "\n")
         if hw.runtime == "tflite-micro":
             (out / "model_data.h").write_text(c_array(blob, ctx.spec.labels, hw.input_size))
@@ -60,6 +63,37 @@ class Export(Stage):
         (out / "report.json").write_text(json.dumps(report, indent=2))
         ctx.log(f"exported seed {seed}: {kb} KB, labels {ctx.spec.labels}")
         return {"seed": int(seed), "model_kb": kb}
+
+
+def fixed_batch(blob: bytes) -> bytes:
+    """The model with batch 1 instead of -1 in every tensor's shape signature. A same-size edit of the
+    flatbuffer (Model.subgraphs[].tensors[].shape_signature[0]), so no TensorFlow is needed here."""
+    if blob[4:8] != b"TFL3":  # not a TFLite flatbuffer: leave it alone
+        return blob
+    buf = bytearray(blob)
+    u32 = lambda at: struct.unpack_from("<I", buf, at)[0]  # noqa: E731
+
+    def field(table: int, i: int) -> int | None:
+        vt = table - struct.unpack_from("<i", buf, table)[0]
+        if 4 + 2 * i >= struct.unpack_from("<H", buf, vt)[0]:
+            return None
+        off = struct.unpack_from("<H", buf, vt + 4 + 2 * i)[0]
+        return table + off if off else None
+
+    def vector(table: int, i: int) -> list[int]:  # element positions
+        f = field(table, i)
+        if f is None:
+            return []
+        v = f + u32(f)
+        return [v + 4 + 4 * k for k in range(u32(v))]
+
+    model = u32(0)
+    for sg in vector(model, 2):                    # Model.subgraphs
+        for t in vector(sg + u32(sg), 0):           # SubGraph.tensors
+            dims = vector(t + u32(t), 7)            # Tensor.shape_signature
+            if dims and struct.unpack_from("<i", buf, dims[0])[0] == -1:
+                struct.pack_into("<i", buf, dims[0], 1)
+    return bytes(buf)
 
 
 def c_array(blob: bytes, labels: list[str], size: int) -> str:

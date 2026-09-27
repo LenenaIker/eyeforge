@@ -1,8 +1,9 @@
-import { ChevronDown, FolderOpen, Plus } from "lucide-react";
+import { ChevronDown, FolderOpen, Plus, WifiOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate, useOutletContext } from "react-router-dom";
 import { getConfig, listJobs, type Config } from "../api";
 import InstallButton from "../components/InstallButton";
+import { savedJobs } from "../live/saved";
 import { Badge, Logo, Notice, cx } from "../components/ui";
 
 export type AppContext = { config: Config | null; refreshJobs: () => void };
@@ -47,7 +48,9 @@ export default function AppShell() {
 
 function JobsMenu({ jobs }: { jobs: string[] }) {
   const [open, setOpen] = useState(false);
+  const [offline, setOffline] = useState<Set<string>>(new Set());  // models saved on this device for the live test
   const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (open) savedJobs().then(setOffline).catch(() => {}); }, [open]);
   const navigate = useNavigate();
   const { pathname } = useLocation();
   useEffect(() => { setOpen(false); }, [pathname]);
@@ -75,7 +78,10 @@ function JobsMenu({ jobs }: { jobs: string[] }) {
               <Link key={j} to={`/app/job/${j}`}
                     className={cx("block truncate px-4 py-2.5 text-sm hover:bg-stone-50",
                                   pathname.endsWith(`/${j}`) && "bg-stone-50 font-medium")}>
-                {j}
+                <span className="flex items-center justify-between gap-2">
+                  <span className="truncate">{j}</span>
+                  {offline.has(j) && <WifiOff className="h-3.5 w-3.5 shrink-0 text-muted" aria-label="works offline on this device" />}
+                </span>
               </Link>
             ))}
           </div>
