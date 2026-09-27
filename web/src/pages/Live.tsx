@@ -112,7 +112,12 @@ export default function Live() {
 
       <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
         {!model && !error && <p className="flex items-center gap-3 text-white/80"><Spinner /> Loading your model</p>}
-        {error && <p className="max-w-sm px-6 text-center text-white/90">{error}</p>}
+        {error && (
+          <div className="max-w-sm space-y-4 px-6 text-center">
+            <p className="text-white/90">{error}</p>
+            <button onClick={() => window.location.reload()} className="h-11 rounded-full bg-white px-5 font-medium text-ink">Try again</button>
+          </div>
+        )}
         {model && !error && (
           <div className="relative" style={frame ? { aspectRatio: `${frame.w} / ${frame.h}`,
                                                       width: `min(100vw, calc((100dvh - 190px) * ${frame.w / frame.h}))` } : undefined}>

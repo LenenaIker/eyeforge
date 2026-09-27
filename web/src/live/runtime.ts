@@ -47,8 +47,11 @@ async function freshReport(job: string): Promise<any> {
 }
 
 export async function loadModel(job: string): Promise<LiveModel> {
-  runtime ??= loadLiteRt("/litert/");
-  await runtime;
+  // A failed script download can leave the runtime promise pending forever: give up after a while, and let the
+  // next attempt start over instead of reusing the failed one.
+  runtime ??= Promise.race([loadLiteRt("/litert/"), new Promise((_, no) => setTimeout(
+    () => no(new Error("Could not download the model runtime. Check the connection and try again.")), 60_000))]);
+  try { await runtime; } catch (e) { runtime = null; throw e; }
   const report = await freshReport(job);
   if (!report.portable_model_path) throw new Error("This model was trained before live testing existed: train it again.");
   const bytes = new Uint8Array(await (await cached(job, "model.tflite")).arrayBuffer());
