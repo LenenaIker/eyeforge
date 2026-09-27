@@ -109,11 +109,17 @@ def _glb2usd(ctx: Context, todo: list[tuple[Path, str]]) -> list[tuple[Path, str
     return failed
 
 
-def _normalize_one(raw_norm: tuple[Path, Path]) -> None:
+def _normalize_one(raw_norm: tuple[Path, Path]) -> str | None:
+    """None when done, else the error: one broken mesh must not stop the others."""
     raw, norm = raw_norm
-    dims = normalize(raw, norm)
+    try:
+        dims = normalize(raw, norm)
+    except Exception as e:  # corrupt USD, degenerate hull...: whatever it is, only this model is lost
+        norm.unlink(missing_ok=True)
+        return f"{type(e).__name__}: {e}"
     if dims is not None:
         norm.with_suffix(".json").write_text(json.dumps({"dims": dims}))
+    return None
 
 
 def _normalize_all(ctx: Context, todo: list[tuple[Path, Path]]) -> None:
@@ -125,7 +131,10 @@ def _normalize_all(ctx: Context, todo: list[tuple[Path, Path]]) -> None:
 
     t0 = time.time()
     with ProcessPoolExecutor(max(1, min(os.cpu_count() or 1, len(todo)))) as pool:
-        list(pool.map(_normalize_one, todo))
+        errors = list(pool.map(_normalize_one, todo))
+    for (raw, _), err in zip(todo, errors):
+        if err:
+            ctx.log(f"could not normalize {raw.name}, left out: {err}")
     ctx.log(f"normalized {len(todo)} models in {time.time() - t0:.1f} s")
 
 
@@ -144,7 +153,13 @@ def _asset_converter(ctx: Context, todo: list[tuple[Path, str]]) -> None:
     pairs = [[str(glb), str(ctx.cache.usd_raw / f"{uid}.usd")] for glb, uid in todo]
     ctx.log(f"{len(pairs)} models to Isaac Sim's Asset Converter")
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH")]))}
-    subprocess.run(exe + ["-m", "sim2chip.isaac_convert", json.dumps(pairs)], env=env, cwd=REPO)
+    # The pairs go in a file: one argv string is capped at 128 KiB on Linux.
+    pairs_file = ctx.out("convert_assets") / "_isaac_pairs.json"
+    pairs_file.write_text(json.dumps(pairs))
+    r = subprocess.run(exe + ["-m", "sim2chip.isaac_convert", str(pairs_file)], env=env, cwd=REPO)
+    pairs_file.unlink(missing_ok=True)
+    if r.returncode:
+        ctx.log(f"Isaac Sim's Asset Converter exited with {r.returncode}: models it did not write are left out")
 
 
 def world_points(stage, max_pts: int = 60000):

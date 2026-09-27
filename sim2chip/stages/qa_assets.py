@@ -190,7 +190,7 @@ class QAAssets(Stage):
     def judge(self, ctx: Context, assets: list[dict]) -> dict:
         from PIL import Image
 
-        from ..llm import Client, image_part, parse_json
+        from ..llm import Client, LLMError, image_part, parse_json
 
         prev = ctx.job.stage_dir("preview_assets")
         views = json.loads((prev / "views.json").read_text())
@@ -216,7 +216,10 @@ class QAAssets(Stage):
             files = views.get(a["uid"], [])
             if len(files) < 4:
                 return None
-            ims = [Image.open(prev / f).convert("RGB") for f in files[:4]]
+            ims = []
+            for f in files[:4]:
+                with Image.open(prev / f) as im:
+                    ims.append(im.convert("RGB"))
             w, h = ims[0].size
             sheet = Image.new("RGB", (w * 2, h * 2))
             for k, im in enumerate(ims):
@@ -229,13 +232,23 @@ class QAAssets(Stage):
             for _ in range(2):
                 try:
                     v = parse_json(client.chat(msg, mdl, purpose=purpose, temperature=0.0, max_tokens=4096))
-                    if check(v):
+                    if isinstance(v, dict) and check(v):
                         return v
-                except ValueError:
+                except (ValueError, TypeError, KeyError, AttributeError):
                     pass
             return None
 
+        errors = []
+
         def one(a):
+            try:
+                return judge_one(a)
+            except (OSError, LLMError) as e:  # one broken sheet or failed call costs that asset only
+                ctx.log(f"  {a['uid']}: {e}")
+                errors.append(a["uid"])
+                return a["uid"], None
+
+        def judge_one(a):
             path = sheet_for(a)
             if path is None:
                 return a["uid"], None
@@ -256,6 +269,8 @@ class QAAssets(Stage):
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             verdicts = dict(pool.map(one, assets))
+        if assets and len(errors) == len(assets):
+            raise RuntimeError(f"the vision model failed on all {len(assets)} assets, see the lines above")
         failed = [u for u, v in verdicts.items() if v is None]
         if failed:
             ctx.log(f"{len(failed)} assets without a valid verdict are discarded")

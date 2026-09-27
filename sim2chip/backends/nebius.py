@@ -350,7 +350,7 @@ class NebiusBackend:
         script = job.logs / "worker.nebius.sh"
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text(worker_script(job.name, plan_args))
-        secrets = self._secrets(any(st.needs_llm for st in todo))
+        secrets = self._secrets(any(st.calls_llm(pipe.spec) for st in todo))
         env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url}
         name = f"s2c-{job.name}-run".lower().replace("_", "-")[:63]
         job.timeline("upload job", time.time() - t_up, "local")
@@ -378,9 +378,20 @@ class NebiusBackend:
         """Waits for the job, echoing new lines of the cloud pipeline log (the web reads them from the local
         log) and bringing done markers back as stages finish."""
         seen, last, since = 0, None, time.time()
+        # The job times out after WORKER_HOURS of running; the extra hour covers the queue and the image pull.
+        deadline = since + (WORKER_HOURS + 1) * 3600
+        misses, store_error = 0, None
         while True:
-            state = self.cli.job_state(job_id)
-            if state != last:
+            try:
+                state = self.cli.job_state(job_id)
+            except RuntimeError as e:  # a transient CLI failure must not orphan a job that is still billing
+                log(f"  could not read the job state: {e}")
+                state = "UNKNOWN"
+            misses = misses + 1 if state == "UNKNOWN" else 0
+            if misses >= 10 or time.time() > deadline:
+                raise RuntimeError(f"lost track of Nebius job {job_id} (state {state}): check it with "
+                                   f"'nebius ai job get {job_id}' and cancel it if it still runs")
+            if state != last and state != "UNKNOWN":
                 now = time.time()
                 if last is not None:  # how long the job stayed in each state: queue, image pull, run
                     job.timeline(f"nebius job: {last.lower()}", now - since, "nebius")
@@ -391,8 +402,10 @@ class NebiusBackend:
                 for key in self.store.listing(bucket):
                     if key.endswith("/" + DONE):
                         self.store.s3.download_file(bucket, key, str(job.root / key))
-            except Exception:  # nothing uploaded yet, or a transient error
-                pass
+            except Exception as e:  # nothing uploaded yet, or a transient error; say it once
+                if store_error is None and "NoSuchKey" not in str(e) and "404" not in str(e):
+                    log(f"  could not read the job bucket yet: {e}")
+                store_error = e
             cloud_log = job.logs / "cloud_pipeline.log"
             lines = cloud_log.read_text(errors="replace").splitlines() if cloud_log.exists() else []
             if len(lines) < seen:  # a new log replaced an older one
@@ -452,13 +465,7 @@ class NebiusBackend:
         script = job.logs / f"{stage.name}.nebius.sh"
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text(bootstrap(stage, fp))
-        s3_secret = _env("SIM2CHIP_S3_SECRET", "sim2chip-s3")
-        secrets = [f"AWS_ACCESS_KEY_ID={s3_secret}", f"AWS_SECRET_ACCESS_KEY={s3_secret}"]
-        if stage.needs_llm:
-            secret = _env("SIM2CHIP_NEBIUS_SECRET")
-            if not secret and not self.dry_run:
-                raise RuntimeError(f"stage {stage.name} calls Token Factory: set SIM2CHIP_NEBIUS_SECRET")
-            secrets.append(f"NEBIUS_API_KEY={secret or '<secret>'}")
+        secrets = self._secrets(stage.needs_llm)
         name = f"s2c-{job.name}-{stage.name}".lower().replace("_", "-")[:63]
         t0 = time.time()
         env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url}

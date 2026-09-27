@@ -61,7 +61,7 @@ class Label(Stage):
     def run(self, ctx: Context) -> dict:
         from PIL import Image, ImageOps
 
-        from ..llm import Client, image_part, parse_json
+        from ..llm import Client, LLMError, image_part, parse_json
 
         ud, spec = ctx.spec.user_data, ctx.spec
         src = ctx.job.resolve_input(ud.raw)
@@ -102,8 +102,7 @@ class Label(Stage):
         todo = [f for f in files if str(f.relative_to(src)) not in reuse]
         ctx.log(f"labeling {len(todo)} photos with {model} ({len(files) - len(todo)} already labeled)")
 
-        def one(item):
-            i, f = item
+        def ask(i, f):
             # Downscale before sending: the model does not need more pixels than a cheap camera has.
             tmp = small / f"{i:06d}.jpg"
             # Counting needs the small, distant objects too, so it sends more pixels.
@@ -120,20 +119,35 @@ class Label(Stage):
                     v = parse_json(client.chat(msg, model, purpose="label", temperature=0.0,
                                                max_tokens=8192 if counting else 2048))
                     if counting:
-                        return f, {"objects": objects_from(v, ids, w, h)}
+                        return {"objects": objects_from(v, ids, w, h)}
                     if v.get("class") in spec.labels + ["unsure"]:
-                        return f, v
+                        return v
                 except (ValueError, TypeError, KeyError, AttributeError):
                     pass
+            return None
+
+        def one(item):
+            i, f = item
+            try:
+                v = ask(i, f)
+            except (OSError, LLMError) as e:  # a broken photo or a failed call costs that photo only
+                ctx.log(f"  {f.name}: {e}")
+                v, failed = None, True
+            else:
+                failed = False
+            if v is not None:
+                # Cached as soon as it arrives: a later failure must not throw away answers already paid.
+                (shared / f"{keys[f]}.json").write_text(json.dumps({**v, "model": model, "prompt": prompt_id}))
+                return f, v, False
             if counting:
-                return f, {"objects": None, "reason": "no valid answer"}
-            return f, {"class": "unsure", "confidence": 0, "reason": "no valid answer"}
+                return f, {"objects": None, "reason": "no valid answer"}, failed
+            return f, {"class": "unsure", "confidence": 0, "reason": "no valid answer"}, failed
 
         with ThreadPoolExecutor(max_workers=8) as pool:
-            fresh = dict(pool.map(one, enumerate(todo)))
-        for f, v in fresh.items():
-            if v.get("reason") != "no valid answer":
-                (shared / f"{keys[f]}.json").write_text(json.dumps({**v, "model": model, "prompt": prompt_id}))
+            answers = list(pool.map(one, enumerate(todo)))
+        if todo and all(failed for _, _, failed in answers):
+            raise RuntimeError(f"the teacher failed on all {len(todo)} photos, see the lines above")
+        fresh = {f: v for f, v, _ in answers}
         corrections = review.load_corrections(ctx.job)
         fixes, fix_points = corrections["labels"], corrections.get("points", {})
         results = []

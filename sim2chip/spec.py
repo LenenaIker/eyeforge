@@ -239,6 +239,30 @@ def fingerprint(*parts: Any) -> str:
     return hashlib.sha256(blob).hexdigest()[:16]
 
 
+_NUMBER = (int, float)
+_SCALARS = {"int": (int,), "float": _NUMBER, "str": (str,)}
+
+
+def _check_type(t: str, v: Any, where: str) -> None:
+    """Scalar and list types; nested sections are built separately. Specs come from an LLM, so a wrong
+    type must be a SpecError here, not a TypeError deep inside a stage (maybe after paying for a GPU)."""
+    optional = t.endswith(" | None")
+    base = t.removesuffix(" | None")
+    if v is None:
+        if not optional and base in _SCALARS:
+            raise SpecError(f"{where}: cannot be null")
+        return
+    kind = _SCALARS.get(base)
+    if kind and (isinstance(v, bool) or not isinstance(v, kind)):
+        raise SpecError(f"{where}: expected {base}, got {v!r}")
+    if base.startswith("tuple[") and not all(isinstance(x, _NUMBER) and not isinstance(x, bool) for x in v):
+        raise SpecError(f"{where}: expected numbers, got {list(v)!r}")
+    if base in ("list[str]", "list[int]"):
+        item = (str,) if base == "list[str]" else (int,)
+        if not isinstance(v, list) or not all(isinstance(x, item) and not isinstance(x, bool) for x in v):
+            raise SpecError(f"{where}: expected {base}, got {v!r}")
+
+
 def _build(cls, data: dict, where: str):
     if not isinstance(data, dict):
         raise SpecError(f"{where}: expected an object")
@@ -256,6 +280,7 @@ def _build(cls, data: dict, where: str):
             if not (isinstance(v, (list, tuple)) and len(v) == 2):
                 raise SpecError(f"{where}.{k}: expected [min, max]")
             v = tuple(v)
+        _check_type(t, v, f"{where}.{k}")
         kwargs[k] = v
     try:
         return cls(**kwargs)
@@ -264,13 +289,27 @@ def _build(cls, data: dict, where: str):
 
 
 def from_dict(data: dict) -> Spec:
+    """Every problem in the data is a SpecError, whatever its shape."""
+    if not isinstance(data, dict):
+        raise SpecError("spec: expected an object")
+    try:
+        return _from_dict(data)
+    except SpecError:
+        raise
+    except (TypeError, ValueError, AttributeError, KeyError) as e:
+        raise SpecError(f"spec: {e}") from None
+
+
+def _from_dict(data: dict) -> Spec:
     data = dict(data)
     if "classes" not in data or not data["classes"]:
         raise SpecError("spec: 'classes' is required and cannot be empty")
     classes = []
     for i, c in enumerate(data.pop("classes")):
-        c = dict(c)
         where = f"classes[{i}]"
+        if not isinstance(c, dict):
+            raise SpecError(f"{where}: expected an object with 'id', 'size_m', ..., got {c!r}")
+        c = dict(c)
         size = _build(SizeSpec, c.pop("size_m"), f"{where}.size_m") if c.get("size_m") else c.pop("size_m", None)
         assets = _build(AssetQuery, c.pop("assets"), f"{where}.assets") if c.get("assets") else c.pop("assets", None)
         classes.append(_build(ClassSpec, {**c, "size_m": size, "assets": assets}, where))
@@ -297,6 +336,9 @@ def from_dict(data: dict) -> Spec:
 
 
 def validate(spec: Spec) -> None:
+    from .hardware import PROFILES
+    if spec.hardware not in PROFILES:
+        raise SpecError(f"hardware: unknown '{spec.hardware}', known: {sorted(PROFILES)}")
     ids = [c.id for c in spec.classes]
     if len(set(ids)) != len(ids):
         raise SpecError("classes: duplicated ids")

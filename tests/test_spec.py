@@ -37,6 +37,12 @@ def test_defaults_and_labels():
     ({"qa": {"mode": "magic"}}, "qa.mode"),
     ({"user_data": {"labeled": "x", "class_map": {"horse": ["h"]}}}, "class_map"),
     ({"background_class": "cow"}, "background_class"),
+    # Specs come from an LLM: wrong types and names must be SpecErrors, not crashes later on.
+    ({"hardware": "esp8266"}, "hardware"),
+    ({"generation": {"frames": "many"}}, "generation.frames"),
+    ({"classes": ["cow"]}, "classes"),
+    ({"classes": [{"id": "cow", "size_m": {"measure": "length", "range": ["a", 2]}}]}, "range"),
+    ({"classes": [{"id": "cow", "assets": {"categories": ["cow"], "count": "12"}}]}, "count"),
 ])
 def test_invalid_specs(bad, msg):
     with pytest.raises(SpecError, match=msg):

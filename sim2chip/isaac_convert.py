@@ -1,12 +1,13 @@
 """Isaac Sim's Asset Converter for the models glb2usd cannot read (convert_assets' fallback).
 
-    <Isaac Sim python.sh> -m sim2chip.isaac_convert '[["in.glb", "out.usd"], ...]'
+    <Isaac Sim python.sh> -m sim2chip.isaac_convert pairs.json   # [["in.glb", "out.usd"], ...]
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import sys
+from pathlib import Path
 
 
 async def convert(src: str, dst: str) -> bool:
@@ -30,7 +31,7 @@ def main() -> int:
     app = SimulationApp({"headless": True})
     try:
         loop = asyncio.get_event_loop()
-        pairs = json.loads(sys.argv[1])
+        pairs = json.loads(Path(sys.argv[1]).read_text())
         ok = sum(loop.run_until_complete(convert(src, dst)) for src, dst in pairs)
         print(f"[sim2chip] Asset Converter: {ok} of {len(pairs)} models converted", flush=True)
     finally:

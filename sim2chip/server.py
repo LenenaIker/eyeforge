@@ -12,6 +12,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -82,6 +83,20 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         sessions[sid].transcript = home / "logs" / "interviews" / f"{sid}.json"
         return {"session": sid, "text": FIRST_QUESTION}
 
+    locks: dict[str, threading.Lock] = {}
+
+    def guarded(sid: str, fn, *args):
+        """One call at a time per interview (a double submit would interleave two model turns), and the
+        right status: 502 when the model service fails, 409 when the interview is already over."""
+        from .llm import LLMError
+        with locks.setdefault(sid, threading.Lock()):
+            try:
+                return fn(*args)
+            except LLMError as e:
+                raise HTTPException(502, f"model service: {e}")
+            except RuntimeError as e:
+                raise HTTPException(409, str(e))
+
     def turn_out(sid: str, turn) -> dict:
         out = {"kind": turn.kind, "text": turn.text}
         if turn.spec is not None:
@@ -90,6 +105,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             out["request"] = turn.request
         if turn.kind in ("done", "failed"):
             sessions.pop(sid, None)
+            locks.pop(sid, None)
         return out
 
     @app.post("/api/interview/{sid}")
@@ -97,17 +113,14 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         session = sessions.get(sid)
         if session is None:
             raise HTTPException(404, "unknown interview session")
-        try:
-            turn = session.reply(str(body.get("text", "")))
-        except RuntimeError as e:
-            raise HTTPException(409, str(e))
-        return turn_out(sid, turn)
+        return turn_out(sid, guarded(sid, session.reply, str(body.get("text", ""))))
 
     @app.post("/api/interview/{sid}/photos")
-    async def interview_photos(sid: str, purpose: str = Form("training"), cls: str = Form(""),
+    def interview_photos(sid: str, purpose: str = Form("training"), cls: str = Form(""),
                                photos: list[UploadFile] = File(...)):
         """Photos uploaded in the chat, asked for by the interview or not. They wait in uploads/<session>
-        until a job adopts them."""
+        until a job adopts them. Sync on purpose: the model calls after the upload block, and FastAPI runs
+        sync handlers in a thread pool instead of the event loop (async stalled every other request)."""
         session = sessions.get(sid)
         if session is None:
             raise HTTPException(404, "unknown interview session")
@@ -117,15 +130,11 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         n = 0
         for p in photos:
             if Path(p.filename or "").suffix.lower() in IMAGE_EXT:
-                (folder / Path(p.filename).name).write_bytes(await p.read())
+                (folder / Path(p.filename).name).write_bytes(p.file.read())
                 n += 1
         if not n:
             raise HTTPException(400, "no images among the files")
-        try:
-            turn = session.add_photos(str(folder), n, purpose, cls or None)
-        except RuntimeError as e:
-            raise HTTPException(409, str(e))
-        return {**turn_out(sid, turn), "photos": n}
+        return {**turn_out(sid, guarded(sid, session.add_photos, str(folder), n, purpose, cls or None)), "photos": n}
 
     @app.get("/api/interview/{sid}/thumb")
     def interview_thumb(sid: str, file: str):
@@ -140,11 +149,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         session = sessions.get(sid)
         if session is None:
             raise HTTPException(404, "unknown interview session")
-        try:
-            turn = session.choose([str(f) for f in body.get("files") or []], str(body.get("class", "")))
-        except RuntimeError as e:
-            raise HTTPException(409, str(e))
-        return turn_out(sid, turn)
+        return turn_out(sid, guarded(sid, session.choose, [str(f) for f in body.get("files") or []],
+                                     str(body.get("class", ""))))
 
     @app.post("/api/jobs")
     async def create_job(spec: str = Form(...), photos: list[UploadFile] = File(default=[])):
@@ -170,7 +176,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         folder = job.input / "photos"
         for p in images:
             folder.mkdir(parents=True, exist_ok=True)
-            (folder / Path(p.filename).name).write_bytes(await p.read())
+            (folder / Path(p.filename).name).write_bytes(p.file.read())
         runs[name] = launch(home, job, request, backend, max_usd)
         return {"job": name, "photos": len(images)}
 
