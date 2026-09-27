@@ -321,8 +321,8 @@ def _launch(home: Path, job: Job, request: Path, backend: str, max_usd: float | 
     if max_usd is not None:
         cmd += ["--max-usd", str(max_usd)]
     job.logs.mkdir(parents=True, exist_ok=True)
-    log = open(job.logs / "pipeline.log", "a")
-    return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=Path(__file__).resolve().parents[1])
+    with open(job.logs / "pipeline.log", "a") as log:  # the child keeps its own copy of the file
+        return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=Path(__file__).resolve().parents[1])
 
 
 def cloud_spent(home: Path, hours: float = 24) -> float:

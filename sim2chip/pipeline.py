@@ -86,7 +86,13 @@ class Pipeline:
             log(f"> {p.stage.name} ({p.stage.powered_by(self.spec, where)})")
             self.job.clear_done(p.stage.name)
             t0 = time.time()
-            backend.run_stage(p.stage, self.job, self.cache, p.fingerprint)
+            try:
+                backend.run_stage(p.stage, self.job, self.cache, p.fingerprint)
+            except StageFailed:
+                raise
+            except (RuntimeError, NotImplementedError, OSError) as e:  # could not run it at all (cloud, interpreter)
+                self.job.timeline(p.stage.name, time.time() - t0, where, failed=True)
+                raise StageFailed(f"stage {p.stage.name} could not run: {e}") from e
             seconds = time.time() - t0
             done = self.job.done(p.stage.name)
             if not done or done.get("fingerprint") != p.fingerprint:

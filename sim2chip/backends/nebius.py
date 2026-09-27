@@ -379,7 +379,7 @@ class NebiusBackend:
         # job) even when the process that launched it is gone.
         marker = job.logs / CLOUD_JOB
         marker.write_text(json.dumps({"id": job_id, "started": time.time(), "hours": WORKER_HOURS + 1}))
-        state = self._follow(job_id, job, job_bucket, log)  # if this fails the marker stays, to find the job
+        state = self._follow(job_id, job, job_bucket, log, [st.name for st in todo])  # if this fails the marker stays, to find the job
         marker.unlink(missing_ok=True)
         hours = (time.time() - t0) / 3600
         self.spent_usd += hours * USD_PER_HOUR
@@ -395,7 +395,7 @@ class NebiusBackend:
             raise StageFailed(f"cloud run {state}: stages not done {missing}, see {job.logs / 'worker.job.log'} "
                               f"and {job.logs / 'cloud_pipeline.log'}")
 
-    def _follow(self, job_id: str, job: Job, bucket: str, log) -> str:
+    def _follow(self, job_id: str, job: Job, bucket: str, log, stages: list[str] | None = None) -> str:
         """Waits for the job, echoing new lines of the cloud pipeline log (the web reads them from the local
         log) and bringing done markers back as stages finish."""
         seen, last, since = 0, None, time.time()
@@ -420,9 +420,15 @@ class NebiusBackend:
                 last, since = state, now
             try:
                 self.store.download(bucket, "logs", job.logs, ("cloud_pipeline.log",))
-                for key in self.store.listing(bucket):
-                    if key.endswith("/" + DONE):
+                # Only the markers of the stages that run: listing the bucket means thousands of render frames.
+                keys = [f"{st}/{DONE}" for st in stages] if stages is not None else \
+                    [k for k in self.store.listing(bucket) if k.endswith("/" + DONE)]
+                for key in keys:
+                    try:
                         self.store.s3.download_file(bucket, key, str(job.root / key))
+                    except Exception as e:  # not written yet
+                        if "404" not in str(e) and "NoSuchKey" not in str(e) and "Not Found" not in str(e):
+                            raise
             except Exception as e:  # nothing uploaded yet, or a transient error; say it once
                 if store_error is None and "NoSuchKey" not in str(e) and "404" not in str(e):
                     log(f"  could not read the job bucket yet: {e}")

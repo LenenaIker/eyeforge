@@ -406,6 +406,7 @@ class Session:
         self.proposed: spec_mod.Spec | None = None
         self.transcript: Path | None = None  # set by the server: logs/interviews/<session>.json
         self.finished = False
+        self.translation_error: str | None = None  # why the last English translation of queries failed
 
     def reply(self, user_text: str) -> Turn:
         if self.finished:
@@ -591,7 +592,8 @@ class Session:
         try:
             names = parse_json(self.client.chat(msg, self.model, purpose="english_queries", temperature=0.0,
                                                 max_tokens=1024))
-        except Exception:  # a failed translation must not stop the interview: keep the queries as they are
+        except Exception as e:  # a failed translation must not stop the interview: keep the queries as they are
+            self.translation_error = f"{type(e).__name__}: {e}"  # kept in the transcript
             return
         if not isinstance(names, dict):
             return
@@ -612,7 +614,8 @@ class Session:
         """The whole conversation with the model, rejections included, to see afterwards why a turn took long."""
         if self.transcript is not None:
             self.transcript.parent.mkdir(parents=True, exist_ok=True)
-            self.transcript.write_text(json.dumps(self.messages, ensure_ascii=False, indent=1))
+            extra = [{"role": "log", "translation_error": self.translation_error}] if self.translation_error else []
+            self.transcript.write_text(json.dumps(self.messages + extra, ensure_ascii=False, indent=1))
 
 
 def run(client, model: str, categories: CategoryIndex, ask: Callable[[str], str], tell: Callable[[str], None],

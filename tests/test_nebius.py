@@ -216,7 +216,7 @@ def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
 
     be = NebiusBackend(dry_run=False, max_usd=10.0, cli=WorkerCLI(store), store=store, poll_s=0)
     lines = []
-    be._follow = lambda job_id, job, bucket, log: (log("> label (x)"), "COMPLETED")[1]  # markers come only at the end
+    # The real _follow runs: it echoes the cloud log (not its noise) and brings the markers back.
     be.run_pipeline(pipe, log=lines.append)
     assert len(be.cli.jobs) == 1 and be.cli.jobs[0]["image"].startswith("nvcr.io/nvidia/isaac-sim")
     script = be.cli.jobs[0]["script"]
