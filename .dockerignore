@@ -2,6 +2,8 @@ data
 runs
 spike
 tests
+web/node_modules
+sim2chip/web/dist
 .env
 .git
 **/__pycache__

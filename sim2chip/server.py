@@ -2,8 +2,8 @@
 
     sim2chip serve [--backend local|nebius] [--host 127.0.0.1] [--port 8000]
 
-The app is a React build in web/dist (from the repo's web/ folder, `npm run build`); without it the server
-falls back to the old single page, web/legacy.html. Any path outside /api serves the app, which routes itself.
+The app is a React build in web/dist (from the repo's web/ folder: `cd web && npm install && npm run build`;
+the Docker image builds it). Any path outside /api serves the app, which routes itself.
 
 Each run is a `sim2chip run` subprocess writing to the job's logs/pipeline.log, so the server never
 blocks on the pipeline and the command line stays the single way to run a job. Progress is read back
@@ -32,6 +32,8 @@ DOWNLOADS = {"model.tflite", "labels.txt", "model_int8.tflite", "model_data.h", 
 WEB = Path(__file__).parent / "web"
 DIST = WEB / "dist"
 OWNER = "owner"  # file in a public server's job folder: the visitor who started it
+NO_BUILD = ("<p>EyeForge: the web app is not built. Run <code>cd web && npm install && npm run build</code> in the "
+            "repository, then reload. The API under /api works without it.</p>")
 VISITOR = "eyeforge_visitor"  # cookie: one per browser, so visitors of a public server only see their own jobs
 
 
@@ -131,11 +133,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     @app.get("/", include_in_schema=False)
     def index():
         page = DIST / "index.html"
-        return HTMLResponse((page if page.exists() else WEB / "legacy.html").read_text())
-
-    @app.get("/legacy", include_in_schema=False)
-    def legacy():
-        return HTMLResponse((WEB / "legacy.html").read_text())
+        if not page.exists():
+            return HTMLResponse(NO_BUILD, 503)
+        return HTMLResponse(page.read_text())
 
     @app.get("/api/config")
     def config():
@@ -184,6 +184,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             out["spec"] = json.loads(turn.spec.to_json())
         if turn.request is not None:
             out["request"] = turn.request
+        if turn.intro is not None:
+            out["intro"] = turn.intro
         if turn.kind in ("done", "failed"):
             sessions.pop(sid, None)
             locks.pop(sid, None)

@@ -59,7 +59,12 @@ conda activate sim2chip
 pip install -e ".[train,assets,web,cloud,dev]"
 cp .env.example .env    # then fill in the keys and paths (see the comments in it)
 pytest
+(cd web && npm install && npm run build)   # the web app (Node 20+), served by `sim2chip serve`
 ```
+
+The web app is React + Vite + Tailwind in `web/` and installs as an app on phones (PWA). To work on it,
+run `sim2chip serve` and, in `web/`, `npm run dev`: it serves the app with live reload and forwards `/api`
+to the server. Design notes in `web/DESIGN.md`.
 
 For the Nebius backend: install the `nebius` CLI and log in (a service account on a server), create an
 object storage key and two MysteryBox secrets (the storage key for the jobs, `SIM2CHIP_S3_SECRET`, and the
@@ -69,7 +74,7 @@ in advance: each job starts from NVIDIA's public Isaac Sim image.
 ## Usage
 
 ```bash
-sim2chip serve --backend nebius        # web UI on http://127.0.0.1:8000: interview, photos, run, results
+sim2chip serve --backend nebius        # web app on http://127.0.0.1:8000: interview, photos, run, review
 sim2chip interview                     # the same interview in the terminal, writes a spec
 
 # Full pipeline; --input exposes a folder of the user's photos inside the job

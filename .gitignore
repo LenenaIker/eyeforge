@@ -8,3 +8,4 @@ runs
 .venv/
 web/node_modules/
 sim2chip/web/dist/
+web/*.tsbuildinfo

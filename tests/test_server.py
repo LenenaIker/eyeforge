@@ -27,6 +27,16 @@ class FakeProc:
         return None
 
 
+@pytest.fixture(autouse=True)
+def built_app(tmp_path, monkeypatch):
+    """A stand-in for the web app build (web/dist), which a checkout without node does not have."""
+    from sim2chip import server
+    dist = tmp_path / "_dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<div id=root></div>")
+    monkeypatch.setattr(server, "DIST", dist)
+
+
 @pytest.fixture
 def app(tmp_path):
     launched = []
@@ -51,7 +61,7 @@ def test_interview_over_http(app):
     assert app.post(f"/api/interview/{sid}", json={"text": "cows"}).json() == {"kind": "say",
                                                                                 "text": "Where is the camera?"}
     t = app.post(f"/api/interview/{sid}", json={"text": "on a post"}).json()
-    assert t["kind"] == "confirm" and t["spec"]["name"] == "Barn Cam"
+    assert t["kind"] == "confirm" and t["spec"]["name"] == "Barn Cam" and t["intro"] == ""
     t = app.post(f"/api/interview/{sid}", json={"text": "sí, adelante"}).json()
     assert t["kind"] == "done"
     assert app.post(f"/api/interview/{sid}", json={"text": "x"}).status_code == 404
@@ -87,7 +97,7 @@ def test_invalid_spec(app):
 
 
 def test_index(app):
-    assert "EyeForge" in app.get("/").text
+    assert app.get("/").text == "<div id=root></div>"
 
 
 def test_status_survives_stale_and_invalid_specs(app, tmp_path):
@@ -265,11 +275,12 @@ def test_public_visitors_only_see_their_own_jobs(tmp_path):
     assert cfg["public"] and not cfg["busy"] and cfg["max_runs"] == 5
 
 
-def test_app_routes_serve_the_build_or_the_old_page(tmp_path, monkeypatch):
+def test_app_routes_serve_the_build(tmp_path, monkeypatch):
     from sim2chip import server
     client = TestClient(create_app(tmp_path, launcher=lambda *a, **k: FakeProc()))
     monkeypatch.setattr(server, "DIST", tmp_path / "missing")
-    assert "EyeForge" in client.get("/app/job/x").text  # no build: the old page
+    r = client.get("/app/job/x")
+    assert r.status_code == 503 and "npm run build" in r.text  # no build: say how to make one
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text("<div id=root></div>")

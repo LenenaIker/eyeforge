@@ -1,0 +1,36 @@
+@import "@fontsource-variable/inter";
+@import "tailwindcss";
+
+/* Design tokens: web/DESIGN.md */
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+  --color-ember-50: #fffbeb;
+  --color-ember-100: #fef3c7;
+  --color-ember-400: #fbbf24;
+  --color-ember-500: #f59e0b;
+  --color-ember-700: #b45309;
+  --color-canvas: #fafaf9;
+  --color-ink: #1c1917;
+  --color-muted: #57534e;
+  --color-line: #e7e5e4;
+  --radius-card: 12px;
+  --radius-control: 10px;
+  --animate-beat: beat 1.6s ease-in-out infinite;
+  @keyframes beat {
+    0%, 100% { box-shadow: 0 0 0 0 rgb(245 158 11 / 0.45); }
+    50% { box-shadow: 0 0 0 6px rgb(245 158 11 / 0); }
+  }
+}
+
+html { -webkit-tap-highlight-color: transparent; }
+body { @apply bg-canvas text-ink antialiased; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

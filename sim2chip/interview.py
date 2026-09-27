@@ -405,6 +405,8 @@ class Turn:
     text: str                       # the user's photos), "confirm" (spec proposed), "done" or "failed"
     spec: spec_mod.Spec | None = None
     request: dict | None = None     # photos: {"for", "class"}; pick: {"for", "class", "query", "candidates"}
+    intro: str | None = None        # confirm: the model's own words, without the spec summary (a front end
+                                    # that shows the spec its own way uses this instead of text)
 
 
 class Session:
@@ -617,7 +619,7 @@ class Session:
                     continue
                 self.proposed = s
                 intro = str(action.get("say") or "").strip()
-                return Turn("confirm", (intro + "\n\n" if intro else "") + summary(s), s)
+                return Turn("confirm", (intro + "\n\n" if intro else "") + summary(s), s, intro=intro)
             else:
                 self._note("Unknown action. Use say, search or spec.")
         self.finished = True

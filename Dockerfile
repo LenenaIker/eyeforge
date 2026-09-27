@@ -3,6 +3,15 @@
 #   docker build -t eyeforge .
 #   docker run -p 8000:8000 --env-file .env -v eyeforge-data:/data -v ~/.nebius:/root/.nebius eyeforge
 # The nebius CLI inside uses the mounted ~/.nebius profile (a service account on a server).
+
+# The web app (web/, React): built here, served by the Python server from sim2chip/web/dist.
+FROM node:22-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web ./
+RUN npx tsc -b && npx vite build --outDir /dist
+
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
@@ -13,6 +22,7 @@ ENV PATH=/root/.nebius/bin:$PATH
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY sim2chip sim2chip
+COPY --from=web /dist sim2chip/web/dist
 # Editable, so the package finds its repo folder (the code archive sent to the cloud jobs is built from it).
 RUN pip install --no-cache-dir -e ".[web,cloud,assets]" pillow
 
