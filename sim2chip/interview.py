@@ -298,6 +298,13 @@ YES = {"y", "yes", "yeah", "yep", "ok", "okay", "sure", "correct", "right", "s",
 NO = {"no", "not", "but", "pero", "cambia", "change", "falta", "missing"}
 
 
+ENGLISH_PROMPT = """These are search terms for 3D models and for an English-only object detector. Translate
+each term into the English words a 3D model site would use, keeping every detail the term gives (kind, place,
+size) and never a shorter, more generic word: "maceta" -> "flower pot", "silla de terraza" -> "patio chair",
+"mesa pequeña de terraza" -> "small patio table". A term already in English stays as it is. Reply with one
+JSON object {"<term>": "<English>"} and nothing else. Terms: """
+
+
 def is_yes(answer: str) -> bool:
     """A short affirmative answer ("Sí, adelante.", "ok!", "yes please") without a change request."""
     import re
@@ -483,6 +490,8 @@ class Session:
                            + json.dumps(found or "nothing found, try other words"))
             elif "spec" in action:
                 try:
+                    if isinstance(action["spec"], dict):
+                        self._english_queries(action["spec"])
                     s = spec_mod.from_dict(action["spec"])
                     unknown = [cat for c in s.classes if c.assets and c.assets.source == "objaverse_lvis"
                                for cat in c.assets.categories if cat not in self.categories.counts]
@@ -500,6 +509,36 @@ class Session:
                 self._note("Unknown action. Use say, search or spec.")
         self.finished = True
         return Turn("failed", "The interview did not converge; nothing was saved.")
+
+    def _english_queries(self, spec: dict) -> None:
+        """Put an English name first in every search query list. The prompt asks for English, but the model
+        sometimes keeps the user's language ("maceta", "silla de terraza", 2026-09-27): the 3D model search
+        then finds little and the photo detector (OWLv2, English only) finds nothing. The original stays after."""
+        from .llm import parse_json
+
+        lists = [a["queries"] for c in spec.get("classes") or [] if isinstance(a := c.get("assets"), dict)
+                 and isinstance(a.get("queries"), list)]
+        lists += [p["queries"] for p in spec.get("props") or [] if isinstance(p, dict)
+                  and isinstance(p.get("queries"), list)]
+        terms = sorted({q for qs in lists for q in qs if isinstance(q, str) and q.strip()})
+        if not terms:
+            return
+        msg = [{"role": "user", "content": ENGLISH_PROMPT + json.dumps(terms, ensure_ascii=False)}]
+        try:
+            names = parse_json(self.client.chat(msg, self.model, purpose="english_queries", temperature=0.0,
+                                                max_tokens=1024))
+        except Exception:  # a failed translation must not stop the interview: keep the queries as they are
+            return
+        if not isinstance(names, dict):
+            return
+        for qs in lists:
+            out = []
+            for q in qs:
+                en = names.get(q)
+                for t in ([en] if isinstance(en, str) and en.strip() else []) + [q]:
+                    if t.strip().lower() not in {o.lower() for o in out}:
+                        out.append(t.strip())
+            qs[:] = out
 
     def _note(self, text: str) -> None:
         self.messages.append({"role": "user", "content": text})
