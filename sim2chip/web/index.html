@@ -204,6 +204,31 @@ async function send(text) {
   refreshTrain();
 }
 
+// "Looks good": close the interview without a chat message and start training right away.
+async function confirmSpec() {
+  $("confirm").classList.add("hidden");
+  $("send").disabled = true;
+  add("sys", "Starting the training...");
+  try {
+    const t = await api(`/api/interview/${session}`, {method: "POST", headers: {"Content-Type": "application/json"},
+                                                      body: JSON.stringify({text: "yes"})});
+    $("chat").lastChild.remove();
+    if (t.kind !== "done") { showTurn(t); $("send").disabled = false; return; }
+    $("spec").value = JSON.stringify(t.spec, null, 2);
+    $("chat-input").classList.add("hidden");
+    session = null;
+    add("sys", "Spec ready: training started below.");
+    refreshTrain();
+    await train();
+    $("s-run").scrollIntoView({behavior: "smooth"});
+  } catch (e) {
+    $("chat").lastChild.remove();
+    add("sys", "Error: " + e.message);
+    $("confirm").classList.remove("hidden");
+  }
+  $("send").disabled = false;
+}
+
 async function ensureSession() {
   if (!session) session = (await api("/api/interview", {method: "POST"})).session;
 }
@@ -531,7 +556,7 @@ async function loadJobs() {
 
 $("send").onclick = () => send($("say").value.trim());
 $("say").onkeydown = (e) => { if (e.key === "Enter") send($("say").value.trim()); };
-$("yes").onclick = () => send("yes");
+$("yes").onclick = confirmSpec;
 $("spec").oninput = refreshTrain;
 $("drop").onclick = () => $("files").click();
 $("files").onchange = (e) => { addPhotos(e.target.files); e.target.value = ""; };
