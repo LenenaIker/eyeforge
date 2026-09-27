@@ -124,6 +124,72 @@ Cuando esté todo, se borra `legacy.html`.
    - con el evento `beforeinstallprompt` en Android;
    - en iOS, con instrucciones de "Compartir, Añadir a pantalla de inicio".
 
+## Fase 4b: probar el modelo en vivo en el móvil (Sonnet, siguiente)
+
+**Por qué** (usuario, 2026-09-27): cuando el modelo termina, quien lo ha entrenado (o un jurado) lo prueba en el acto con la cámara del móvil, dentro de la misma web o app. El modelo corre en el teléfono, sin red: es la misma idea que el chip de 10 $, demostrable sin hardware. De paso cubre la prueba en Android que estaba pendiente (sin Classifier Lens).
+
+**Qué ya existe:**
+- `export/model.tflite`: entrada float32 RGB 0-255, sin normalizar (el modelo normaliza), probabilidades a la salida.
+- `export/report.json`: todo lo que la página necesita:
+  - `task`, `labels` (el fondo primero) e `input` ([224, 224, 3]);
+  - en conteo, `output.threshold` y `output.stride_px`.
+- Los dos se descargan ya con `GET /api/jobs/{name}/files/{file}`, filtrado por visitante en modo público.
+- La lectura de la rejilla está en `sim2chip/counting.py::decode`:
+  - una celda es objeto si su mejor clase que no es fondo llega al umbral;
+  - las celdas vecinas de la misma clase forman un objeto;
+  - su centro, ponderado por probabilidad, es el punto, en 0..1 de la imagen.
+- **Preproceso:** `ingest` estira la foto entera a 224x224, sin recortar ni añadir bandas. En vivo hay que hacer lo mismo con el fotograma de la cámara, o el modelo verá otra geometría.
+
+**Motor en el navegador:** LiteRT.js (`@litertjs/core`, de Google; `@tensorflow/tfjs-tflite` está abandonado en alfa).
+- Usa WebGPU si hay y, si no, WASM en CPU.
+- Sus archivos `.wasm` se sirven desde `dist` y entran en la precaché de la PWA, para que funcione sin conexión.
+- Primer paso de la fase: una prueba mínima que cargue `model.tflite` de `exp_places` y compare su salida con la de Python en la misma foto. Si LiteRT.js falla con este modelo, el plan B es TensorFlow.js con el modelo convertido en el export.
+
+**Pantalla** `/app/job/:name/live`, abierta con el botón "Try it live" de la tarjeta de resultado:
+1. **Arranque:** descarga `model.tflite` y `report.json` una vez y los guarda en la Cache API bajo el nombre del trabajo. A partir de ahí funciona sin red. Además, "Your models" marca qué modelos están guardados en el teléfono.
+2. **Cámara trasera** (`getUserMedia` con `facingMode: environment`) a pantalla completa, con un canvas encima.
+3. **Bucle:**
+   - Con `requestAnimationFrame`, sin cola: si la inferencia anterior no ha terminado, se salta el fotograma.
+   - Se dibuja el fotograma estirado a 224x224 en un canvas oculto y se pasan sus píxeles RGB en float32.
+   - Se ejecuta el modelo y se lee la salida:
+     - **conteo:** la rejilla se decodifica con el mismo algoritmo que en Python y los puntos se pintan sobre el vídeo;
+     - **clasificación:** se muestra la clase y su confianza.
+4. **Número grande** ("3 pots"), estabilizado con la mediana de los últimos 5 fotogramas para que no parpadee. También se ve cuánto tarda cada inferencia en milisegundos y el motor usado (WebGPU o CPU): es un buen dato para el jurado.
+5. **Controles:**
+   - cambiar de cámara;
+   - "Use a photo", que carga una foto de la galería o del ordenador. Sirve para escritorio sin cámara y para las pruebas;
+   - un deslizador de sensibilidad (el umbral), que parte del de `report.json`.
+6. **Errores comprensibles:**
+   - sin permiso de cámara;
+   - navegador sin soporte;
+   - página sin HTTPS: la cámara exige HTTPS o `localhost`.
+
+**Una sola lógica en dos lenguajes:** `web/src/live/decode.ts` es la versión TypeScript de `counting.decode`. Para que no se separen:
+- un script de Python (`scripts/decode_fixtures.py`) genera rejillas de ejemplo con sus puntos esperados (`web/src/live/decode.fixtures.json`);
+- una prueba de Vitest exige que TypeScript dé los mismos puntos, al cuarto decimal.
+
+Cualquier cambio futuro en `decode` (por ejemplo, el arreglo pendiente de la maceta alta contada dos veces) obliga a regenerar los fixtures, y la prueba falla si la web no se actualiza. Conviene hacer ese arreglo en Python antes de esta fase o justo después, con los fixtures regenerados.
+
+**Fuera de esta fase:**
+- compartir un modelo con alguien que no lo entrenó (un enlace público de solo lectura);
+- el modelo int8 en el navegador;
+- el flasheo del chip.
+
+**Archivos:**
+- nuevos: `web/src/pages/Live.tsx`, `web/src/live/{runtime,decode,camera}.ts`, `scripts/decode_fixtures.py`;
+- modificados: `web/src/main.tsx` (ruta), `web/src/pages/Job.tsx` (botón), `web/vite.config.ts` (`.wasm` en la precaché), `web/package.json` (`@litertjs/core`, `vitest`).
+- El servidor no cambia.
+
+**Verificación:**
+1. `npm test`: el decode de TypeScript igual al de Python.
+2. **Prueba de paridad del modelo:** en Playwright, "Use a photo" con 5 fotos de test de `exp_places`. Los puntos deben coincidir con los de `model.tflite` en Python, con tolerancia de una celda. Se compara con el modelo float, no con el int8 de `evaluate`.
+3. **En el móvil real,** con `adb reverse tcp:8000 tcp:8000` y `http://localhost:8000`:
+   - instalar la app;
+   - abrir "Try it live" sobre `exp_places` y apuntar a macetas;
+   - activar el modo avión: debe seguir funcionando;
+   - apuntar el tiempo por inferencia.
+4. Lighthouse sin errores nuevos. La precaché sigue por debajo de 1,5 MB, incluidos los `.wasm`.
+
 ## Fase 5: pulido para el jurado (Sonnet, con Opus para el repaso visual)
 
 - Animaciones suaves en la línea de tiempo y en los resultados, sin exagerar.
