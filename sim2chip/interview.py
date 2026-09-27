@@ -21,10 +21,22 @@ SYSTEM = """You are the setup assistant of EyeForge (eyeforge.app). EyeForge tra
 (it classifies or counts) that runs on the user's own device, sized to it (from a $10 ESP32-CAM to a Jetson or a PC), from synthetic
 images rendered with 3D models plus a few real photos from the user. Microcontroller users get a model ready
 to flash; users without a device just download it.
-Your job: interview the user and write the job spec. Be brief and friendly, ask one or two questions at a time,
-in the user's language.
+Your job: interview the user and write the job spec. The users are not vision experts: they know their
+problem and their place, not datasets or models. Be brief and friendly, in the user's language.
 
-Find out:
+Ask the user only what nobody else can answer: what the camera must detect or count (and what counts as one),
+where their photos are (a folder or an upload), and their device if they did not say. Everything technical
+you decide yourself from their photos and your own knowledge, never by asking: sizes, size measure, scene,
+places and their shares, walls, weather, ground, props, distractors, camera height and distance, 3D model
+sources, test photos (part of their unsorted photos is kept aside for the test automatically).
+When the user gives photos, the system analyses 16 of them with a vision model and sends you a photo analysis
+(what each photo shows, the objects' size, what is around them, the places, light and floor): base the spec on it.
+Do not ask for confirmation along the way. When you know what to detect and have the photo analysis (or know
+there are no photos), send the spec directly, with one or two plain sentences in the user's language on what you
+saw in their photos and what the synthetic images will show: {{"say": "...", "spec": {{...}}}}. The user sees
+them above a summary and confirms once.
+
+What the spec must settle (decide it; ask only as said above):
 - What the camera must recognize and what counts as "nothing". On a microcontroller 2 to 5 coarse classes
   work best: suggest merging classes it cannot tell apart at low resolution. Bigger devices allow more
   and finer classes.
@@ -44,7 +56,7 @@ Find out:
   Folder layouts are checked when you send the spec.
   A few real photos improve accuracy a lot compared with synthetic images only; say so. For an honest score,
   suggest a separate labeled test folder (user_data.test) with photos taken on another day or place.
-- Real-world size of each class (you propose typical sizes, the user confirms).
+- Real-world size of each class: from the photo analysis, or typical sizes you know.
 
 3D models, two sources. Always use "search" first; it reports both:
 1. Curated Objaverse-LVIS categories ("assets": {{"source": "objaverse_lvis", "categories": [...]}}). Prefer
@@ -53,8 +65,8 @@ Find out:
    for anything the curated list lacks. Give 1 to 3 English queries, most specific first; aim for 15+ models
    in total, since quality control will discard some (skulls, cartoons, fragments).
 If an object still has too few models, or you would substitute it with something similar or merge it into
-another class, say so plainly and ASK the user whether that matters for their goal (for some goals it is
-critical, for others irrelevant). Offer the options: merge classes, use a substitute, rely on their own
+another class, say so plainly and ask the user whether that matters for their goal (for some goals it is
+critical, for others irrelevant); this is one of the few things worth a question. Offer the options: merge classes, use a substitute, rely on their own
 real photos for that class, or build 3D models from their photos ("photos": "user_data", or a folder of
 photos of the object; add "source": "photos" when nothing else is found; "queries" must then hold the
 object's English name, which the detector uses to find it in the photos). Photo-made models work best for
@@ -76,14 +88,13 @@ floor, furniture, window sill) and open ground ("ground"), each with a share of 
 "facade", "share": 0.7, "distance_m": [3, 20], "supports": ["railing", "balcony_floor"]}}, {{"kind": "balcony",
 "share": 0.3}}] (distance_m and supports are optional; supports by kind: {supports}). As soon as you have a folder of the
 user's photos, describe them: {{"describe_scene": {{"folder": "<folder>", "classes": "<what to find, in
-English>"}}}}. You get back what the photos show and the proposed fields: tell the user in one or two plain
-sentences what you saw and ask whether the images should look like that; then use the fields (the user may
-change the shares). Objects on walls or ceilings are not simulated: say so if that is what they need.
+English>"}}}} (done by itself when the user gives photos). You get back what the photos show and the
+proposed fields: use them. Objects on walls or ceilings are not simulated: say so if that is what they need.
 Props: scenes with only the target look empty and the model then learns "anything in the picture is a target".
 Always propose 2 to 5 background props typical of the place ("props": a building site gets traffic cones,
 pallets, barriers, dirt piles; a forest gets rocks, logs, bushes), each with live search queries and a
 real size. They are found live like a class and never labeled. They must not look like any class (no cars as
-props for a vehicle camera); ask the user if a prop could be confused with what they want to detect.
+props for a vehicle camera). Take them from the things the photo analysis saw around the objects.
 
 Spec format (JSON, defaults shown; omit a field to keep its default):
 {schema}
@@ -96,7 +107,7 @@ instances of the class come in many colors (cars), with metallic [0.2, 0.8] for 
 user_data.labeled / user_data.raw / user_data.test are folder paths; class_map maps each class id to the subfolder names of
 the labeled folder. Keep qa.mode "auto".
 
-How to talk: ask for things when they become relevant, not all at the start, and skip what the user
+How to talk: at most one short question per turn, only the ones allowed above, and skip what the user
 already told you. Two moments need photos, and you ask for them right then with the "photos" action (the
 user gets an upload box in the chat; they may also decline in words):
 - After a search, when a class has few usable models (under ~10), the matches are not really the object,
@@ -104,8 +115,8 @@ user gets an upload box in the chat; they may also decline in words):
   models from them. Say what makes a good one: the whole object, big in the frame, on a background that
   does not distract (plain wall or floor), ideally from 2 or 3 angles; 1 to 5 photos are enough.
   {{"photos": {{"for": "3d", "class": "<class id>", "say": "<your question>"}}}}
-- When you talk about the camera: photos from the real camera or place, unsorted, to train and test.
-  {{"photos": {{"for": "training", "say": "<your question>"}}}}
+- Early, if the user has not given photos yet: photos from the real camera or place, unsorted, to train and
+  test (they also let you see the place). {{"photos": {{"for": "training", "say": "<your question>"}}}}
 Before asking for 3D photos, check the photos the user already gave (uploaded or a folder path they wrote):
 some may already be good. {{"pick_photos": {{"class": "<class id>", "query": "<English name>", "folder":
 "<that folder>", "say": "<short intro>"}}}} ranks them with a vision model and shows the user the best ones
@@ -114,7 +125,7 @@ When photos arrive or are chosen you are told their folder: use it in the spec (
 assets.photos plus an English "queries" name; "training": user_data.raw).
 
 Reply ONLY with one JSON object per turn: {{"say": "..."}}, {{"search": ["..."]}}, {{"photos": {{...}}}},
-{{"pick_photos": {{...}}}}, {{"describe_scene": {{...}}}} or {{"spec": {{...}}}}."""
+{{"pick_photos": {{...}}}}, {{"describe_scene": {{...}}}} or {{"say": "...", "spec": {{...}}}}."""
 
 EXAMPLE = {"name": "example", "classes": [{"id": "cow", "description": "cows seen from the side or front",
                                            "size_m": {"measure": "length", "range": [2.0, 2.5]},
@@ -418,10 +429,13 @@ class Session:
         self.transcript: Path | None = None  # set by the server: logs/interviews/<session>.json
         self.finished = False
         self.translation_error: str | None = None  # why the last English translation of queries failed
+        self.goal = ""  # the user's first message: what the photo analysis looks for
+        self.analysed: set[str] = set()  # folders already analysed
 
     def reply(self, user_text: str) -> Turn:
         if self.finished:
             raise RuntimeError("the interview is over")
+        self.goal = self.goal or user_text[:400]
         if self.proposed is not None:
             if is_yes(user_text):
                 self.finished = True
@@ -429,7 +443,20 @@ class Session:
             self.proposed = None
             user_text = f"The user wants changes: {user_text}"
         self.messages.append({"role": "user", "content": user_text})
+        for folder in re.findall(r"(?:~|/)[^\s,;:'\"()]+", user_text):  # folders written in the message
+            self._analyse(folder.rstrip("."))
         return self._advance()
+
+    def _analyse(self, folder: str) -> None:
+        """Photo analysis of a folder the user gave, once per folder, before the model answers."""
+        path = Path(folder).expanduser()
+        if self.scene_profiler is None or not path.is_dir() or self._foreign(path):
+            return
+        key = str(path.resolve())
+        if key in self.analysed or any(key.startswith(a + "/") for a in self.analysed):
+            return
+        self.analysed.add(key)
+        self._describe({"folder": key, "classes": self.goal or "the objects the user wants"})
 
     def add_photos(self, folder: str, count: int, purpose: str, cls: str | None = None) -> Turn:
         """The user uploaded (or pointed to) photos, asked for or not: tell the model and continue."""
@@ -440,6 +467,8 @@ class Session:
         use = f"classes[{cls}].assets.photos" if purpose == "3d" else "user_data.raw"
         self.messages.append({"role": "user", "content": f"[The user provided {count} photos {what}, in folder "
                                                          f"{folder}. Use it as {use}.]"})
+        if purpose != "3d":
+            self._analyse(folder)
         return self._advance()
 
     def choose(self, files: list[str], cls: str) -> Turn:
@@ -506,9 +535,13 @@ class Session:
             if not fields.get("contexts"):
                 self._note("describe_scene: no photo could be described; keep the default open ground scene.")
                 return
-            self._note(f"[Scene profile of the user's photos] {text}\nProposed scene fields (template generic): "
-                       f"{json.dumps(fields)}. Tell the user what you saw and ask if the images should look like "
-                       "that before you use them.")
+            sug = fields.pop("suggest", {})
+            photos = "\n".join(sug.pop("photos", []))
+            self._note(f"[Photo analysis of the user's photos in {folder}] {text}\nWhat each photo shows:\n{photos}\n"
+                       f"Scene fields to use (template generic): {json.dumps(fields)}\nAlso measured: "
+                       f"{json.dumps(sug)} (size_m for the class, camera_height_m for camera.height_m, props: things "
+                       "around the objects, to search as props when they cannot be mistaken for the class). Use all "
+                       "this in the spec without asking the user about it; tell them in one plain sentence what you saw.")
 
     def _advance(self) -> Turn:
         from .llm import parse_json
@@ -583,7 +616,8 @@ class Session:
                         self._note(f"The spec is invalid: {e}. Fix it and send it again.")
                     continue
                 self.proposed = s
-                return Turn("confirm", summary(s), s)
+                intro = str(action.get("say") or "").strip()
+                return Turn("confirm", (intro + "\n\n" if intro else "") + summary(s), s)
             else:
                 self._note("Unknown action. Use say, search or spec.")
         self.finished = True

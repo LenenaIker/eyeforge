@@ -110,7 +110,8 @@ def test_profile_aggregate():
     assert set(kinds) == {"facade", "balcony"}  # a single room in 12 photos is under MIN_SHARE
     assert kinds["facade"]["distance_m"] == [7.0, 26.0] and kinds["facade"]["supports"] == ["railing", "window_sill"]
     assert prof["wall_tags"][0] == "brick" and prof["railings"] == ["bars", "solid"]  # glass counts as bars
-    from_dict({**SPEC, "scene": {"template": "generic", **prof}})  # the proposal is a valid spec
+    scene = {k: v for k, v in prof.items() if k != "suggest"}
+    from_dict({**SPEC, "scene": {"template": "generic", **scene}})  # the proposal is a valid spec
     assert "75% building fronts" in scene_profile.summary(prof, 12)
 
 
@@ -136,3 +137,21 @@ def test_interview_describes_the_photos(tmp_path):
     turn = s.reply("I want to count pots, photos in the folder")
     assert turn.kind == "say" and calls == [(str(tmp_path), "flower pots")]
     assert "building fronts" in client.seen[-1] and '"wall_tags": ["brick"]' in client.seen[-1]
+
+
+def test_photos_are_analysed_as_soon_as_the_user_names_the_folder(tmp_path):
+    (tmp_path / "sub").mkdir()
+    calls = []
+
+    def profiler(folder, classes):
+        calls.append((folder, classes))
+        return ({"contexts": [{"kind": "balcony", "share": 1.0}],
+                 "suggest": {"size_m": {"measure": "length", "range": [0.2, 0.5]}, "props": ["chair"],
+                             "photos": ["a.jpg: two pots on a balcony floor"]}}, "In 16 of your photos I see: balconies.")
+    client = Scripted([{"say": "I saw pots on balconies. Which device?"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), scene_profiler=profiler)
+    s.reply(f"I want to count pots, my photos are in {tmp_path} and some in {tmp_path}/sub.")
+    assert calls == [(str(tmp_path.resolve()), f"I want to count pots, my photos are in {tmp_path} and some in "
+                      f"{tmp_path}/sub.")]  # once: the subfolder is part of it
+    note = client.seen[-1]
+    assert "two pots on a balcony floor" in note and '"size_m"' in note and "without asking" in note

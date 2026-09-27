@@ -161,3 +161,4 @@ def test_spec_sent_with_text_is_proposed():
     s = interview.Session(Scripted([{"say": "Here is the setup, check it.", "spec": good}]), "m", cats)
     turn = s.reply("go")
     assert turn.kind == "confirm" and turn.spec.name == "barn" and turn.spec.labels == ["empty", "cow"]
+    assert turn.text.startswith("Here is the setup, check it.\n\nSpec 'barn'")

@@ -31,14 +31,28 @@ def _quoted(items) -> str:
 
 
 PROMPT = """This photo comes from a user who wants a small camera model for: {classes}.
-We will rebuild places like this one in 3D to make training images, so describe where those objects are.
+We will rebuild places like this one in 3D to make training images, so describe the photo in detail.
 
 Answer only with JSON:
-{{"context": """ + " | ".join(f'"{k}" ({CONTEXT_WORDS[k]})' for k in CONTEXTS) + """,
+{{"description": "<two or three sentences: what the photo shows, where those objects are, the light, where the
+  camera stands>",
+ "count": <how many of those objects are visible, 0 if none>,
+ "size_m": <their typical size in meters, the longest side seen from above; judge from things of known size:
+  doors are about 2 m high, railings about 1 m, chair seats about 0.45 m, bricks 0.25 m>,
+ "height_m": <their typical height in meters>,
+ "camera_height_m": <height of the camera above the floor it stands on, meters>,
+ "others": [up to 6 other movable things standing near them on the same surfaces, English nouns: "chair",
+  "watering can", "bicycle"; not parts of the building (shutters, awnings, lamps, windows) and not vehicles],
+ "floor": "<what those objects stand on, one or two English words: tiles, concrete, grass, wood, asphalt>",
+ "light": "sun" | "overcast" | "evening" | "night" | "indoor",
+ "context": """ + " | ".join(f'"{k}" ({CONTEXT_WORDS[k]})' for k in CONTEXTS) + """,
  "distance_m": <typical camera distance to the objects, meters>,
  "supports": [where the objects stand, from """ + _quoted(dict.fromkeys(s for v in CONTEXTS.values() for s in v)) + """],
  "wall": """ + " | ".join(f'"{w}"' for w in (*WALLS, "none")) + """ (the main wall material in view),
  "railing": """ + " | ".join(f'"{r}"' for r in (*RAILINGS, "none")) + """}}"""
+
+LIGHT_WEATHER = {"sun": "clear", "overcast": "cloudy", "evening": "evening", "night": "night"}
+MIN_OTHER = 0.15  # things seen near the objects in fewer photos than this are not proposed as props
 
 
 def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0) -> list[dict]:
@@ -95,12 +109,48 @@ def aggregate(descriptions: list[dict]) -> dict:
     walls = [w for w, _ in Counter(d.get("wall") for d in descriptions).most_common() if w in WALLS][:3]
     rails = Counter({"glass": "bars"}.get(d.get("railing"), d.get("railing")) for d in descriptions)
     out = {"contexts": contexts}
+    out |= _objects_and_light(descriptions)
     if walls:
         out["wall_tags"] = walls
     railings = [r for r, _ in rails.most_common() if r in RAILINGS]
     if railings:
         out["railings"] = railings
     return out
+
+
+def _objects_and_light(descriptions: list[dict]) -> dict:
+    """Scene fields for the floor and the weather, and under "suggest" what belongs elsewhere in the spec:
+    the objects' size (the class), the camera height, props, objects per photo and the photo descriptions."""
+    n, out, sug = len(descriptions), {}, {}
+
+    def spread(key, lo=0.8, hi=1.25):
+        v = sorted(float(d[key]) for d in descriptions if _number(d.get(key)))
+        if not v:
+            return None
+        a, b = v[int(0.1 * (len(v) - 1))], v[int(round(0.9 * (len(v) - 1)))]
+        return [round(a * lo, 2), round(b * hi, 2)]
+
+    floors = Counter(str(d.get("floor", "")).strip().lower() for d in descriptions if d.get("floor"))
+    if ground := [f for f, k in floors.most_common(2) if k / n >= MIN_OTHER]:
+        out["ground_tags"] = ground
+    light = Counter(d.get("light") for d in descriptions)
+    if weather := [LIGHT_WEATHER[w] for w, k in light.most_common() if w in LIGHT_WEATHER and k / n >= MIN_SHARE]:
+        out["weather"] = weather
+    if size := spread("size_m"):
+        sug["size_m"] = {"measure": "length", "range": size}
+    if height := spread("height_m"):
+        sug["height_m"] = height
+    if cam := spread("camera_height_m", 0.9, 1.1):
+        sug["camera_height_m"] = cam
+    counts = sorted(int(float(d["count"])) for d in descriptions if _number(d.get("count")))
+    if counts:
+        sug["objects_per_photo"] = {"median": counts[len(counts) // 2], "max": counts[-1]}
+    others = Counter(o.strip().lower() for d in descriptions for o in set(d.get("others") or []) if isinstance(o, str))
+    sug["props"] = [o for o, k in others.most_common(6) if k / n >= MIN_OTHER]
+    if light.get("indoor", 0) / n >= 0.5:
+        sug["indoor"] = True
+    sug["photos"] = [f"{d.get('photo', '?')}: {d['description']}" for d in descriptions if d.get("description")]
+    return {**out, "suggest": sug}
 
 
 def summary(profile: dict, n_photos: int) -> str:
@@ -116,6 +166,14 @@ def summary(profile: dict, n_photos: int) -> str:
         text += f" Walls: {', '.join(profile['wall_tags'])}."
     if profile.get("railings"):
         text += f" Railings: {', '.join(profile['railings'])}."
+    sug = profile.get("suggest", {})
+    if sug.get("size_m"):
+        lo, hi = sug["size_m"]["range"]
+        text += f" The objects measure about {lo}-{hi} m."
+    if sug.get("objects_per_photo"):
+        text += f" Usually {sug['objects_per_photo']['median']} per photo, up to {sug['objects_per_photo']['max']}."
+    if sug.get("props"):
+        text += f" Around them: {', '.join(sug['props'])}."
     return text
 
 
