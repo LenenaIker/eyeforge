@@ -22,7 +22,9 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-REGION = "eu-north1"
+from . import config
+
+REGION = config.env("SIM2CHIP_REGION", "eu-north1")  # the project's region; the worker gets it from the job
 S3_ENDPOINT = f"https://storage.{REGION}.nebius.cloud"
 
 

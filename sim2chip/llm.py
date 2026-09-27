@@ -23,7 +23,6 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .workspace import REPO
 
 DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 # Preferred model families per role, matched against the live /models list (ids change over time).
@@ -42,12 +41,8 @@ class LLMError(RuntimeError):
 
 
 def api_key() -> str:
-    key = os.environ.get("NEBIUS_API_KEY", "")
-    env_file = REPO / ".env"
-    if not key and env_file.exists():
-        for line in env_file.read_text().splitlines():
-            if line.strip().startswith("NEBIUS_API_KEY="):
-                key = line.split("=", 1)[1].strip().strip('"').strip("'")
+    from .config import env
+    key = env("NEBIUS_API_KEY", "")
     if not key:
         raise LLMError("NEBIUS_API_KEY is not set (environment or .env)")
     return key

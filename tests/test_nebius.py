@@ -87,7 +87,8 @@ def test_stage_runs_as_job_and_brings_back_small_results(job, tmp_path):
     assert j["image"].startswith("nvcr.io/nvidia/isaac-sim")
     assert store.buckets == {"sim2chip-j", "sim2chip-cache"}
     assert j["env"] == {"S2C_JOB_BUCKET": "sim2chip-j", "S2C_CACHE_BUCKET": "sim2chip-cache",
-                        "S2C_CODE_URL": "https://signed/sim2chip-j/_code/sim2chip.tar.gz"}
+                        "S2C_CODE_URL": "https://signed/sim2chip-j/_code/sim2chip.tar.gz",
+                        "SIM2CHIP_REGION": nebius.REGION}
     assert j["timeout_h"] == 2 and all(s.startswith("AWS_") for s in j["secrets"])
     script = j["script"]
     assert script.index("cloud_sync pull render") < script.index("run_stage render") < script.index(
@@ -115,7 +116,7 @@ def test_spend_cap(job):
 
 def test_llm_stage_needs_the_secret(job, monkeypatch):
     monkeypatch.delenv("SIM2CHIP_NEBIUS_SECRET", raising=False)
-    monkeypatch.setattr(nebius, "REPO", job.root)  # no .env there
+    monkeypatch.setattr("sim2chip.config.REPO", job.root)  # no .env there
     with pytest.raises(RuntimeError, match="SIM2CHIP_NEBIUS_SECRET"):
         backend(FakeStore()).run_stage(BY_NAME["qa_assets"], job, Cache(job.root.parent / "cache"), "fp")
     monkeypatch.setenv("SIM2CHIP_NEBIUS_SECRET", "s2c-token")

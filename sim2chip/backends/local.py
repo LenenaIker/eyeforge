@@ -13,14 +13,15 @@ import sys
 from collections import deque
 from pathlib import Path
 
+from .. import config
 from ..stages import Stage
 from ..workspace import REPO, Cache, Job
 
-ISAAC_PYTHON = "/opt/isaacsim/isaac-sim-5.1.0-20260318-clean/python.sh"
-TRELLIS_PYTHON = str(Path.home() / "miniforge3/envs/trellis2/bin/python")
-# Model weights of the image-to-3D runtime live on the data SSD, next to the TRELLIS checkout.
-TRELLIS_ENV = {"HF_HUB_CACHE": "/media/lenena-iker/Crucial/tools/hf_cache",
-               "TORCH_HOME": "/media/lenena-iker/Crucial/tools/torch_cache"}
+# Where this machine keeps the other runtimes: environment or .env (see README). Isaac Sim's default is the
+# standard install folder; the image-to-3D runtime has no default. Its model weights go wherever HF_HUB_CACHE
+# and TORCH_HOME point (set them in .env to keep the weights off the system disk).
+ISAAC_PYTHON = str(Path.home() / "isaacsim" / "python.sh")
+TRELLIS_ENV = ("HF_HUB_CACHE", "TORCH_HOME")
 PREFIX = "[sim2chip]"
 
 
@@ -34,13 +35,13 @@ class LocalBackend:
 
     def interpreter(self, runtime: str) -> list[str]:
         if runtime == "isaac":
-            exe = os.environ.get("SIM2CHIP_ISAAC_PYTHON", ISAAC_PYTHON)
+            exe = config.env("SIM2CHIP_ISAAC_PYTHON", ISAAC_PYTHON)
             if not Path(exe).exists():
                 raise FileNotFoundError(f"Isaac Sim python not found at {exe}, set SIM2CHIP_ISAAC_PYTHON")
             return [exe]
         if runtime == "trellis":
-            exe = os.environ.get("SIM2CHIP_TRELLIS_PYTHON", TRELLIS_PYTHON)
-            if not Path(exe).exists():
+            exe = config.env("SIM2CHIP_TRELLIS_PYTHON")
+            if not exe or not Path(exe).exists():
                 raise FileNotFoundError(f"image-to-3D python not found at {exe}, set SIM2CHIP_TRELLIS_PYTHON")
             return [exe]
         return [os.environ.get("SIM2CHIP_PYTHON", sys.executable)]
@@ -53,7 +54,7 @@ class LocalBackend:
         env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH")])),
                "PYTHONUNBUFFERED": "1"}
         if stage.runtime == "trellis":
-            env = {**{k: os.environ.get(k, v) for k, v in TRELLIS_ENV.items()}, **env}
+            env = {**{k: v for k in TRELLIS_ENV if (v := config.env(k))}, **env}
         log_path = job.logs / f"{stage.name}.log"
         tail: deque[str] = deque(maxlen=40)
         with open(log_path, "w") as log, subprocess.Popen(cmd, env=env, cwd=REPO, stdout=subprocess.PIPE,

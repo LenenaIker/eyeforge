@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import shlex
 import shutil
 import subprocess
@@ -34,12 +33,17 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..cloud_sync import S3Store
+from .. import config
+from ..cloud_sync import REGION, S3Store
 from ..stages import Stage
 from ..workspace import DONE, REPO, Cache, Job
 
-PLATFORM, PRESET = "gpu-l40s-a", "1gpu-8vcpu-32gb"
-WORKER_HOURS = 3        # timeout of a whole run in one job
+# The GPU and its price go together: set all three to try another platform (for instance when eu-north1 has
+# no L40S left). Isaac Sim needs a GPU with RT cores (L40S yes, H100/H200 no).
+PLATFORM = config.env("SIM2CHIP_NEBIUS_PLATFORM", "gpu-l40s-a")
+PRESET = config.env("SIM2CHIP_NEBIUS_PRESET", "1gpu-8vcpu-32gb")
+USD_PER_HOUR = float(config.env("SIM2CHIP_USD_PER_HOUR", "1.55"))  # on-demand L40S (Intel), nebius.com/prices, 2026-09
+WORKER_HOURS = int(config.env("SIM2CHIP_WORKER_HOURS", "3"))  # timeout of a whole run in one job
 UV_URL = "https://github.com/astral-sh/uv/releases/download/0.8.22/uv-x86_64-unknown-linux-gnu.tar.gz"
 WORKER_DEPS = ["tensorflow[and-cuda]==2.18.1", "numpy<2.1", "pillow", "objaverse", "boto3", "usd-core==26.8",
                "trimesh==5.1.0"]  # the last two convert models (glb2usd)
@@ -47,7 +51,6 @@ WORKER_DEPS = ["tensorflow[and-cuda]==2.18.1", "numpy<2.1", "pillow", "objaverse
 WORKER_RESULTS = ("*.json", "export/*", "label/*", "ingest/test/*", "qa_assets/sheets/*", "preview_assets/*_0.png",
                   "generate_assets/*", "logs/*")
 RENDER_SAMPLE = 48
-USD_PER_HOUR = 1.55  # on-demand L40S (Intel), nebius.com/prices, 2026-09
 JOB_DIR, CACHE_DIR = "/tmp/s2c/job", "/tmp/s2c/cache"
 PREFIX = "[sim2chip]"
 
@@ -71,15 +74,7 @@ RUNTIMES = {
 TERMINAL = {"COMPLETED", "SUCCEEDED", "FAILED", "ERROR", "CANCELLED", "CANCELED", "STOPPED", "DELETED"}
 
 
-def _env(name: str, default: str | None = None) -> str | None:
-    if name in os.environ:
-        return os.environ[name]
-    env_file = REPO / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            if line.strip().startswith(name + "="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    return default
+_env = config.env
 
 
 def code_archive() -> bytes:
@@ -351,7 +346,8 @@ class NebiusBackend:
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text(worker_script(job.name, plan_args))
         secrets = self._secrets(any(st.calls_llm(pipe.spec) for st in todo))
-        env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url}
+        env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url,
+               "SIM2CHIP_REGION": REGION}
         name = f"s2c-{job.name}-run".lower().replace("_", "-")[:63]
         job.timeline("upload job", time.time() - t_up, "local")
         t0 = time.time()
@@ -468,7 +464,8 @@ class NebiusBackend:
         secrets = self._secrets(stage.needs_llm)
         name = f"s2c-{job.name}-{stage.name}".lower().replace("_", "-")[:63]
         t0 = time.time()
-        env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url}
+        env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url,
+               "SIM2CHIP_REGION": REGION}
         job_id = self.cli.create_job(name, RUNTIMES[stage.runtime], env, script, timeout_h, secrets)
         if self.dry_run:
             return

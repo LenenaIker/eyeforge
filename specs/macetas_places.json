@@ -164,7 +164,7 @@
   },
   "user_data": {
     "labeled": null,
-    "raw": "/home/lenena-iker/work/nvidia/data/real/maceta",
+    "raw": "maceta",
     "test": null,
     "label_min_confidence": 0.6,
     "class_map": {},

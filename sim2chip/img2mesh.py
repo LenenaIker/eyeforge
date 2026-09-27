@@ -7,7 +7,7 @@ spike/NOTES.md ("Imagen a 3D con TRELLIS v1").
 License note: TRELLIS bakes the texture with nvdiffrast and a Gaussian rasterizer (mip-splatting), both
 non-commercial. Replace that export before any commercial use (TODO.md, 3.E).
 
-Environment: SIM2CHIP_TRELLIS_DIR is the TRELLIS checkout (default below); model weights come from the
+Environment: SIM2CHIP_TRELLIS_DIR is the TRELLIS checkout (environment or .env); model weights come from the
 Hugging Face cache.
 """
 from __future__ import annotations
@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-TRELLIS_DIR = "/media/lenena-iker/Crucial/tools/TRELLIS"
 DETECTOR = "google/owlv2-base-patch16-ensemble"
 CUTOUT = "ZhengPeng7/BiRefNet"
 IMAGE_TO_3D = "microsoft/TRELLIS-image-large"
@@ -40,7 +39,11 @@ class ImageTo3D:
         from torchvision import transforms
         from transformers import AutoModelForImageSegmentation, Owlv2ForObjectDetection, Owlv2Processor
 
-        sys.path.insert(0, os.environ.get("SIM2CHIP_TRELLIS_DIR", TRELLIS_DIR))
+        from .config import env
+        trellis = env("SIM2CHIP_TRELLIS_DIR")
+        if not trellis:
+            raise RuntimeError("set SIM2CHIP_TRELLIS_DIR to the TRELLIS checkout (environment or .env)")
+        sys.path.insert(0, trellis)
         from trellis.pipelines import TrellisImageTo3DPipeline
         from trellis.utils import postprocessing_utils
 

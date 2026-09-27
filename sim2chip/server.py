@@ -300,7 +300,7 @@ def photo_thumb(cache: Path, src: Path, rel: Path | None = None, size: int = 360
 
 
 CLOUD_PHASES = {
-    "PROVISIONING": "Waiting for Nebius to assign an L40S GPU (usually 1 min, longer when the region is busy)",
+    "PROVISIONING": "Waiting for Nebius to assign a GPU (usually 1 min, longer when the region is busy)",
     "STARTING": "Nebius is starting the GPU machine",
     "IMAGE_PULLING": "Downloading the Isaac Sim image onto the machine (about 2 min)",
     "RUNNING": "Machine ready: installing the environment and fetching the job data",

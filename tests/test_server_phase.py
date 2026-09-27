@@ -4,7 +4,7 @@ from sim2chip.server import phase
 
 def test_phase_follows_the_cloud_then_the_stages():
     log = ["job j  backend nebius", "  nebius job aijob-1 (gpu-l40s-a)", "  state PROVISIONING"]
-    assert "assign an L40S" in phase(log, True)
+    assert "assign a GPU" in phase(log, True)
     log += ["  state STARTING", "  state IMAGE_PULLING"]
     assert "image" in phase(log, True)
     log += ["  state RUNNING"]

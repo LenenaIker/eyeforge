@@ -83,9 +83,13 @@ class Job:
         return self.root / stage
 
     def resolve_input(self, rel: str) -> Path:
-        """Spec paths are absolute or relative to the job's input folder."""
+        """Spec paths are absolute or relative to the job's input folder (and stay inside it)."""
         p = Path(rel)
-        return p if p.is_absolute() else self.input / p
+        if p.is_absolute():
+            return p
+        if ".." in p.parts:
+            raise ValueError(f"input path '{rel}' leaves the job's input folder")
+        return self.input / p
 
     def done(self, stage: str) -> dict | None:
         f = self.stage_dir(stage) / DONE

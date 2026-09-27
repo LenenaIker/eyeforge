@@ -68,7 +68,8 @@ class Stage:
         """What the stage runs on, as shown to the user. Only what really happens: a local run says local,
         never Nebius AI Cloud. The backend decides where the stage's own process runs; models called through
         Token Factory always run on Nebius, whatever the backend (they do not fit a local GPU)."""
-        where = "Nebius AI Cloud, L40S" if backend == "nebius" else "local GPU" if self.gpu else "local CPU"
+        from ..config import gpu_name
+        where = f"Nebius AI Cloud, {gpu_name()}" if backend == "nebius" else "local GPU" if self.gpu else "local CPU"
         if self.calls_llm(spec):
             name = model.split("/")[-1] if model else "vision model"
             return f"{name} on Nebius Token Factory, called from {where}"
