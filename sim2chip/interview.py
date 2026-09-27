@@ -72,7 +72,9 @@ Places: by default synthetic scenes stand the objects on open ground, seen from 
 template can also build "scene.contexts": building fronts seen from the street ("facade": objects on balcony
 floors, railings, window sills and the pavement), balconies seen from close ("balcony"), rooms ("indoor":
 floor, furniture, window sill) and open ground ("ground"), each with a share of the images, plus "wall_tags"
-(brick, plaster, stone, concrete, wood) and "railings" (bars, solid). As soon as you have a folder of the
+(brick, plaster, stone, concrete, wood) and "railings" (bars, solid). Exact format: "contexts": [{{"kind":
+"facade", "share": 0.7, "distance_m": [3, 20], "supports": ["railing", "balcony_floor"]}}, {{"kind": "balcony",
+"share": 0.3}}] (distance_m and supports are optional; supports by kind: {supports}). As soon as you have a folder of the
 user's photos, describe them: {{"describe_scene": {{"folder": "<folder>", "classes": "<what to find, in
 English>"}}}}. You get back what the photos show and the proposed fields: tell the user in one or two plain
 sentences what you saw and ask whether the images should look like that; then use the fields (the user may
@@ -139,7 +141,8 @@ def system_prompt() -> str:
     profiles = "\n".join(f"  - {h.name}: {h.description}" for h in hardware.PROFILES.values())
     return SYSTEM.format(hardware=profiles, weather=", ".join(spec_mod.WEATHER),
                          sky_tags=", ".join(scene_tags("hdris")), ground_tags=", ".join(scene_tags("textures")),
-                         schema=schema)
+                         schema=schema, supports="; ".join(f"{k}: {', '.join(v)}"
+                                                           for k, v in spec_mod.CONTEXTS.items()))
 
 
 class CategoryIndex:

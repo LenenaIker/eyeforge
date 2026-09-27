@@ -245,7 +245,8 @@ def _build(cls, data: dict, where: str):
     known = {f.name: f for f in fields(cls)}
     unknown = set(data) - set(known)
     if unknown:
-        raise SpecError(f"{where}: unknown keys {sorted(unknown)}")
+        # Name the valid keys: without them the interview model guessed ("name", "type") until it gave up.
+        raise SpecError(f"{where}: unknown keys {sorted(unknown)}, valid keys are {sorted(known)}")
     kwargs = {}
     for k, v in data.items():
         t = known[k].type
