@@ -1,4 +1,5 @@
 """CPU stages on tiny fabricated data: ingest, qa_assets, crops and the C export."""
+import hashlib
 import json
 
 import numpy as np
@@ -24,8 +25,11 @@ def ctx_for(tmp_path, **over):
 
 
 def img(path, size=(64, 48), color=(200, 10, 10)):
+    """A plain photo with its bottom-right corner set from its path: exact copies count as one photo in ingest."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", size, color).save(path)
+    im = Image.new("RGB", size, color)
+    im.paste(tuple(hashlib.sha256(str(path).encode()).digest()[:3]), (size[0] - 16, size[1] - 16, *size))  # survives JPEG
+    im.save(path)
 
 
 def test_ingest_maps_and_splits(tmp_path):
@@ -212,3 +216,34 @@ def test_qa_props_drop_lookalikes(tmp_path, monkeypatch):
     assert QAAssets().run(ctx)["kept"] == {"excavator": 1, "cone": 1}  # p3 capped by count
     kept = json.loads((ctx.job.stage_dir("qa_assets") / "assets.json").read_text())
     assert [(a["uid"], a.get("role")) for a in kept] == [("t1", None), ("p2", "prop")]
+
+
+def test_split_keeps_old_photos_and_halves_new_ones():
+    from sim2chip.stages.ingest import split
+    first = split([f"k{i}" for i in range(10)], set(), {}, test_cap=400, train_cap=3)
+    assert list(first.values()).count("test") == 5 and list(first.values()).count("train") == 3  # 2 unused
+    added = [f"n{i}" for i in range(6)]
+    second = split([f"k{i}" for i in range(10)] + added, {"n0"}, first, test_cap=400, train_cap=3)
+    assert all(second[k] == v for k, v in first.items())  # nothing old moves
+    new = [second[k] for k in added]
+    assert new.count("test") == 2 and new.count("train") == 4 and second["n0"] == "train"  # 5 usable // 2
+    assert split(list(second), set(), second, test_cap=5, train_cap=3) == second  # stable when nothing changes
+    capped = split([f"k{i}" for i in range(10)] + added, set(), first, test_cap=6, train_cap=3)
+    assert [capped[k] for k in added].count("test") == 1  # room left under the test cap
+
+
+def test_ingest_keeps_split_when_photos_are_added(tmp_path):
+    photos = tmp_path / "photos"
+    for i in range(8):
+        img(photos / "cow" / f"{i}.jpg")
+    ctx = ctx_for(tmp_path, user_data={"labeled": "photos", "test_per_class": 400, "train_per_class": 2})
+    link_input(ctx.job, "photos", photos)
+    Ingest().run(ctx)
+    out = ctx.job.stage_dir("ingest")
+    before = {s: sorted(f.name for f in (out / s / "cow").glob("*")) for s in ("test", "train")}
+    for i in range(4):
+        img(photos / "cow" / f"dry_{i}.jpg")
+    info = Ingest().run(ctx)
+    after = {s: sorted(f.name for f in (out / s / "cow").glob("*")) for s in ("test", "train")}
+    assert set(before["test"]) <= set(after["test"]) and set(before["train"]) <= set(after["train"])
+    assert info["counts"]["cow"] == {"test": 4 + 2, "train": 2 + 2}  # past the train cap of 2

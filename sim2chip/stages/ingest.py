@@ -3,7 +3,12 @@ resize to the model input and split train/test. With `user_data.test`, the test 
 that folder and all the others go to training. Photos that 3D models were made from never go to test (the
 model has seen them as 3D). With fewer than MIN_TEST test photos the score is noisy: the log says so.
 
-Output: ingest/{train,test}/<class>/*.png
+The split is kept (split.json, by photo content): photos added to a trained job never move the old ones, so a
+new version is scored on the same test photos as the old one. Half of the added photos go to test (the case
+the user found missing gets measured too) and the rest all go to training, past the train_per_class cap.
+Exact copies of a photo count once (they would otherwise land on both sides).
+
+Output: ingest/{train,test}/<class>/*.png, ingest/split.json {photo content key: "test" | "train" | "unused"}
 Count task: the teacher's (or the user's) points come along; the train_per_class and test_per_class limits
 then count photos. Output: ingest/{train,test}/images/*.png and ingest/{train,test}/points.json
 {image: {"points": [[x, y, class(, w, h)], ...], "key": photo in the raw folder, "source": its label/ copy}}
@@ -13,21 +18,22 @@ from __future__ import annotations
 
 import hashlib
 import json
-import random
 import shutil
 from pathlib import Path
 
 from ..workspace import IMAGE_EXT, content_key
 from .base import Context, Stage
 
+SPLIT = "split.json"
 MIN_TEST = 20  # below this many test photos (per class) one photo moves the score by 5 points or more
 
 
 class Ingest(Stage):
     name = "ingest"
-    version = "5"  # v4: 3D source photos out of test; count split by photo content. v5: box sizes
+    version = "6"  # v4: 3D source photos out of test; count split by photo content. v5: box sizes. v6: kept split
     runtime = "cpu"
     reads_input = True
+    rereads = (SPLIT,)  # earlier sides of each photo
     uses = ("user_data", "hardware", "classes", "background_class", "task")
     after = ("label", "generate_assets")
 
@@ -51,41 +57,36 @@ class Ingest(Stage):
         test_src = [(self._folder(ctx, "test", ud.test), ud.class_map)] if ud.test else []
         size = ctx.hardware.input_size
         out = ctx.job.stage_dir(self.name)
+        prev = read_split(out)
         shutil.rmtree(out, ignore_errors=True)
-        rng = random.Random(0)
 
-        def pick(srcs, cls, n):
-            files = sorted(f for src, cmap in srcs for d in cmap.get(cls, [cls]) for f in (src / d).glob("*")
-                           if f.suffix.lower() in IMAGE_EXT)
-            rng.shuffle(files)
-            # Take images in shuffled order until enough pass the size filter: opening every image of a
-            # large dataset just to read its size would take minutes.
-            picked = []
-            for f in files:
-                if len(picked) == n:
-                    break
-                with Image.open(f) as im:
-                    if min(im.size) >= ud.min_side_px:
-                        picked.append(f)
-            return files, picked
+        def big_enough(f) -> bool:
+            with Image.open(f) as im:
+                return min(im.size) >= ud.min_side_px
+
+        def files_of(srcs, cls) -> dict:
+            fs = sorted(f for src, cmap in srcs for d in cmap.get(cls, [cls]) for f in (src / d).glob("*")
+                        if f.suffix.lower() in IMAGE_EXT)
+            return {content_key(f): f for f in fs}
 
         held = held_out(ctx)
-        counts = {}
+        counts, sides = {}, {}
         for cls in ctx.spec.labels:
-            if test_src:
-                files, train = pick(sources, cls, ud.train_per_class)
-                _, test = pick(test_src, cls, ud.test_per_class)
+            by_key = files_of(sources, cls)
+            files = list(by_key.values())
+            if test_src:  # the user's own test folder: only a training side to keep
+                s = split(list(by_key), set(), prev, 0, ud.train_per_class, lambda k: big_enough(by_key[k]))
+                t_key = files_of(test_src, cls)
+                ts = split(list(t_key), set(), {}, ud.test_per_class, 0, lambda k: big_enough(t_key[k]))
+                test = [t_key[k] for k, v in ts.items() if v == "test"]
             else:
-                need = ud.test_per_class + ud.train_per_class
-                files, picked = pick(sources, cls, need)
-                n_test = min(ud.test_per_class, len(picked) // 2) if len(picked) < need else ud.test_per_class
-                if held:
-                    picked = [f for f in picked if content_key(f) not in held] + \
-                             [f for f in picked if content_key(f) in held]
-                    n_test = min(n_test, sum(content_key(f) not in held for f in picked))
-                test, train = picked[:n_test], picked[n_test:n_test + ud.train_per_class]
-            for split, sel in (("test", test), ("train", train)):
-                d = out / split / cls
+                s = split(list(by_key), held, prev, ud.test_per_class, ud.train_per_class,
+                          lambda k: big_enough(by_key[k]))
+                test = [by_key[k] for k, v in s.items() if v == "test"]
+            train = [by_key[k] for k, v in s.items() if v == "train"]
+            sides |= s
+            for side, sel in (("test", test), ("train", train)):
+                d = out / side / cls
                 d.mkdir(parents=True, exist_ok=True)
                 for f in sel:
                     with Image.open(f) as im:
@@ -97,6 +98,7 @@ class Ingest(Stage):
             if 0 < len(test) < MIN_TEST:
                 ctx.log(f"WARNING: only {len(test)} test photos of {cls}: each one moves its score by "
                         f"{100 / len(test):.0f} points")
+        write_split(out, sides, prev)
         return {"counts": counts}
 
     def _count(self, ctx: Context) -> dict:
@@ -111,15 +113,16 @@ class Ingest(Stage):
         # Ordered by photo content, not by name or folder: a photo lands on the same side in every job.
         ck = {k: content_key(src_dir / k) for k, v in verdicts.items() if v["assigned"] == "images"}
         held = held_out(ctx)
-        keys = sorted(ck, key=lambda k: (ck[k] in held, hashlib.sha256(f"split:{ck[k]}".encode()).hexdigest()))
-        need = ud.test_per_class + ud.train_per_class
-        n_test = min(ud.test_per_class, len(keys) // 2) if len(keys) < need else ud.test_per_class
-        n_test = min(n_test, sum(ck[k] not in held for k in keys))
         out = ctx.job.stage_dir(self.name)
+        prev = read_split(out)
         shutil.rmtree(out, ignore_errors=True)
+        sides = split(list(ck.values()), held, prev, ud.test_per_class, ud.train_per_class)
+        keys = sorted(ck, key=lambda k: order(ck[k]))
+        n_test = sum(sides[ck[k]] == "test" for k in keys)
         counts = {}
-        for split, sel in (("test", keys[:n_test]), ("train", keys[n_test:n_test + ud.train_per_class])):
-            d = out / split / "images"
+        for side in ("test", "train"):
+            sel = [k for k in keys if sides[ck[k]] == side]
+            d = out / side / "images"
             d.mkdir(parents=True)
             points = {}
             for key in sel:
@@ -129,10 +132,11 @@ class Ingest(Stage):
                     ImageOps.exif_transpose(im).convert("RGB").resize((size, size), Image.BILINEAR).save(d / name)
                 points[name] = {"points": [point(o) for o in verdicts[key]["objects"]],
                                 "key": key, "source": str(src.relative_to(ctx.job.root))}
-            (out / split / "points.json").write_text(json.dumps(points, indent=1))
-            counts[split] = {"photos": len(sel), "objects": sum(len(p["points"]) for p in points.values())}
+            (out / side / "points.json").write_text(json.dumps(points, indent=1))
+            counts[side] = {"photos": len(sel), "objects": sum(len(p["points"]) for p in points.values())}
         ctx.log(f"{len(keys)} marked photos ({len(held & set(ck.values()))} used for 3D, kept out of test): "
                 f"test {counts['test']}, train {counts['train']}")
+        write_split(out, sides, prev)
         if 0 < n_test < MIN_TEST:
             ctx.log(f"WARNING: only {n_test} test photos: the score is noisy, add photos for a steadier one")
         return {"counts": counts}
@@ -143,6 +147,52 @@ class Ingest(Stage):
         if not src.is_dir():
             raise FileNotFoundError(f"user_data.{key}: {src} is not a folder")
         return src
+
+
+def order(key: str) -> str:
+    """A photo's place in the split order: by content, so the same photo lands on the same side in every job."""
+    return hashlib.sha256(f"split:{key}".encode()).hexdigest()
+
+
+def split(keys: list[str], held: set[str], prev: dict[str, str], test_cap: int, train_cap: int,
+          usable=lambda k: True) -> dict[str, str]:
+    """Each photo's side: "test", "train" or "unused" (over the caps, or too small).
+
+    First split: half to test when there are fewer photos than both caps, else test_cap to test and train_cap
+    to train. Later splits (prev, the earlier sides) keep every known photo where it was and split only the
+    new ones: half of them to test while test_cap allows, the rest all to training. Photos in `held` (3D
+    models were made from them) never go to test. `usable` is checked lazily: opening every photo of a large
+    dataset just to read its size would take minutes."""
+    ordered = sorted(keys, key=lambda k: (k in held, order(k)))
+    sides = {k: ("train" if prev[k] == "test" and k in held else prev[k]) for k in ordered if k in prev}
+    new = [k for k in ordered if k not in sides]
+    if not prev:
+        need, picked = test_cap + train_cap, []
+        for k in new:
+            if len(picked) == need:
+                break
+            if usable(k):
+                picked.append(k)
+        n_test = min(test_cap, len(picked) // 2) if len(picked) < need else test_cap
+        n_test = min(n_test, sum(k not in held for k in picked))
+        sides |= {k: "test" for k in picked[:n_test]} | {k: "train" for k in picked[n_test:n_test + train_cap]}
+    else:
+        fresh = [k for k in new if usable(k)]
+        room = max(0, test_cap - sum(v == "test" for v in sides.values()))
+        n_test = min(room, sum(k not in held for k in fresh) // 2)
+        sides |= {k: "test" for k in fresh[:n_test]} | {k: "train" for k in fresh[n_test:]}
+    return {k: sides.get(k, "unused") for k in keys}
+
+
+def read_split(out) -> dict[str, str]:
+    f = out / SPLIT
+    return json.loads(f.read_text()) if f.exists() else {}
+
+
+def write_split(out, sides: dict[str, str], prev: dict[str, str]) -> None:
+    """Photos no longer in the job (deleted, relabeled as unsure) keep their side, should they come back."""
+    out.mkdir(parents=True, exist_ok=True)
+    (out / SPLIT).write_text(json.dumps(prev | sides, indent=1, sort_keys=True))
 
 
 def held_out(ctx: Context) -> set[str]:

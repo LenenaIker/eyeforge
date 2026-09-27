@@ -1,4 +1,5 @@
 """Stages that call Token Factory, with a fake client (no network, no key)."""
+import hashlib
 import json
 import threading
 
@@ -44,8 +45,11 @@ def fake(monkeypatch):
 
 
 def img(path, color=(120, 120, 120)):
+    """A plain photo with its bottom-right corner set from its path: exact copies count as one photo in ingest."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (64, 64), color).save(path)
+    im = Image.new("RGB", (64, 64), color)
+    im.paste(tuple(hashlib.sha256(str(path).encode()).digest()[:3]), (48, 48, 64, 64))  # survives JPEG
+    im.save(path)
 
 
 def test_label_then_ingest(tmp_path):
