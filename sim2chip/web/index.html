@@ -325,17 +325,21 @@ async function addPhotos(list) {
   refreshTrain();
 }
 
+let starting = false;  // "Looks good" and the Train button could both launch the same run
 async function train() {
+  if (starting) return;
   let spec;
   try { spec = JSON.parse(specText()); } catch (e) { alert("The spec is not valid JSON: " + e.message); return; }
   const form = new FormData();
   form.append("spec", JSON.stringify(spec));
   $("train").disabled = true;
+  starting = true;
   try {
     const r = await api("/api/jobs", {method: "POST", body: form});
     watch(r.job);
     loadJobs();
   } catch (e) { alert(e.message); $("train").disabled = false; }
+  starting = false;
 }
 
 function watch(job) {
@@ -369,6 +373,7 @@ async function poll() {
     loadReview(s.job);
   }
   refreshTrain();
+  if (s.running) $("train").disabled = true;  // one run at a time from this page
 }
 
 function showResult(s) {

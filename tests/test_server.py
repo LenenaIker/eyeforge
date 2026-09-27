@@ -217,3 +217,9 @@ def test_daily_cloud_budget(tmp_path):
     client = TestClient(create_app(tmp_path, backend="nebius", launcher=lambda *a, **k: FakeProc(), daily_usd=10))
     r = client.post("/api/jobs", data={"spec": json.dumps(GOOD)})
     assert r.status_code == 429 and "budget" in r.json()["detail"]
+
+
+def test_the_same_setup_sent_twice_runs_once(app):
+    first = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()
+    again = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()
+    assert again["job"] == first["job"] and again["already_running"] and len(app.launched) == 1

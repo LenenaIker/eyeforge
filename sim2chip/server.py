@@ -218,6 +218,12 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 Path(p).is_absolute() and Path(p).resolve().is_relative_to(uploads))]
             if bad:
                 raise HTTPException(400, f"invalid spec: only photos uploaded here can be used, not {bad}")
+        # The same setup sent twice (a double click, "Looks good" and Train together) must not pay for two runs.
+        same = json.loads(parsed.to_json())
+        for other, proc in runs.items():
+            req = home / "jobs" / other / "request.json"
+            if proc.poll() is None and req.exists() and {**json.loads(req.read_text()), "name": same["name"]} == same:
+                return {"job": other, "photos": 0, "already_running": True}
         # A new request never reuses an existing job folder: it would overwrite that job's results and pick
         # up its review corrections. Reruns of a job go through the corrections endpoint instead.
         base = name = slug(parsed.name)
