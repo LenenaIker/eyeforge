@@ -68,10 +68,9 @@ class Mirror:
 
     def __init__(self, objaverse_dir: Path | None = None, uids: set[str] | None = None):
         if uids is None:
-            import objaverse
+            from .workspace import objaverse_at
             objaverse_dir = Path(objaverse_dir)
-            objaverse.BASE_PATH = str(objaverse_dir)
-            objaverse._VERSIONED_PATH = str(objaverse_dir / "hf-objaverse-v1")
+            objaverse = objaverse_at(objaverse_dir)
             objaverse._load_object_paths()  # downloads the index if missing
             with gzip.open(objaverse_dir / "hf-objaverse-v1" / "object-paths.json.gz") as f:
                 uids = set(json.load(f))

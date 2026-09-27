@@ -54,7 +54,7 @@ class Label(Stage):
     def run(self, ctx: Context) -> dict:
         from PIL import Image, ImageOps
 
-        from ..llm import Client, LLMError, ask_json, image_part
+        from ..llm import WORKERS, Client, LLMError, ask_json, image_part
 
         ud, spec = ctx.spec.user_data, ctx.spec
         src = ctx.job.resolve_input(ud.raw)
@@ -131,7 +131,7 @@ class Label(Stage):
                 return f, {"objects": None, "reason": "no valid answer"}, failed
             return f, {"class": "unsure", "confidence": 0, "reason": "no valid answer"}, failed
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             answers = list(pool.map(one, enumerate(todo)))
         if todo and all(failed for _, _, failed in answers):
             raise RuntimeError(f"the teacher failed on all {len(todo)} photos, see the lines above")

@@ -49,7 +49,9 @@ def default_interviewer(home: Path, backend: str = "local", public: bool = False
 
 
 MAX_PHOTOS = 400  # per upload on a public server
-SESSION_HOURS = 6  # an interview left open longer is dropped
+SESSION_HOURS = 6
+# Model calls are logged by purpose, which is the stage name except for qa's two-step strategy.
+PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets"}  # an interview left open longer is dropped
 
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,
@@ -447,8 +449,8 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     failed = any(l.startswith("FAILED") or l.startswith("error:") for l in log[-5:])
     # Token Factory model each stage really called (the usage log records it per call, by stage name).
     llm_log = job.logs / "llm_usage.jsonl"
-    models = {r["purpose"]: r["model"] for r in map(json.loads, llm_log.read_text().splitlines())} \
-        if llm_log.exists() else {}
+    models = {PURPOSE_STAGE.get(r["purpose"], r["purpose"]): r["model"]
+              for r in map(json.loads, llm_log.read_text().splitlines())} if llm_log.exists() else {}
     stages = []
     for p in Pipeline(spec, job, Cache(home / "cache")).plan():
         state = "done" if p.action == "skip" else "pending"

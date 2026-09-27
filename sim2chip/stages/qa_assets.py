@@ -190,7 +190,7 @@ class QAAssets(Stage):
     def judge(self, ctx: Context, assets: list[dict]) -> dict:
         from PIL import Image
 
-        from ..llm import Client, LLMError, ask_json, image_part
+        from ..llm import WORKERS, Client, LLMError, ask_json, image_part
 
         prev = ctx.job.stage_dir("preview_assets")
         views = json.loads((prev / "views.json").read_text())
@@ -260,7 +260,7 @@ class QAAssets(Stage):
             v = ask(msg, text_model, "qa_decide", is_verdict)
             return a["uid"], ({**v, "description": desc, "judge": f"{model} + {text_model}"} if v else None)
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             verdicts = dict(pool.map(one, assets))
         if assets and len(errors) == len(assets):
             raise RuntimeError(f"the vision model failed on all {len(assets)} assets, see the lines above")

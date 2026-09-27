@@ -66,10 +66,8 @@ class FetchAssets(Stage):
 
     @staticmethod
     def _objaverse(ctx: Context):
-        import objaverse
-        objaverse.BASE_PATH = str(ctx.cache.objaverse)
-        objaverse._VERSIONED_PATH = str(ctx.cache.objaverse / "hf-objaverse-v1")
-        return objaverse
+        from ..workspace import objaverse_at
+        return objaverse_at(ctx.cache.objaverse)
 
     def objaverse_lvis(self, ctx: Context) -> list[dict]:
         wanted = [c for c in ctx.spec.classes if c.assets and c.assets.source == "objaverse_lvis"]

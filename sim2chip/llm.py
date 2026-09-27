@@ -36,6 +36,10 @@ PREFERENCES = {
 }
 
 
+# Model calls in flight at once per stage (photos to label, assets to judge): Token Factory rate limits.
+WORKERS = int(os.environ.get("SIM2CHIP_LLM_WORKERS", "8"))
+
+
 class LLMError(RuntimeError):
     pass
 

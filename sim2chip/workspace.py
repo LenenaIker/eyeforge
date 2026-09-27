@@ -136,3 +136,11 @@ def copy_name(key: str) -> str:
     """Name of a photo's copy in label/<class>/: subfolder names are kept as a prefix."""
     p = key.split("/")
     return p[-1] if len(p) == 1 else f"{p[-2]}_{p[-1]}"
+
+
+def objaverse_at(folder: Path):
+    """The objaverse package, downloading into `folder` (it has no setting for this, only module globals)."""
+    import objaverse
+    objaverse.BASE_PATH = str(folder)
+    objaverse._VERSIONED_PATH = str(Path(folder) / "hf-objaverse-v1")
+    return objaverse

@@ -152,10 +152,11 @@ class CategoryIndex:
 
     def __init__(self, counts: dict[str, int] | None = None, cache_dir: Path | None = None, live=None):
         if counts is None:
-            import objaverse
             if cache_dir:
-                objaverse.BASE_PATH = str(cache_dir)
-                objaverse._VERSIONED_PATH = str(cache_dir / "hf-objaverse-v1")
+                from .workspace import objaverse_at
+                objaverse = objaverse_at(cache_dir)
+            else:
+                import objaverse
             counts = {k: len(v) for k, v in objaverse.load_lvis_annotations().items()}
         self.counts = counts
         self.live = live  # query -> list of asset_search.Hit, or None for curated categories only
@@ -213,14 +214,14 @@ MAX_INVALID_SPECS = 4  # rejected proposals in a row before the model must ask t
 PICK_MAX = 8
 
 
-def photo_ranker(client, model: str, limit: int = 80, workers: int = 8):
+def photo_ranker(client, model: str, limit: int = 80, workers: int | None = None):
     """Vision-model ranking of a folder's photos for building 3D models of a query (Token Factory)."""
     import tempfile
     from concurrent.futures import ThreadPoolExecutor
 
     from PIL import Image, ImageOps
 
-    from .llm import image_part, parse_json
+    from .llm import WORKERS, image_part, parse_json
     from .workspace import IMAGE_EXT
 
     def rank(folder: str, query: str) -> list[dict]:
@@ -242,7 +243,7 @@ def photo_ranker(client, model: str, limit: int = 80, workers: int = 8):
                             "reason": str(v.get("reason", ""))}
                 except (ValueError, TypeError, AttributeError):
                     return {"file": str(f.resolve()), "score": 0.0, "reason": "no valid answer"}
-            with ThreadPoolExecutor(max_workers=workers) as pool:
+            with ThreadPoolExecutor(max_workers=workers or WORKERS) as pool:
                 out = list(pool.map(one, enumerate(files)))
         return sorted(out, key=lambda c: -c["score"])
     return rank

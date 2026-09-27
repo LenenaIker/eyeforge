@@ -38,7 +38,7 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
     """One description per sampled photo (photos without a valid answer are skipped)."""
     from PIL import Image, ImageOps
 
-    from .llm import ask_json, image_part
+    from .llm import WORKERS, ask_json, image_part
 
     sample = sorted(photos)
     random.Random(seed).shuffle(sample)
@@ -59,7 +59,7 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
         return {**v, "photo": f.name} if v else None
 
     try:
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             return [d for d in pool.map(one, enumerate(sample)) if d]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
