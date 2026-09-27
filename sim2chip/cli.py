@@ -35,34 +35,21 @@ def cmd_run(args) -> int:
         if not path:
             raise SystemExit(f"--input expects NAME=PATH, got '{item}'")
         link_input(pipe.job, name, Path(path))
-    if args.backend == "nebius":  # local folders named in the spec travel as job input
-        from .backends.nebius import cloud_spec, portable_spec
-        pipe = Pipeline(portable_spec(cloud_spec(pipe.spec), pipe.job), pipe.job, pipe.cache)  # stages anew
-    print(f"job {pipe.job.root}  backend {args.backend}")
     kw = {}
     if args.backend == "nebius":
         kw = {"dry_run": args.dry_run, "max_usd": args.max_usd}
     elif args.dry_run:
         raise SystemExit("--dry-run is only for the nebius backend")
     backend = backends.get(args.backend, verbose=args.verbose, **kw)
-    if args.dry_run and getattr(backend, "worker_mode", False):
-        backend.run_pipeline(pipe, start=args.start, only=args.only, force=args.force)
-        return 0
-    if args.dry_run:
-        pipe.job.spec_path.write_text(pipe.spec.to_json())
-        for p in pipe.plan(args.start, args.only, args.force):
-            if p.action == "run":
-                print(f"> {p.stage.name} ({p.stage.powered_by(pipe.spec, backend.name)})")
-                backend.run_stage(p.stage, pipe.job, pipe.cache, p.fingerprint)
-        return 0
+    pipe = backend.prepare(pipe)
+    print(f"job {pipe.job.root}  backend {args.backend}")
     try:
-        if getattr(backend, "worker_mode", False):  # the whole run in one cloud job
-            backend.run_pipeline(pipe, start=args.start, only=args.only, force=args.force)
-        else:
-            pipe.run(backend, start=args.start, only=args.only, force=args.force)
+        backend.run(pipe, start=args.start, only=args.only, force=args.force)
     except StageFailed as e:
         print(f"FAILED: {e}", file=sys.stderr)
         return 1
+    if args.dry_run:
+        return 0
     report = pipe.job.stage_dir("export") / "report.json"
     fresh = any(p.stage.name == "export" and p.action == "skip" for p in pipe.plan())
     if fresh and report.exists():

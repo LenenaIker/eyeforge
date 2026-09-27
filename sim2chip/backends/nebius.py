@@ -328,6 +328,24 @@ class NebiusBackend:
         self.store.put(bucket, "spec.json", job.spec_path.read_bytes())
         return self.store.url(bucket, "_code/sim2chip.tar.gz")
 
+    def prepare(self, pipe):
+        """Local folders named in the spec travel as job input, and what the cloud cannot do yet is swapped
+        for what it can (3D from photos). The stages are built anew from the new spec."""
+        from ..pipeline import Pipeline
+        return Pipeline(portable_spec(cloud_spec(pipe.spec), pipe.job), pipe.job, pipe.cache)
+
+    def run(self, pipe, start: str | None = None, only: str | None = None, force: bool = False) -> None:
+        if self.worker_mode:  # the whole run in one cloud job
+            self.run_pipeline(pipe, start=start, only=only, force=force)
+        elif self.dry_run:  # stage mode: print each stage's job
+            pipe.job.spec_path.write_text(pipe.spec.to_json())
+            for p in pipe.plan(start, only, force):
+                if p.action == "run":
+                    print(f"> {p.stage.name} ({p.stage.powered_by(pipe.spec, self.name)})")
+                    self.run_stage(p.stage, pipe.job, pipe.cache, p.fingerprint)
+        else:
+            pipe.run(self, start=start, only=only, force=force)
+
     @property
     def worker_mode(self) -> bool:
         return _env("SIM2CHIP_NEBIUS_MODE", "worker") != "stage"

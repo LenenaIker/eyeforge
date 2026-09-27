@@ -11,6 +11,12 @@ from .workspace import Cache, Job
 
 
 class Backend(Protocol):
+    def prepare(self, pipe: "Pipeline") -> "Pipeline":
+        """The pipeline as this backend can run it (the cloud rewrites local paths and local-only options)."""
+
+    def run(self, pipe: "Pipeline", start: str | None = None, only: str | None = None, force: bool = False) -> None:
+        """Run the planned stages; raises StageFailed. Usually pipe.run(self, ...)."""
+
     def run_stage(self, stage: Stage, job: Job, cache: Cache, fp: str) -> None:
         """Run one stage to completion. It must leave job/<stage>/_done.json with `fp`, or raise."""
 

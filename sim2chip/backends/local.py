@@ -46,6 +46,12 @@ class LocalBackend:
             return [exe]
         return [os.environ.get("SIM2CHIP_PYTHON", sys.executable)]
 
+    def prepare(self, pipe):
+        return pipe
+
+    def run(self, pipe, start: str | None = None, only: str | None = None, force: bool = False) -> None:
+        pipe.run(self, start=start, only=only, force=force)
+
     def run_stage(self, stage: Stage, job: Job, cache: Cache, fp: str) -> None:
         if self.before_stage:
             self.before_stage(stage, job, cache)
