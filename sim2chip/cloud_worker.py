@@ -5,26 +5,59 @@ stage on it with the local backend, instead of one job per stage. Inside the con
 
     python -m sim2chip.cloud_worker --home /tmp/s2c/home --job <name> [--from STAGE] [--only STAGE] [--force]
 
-It pulls the job (spec, input, earlier stage outputs) and the shared knowledge (asset reviews, teacher
-answers) from Object Storage, runs `sim2chip run` locally, pushes progress every PROGRESS_S seconds (the
+It plans the run first and pulls only what the stages about to run read: the input, their upstream
+outputs and what a stage reads back from its own last run (label's verdicts with the user's corrections),
+plus the shared knowledge (asset reviews, teacher answers). Before each stage that uses the asset cache it
+pulls that job's cached files (USD conversions, skies, textures) so nothing is converted or downloaded
+twice. It runs the pipeline with the local backend, pushes progress every PROGRESS_S seconds (the
 log and done markers, so the machine that launched it can follow) and everything at the end.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
-import subprocess
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
-from .cloud_sync import S3Store
-from .workspace import Job
+from . import spec as spec_mod
+from .backends.local import LocalBackend
+from .cloud_sync import S3Store, asset_cache_keys
+from .pipeline import Pipeline, StageFailed
+from .workspace import DONE, Cache, Job
 
 PROGRESS_S = 20
 LOG = "logs/cloud_pipeline.log"
 SHARED = ("db/", "labels/")  # small, append-only knowledge shared by all jobs
+# Isaac Sim compiles its renderer's shaders on the first start in a fresh container: about 180 s on an L40S
+# (2026-09-27), then 3 s for every later start. The compiled caches go to the cache bucket and come back on
+# the next run, so only the first run pays. Bucket prefix -> path ("~" is $HOME, /isaac-sim in the image).
+GPU_CACHES = {"gpu/ov-shaders": "~/.cache/ov/shaders", "gpu/ov-ddc": "~/.cache/ov/DerivedDataCache",
+              "gpu/kit": "/isaac-sim/kit/cache", "gpu/compute": "~/.nv/ComputeCache",
+              "gpu/gl": "~/.cache/nvidia/GLCache"}
+# Where the caches really land is checked after each run: sizes of these folders go to the worker log.
+CACHE_PROBE = ("~/.cache", "~/.cache/ov", "~/.nv", "/isaac-sim/kit/cache", "/isaac-sim/kit/data")
+
+
+def gpu_cache(local: str) -> Path:
+    return Path(local).expanduser()
+
+
+def probe_caches() -> None:
+    for top in CACHE_PROBE:
+        d = gpu_cache(top)
+        if not d.is_dir():
+            continue
+        for sub in sorted(d.iterdir()):
+            if sub.is_dir():
+                try:
+                    mb = sum(f.stat().st_size for f in sub.rglob("*") if f.is_file()) / 1e6
+                except OSError:  # unreadable folders must not stop the run
+                    continue
+                print(f"[sim2chip] cache probe {sub}: {mb:.0f} MB", flush=True)
 
 
 def sync_progress(store: S3Store, bucket: str, job: Path) -> None:
@@ -32,6 +65,20 @@ def sync_progress(store: S3Store, bucket: str, job: Path) -> None:
     for f in [job / LOG, job / "logs" / "timeline.jsonl"] + sorted(job.glob("*/_done.json")):
         if f.exists():
             store.s3.upload_file(str(f), bucket, f.relative_to(job).as_posix())
+
+
+def wanted(key: str, todo: list) -> bool:
+    """Job files the stages about to run read: the input, the outputs of their upstream stages and what they
+    read back from their own last run. Everything else stays in the bucket."""
+    top, _, rest = key.partition("/")
+    names = {st.name for st in todo}
+    if top == "input":
+        return any(st.reads_input for st in todo)
+    if top in names:
+        return any(st.name == top and rest in st.rereads for st in todo)
+    if top == "fetch_assets" and any(st.uses_cache for st in todo):
+        return True  # its manifest says which cached files the asset stages need
+    return any(top in st.after for st in todo)
 
 
 def main() -> int:
@@ -44,46 +91,63 @@ def main() -> int:
     args = p.parse_args()
     job_bucket, cache_bucket = os.environ["S2C_JOB_BUCKET"], os.environ["S2C_CACHE_BUCKET"]
     store = S3Store()
-    job, cache = args.home / "jobs" / args.job, args.home / "cache"
+    job, cache = Job(args.home / "jobs" / args.job), Cache(args.home / "cache")
     t0 = time.time()
-    n = store.pull(job_bucket, [k for k in store.listing(job_bucket) if not k.startswith("_code/")], job)
-    m = store.pull(cache_bucket, [k for k in store.listing(cache_bucket) if k.startswith(SHARED)], cache)
-    print(f"[sim2chip] worker: pulled {n} job files and {m} shared cache files", flush=True)
-    timeline = Job(job).timeline
+    listing = store.listing(job_bucket)
+    store.pull(job_bucket, [k for k in listing if k == "spec.json" or k.endswith("/" + DONE)], job.root)
+    pipe = Pipeline(spec_mod.load(job.spec_path), job, cache)
+    todo = [pl.stage for pl in pipe.plan(args.start, args.only, args.force) if pl.action == "run"]
+    n = store.pull(job_bucket, [k for k in listing if wanted(k, todo)], job.root)
+    m = store.pull(cache_bucket, [k for k in store.listing(cache_bucket) if k.startswith(SHARED)], cache.root)
+    listing = store.listing(cache_bucket, "gpu/")
+    g = sum(store.pull(cache_bucket, [k for k in listing if k.startswith(prefix + "/")], gpu_cache(local),
+                       strip=prefix) for prefix, local in GPU_CACHES.items())
+    print(f"[sim2chip] worker: pulled {n} job files, {m} shared cache files and {g} GPU cache files, "
+          f"{len(todo)} stages to run", flush=True)
     setup = os.environ.get("S2C_SETUP_S")
     if setup:  # code download and Python environment, measured by the job script
-        timeline("cloud: set up environment", float(setup), "nebius")
-    timeline("cloud: pull job data", time.time() - t0, "nebius", files=n + m)
+        job.timeline("cloud: set up environment", float(setup), "nebius")
+    job.timeline("cloud: pull job data", time.time() - t0, "nebius", files=n + m + g)
 
-    cmd = [sys.executable, "-m", "sim2chip.cli", "--home", str(args.home), "run", str(job / "spec.json"),
-           "--job", args.job, "--backend", "local"]
-    for flag, value in (("--from", args.start), ("--only", args.only)):
-        if value:
-            cmd += [flag, value]
-    if args.force:
-        cmd.append("--force")
-    (job / "logs").mkdir(parents=True, exist_ok=True)
+    def pull_asset_cache(stage, job: Job, cache: Cache) -> None:
+        if not stage.uses_cache:
+            return
+        t = time.time()
+        k = store.pull(cache_bucket, asset_cache_keys(store.listing(cache_bucket), job.root), cache.root)
+        if k:
+            job.timeline(f"cloud: pull cache for {stage.name}", time.time() - t, "nebius", files=k)
+
+    job.logs.mkdir(parents=True, exist_ok=True)
     stop = threading.Event()
 
     def progress():
         while not stop.wait(PROGRESS_S):
             try:
-                sync_progress(store, job_bucket, job)
+                sync_progress(store, job_bucket, job.root)
             except Exception as e:  # a failed progress upload must not kill the run
                 print(f"[sim2chip] progress upload failed: {e}", flush=True)
     t = threading.Thread(target=progress, daemon=True)
     t.start()
-    with open(job / LOG, "w") as log:
-        code = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, env={**os.environ, "PYTHONUNBUFFERED": "1"}
-                              ).returncode
+    code = 1
+    with open(job.root / LOG, "w", buffering=1) as log, contextlib.redirect_stdout(log), \
+            contextlib.redirect_stderr(log):
+        try:
+            pipe.run(LocalBackend(before_stage=pull_asset_cache), start=args.start, only=args.only, force=args.force)
+            code = 0
+        except StageFailed as e:
+            print(f"FAILED: {e}")
+        except Exception:
+            traceback.print_exc()
     stop.set()
     t.join()
-    print((job / LOG).read_text(errors="replace")[-3000:], flush=True)
+    print((job.root / LOG).read_text(errors="replace")[-3000:], flush=True)
+    probe_caches()
     t0 = time.time()
-    m = store.upload_dir(cache_bucket, cache, "")
-    timeline("cloud: push cache", time.time() - t0, "nebius", files=m)
-    n = store.upload_dir(job_bucket, job, "")
-    sync_progress(store, job_bucket, job)
+    m = store.upload_dir(cache_bucket, cache.root, "")
+    m += sum(store.upload_dir(cache_bucket, gpu_cache(local), prefix) for prefix, local in GPU_CACHES.items())
+    job.timeline("cloud: push cache", time.time() - t0, "nebius", files=m)
+    n = store.upload_dir(job_bucket, job.root, "")
+    sync_progress(store, job_bucket, job.root)
     print(f"[sim2chip] worker: pushed {n} job files and {m} cache files, exit {code}", flush=True)
     return code
 

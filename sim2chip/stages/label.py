@@ -51,6 +51,7 @@ class Label(Stage):
     runtime = "cpu"
     needs_llm = True
     reads_input = True
+    rereads = ("verdicts.json",)  # the user's corrections and earlier answers
     uses_cache = True
     uses = ("user_data", "classes", "background_class", "task")
 

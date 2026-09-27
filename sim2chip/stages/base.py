@@ -55,6 +55,7 @@ class Stage:
     reads_input: ClassVar[bool] = False    # needs the job's input/ folder
     uses_cache: ClassVar[bool] = False     # reads or writes the shared asset cache
     uses_db: ClassVar[bool] = False        # reads or writes the asset knowledge base (cache/db)
+    rereads: ClassVar[tuple[str, ...]] = ()  # own output files (relative) a rerun reads back, e.g. user corrections
 
     def enabled(self, spec: Spec) -> bool:
         return True

@@ -25,8 +25,10 @@ PREFIX = "[sim2chip]"
 
 
 class LocalBackend:
-    def __init__(self, verbose: bool = False):
+    def __init__(self, verbose: bool = False, before_stage=None):
         self.verbose = verbose
+        # Called with (stage, job, cache) before each stage: the Nebius worker brings cached files in.
+        self.before_stage = before_stage
         # Inside a Nebius worker job this machine is Nebius AI Cloud: stage labels must say so.
         self.name = os.environ.get("SIM2CHIP_RUNS_ON", "local")
 
@@ -44,6 +46,8 @@ class LocalBackend:
         return [os.environ.get("SIM2CHIP_PYTHON", sys.executable)]
 
     def run_stage(self, stage: Stage, job: Job, cache: Cache, fp: str) -> None:
+        if self.before_stage:
+            self.before_stage(stage, job, cache)
         cmd = self.interpreter(stage.runtime) + ["-m", "sim2chip.run_stage", stage.name, "--job", str(job.root),
                                                  "--cache", str(cache.root), "--fingerprint", fp]
         env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH")])),

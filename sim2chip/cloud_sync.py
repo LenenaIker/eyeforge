@@ -103,6 +103,26 @@ def asset_uids(job: Path) -> set[str]:
     return {m["uid"] for m in json.loads(manifest.read_text())} if manifest.exists() else set()
 
 
+def asset_cache_keys(listing: dict[str, int], job: Path) -> list[str]:
+    """Cache objects of the job's assets and scene: downloads, USD conversions, skies and textures. A download
+    whose USD conversion is already in the cache is left out: nothing reads it again."""
+    uids = asset_uids(job)
+    scene_file = job / "fetch_assets" / "scene.json"
+    scene = json.loads(scene_file.read_text()) if scene_file.exists() else {}
+    listed = {k for k in scene.values() if isinstance(k, str)} | {
+        k for v in scene.values() if isinstance(v, list) for k in v if isinstance(k, str)}
+    converted = {u for u in uids if f"usd/raw/{u}.usd" in listing}
+    keys = []
+    for k in listing:
+        if k in listed:
+            keys.append(k)
+            continue
+        owner = next((u for u in uids if u in k), None)
+        if owner and (k.startswith("usd/") or owner not in converted):
+            keys.append(k)
+    return keys
+
+
 def pull(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_bucket: str) -> None:
     listing = store.listing(job_bucket)
     wanted = ["spec.json"] + (["input/"] if stage.reads_input else [])
@@ -113,12 +133,7 @@ def pull(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_b
     n = store.pull(job_bucket, keys, job)
     m = 0
     if stage.uses_cache:
-        uids = asset_uids(job)
-        scene_file = job / "fetch_assets" / "scene.json"
-        scene = json.loads(scene_file.read_text()) if scene_file.exists() else {}
-        listed = set(scene.get("skies", []) + scene.get("ground", []))
-        ckeys = [k for k in store.listing(cache_bucket) if k in listed or any(u in k for u in uids)]
-        m = store.pull(cache_bucket, ckeys, cache)
+        m = store.pull(cache_bucket, asset_cache_keys(store.listing(cache_bucket), job), cache)
     if stage.uses_db:
         m += store.pull(cache_bucket, list(store.listing(cache_bucket, "db/")), cache)
     print(f"[sim2chip] pulled {n} job files and {m} cache files", flush=True)

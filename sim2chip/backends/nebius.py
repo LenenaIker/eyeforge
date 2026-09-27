@@ -186,7 +186,11 @@ class NebiusCLI:
             self("storage", "bucket", "create", "--name", name, *self._parent())
             return
         if not self("storage", "bucket", "get-by-name", "--name", name, *self._parent(), check=False).strip():
-            self("storage", "bucket", "create", "--name", name, *self._parent())
+            try:
+                self("storage", "bucket", "create", "--name", name, *self._parent())
+            except RuntimeError as e:  # the lookup can fail for a moment (seen 2026-09-27) on a bucket we own
+                if "BucketAlreadyOwnedByYou" not in str(e):
+                    raise
 
     def create_job(self, name: str, runtime: Runtime, env: dict[str, str], script: Path, timeout_h: int,
                    env_secrets: list[str]) -> str:
