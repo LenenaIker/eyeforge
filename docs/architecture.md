@@ -25,7 +25,7 @@ sim2chip run specs/lora_alarm_traffic.json --backend local
         │
         ▼
    Backend   ── LocalBackend: subproceso con el intérprete adecuado (python.sh de Isaac o conda edge-sdg)
-        │       NebiusBackend (semana 3): un Serverless Job por etapa, con el bucket del trabajo montado
+        │       NebiusBackend: un Serverless AI Job (L40S) que ejecuta todo el pipeline (cloud_worker.py)
         ▼
    Etapa.run(ctx)  ── lee y escribe en jobs/<id>/
 ```
@@ -34,16 +34,18 @@ sim2chip run specs/lora_alarm_traffic.json --backend local
 
 | Etapa | Qué hace | Runtime | Viene de |
 |---|---|---|---|
-| `interview` | Conversación con Nemotron -> `spec.json` | api (semana 2) | nuevo |
+| `interview` | Conversación con Nemotron -> `spec.json` (web o terminal) | Token Factory | `interview.py` |
+| `label` | Profesor (modelo de visión) que etiqueta fotos crudas; respuestas en caché por foto | Token Factory | nuevo |
+| `generate_assets` | Modelos 3D desde fotos del usuario (TRELLIS, opcional, solo local) | trellis | nuevo |
 | `ingest` | Fotos del usuario: normaliza, mapea sus clases a las del spec, reparte train/val/test | cpu | `prepare_crops.real` |
-| `label` | Profesor que etiqueta fotos crudas | api/gpu (semana 2) | nuevo |
-| `fetch_assets` | Busca y descarga modelos 3D por clase (fuente según spec: Objaverse-LVIS de momento) | cpu | `download_assets.py` |
-| `convert_assets` | GLB -> USD, endereza, apoya en el suelo, escala al tamaño real del spec | isaac | `convert_assets.py` |
-| `qa_assets` | Filtra assets malos (hoy: lista manual opcional; semana 2: Nemotron VL) | api | `exclude.txt` |
+| `fetch_assets` | Busca y descarga modelos 3D por clase (búsqueda web, Objaverse-LVIS), cielos y texturas | cpu | `download_assets.py` |
+| `convert_assets` | GLB -> USD con `glb2usd` (Asset Converter de Isaac solo de respaldo), endereza y mide | cpu | `convert_assets.py` |
+| `preview_assets` | Cuatro vistas de cada modelo para el control de calidad | isaac | nuevo |
+| `qa_assets` | Modelo de visión decide conservar o descartar cada modelo; base de conocimiento compartida | Token Factory | `exclude.txt` |
 | `render` | Genera el dataset sintético con la plantilla de escena del spec | isaac (GPU RTX) | `generate.py` |
-| `crops` | Recortes del tamaño de entrada del hardware | cpu | `prepare_crops.synth` |
-| `train` | Entrena el modelo (sintético + fotos del usuario), N semillas | tf (GPU) | `train.py` |
-| `evaluate` | Precisión del modelo int8 en el test real, matriz de confusión | tf | `train.py` |
+| `crops` / `points` | Recortes del tamaño de entrada (clasificación) o imágenes con puntos (conteo) | cpu | `prepare_crops.synth` |
+| `train` | Entrena el modelo (sintético + fotos del usuario), N semillas en paralelo en la misma GPU | tf (GPU) | `train.py` |
+| `evaluate` | Resultado del modelo int8 en el test real (precisión o F1 de conteo) | tf | `train.py` |
 | `export` | `.tflite` int8, cabecera C para TFLite Micro, informe | cpu | nuevo |
 
 Interfaz de una etapa (esbozo):
@@ -51,8 +53,9 @@ Interfaz de una etapa (esbozo):
 ```python
 class Stage:
     name: str
-    runtime: str            # "cpu" | "isaac" | "tf" | "api"
-    needs_gpu: str | None   # None | "any" | "rtx"
+    runtime: str            # "cpu" | "isaac" | "tf" | "trellis"
+    gpu: str | None         # None | "any" | "rtx"
+    needs_llm: bool         # llama a Token Factory (calls_llm(spec) decide si de verdad lo hace)
     def enabled(self, spec) -> bool: ...   # p. ej. `label` solo si hay fotos crudas
     def run(self, ctx: Context) -> None: ...  # ctx.spec, ctx.job (rutas del trabajo), ctx.cache, ctx.log
 ```
@@ -61,7 +64,7 @@ Cada etapa escribe al terminar `jobs/<id>/<etapa>/_done.json` con un hash de la 
 
 ## Por qué subprocesos
 
-Isaac Sim tiene su propio Python (`python.sh`) y TensorFlow vive en el entorno conda `edge-sdg`: no pueden compartir proceso. Cada etapa se lanza como `python -m sim2chip.stage <nombre> --job <carpeta>` con el intérprete de su runtime. En Nebius es lo mismo con dos imágenes de contenedor: `sim2chip-isaac` (sobre la imagen oficial de Isaac Sim) y `sim2chip-train`. El paquete `sim2chip` solo usa la biblioteca estándar en su núcleo (spec, pipeline, etapas base), para que funcione en los dos intérpretes sin instalar nada más en el de Isaac.
+Isaac Sim tiene su propio Python (`python.sh`) y TensorFlow vive en el entorno conda `edge-sdg`: no pueden compartir proceso. Cada etapa se lanza como `python -m sim2chip.run_stage <nombre> --job <carpeta>` con el intérprete de su runtime. En Nebius, un solo job sobre la imagen pública de Isaac Sim instala TensorFlow y lo demás con `uv` al arrancar y ejecuta el pipeline entero con el backend local dentro del contenedor (modo worker); no hay imágenes propias todavía. El paquete `sim2chip` solo usa la biblioteca estándar en su núcleo (spec, pipeline, etapas base), para que funcione en los dos intérpretes sin instalar nada más en el de Isaac.
 
 ## Espacio de trabajo
 
@@ -82,7 +85,7 @@ cache/
 ```
 
 - **Local:** `jobs/` y `cache/` en `data/` (enlace a Crucial).
-- **Nebius (semana 3):** el bucket del trabajo montado en la misma ruta dentro del contenedor. Las etapas ven carpetas normales en ambos casos: la diferencia la gestiona el backend, no las etapas.
+- **Nebius:** el worker copia del bucket del trabajo a una carpeta local con la misma estructura (solo lo que necesitan las etapas pendientes), ejecuta y sube el resultado; el portátil trae de vuelta lo que muestra la web. Las etapas ven carpetas normales en ambos casos: la diferencia la gestiona el backend, no las etapas.
 - La caché de assets vive fuera del trabajo porque se reutiliza: un segundo cliente que pida coches no vuelve a descargar ni convertir.
 
 ## Spec (esbozo del caso de prueba de vehículos)
