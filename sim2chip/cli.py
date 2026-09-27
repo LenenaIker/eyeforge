@@ -142,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--input", action="append", default=[], metavar="NAME=PATH",
                    help="expose a user folder as input/NAME inside the job")
     r.add_argument("--backend", default="local", choices=["local", "nebius"])
-    r.add_argument("--from", dest="start", help="rerun from this stage on")
+    r.add_argument("--from", dest="start", help="rerun this stage and the stages that depend on it")
     r.add_argument("--only", help="run only this stage (upstream must be done)")
     r.add_argument("--force", action="store_true", help="rerun every stage")
     r.add_argument("-v", "--verbose", action="store_true", help="show the full output of every stage")

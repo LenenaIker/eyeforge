@@ -141,3 +141,29 @@ def test_powered_by_says_where_it_really_runs():
         "GLM-5.3-Flash on Nebius Token Factory, called from Nebius AI Cloud, L40S"
     # Without auto QA the stage makes no Token Factory call, so it must not claim one.
     assert BY_NAME["qa_assets"].powered_by(from_dict(SPEC), "local") == "local CPU"
+
+
+def real_shape():
+    """The real graph's shape: user photos (label, ingest) and the synthetic branch (generate_assets, render)
+    meet at train."""
+    gen = Fake("generate_assets", after=("label",))
+    gen.follows_upstream = False
+    return [Fake("label"), gen, Fake("ingest", after=("label", "generate_assets")),
+            Fake("fetch", after=("generate_assets",)), Fake("qa", after=("fetch",)), Fake("render", after=("qa",)),
+            Fake("train", after=("render", "ingest")), Fake("export", after=("train", "qa"))]
+
+
+def test_from_reruns_dependents_only(tmp_path):
+    make(tmp_path, stages=real_shape()).run(InProcess(), log=lambda m: None)
+    be = InProcess()
+    make(tmp_path, stages=real_shape()).run(be, start="label", log=lambda m: None)
+    assert be.ran == ["label", "ingest", "train", "export"]  # no 3D models, no render
+    be = InProcess()
+    make(tmp_path, stages=real_shape()).run(be, start="qa", log=lambda m: None)
+    assert be.ran == ["qa", "render", "train", "export"]  # the user photos are untouched
+    be = InProcess()
+    make(tmp_path, stages=real_shape()).run(be, start="generate_assets", log=lambda m: None)
+    assert be.ran == ["generate_assets", "ingest", "fetch", "qa", "render", "train", "export"]  # named: it runs
+    be = InProcess()
+    make(tmp_path, stages=real_shape()).run(be, force=True, log=lambda m: None)
+    assert len(be.ran) == 8

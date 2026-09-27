@@ -64,10 +64,11 @@ class Pipeline:
             if n is not None and n not in names:
                 raise ValueError(f"unknown or disabled stage '{n}', stages for this spec: {names}")
         fps = self.fingerprints()
-        plans, forced = [], force
+        # --from reruns the stage and what depends on it, not every stage listed after it: new user photos
+        # must not re-render the synthetic data.
+        forced = set(names) if force else {start} | _dependents(self.stages, start) if start else set()
+        plans = []
         for s in self.stages:
-            if start == s.name:
-                forced = True
             done = self.job.done(s.name)
             fresh = done is not None and done.get("fingerprint") == fps[s.name]
             if only is not None:
@@ -76,7 +77,7 @@ class Pipeline:
                         self.stages, only):
                     raise ValueError(f"--only {only}: upstream stage {s.name} is not done or is stale")
             else:
-                action = "run" if forced or not fresh else "skip"
+                action = "run" if s.name in forced or not fresh else "skip"
             plans.append(Plan(s, fps[s.name], action))
         return plans
 
@@ -106,6 +107,19 @@ class Pipeline:
                 raise StageFailed(f"stage {p.stage.name} did not finish, see {self.job.logs / (p.stage.name + '.log')}")
             self.job.timeline(p.stage.name, seconds, where)
             log(f"  {p.stage.name}: done in {seconds:.0f} s")
+
+
+def _dependents(stages: list[Stage], name: str) -> set[str]:
+    """Stages that read `name`'s output, directly or through others, except those that do not follow an
+    upstream rerun (and what hangs only from them)."""
+    out, todo = set(), [name]
+    while todo:
+        top = todo.pop()
+        for s in stages:
+            if top in s.after and s.name not in out and s.follows_upstream:
+                out.add(s.name)
+                todo.append(s.name)
+    return out
 
 
 def _deps(stages: list[Stage], name: str) -> set[str]:

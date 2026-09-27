@@ -57,6 +57,10 @@ class Stage:
     uses_cache: ClassVar[bool] = False     # reads or writes the shared asset cache
     uses_db: ClassVar[bool] = False        # reads or writes the asset knowledge base (cache/db)
     rereads: ClassVar[tuple[str, ...]] = ()  # own output files (relative) a rerun reads back, e.g. user corrections
+    # Whether "rerun from an upstream stage" (--from) drags this stage and its own dependents along. False for a
+    # stage whose output is cached by content and must stay put across versions (models made from photos): it
+    # still reruns when its own fingerprint changes or when it is named.
+    follows_upstream: ClassVar[bool] = True
 
     def enabled(self, spec: Spec) -> bool:
         return True
