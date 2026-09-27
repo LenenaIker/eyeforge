@@ -445,6 +445,7 @@ class NebiusBackend:
                     [k for k in self.store.listing(bucket) if k.endswith("/" + DONE)]
                 for key in keys:
                     try:
+                        (job.root / key).parent.mkdir(parents=True, exist_ok=True)  # the stage's folder is new here
                         self.store.s3.download_file(bucket, key, str(job.root / key))
                     except Exception as e:  # not written yet
                         if "404" not in str(e) and "NoSuchKey" not in str(e) and "Not Found" not in str(e):

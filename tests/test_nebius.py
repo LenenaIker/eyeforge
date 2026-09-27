@@ -174,9 +174,9 @@ class _S3:
     def __init__(self, store):
         self.store = store
 
-    def download_file(self, bucket, key, path):
-        from pathlib import Path
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
+    def download_file(self, bucket, key, path):  # like boto3: 404 when missing, no folders made
+        if (bucket, key) not in self.store.objects:
+            raise RuntimeError("An error occurred (404) when calling the HeadObject operation: Not Found")
         Path(path).write_bytes(self.store.objects[(bucket, key)])
 
 
@@ -321,3 +321,13 @@ def test_new_jobs_get_their_own_bucket_and_stale_input_is_removed(tmp_path):
     assert ("sim2chip-j", "input/photos/someone_else.jpg") not in store.objects
     assert ("sim2chip-j", "input/photos/a.jpg") in store.objects
     assert ("sim2chip-j", "input/linked/b.jpg") in store.objects  # a linked folder is not pruned
+
+
+def test_follow_brings_done_markers_back_while_the_job_runs(tmp_path):
+    store = ListingStore()
+    store.objects[("b", f"label/{DONE}")] = b'{"fingerprint": "x"}'  # ingest has not finished yet
+    job = Job(tmp_path / "j")
+    job.logs.mkdir(parents=True)
+    be = backend(store)
+    assert be._follow("aijob-1", job, "b", lambda line: None, ["label", "ingest"]) == "COMPLETED"
+    assert (job.root / "label" / DONE).exists() and not (job.root / "ingest" / DONE).exists()
