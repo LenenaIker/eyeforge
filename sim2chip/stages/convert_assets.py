@@ -197,10 +197,13 @@ def min_area_rect(xy):
     pts = np.unique(xy.round(6), axis=0)
     pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]
 
+    def cross(o, a, b):  # z of the 2D cross product (np.cross on 2D vectors is deprecated)
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
     def half(ps):
         h = []
         for p in ps:
-            while len(h) >= 2 and np.cross(h[-1] - h[-2], p - h[-2]) <= 0:
+            while len(h) >= 2 and cross(h[-2], h[-1], p) <= 0:
                 h.pop()
             h.append(p)
         return h
