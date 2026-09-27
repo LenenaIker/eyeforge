@@ -25,13 +25,12 @@ from pathlib import Path
 
 from . import spec as spec_mod
 from .backends.local import LocalBackend
-from .cloud_sync import S3Store, asset_cache_keys
+from .cloud_sync import SHARED, S3Store, asset_cache_keys, wanted
 from .pipeline import Pipeline, StageFailed
 from .workspace import DONE, Cache, Job
 
 PROGRESS_S = 20
 LOG = "logs/cloud_pipeline.log"
-SHARED = ("db/", "labels/")  # small, append-only knowledge shared by all jobs
 # Isaac Sim compiles its renderer's shaders on the first start in a fresh container: about 180 s on an L40S
 # (2026-09-27), then 3 s for every later start. The compiled caches go to the cache bucket and come back on
 # the next run, so only the first run pays. Bucket prefix -> path ("~" is $HOME, /isaac-sim in the image).
@@ -65,20 +64,6 @@ def sync_progress(store: S3Store, bucket: str, job: Path) -> None:
     for f in [job / LOG, job / "logs" / "timeline.jsonl"] + sorted(job.glob("*/_done.json")):
         if f.exists():
             store.s3.upload_file(str(f), bucket, f.relative_to(job).as_posix())
-
-
-def wanted(key: str, todo: list) -> bool:
-    """Job files the stages about to run read: the input, the outputs of their upstream stages and what they
-    read back from their own last run. Everything else stays in the bucket."""
-    top, _, rest = key.partition("/")
-    names = {st.name for st in todo}
-    if top == "input":
-        return any(st.reads_input for st in todo)
-    if top in names:
-        return any(st.name == top and rest in st.rereads for st in todo)
-    if top == "fetch_assets" and any(st.uses_cache for st in todo):
-        return True  # its manifest says which cached files the asset stages need
-    return any(top in st.after for st in todo)
 
 
 def main() -> int:

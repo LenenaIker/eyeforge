@@ -3,7 +3,7 @@ import math
 
 import numpy as np
 
-from sim2chip.cloud_worker import wanted
+from sim2chip.cloud_sync import wanted
 from sim2chip.stages import BY_NAME
 from sim2chip.stages.convert_assets import min_area_rect
 

@@ -24,6 +24,7 @@ from pathlib import Path
 
 from . import config
 
+SHARED = ("db/", "labels/")  # small, append-only knowledge shared by all jobs (assets, teacher answers)
 REGION = config.env("SIM2CHIP_REGION", "eu-north1")  # the project's region; the worker gets it from the job
 S3_ENDPOINT = f"https://storage.{REGION}.nebius.cloud"
 
@@ -125,19 +126,28 @@ def asset_cache_keys(listing: dict[str, int], job: Path) -> list[str]:
     return keys
 
 
+def wanted(key: str, todo: list) -> bool:
+    """Job files the stages about to run read: the input, the outputs of their upstream stages and what they
+    read back from their own last run. Everything else stays in the bucket."""
+    top, _, rest = key.partition("/")
+    names = {st.name for st in todo}
+    if top == "input":
+        return any(st.reads_input for st in todo)
+    if top in names:
+        return any(st.name == top and rest in st.rereads for st in todo)
+    if top == "fetch_assets" and any(st.uses_cache for st in todo):
+        return True  # its manifest says which cached files the asset stages need
+    return any(top in st.after for st in todo)
+
+
 def pull(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_bucket: str) -> None:
-    listing = store.listing(job_bucket)
-    wanted = ["spec.json"] + (["input/"] if stage.reads_input else [])
-    wanted += [f"{a}/" for a in stage.after]
-    if stage.uses_cache:
-        wanted.append("fetch_assets/")
-    keys = [k for k in listing if any(k == w or (w.endswith("/") and k.startswith(w)) for w in wanted)]
+    """Stage mode: what one stage reads, chosen as the worker chooses it for a whole run."""
+    keys = [k for k in store.listing(job_bucket) if k == "spec.json" or wanted(k, [stage])]
     n = store.pull(job_bucket, keys, job)
     m = 0
     if stage.uses_cache:
         m = store.pull(cache_bucket, asset_cache_keys(store.listing(cache_bucket), job), cache)
-    if stage.uses_db:
-        m += store.pull(cache_bucket, list(store.listing(cache_bucket, "db/")), cache)
+    m += store.pull(cache_bucket, [k for k in store.listing(cache_bucket) if k.startswith(SHARED)], cache)
     print(f"[sim2chip] pulled {n} job files and {m} cache files", flush=True)
 
 
@@ -146,8 +156,8 @@ def push(store: S3Store, stage, job: Path, cache: Path, job_bucket: str, cache_b
     n = store.upload_dir(job_bucket, job / stage.name, stage.name, changed_only=False)
     n += store.upload_dir(job_bucket, job / "logs", "logs", changed_only=False)
     m = store.upload_dir(cache_bucket, cache, "") if stage.uses_cache else 0
-    if stage.uses_db and not stage.uses_cache:  # the knowledge base is append-only: new files only
-        m += store.upload_dir(cache_bucket, cache / "db", "db")
+    if not stage.uses_cache:  # the shared knowledge (asset verdicts, teacher answers) is append-only: new files
+        m += sum(store.upload_dir(cache_bucket, cache / p.rstrip("/"), p.rstrip("/")) for p in SHARED)
     print(f"[sim2chip] pushed {n} job files and {m} cache files", flush=True)
 
 
