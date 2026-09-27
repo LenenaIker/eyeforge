@@ -36,7 +36,13 @@ export type Report = {
   job: string; hardware: string; labels: string[]; input: number[]; model_kb: number; task: string;
   val_score?: number; val_accuracy?: number; real_test?: RealTest; real_accuracy?: RealTest;
   c_array_path: string | null; portable_model_path?: string;
+  // The model this one replaced, scored on the same test photos (or why it could not be).
+  previous?: { version: number; score?: number; now?: number; count_mae?: number; now_count_mae?: number;
+               skipped?: string } | null;
 };
+
+export type Version = { n: number; reason: string; created?: number; started?: number; metric?: string;
+                        headline?: number | null; shipped?: number | null; test_size?: number | null };
 
 export type Status = {
   job: string;
@@ -48,6 +54,8 @@ export type Status = {
   phase: string | null;
   timing: { started_at: number | null; elapsed_s: number | null; eta_s: number | null } | null;
   report: Report | null;
+  version: Version | null;  // the model export holds or the run in progress will make
+  versions: Version[];      // earlier models, oldest first
 };
 
 export type Point = [number, number, string, ...number[]];
@@ -105,3 +113,4 @@ export const applyFixes = (job: string, fixes: Fixes) =>
 export const mediaUrl = (job: string, path: string, big = false) =>
   `/api/jobs/${job}/media/${path}${big ? "?size=1024" : ""}`;
 export const fileUrl = (job: string, file: string) => `/api/jobs/${job}/files/${file}`;
+export const versionFileUrl = (job: string, n: number, file: string) => `/api/jobs/${job}/versions/${n}/files/${file}`;

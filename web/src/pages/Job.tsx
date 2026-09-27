@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { enterCameraMode, isHandheld } from "../live/device";
 import * as API from "../api";
-import type { Report, Stage, Status } from "../api";
+import type { Report, Stage, Status, Version } from "../api";
 import { Badge, Button, Card, Notice, cx } from "../components/ui";
 import ReviewPanel from "./Review";
 
@@ -57,7 +57,8 @@ export default function JobPage() {
       </div>
       {error && <Notice tone="bad">Lost contact with the server, retrying: {error}</Notice>}
       {(s.running || !s.report) && <Progress s={s} failed={failed} />}
-      {s.report && <Result job={s.job} r={s.report} usd={s.cloud_usd} />}
+      {s.report && <Result job={s.job} r={s.report} usd={s.cloud_usd} version={s.version} />}
+      {s.report && s.versions.length > 0 && <Versions job={s.job} versions={s.versions} />}
       {!s.running && (s.report || failed) && <ReviewPanel key={reviewKey} job={s.job} onRerun={restart} />}
     </div>
   );
@@ -137,7 +138,7 @@ function StageRow({ st }: { st: Stage }) {
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
-function Result({ job, r, usd }: { job: string; r: Report; usd: number }) {
+function Result({ job, r, usd, version }: { job: string; r: Report; usd: number; version: Version | null }) {
   const real = r.real_test ?? r.real_accuracy;
   const counting = r.task === "count";
   const headline = real ? pct(real.mean) : r.val_score != null ? pct(r.val_score) : "n/a";
@@ -150,7 +151,10 @@ function Result({ job, r, usd }: { job: string; r: Report; usd: number }) {
   return (
     <div className="space-y-4">
       <Card className="p-6">
-        <Badge tone="good"><Check className="h-3 w-3" /> Ready</Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone="good"><Check className="h-3 w-3" /> Ready</Badge>
+          {version && version.n > 1 && <Badge>v{version.n} · {version.reason}</Badge>}
+        </div>
         {isHandheld() && r.portable_model_path && (
           <Link to={`/app/job/${job}/live`} onClick={() => { enterCameraMode(); }}
                 className="mt-4 flex h-14 w-full items-center justify-center gap-2 rounded-[var(--radius-control)] bg-ink text-base font-semibold text-white shadow-sm">
@@ -161,6 +165,7 @@ function Result({ job, r, usd }: { job: string; r: Report; usd: number }) {
           <div className="flex-1">
             <p className="text-6xl font-bold tracking-tight text-brand-600">{headline}</p>
             <p className="mt-2 max-w-md text-muted">{explain}</p>
+            {r.previous && <Compare p={r.previous} counting={counting} />}
           </div>
           <div className="grid grid-cols-2 gap-3 sm:w-72">
             {counting && real?.count_mae != null && <Mini label="count error per photo" value={real.count_mae.toFixed(1)} />}
@@ -193,6 +198,46 @@ function Result({ job, r, usd }: { job: string; r: Report; usd: number }) {
         </Card>
       </div>
     </div>
+  );
+}
+
+function Compare({ p, counting }: { p: NonNullable<Report["previous"]>; counting: boolean }) {
+  if (p.score == null || p.now == null) {
+    return <p className="mt-3 text-sm text-muted">Not compared with v{p.version}: {p.skipped ?? "no score"}.</p>;
+  }
+  const up = p.now - p.score;
+  return (
+    <p className="mt-3 inline-flex flex-wrap items-center gap-x-2 rounded-full bg-stone-50 px-3 py-1.5 text-sm">
+      <span className="text-muted">v{p.version} {pct(p.score)}</span>
+      <ChevronRight className="h-3.5 w-3.5 text-stone-400" />
+      <span className="font-semibold">now {pct(p.now)}</span>
+      <span className={cx("font-medium", up > 0 ? "text-green-700" : up < 0 ? "text-red-700" : "text-muted")}>
+        ({up >= 0 ? "+" : ""}{Math.round(up * 100)} pts{counting && p.count_mae != null && p.now_count_mae != null
+          ? `, count error ${p.count_mae.toFixed(1)} → ${p.now_count_mae.toFixed(1)}` : ""})
+      </span>
+      <span className="text-xs text-muted">same test photos, shipped models</span>
+    </p>
+  );
+}
+
+function Versions({ job, versions }: { job: string; versions: Version[] }) {
+  return (
+    <Card className="p-5">
+      <details>
+        <summary className="cursor-pointer font-semibold">Earlier versions ({versions.length})</summary>
+        <ul className="mt-3 divide-y divide-line">
+          {[...versions].reverse().map((v) => (
+            <li key={v.n} className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm">
+              <span><span className="font-medium">v{v.n}</span> <span className="text-muted">· {v.reason}</span>
+                {v.headline != null && <span className="text-muted"> · {pct(v.headline)}{v.test_size ? ` on ${v.test_size} photos` : ""}</span>}
+              </span>
+              <a href={API.versionFileUrl(job, v.n, "model_int8.tflite")}
+                 className="flex items-center gap-1 text-brand-600 hover:underline"><Download className="h-3.5 w-3.5" /> model</a>
+            </li>
+          ))}
+        </ul>
+      </details>
+    </Card>
   );
 }
 

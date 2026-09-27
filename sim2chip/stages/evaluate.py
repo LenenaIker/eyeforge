@@ -4,13 +4,29 @@ Output: evaluate/seed_<n>.json (accuracy, per class, confusion, prediction per p
         evaluate/summary.json (mean and std)
 Count task: points F1 as the headline (`metric`), plus count error and exact counts, and the predicted and
 true points of every photo.
+When the job had a model before this run (input/previous/, see workspace.snapshot), that model is scored on
+the same test photos: evaluate/previous.json {version, score, count_mae} or {version, skipped: why}.
 """
 from __future__ import annotations
 
 import json
 import statistics
 
+from ..workspace import PREVIOUS
 from .base import Context, Stage
+
+
+def previous_model(ctx: Context):
+    """(version, int8 model bytes, its report) of the model this run replaces, or (version, None, why not)."""
+    d = ctx.job.input / PREVIOUS
+    if not (d / "model_int8.tflite").exists():
+        return None, None, None
+    n = json.loads((d / "meta.json").read_text())["n"] if (d / "meta.json").exists() else None
+    rep = json.loads((d / "report.json").read_text())
+    if rep.get("labels") != ctx.spec.labels or rep.get("task") != ctx.spec.task or \
+            (rep.get("input") or [None])[0] != ctx.hardware.input_size:
+        return n, None, "the setup changed (classes, task or input size), the scores do not compare"
+    return n, (d / "model_int8.tflite").read_bytes(), rep
 
 
 class Evaluate(Stage):
@@ -19,6 +35,7 @@ class Evaluate(Stage):
     runtime = "tf"
     uses = ("task",)
     after = ("train", "ingest")
+    reads_input = True  # the previous model, to compare
 
     def enabled(self, spec) -> bool:
         ud = spec.user_data
@@ -53,6 +70,12 @@ class Evaluate(Stage):
                                                             "confusion": cm.tolist(), "labels": labels,
                                                             "predictions": predictions}, indent=2))
             ctx.log(f"seed {seed}: real int8 accuracy {acc:.3f}  {per_class}")
+        n, model, rep = previous_model(ctx)
+        if n is not None:
+            prev = {"version": n, "skipped": rep} if model is None else \
+                {"version": n, "score": round(float((tu.predict_int8(model, xt) == yt).mean()), 4)}
+            (out / "previous.json").write_text(json.dumps(prev, indent=1))
+            ctx.log(f"previous model (v{n}) on the same test photos: {prev}")
         vals = list(accs.values())
         summary = {"metric": "accuracy", "mean": round(statistics.mean(vals), 4), "std": round(statistics.pstdev(vals), 4),
                    "seeds": sorted(accs), "per_seed": {str(k): round(v, 4) for k, v in accs.items()},
@@ -89,6 +112,17 @@ class Evaluate(Stage):
             (out / f"{d.name}.json").write_text(json.dumps({**sc, "labels": labels, "predictions": predictions},
                                                            indent=1))
             ctx.log(f"seed {seed}: real int8 {sc}")
+        n, model, rep = previous_model(ctx)
+        if n is not None:
+            if model is None:
+                prev = {"version": n, "skipped": rep}
+            else:
+                th = (rep.get("output") or {}).get("threshold", counting.THRESHOLD)
+                sc = counting.score([counting.decode(g, labels, th) for g in tu.predict_int8_grid(model, xt)],
+                                    truth, grid)
+                prev = {"version": n, "score": sc["f1"], "count_mae": sc["count_mae"]}
+            (out / "previous.json").write_text(json.dumps(prev, indent=1))
+            ctx.log(f"previous model (v{n}) on the same test photos: {prev}")
         f1 = [s["f1"] for s in scores.values()]
         summary = {"metric": "f1", "mean": round(statistics.mean(f1), 4), "std": round(statistics.pstdev(f1), 4),
                    "count_mae": round(float(np.mean([s["count_mae"] for s in scores.values()])), 3),

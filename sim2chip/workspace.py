@@ -4,6 +4,7 @@ Stages only see plain folders. Locally they live under the data root; on Nebius 
 bucket to a local folder with the same layout (cloud_worker.py), so stage code does not change.
 
     <home>/jobs/<job>/spec.json, input/, logs/, <stage>/..., <stage>/_done.json
+    <home>/jobs/<job>/versions/v<n>/  earlier models of the job (snapshot())
     <home>/cache/objaverse, cache/usd/{raw,norm}, cache/hdri, cache/textures   (disposable files)
     <home>/cache/db                                                          (asset knowledge base, keep)
     <home>/cache/labels/<prompt>/<model>/<photo>.json                        (teacher answers per photo)
@@ -113,6 +114,64 @@ class Job:
         rec = {"t": round(time.time(), 1), "step": step, "seconds": round(seconds, 1), "where": where, **extra}
         with open(self.logs / "timeline.jsonl", "a") as f:
             f.write(json.dumps(rec) + "\n")
+
+
+VERSION_FILES = ("model_int8.tflite", "model.tflite", "labels.txt", "model_data.h", "report.json")
+CURRENT_VERSION = "version.json"  # input/version.json: number and reason of the model export/ holds or will hold
+PREVIOUS = "previous"             # input/previous/: the model a rerun replaces, scored again on the new test set
+
+
+def current_version(job: Job) -> dict:
+    f = job.input / CURRENT_VERSION
+    return json.loads(f.read_text()) if f.exists() else {"n": 1, "reason": "first model"}
+
+
+def versions(job: Job) -> list[dict]:
+    """Earlier models of the job, oldest first (versions/v<n>/meta.json)."""
+    out = [json.loads(f.read_text()) for f in (job.root / "versions").glob("v*/meta.json")]
+    return sorted(out, key=lambda m: m["n"])
+
+
+def snapshot(job: Job, reason: str) -> dict | None:
+    """Called before a rerun that will replace the job's model (new photos, corrections, a changed spec).
+
+    Keeps the current model in versions/v<n>/, copies it to input/previous/ for evaluate to score it on the
+    same test photos as its successor, and records why the next version is made. Returns the kept version,
+    or None when there is no finished model yet. A rerun that failed left the same model in export/: it is
+    not kept twice, only the reason of the next version changes."""
+    import shutil
+    import time
+
+    export = job.root / "export"
+    report = export / "report.json"
+    if not report.exists():
+        return None
+    cur = current_version(job)
+    rep = json.loads(report.read_text())
+    kept = next((m for m in versions(job) if m.get("report_key") == content_key(report)), None)
+    if kept is None:
+        real = rep.get("real_test") or {}
+        kept = {"n": cur["n"], "reason": cur["reason"], "created": round(report.stat().st_mtime),
+                "metric": rep.get("metric"), "headline": real.get("mean", rep.get("val_score")),
+                "shipped": (real.get("per_seed") or {}).get(str(rep.get("seed"))),
+                "test_size": real.get("test_size"), "report_key": content_key(report)}
+        d = job.root / "versions" / f"v{cur['n']}"
+        d.mkdir(parents=True, exist_ok=True)
+        for f in VERSION_FILES:
+            if (export / f).exists():
+                shutil.copy2(export / f, d / f)
+        if job.spec_path.exists():
+            shutil.copy2(job.spec_path, d / "spec.json")
+        (d / "meta.json").write_text(json.dumps(kept, indent=1))
+    prev = job.input / PREVIOUS
+    shutil.rmtree(prev, ignore_errors=True)
+    prev.mkdir(parents=True)
+    for f in ("model_int8.tflite", "report.json"):
+        shutil.copy2(export / f, prev / f)
+    (prev / "meta.json").write_text(json.dumps({"n": kept["n"]}))
+    (job.input / CURRENT_VERSION).write_text(json.dumps({"n": kept["n"] + 1, "reason": reason,
+                                                         "started": round(time.time())}))
+    return kept
 
 
 def open_job(home: Path, name: str) -> Job:

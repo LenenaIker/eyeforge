@@ -60,9 +60,21 @@ class Export(Stage):
             **({"output": count_output(hw.input_size, summary[seed].get("threshold"))} if counting else {}),
             "asset_credits": [{"name": n, "author": a, "license": lic, "source": s} for n, a, lic, s in credits],
         }
+        report["previous"] = compare_previous(ctx, seed)
         (out / "report.json").write_text(json.dumps(report, indent=2))
         ctx.log(f"exported seed {seed}: {kb} KB, labels {ctx.spec.labels}")
         return {"seed": int(seed), "model_kb": kb}
+
+
+def compare_previous(ctx: Context, seed) -> dict | None:
+    """The model this run replaced against the shipped one, both on the same test photos (evaluate)."""
+    ev = ctx.job.stage_dir("evaluate")
+    if not (ev / "previous.json").exists():
+        return None
+    prev = json.loads((ev / "previous.json").read_text())
+    now = json.loads((ev / f"seed_{seed}.json").read_text()) if (ev / f"seed_{seed}.json").exists() else {}
+    score = now.get("f1", now.get("accuracy"))
+    return {**prev, "now": score, **({"now_count_mae": now["count_mae"]} if "count_mae" in now else {})}
 
 
 def fixed_batch(blob: bytes) -> bytes:

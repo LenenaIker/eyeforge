@@ -122,6 +122,9 @@ def test_review_corrections_relaunch_and_media_is_fenced(app, tmp_path):
     (job / "request.json").write_text(json.dumps(GOOD))
     Image.new("RGB", (800, 600)).save(job / "label" / "cow" / "a.jpg")
     (job / "label" / "verdicts.json").write_text(json.dumps({"a.jpg": {"class": "cow", "assigned": "cow"}}))
+    (job / "export").mkdir()
+    (job / "export" / "model_int8.tflite").write_bytes(b"v1")
+    (job / "export" / "report.json").write_text(json.dumps({"metric": "accuracy", "val_score": 0.5, "seed": 0}))
     r = app.get("/api/jobs/barn_cam/review").json()
     assert r["photos"][0]["image"] == "label/cow/a.jpg"
     thumb = app.get("/api/jobs/barn_cam/media/label/cow/a.jpg")
@@ -130,6 +133,12 @@ def test_review_corrections_relaunch_and_media_is_fenced(app, tmp_path):
         assert app.get(f"/api/jobs/barn_cam/media/{bad}").status_code == 404
     r = app.post("/api/jobs/barn_cam/corrections", json={"labels": {"a.jpg": "empty"}})
     assert r.json() == {"rerun_from": "label"} and app.launched[-1][3] == "label"
+    # The model it replaces is kept as v1 and can still be downloaded.
+    s = app.get("/api/jobs/barn_cam").json()
+    assert [v["n"] for v in s["versions"]] == [1] and s["version"]["n"] == 2
+    assert s["version"]["reason"] == "corrected labels"
+    assert app.get("/api/jobs/barn_cam/versions/1/files/model_int8.tflite").content == b"v1"
+    assert app.get("/api/jobs/barn_cam/versions/1/files/spec.json").status_code == 404
     # The relaunched job is still running (FakeProc never ends): no second relaunch on top of it.
     assert app.post("/api/jobs/barn_cam/corrections", json={}).status_code == 409
 

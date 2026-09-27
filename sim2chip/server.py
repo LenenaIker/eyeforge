@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from . import review
 from . import spec as spec_mod
 from .pipeline import Pipeline
-from .workspace import IMAGE_EXT, Cache, Job, open_job
+from .workspace import IMAGE_EXT, Cache, Job, current_version, open_job, snapshot, versions
 
 DOWNLOADS = {"model.tflite", "labels.txt", "model_int8.tflite", "model_data.h", "report.json"}
 WEB = Path(__file__).parent / "web"
@@ -353,11 +353,22 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                              body.get("points") or {}, share=not public)
         if start is None:
             return {"rerun_from": None}
+        snapshot(job, "corrected labels" if start == "label" else "reviewed 3D models")
         req = job.root / "request.json"
         if not req.exists():
             req.write_text(job.spec_path.read_text())
         start_run(job, req, start)
         return {"rerun_from": start}
+
+    @app.get("/api/jobs/{name}/versions/{n}/files/{file}")
+    def download_version(name: str, n: int, file: str, request: Request):
+        if file not in DOWNLOADS:
+            raise HTTPException(404, "not a downloadable file")
+        job = job_of(name, request)
+        path = job.root / "versions" / f"v{n}" / file
+        if not path.exists():
+            raise HTTPException(404, "no such version or file")
+        return FileResponse(path, filename=f"{job.name}_v{n}_{file}")
 
     @app.get("/api/jobs/{name}/files/{file}")
     def download(name: str, file: str, request: Request):
@@ -571,7 +582,7 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
         spec = spec_mod.load(spec_path)
     except spec_mod.SpecError as e:  # e.g. an old job whose spec a newer version no longer accepts
         return {"job": job.name, "spec": None, "running": running, "stages": [], "log": log[-30:] + [f"error: {e}"],
-                "cloud_usd": 0.0, "report": None, "timing": None}
+                "cloud_usd": 0.0, "report": None, "timing": None, "version": None, "versions": []}
     current = next((l[2:].split(" ")[0] for l in reversed(log) if l.startswith("> ")), None)
     failed = any(l.startswith("FAILED") or l.startswith("error:") for l in log[-5:])
     # Token Factory model each stage really called (the usage log records it per call, by stage name).
@@ -592,6 +603,8 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     return {"job": job.name, "spec": json.loads(spec.to_json()), "running": running,
             "stages": stages, "log": log[-30:], "cloud_usd": round(cost, 2), "phase": phase(log, running),
             "timing": timing(job, home, stages, running, backend),
+            "version": current_version(job), "versions": [{k: v for k, v in m.items() if k != "report_key"}
+                                                          for m in versions(job)],
             "report": json.loads(report.read_text()) if fresh and report.exists() else None}
 
 
