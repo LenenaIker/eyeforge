@@ -35,6 +35,9 @@ def cmd_run(args) -> int:
         if not path:
             raise SystemExit(f"--input expects NAME=PATH, got '{item}'")
         link_input(pipe.job, name, Path(path))
+    if args.backend == "nebius":  # local folders named in the spec travel as job input
+        from .backends.nebius import portable_spec
+        pipe.spec = portable_spec(pipe.spec, pipe.job)
     print(f"job {pipe.job.root}  backend {args.backend}")
     kw = {}
     if args.backend == "nebius":

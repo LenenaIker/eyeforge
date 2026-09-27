@@ -130,6 +130,7 @@ pre.log { background: var(--code); border: 1px solid var(--line); border-radius:
     </div>
     <div id="progress" class="hidden">
       <p class="muted" id="job-line"></p>
+      <p id="phase" class="hidden"></p>
       <ol class="stages" id="stages"></ol>
       <details><summary>Log</summary><pre class="log" id="log"></pre></details>
     </div>
@@ -325,6 +326,8 @@ async function poll() {
   const done = s.stages.filter((x) => x.state === "done").length;
   $("job-line").textContent = `Job ${s.job}: ${done}/${s.stages.length} stages` +
     (s.cloud_usd ? `, about $${s.cloud_usd.toFixed(2)} of cloud GPU` : "") + (s.running ? ", running" : "");
+  $("phase").textContent = s.phase || "";
+  $("phase").classList.toggle("hidden", !s.phase);
   $("stages").innerHTML = "";
   for (const st of s.stages) {
     const li = document.createElement("li");

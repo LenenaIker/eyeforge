@@ -137,6 +137,37 @@ def print_timeline(job: Job, log=print, since: float | None = None) -> None:
         log(f"    {r['seconds'] / 60:5.1f} min  {100 * r['seconds'] / total:3.0f}%  {r['step']} ({r['where']})")
 
 
+def portable_spec(spec, job: Job):
+    """The spec with every local file or folder it names (user photos, QA lists) linked into the job's input/
+    and named relative to it: input/ is uploaded, and absolute paths of this machine mean nothing on Nebius.
+    Paths are rewritten before the pipeline fingerprints its stages, so both sides plan the same run."""
+    import hashlib
+
+    from .. import spec as spec_mod
+    from ..workspace import link_input
+
+    def portable(path: str | None) -> str | None:
+        if not path or not Path(path).is_absolute() or not Path(path).exists():
+            return path
+        name = f"{Path(path).name}_{hashlib.sha256(str(Path(path).resolve()).encode()).hexdigest()[:8]}"
+        link_input(job, name, Path(path))
+        return name
+
+    data = json.loads(spec.to_json())
+    ud = data.get("user_data") or {}
+    for k in ("raw", "labeled", "test"):
+        if k in ud:
+            ud[k] = portable(ud[k])
+    for c in data.get("classes") or []:
+        if c.get("assets"):
+            c["assets"]["photos"] = portable(c["assets"].get("photos"))
+    qa = data.get("qa") or {}
+    for k in ("exclude", "class_override", "no_color"):
+        if k in qa:
+            qa[k] = portable(qa[k])
+    return spec_mod.from_dict(data)
+
+
 def worker_script(job_name: str, plan_args: list[str]) -> str:
     """Shell script for the worker job, in the stock Isaac Sim image: the code from a presigned URL, a Python
     with TensorFlow next to Isaac's own (uv, a couple of minutes), then the whole pipeline."""

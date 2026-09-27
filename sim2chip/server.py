@@ -79,6 +79,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         sid = uuid.uuid4().hex
         sessions[sid] = new_session()
         sessions[sid].uploads = home / "uploads" / sid
+        sessions[sid].transcript = home / "logs" / "interviews" / f"{sid}.json"
         return {"session": sid, "text": FIRST_QUESTION}
 
     def turn_out(sid: str, turn) -> dict:
@@ -292,6 +293,34 @@ def photo_thumb(cache: Path, src: Path, rel: Path | None = None, size: int = 360
     return out
 
 
+CLOUD_PHASES = {
+    "PROVISIONING": "Waiting for Nebius to assign an L40S GPU (usually 1 min, longer when the region is busy)",
+    "STARTING": "Nebius is starting the GPU machine",
+    "IMAGE_PULLING": "Downloading the Isaac Sim image onto the machine (about 2 min)",
+    "RUNNING": "Machine ready: installing the environment and fetching the job data",
+}
+
+
+def phase(log: list[str], running: bool) -> str | None:
+    """What the run is doing now, in words, from the pipeline log: is the cloud still getting a machine ready,
+    or is the pipeline working on a stage? The stage list alone shows "pending" in both cases."""
+    if not running:
+        return None
+    stage = cloud = None
+    for line in log:
+        if line.startswith("> "):
+            stage = line[2:].split(" ")[0]
+        elif line.startswith("  state "):
+            cloud = line.split()[-1]
+        elif line.startswith("FAILED"):
+            return "The pipeline failed (see the log below); the cloud machine is shutting down"
+    if stage:
+        return f"Running {stage}" + (" on Nebius" if cloud else "")
+    if cloud:
+        return CLOUD_PHASES.get(cloud, f"Nebius job: {cloud.lower()}")
+    return "Starting the run"
+
+
 def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     # A relaunched job has a new request.json while spec.json is still the previous run's until the run
     # starts: read the newer one.
@@ -322,7 +351,7 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     report = job.stage_dir("export") / "report.json"
     fresh = any(st["name"] == "export" and st["state"] == "done" for st in stages)  # not a stale model
     return {"job": job.name, "spec": json.loads(spec.to_json()), "running": running,
-            "stages": stages, "log": log[-30:], "cloud_usd": round(cost, 2),
+            "stages": stages, "log": log[-30:], "cloud_usd": round(cost, 2), "phase": phase(log, running),
             "report": json.loads(report.read_text()) if fresh and report.exists() else None}
 
 

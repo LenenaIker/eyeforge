@@ -257,3 +257,21 @@ def test_timeline_breakdown(tmp_path):
     lines = []
     nebius.print_timeline(j, lines.append)
     assert "render (nebius)" in lines[1] and "train" in lines[2]
+
+
+def test_local_folders_in_the_spec_travel_as_input(tmp_path):
+    from sim2chip import spec as spec_mod
+    from sim2chip.backends.nebius import portable_spec
+    from sim2chip.workspace import open_job
+
+    photos = tmp_path / "my photos"
+    photos.mkdir()
+    (photos / "a.jpg").write_bytes(b"jpg")
+    s = spec_mod.from_dict({"name": "p", "task": "count", "classes": [{"id": "pot", "description": "pots",
+                            "size_m": {"measure": "length", "range": [0.1, 0.4]}}],
+                            "user_data": {"raw": str(photos)}})
+    job = open_job(tmp_path / "home", "p")
+    out = portable_spec(s, job)
+    assert not out.user_data.raw.startswith("/")
+    assert (job.input / out.user_data.raw / "a.jpg").read_bytes() == b"jpg"
+    assert portable_spec(out, job).user_data.raw == out.user_data.raw  # already portable: unchanged
