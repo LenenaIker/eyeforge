@@ -207,3 +207,13 @@ def test_cloud_job_left_running_shows_and_can_be_cancelled(app, tmp_path, monkey
     assert app.post(f"/api/jobs/{job}/corrections", json={"labels": {"x": "cow"}}).status_code == 409
     assert app.post(f"/api/jobs/{job}/cancel").json()["cloud_job"] == "aijob-1"
     assert cancelled == ["aijob-1"] and not app.get(f"/api/jobs/{job}").json()["running"]
+
+
+def test_daily_cloud_budget(tmp_path):
+    import time
+    logs = tmp_path / "jobs" / "old" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "cloud_usage.jsonl").write_text(json.dumps({"t": time.time(), "usd_estimate": 9.0}) + "\n")
+    client = TestClient(create_app(tmp_path, backend="nebius", launcher=lambda *a, **k: FakeProc(), daily_usd=10))
+    r = client.post("/api/jobs", data={"spec": json.dumps(GOOD)})
+    assert r.status_code == 429 and "budget" in r.json()["detail"]

@@ -136,8 +136,11 @@ def cmd_serve(args) -> int:
         raise SystemExit(f"serving on {args.host} lets others in: add --public (access key, uploads only)")
     url = f"http://{args.host}:{args.port}" + ("/?key=<SIM2CHIP_WEB_KEY>" if key else "")
     print(f"EyeForge web on {url}  (backend {args.backend}{', public' if args.public else ''})")
+    daily = env("SIM2CHIP_DAILY_USD")
+    if args.public and not env("SIM2CHIP_HOME"):
+        raise SystemExit("--public needs SIM2CHIP_HOME on a disk that survives restarts (jobs, buckets, spend)")
     serve(Path(args.home), args.backend, args.host, args.port, args.max_usd, public=args.public, key=key,
-          max_runs=args.max_runs)
+          max_runs=args.max_runs, daily_usd=float(daily) if daily else (30.0 if args.public else None))
     return 0
 
 

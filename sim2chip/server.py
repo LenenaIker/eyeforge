@@ -53,10 +53,11 @@ SESSION_HOURS = 6  # an interview left open longer is dropped
 
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,
-               launcher=None, public: bool = False, key: str | None = None, max_runs: int = 2):
+               launcher=None, public: bool = False, key: str | None = None, max_runs: int = 2,
+               daily_usd: float | None = None):
     """public: a server others can reach. Specs may only use photos uploaded through it (no server paths),
     at most `max_runs` runs at a time, and, with `key`, every request needs it (a link with ?key=... sets a
-    cookie)."""
+    cookie). daily_usd: no new run when the cloud GPU spent in the last 24 h plus one more run could pass it."""
     import hmac
 
     from fastapi import Request
@@ -184,8 +185,18 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return turn_out(sid, guarded(sid, session.choose, [str(f) for f in body.get("files") or []],
                                      str(body.get("class", ""))))
 
+    def budget_left() -> None:
+        if daily_usd is None or backend != "nebius":
+            return
+        from .backends.nebius import USD_PER_HOUR, WORKER_HOURS
+        spent, worst = cloud_spent(home), WORKER_HOURS * USD_PER_HOUR
+        if spent + worst > daily_usd:
+            raise HTTPException(429, f"today's cloud budget is used up (${spent:.2f} of ${daily_usd:.2f}); "
+                                     "try again tomorrow")
+
     @app.post("/api/jobs")
     def create_job(spec: str = Form(...), photos: list[UploadFile] = File(default=[])):
+        budget_left()
         if public:
             if sum(p.poll() is None for p in runs.values()) >= max_runs:
                 raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
@@ -278,6 +289,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         job = job_of(name)
         if running(job):
             raise HTTPException(409, f"job {job.name} is running")
+        budget_left()
         start = review.apply(job, Cache(home / "cache"), body.get("labels") or {}, body.get("assets") or {},
                              body.get("points") or {}, share=not public)
         if start is None:
@@ -311,6 +323,25 @@ def _launch(home: Path, job: Job, request: Path, backend: str, max_usd: float | 
     job.logs.mkdir(parents=True, exist_ok=True)
     log = open(job.logs / "pipeline.log", "a")
     return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=Path(__file__).resolve().parents[1])
+
+
+def cloud_spent(home: Path, hours: float = 24) -> float:
+    """Cloud GPU dollars of every job's runs that ended in the last `hours`, plus the runs still going
+    (counted at their worst case, the whole timeout)."""
+    from .backends.nebius import USD_PER_HOUR
+    since, total = time.time() - hours * 3600, 0.0
+    for logs in (home / "jobs").glob("*/logs"):
+        try:
+            for line in (logs / "cloud_usage.jsonl").read_text().splitlines():
+                rec = json.loads(line)
+                if rec.get("t", 0) >= since:
+                    total += rec.get("usd_estimate", 0.0)
+        except (OSError, ValueError):
+            pass
+        cj = cloud_job(Job(logs.parent))
+        if cj:
+            total += cj["hours"] * USD_PER_HOUR
+    return total
 
 
 def cloud_job(job: Job) -> dict | None:
@@ -435,6 +466,7 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
 
 
 def serve(home: Path, backend: str, host: str, port: int, max_usd: float | None, public: bool = False,
-          key: str | None = None, max_runs: int = 2) -> None:
+          key: str | None = None, max_runs: int = 2, daily_usd: float | None = None) -> None:
     import uvicorn
-    uvicorn.run(create_app(home, backend, max_usd, public=public, key=key, max_runs=max_runs), host=host, port=port)
+    uvicorn.run(create_app(home, backend, max_usd, public=public, key=key, max_runs=max_runs, daily_usd=daily_usd),
+                host=host, port=port)
