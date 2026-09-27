@@ -33,7 +33,8 @@ COUNT_PROMPT = """You mark objects in photos to train a small camera model that 
 {classes}
 
 Find every one of them in the photo, including small, distant and partly hidden ones. Mark each object
-separately, even when several stand side by side.
+separately, even when several stand side by side. A box holds the whole visible object as described above,
+with everything that belongs to it (a pot and the plant growing in it), not just its main part.
 
 Answer only with JSON: {{"objects": [{{"class": "<one of: {ids}>", "box": [x0, y0, x1, y1]}}]}} with each box
 in pixel coordinates of this image, which is {w} x {h} pixels. Use an empty list when there are none."""

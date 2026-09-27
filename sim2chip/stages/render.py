@@ -18,7 +18,7 @@ from .base import Context, Stage
 
 class Render(Stage):
     name = "render"
-    version = "2"  # paint, empty-frame distance and camera aim from the spec instead of road values
+    version = "3"  # v2: paint, empty-frame distance and camera aim from the spec; v3: masonry parapets
     runtime = "isaac"
     uses_cache = True
     gpu = "rtx"

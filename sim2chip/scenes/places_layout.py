@@ -80,9 +80,11 @@ def building(rng, railings: list[str] | None = None) -> Layout:
 def _railing(lay: Layout, style: str, bx: float, bw: float, d: float, z: float, group: int) -> None:
     x0, x1, top = bx - bw / 2, bx + bw / 2, z + 1.0
     if style == "solid":
-        lay.add("railing", (bx, -d + 0.06, z + 0.5), (bw, 0.12, 1.0))
+        # A parapet of masonry like the wall (brick, plaster): matte. Built in the shiny railing metal it read as
+        # dark opaque glass, which real balconies do not have (user, 2026-09-27).
+        lay.add("wall", (bx, -d + 0.06, z + 0.5), (bw, 0.12, 1.0))
         for x in (x0 + 0.06, x1 - 0.06):
-            lay.add("railing", (x, -d / 2, z + 0.5), (0.12, d, 1.0))
+            lay.add("wall", (x, -d / 2, z + 0.5), (0.12, d, 1.0))
         # Pots stand on top of a solid railing (the object's centre stays on its 12 cm).
         lay.surfaces.append(Surface("railing", (x0 + 0.15, x1 - 0.15), (-d + 0.06, -d + 0.06), top, group=group))
         return
