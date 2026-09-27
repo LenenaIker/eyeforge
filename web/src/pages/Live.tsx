@@ -1,10 +1,11 @@
-import { Camera, Image as ImageIcon, RefreshCw, SlidersHorizontal, X } from "lucide-react";
+import { Camera, Flag, Image as ImageIcon, RefreshCw, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Navigate, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { Spinner, cx } from "../components/ui";
+import { addCapture, listCaptures } from "../live/captures";
 import { decode, type LivePoint } from "../live/decode";
 import { isHandheld } from "../live/device";
-import { fit, toFrame, turnFromGravity, uprightRgb, type Turn } from "../live/orient";
+import { fit, toFrame, turnFromGravity, uprightRgb, uprightTransform, type Turn } from "../live/orient";
 import { resizeBilinear } from "../live/resize";
 import { loadModel, type LiveModel } from "../live/runtime";
 
@@ -13,9 +14,11 @@ import { loadModel, type LiveModel } from "../live/runtime";
 // while the labels turn with the phone, and the system back gesture leaves (no back button, except on iOS,
 // where an installed app has none). The frame is turned upright before the model sees it and shrunk with
 // Pillow's filter to the model's square input, as ingest did with the photos it was trained and scored on.
+// "This one is wrong" saves the frame (upright, full size) for the job page's "Make it better", offline too.
 
 type Seen = { points: LivePoint[]; top: { label: string; p: number } | null; ms: number };
 const SMOOTH = 5;  // frames in the median count shown, so the number does not flicker
+const SAVE_SIDE = 1600;  // long side of a saved frame, as images.ts shrinks uploads
 const IOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (/macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 
 export default function Live() {
@@ -31,6 +34,8 @@ export default function Live() {
   const [turn, setTurn] = useState<Turn>(0);
   const [threshold, setThreshold] = useState(0.5);
   const [tuning, setTuning] = useState(false);
+  const [saved, setSaved] = useState(0);  // frames saved for improving the model (this job, all visits)
+  const [flash, setFlash] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
   const image = useRef<HTMLImageElement>(null);
   const counts = useRef<number[]>([]);
@@ -143,6 +148,21 @@ export default function Live() {
     infer(model, image.current, document.createElement("canvas"), threshold, 0).then(show).catch((e) => setError(String(e)));
   }, [model, photo, frame, threshold]);
 
+  useEffect(() => { listCaptures(name).then((c) => setSaved(c.length)); }, [name]);
+
+  async function save() {
+    const src = photo ? image.current : video.current;
+    if (!src) return;
+    const blob = await uprightJpeg(src, photo ? 0 : turn);
+    if (blob && await addCapture(name, blob)) {
+      setSaved((n) => n + 1);
+      setFlash(true);
+      setTimeout(() => setFlash(false), 180);
+    } else {
+      setError("Could not save the frame: this browser blocks storage for the site.");
+    }
+  }
+
   function show(r: Seen) {
     counts.current = [...counts.current.slice(-(SMOOTH - 1)), r.points.length];
     setSeen(r);
@@ -161,6 +181,7 @@ export default function Live() {
 
   return (
     <div className="fixed inset-0 z-40 touch-none overflow-hidden bg-black text-white select-none">
+      <div className={cx("pointer-events-none absolute inset-0 z-10 bg-white transition-opacity duration-150", flash ? "opacity-60" : "opacity-0")} />
       {model && !error && (
         <div className={box ? "absolute" : "invisible absolute"} style={box ?? undefined}>
           {photo
@@ -189,6 +210,12 @@ export default function Live() {
                 className="absolute top-[max(0.75rem,env(safe-area-inset-top))] left-3 grid h-10 w-10 place-items-center rounded-full bg-black/35 backdrop-blur">
           <X className="h-5 w-5" />
         </button>
+      )}
+      {saved > 0 && !error && (
+        <Link to={`/app/job/${name}#improve`} replace
+              className="absolute top-[max(0.75rem,env(safe-area-inset-top))] left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/45 px-3.5 py-2 text-xs font-medium whitespace-nowrap text-white backdrop-blur">
+          {saved} saved · Improve the model
+        </Link>
       )}
       {model && seen && (
         // A square slot, so the label turns inside it instead of past the screen edge.
@@ -220,6 +247,7 @@ export default function Live() {
               )}
             </div>
             <div className="flex gap-3">
+              <RoundButton label="This one is wrong: save it to improve the model" style={face} onClick={save}><Flag className="h-5 w-5" /></RoundButton>
               {counting && <RoundButton label="Sensitivity" on={tuning} style={face} onClick={() => setTuning(!tuning)}><SlidersHorizontal className="h-5 w-5" /></RoundButton>}
               {photo
                 ? <RoundButton label="Camera" style={face} onClick={() => { setPhoto(null); setFrame(null); setSeen(null); counts.current = []; }}><Camera className="h-5 w-5" /></RoundButton>
@@ -249,6 +277,22 @@ function RoundButton({ label, on, onClick, style, children }: {
 }) {
   return <button onClick={onClick} aria-label={label} style={style}
                  className={cx("grid h-12 w-12 place-items-center rounded-full backdrop-blur", on ? "bg-ember-500" : "bg-black/35")}>{children}</button>;
+}
+
+/** The frame as a JPEG, turned upright (as the model saw it) and at most SAVE_SIDE pixels on its long side. */
+async function uprightJpeg(src: HTMLVideoElement | HTMLImageElement, turn: Turn): Promise<Blob | null> {
+  const w0 = src instanceof HTMLVideoElement ? src.videoWidth : src.naturalWidth;
+  const h0 = src instanceof HTMLVideoElement ? src.videoHeight : src.naturalHeight;
+  const k = Math.min(1, SAVE_SIDE / Math.max(w0, h0));
+  const w = Math.round(w0 * k), h = Math.round(h0 * k);
+  const { width, height, m } = uprightTransform(w, h, turn);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d")!;
+  ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+  ctx.drawImage(src, 0, 0, w, h);
+  return new Promise((ok) => canvas.toBlob(ok, "image/jpeg", 0.9));
 }
 
 /** One frame (video or photo) through the model: turned upright, shrunk with Pillow's filter to the input square,

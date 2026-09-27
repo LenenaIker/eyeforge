@@ -247,3 +247,27 @@ def test_ingest_keeps_split_when_photos_are_added(tmp_path):
     after = {s: sorted(f.name for f in (out / s / "cow").glob("*")) for s in ("test", "train")}
     assert set(before["test"]) <= set(after["test"]) and set(before["train"]) <= set(after["train"])
     assert info["counts"]["cow"] == {"test": 4 + 2, "train": 2 + 2}  # past the train cap of 2
+
+
+def test_ingest_recovers_the_split_of_a_job_made_before_split_json(tmp_path):
+    import os
+    import time
+    photos = tmp_path / "photos"
+    for i in range(8):
+        img(photos / "cow" / f"{i}.jpg")
+    ctx = ctx_for(tmp_path, user_data={"labeled": "photos", "test_per_class": 400, "train_per_class": 2})
+    link_input(ctx.job, "photos", photos)
+    Ingest().run(ctx)
+    out = ctx.job.stage_dir("ingest")
+    (out / "split.json").unlink()  # as an older version left it
+    ctx.job.mark_done("ingest", "old")
+    ctx.job.clear_done("ingest")  # the pipeline does this before running the stage
+    before = {s: sorted(f.name for f in (out / s / "cow").glob("*")) for s in ("test", "train")}
+    later = time.time() + 60
+    for i in range(4):
+        img(photos / "cow" / f"dry_{i}.jpg")
+        os.utime(photos / "cow" / f"dry_{i}.jpg", (later, later))
+    info = Ingest().run(ctx)
+    after = {s: sorted(f.name for f in (out / s / "cow").glob("*")) for s in ("test", "train")}
+    assert set(before["test"]) <= set(after["test"]) and set(before["train"]) <= set(after["train"])
+    assert info["counts"]["cow"] == {"test": 6, "train": 4}  # the 2 unused old photos stay out

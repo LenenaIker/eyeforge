@@ -143,6 +143,69 @@ def test_review_corrections_relaunch_and_media_is_fenced(app, tmp_path):
     assert app.post("/api/jobs/barn_cam/corrections", json={}).status_code == 409
 
 
+def test_add_photos_to_a_trained_job(app, tmp_path):
+    job = tmp_path / "jobs" / "barn_cam"
+    (job / "logs").mkdir(parents=True)
+    (job / "input" / "photos").mkdir(parents=True)
+    (job / "input" / "photos" / "a.jpg").write_bytes(b"first")
+    (job / "spec.json").write_text(json.dumps({**GOOD, "user_data": {"raw": "photos"}}))
+    (job / "export").mkdir()
+    (job / "export" / "model_int8.tflite").write_bytes(b"v1")
+    (job / "export" / "report.json").write_text(json.dumps({"metric": "f1", "real_test": {"mean": 0.2}}))
+    files = [("photos", ("a.jpg", b"dry patch", "image/jpeg")), ("photos", ("b.png", b"another", "image/png")),
+             ("photos", ("notes.txt", b"no", "text/plain"))]
+    r = app.post("/api/jobs/barn_cam/photos", data={"note": "misses  dry\npatches"}, files=files)
+    assert r.json() == {"rerun_from": "label", "photos": 2} and app.launched[-1][3] == "label"
+    added = job / "input" / "photos" / "added"
+    assert sorted(f.name for f in added.iterdir()) == ["a.jpg", "b.png"]  # its own folder: no clash with a.jpg
+    assert (job / "input" / "photos" / "a.jpg").read_bytes() == b"first"
+    s = app.get("/api/jobs/barn_cam").json()
+    assert s["version"]["reason"] == "added 2 photos: misses dry patches" and s["versions"][0]["headline"] == 0.2
+    assert app.post("/api/jobs/barn_cam/photos", files=files[:1]).status_code == 409  # still running
+
+
+def test_add_photos_leaves_linked_folders_alone(app, tmp_path):
+    job = tmp_path / "jobs" / "linked"
+    (job / "logs").mkdir(parents=True)
+    (job / "input").mkdir()
+    (tmp_path / "mine").mkdir()
+    (job / "input" / "photos").symlink_to(tmp_path / "mine")
+    (job / "spec.json").write_text(json.dumps({**GOOD, "user_data": {"raw": "photos"}}))
+    r = app.post("/api/jobs/linked/photos", files=[("photos", ("a.jpg", b"x", "image/jpeg"))])
+    assert r.status_code == 400 and not list((tmp_path / "mine").iterdir())
+    r = app.post("/api/jobs/linked/photos", files=[("photos", ("a.txt", b"x", "text/plain"))])
+    assert r.status_code == 400
+
+
+def test_revise_a_trained_job(app, tmp_path):
+    from sim2chip import spec as spec_mod
+    from sim2chip.pipeline import Pipeline
+    from sim2chip.workspace import Cache, Job
+    job = Job(tmp_path / "jobs" / "barn_cam")
+    (job.logs).mkdir(parents=True)
+    job.spec_path.write_text(json.dumps(GOOD))
+    pipe = Pipeline(spec_mod.from_dict(GOOD), job, Cache(tmp_path / "cache"))
+    for name, fp in pipe.fingerprints().items():
+        job.mark_done(name, fp)
+    (job.root / "export" / "model_int8.tflite").write_bytes(b"v1")
+    (job.root / "export" / "report.json").write_text(json.dumps({"metric": "accuracy", "val_score": 0.4}))
+
+    r = app.post("/api/interview", params={"job": "barn_cam"}).json()
+    assert r["job"] == "barn_cam" and "change" in r["text"]
+    assert app.post("/api/interview", params={"job": "nope"}).status_code == 404
+
+    jetson = json.dumps({**GOOD, "hardware": "jetson_nano"})
+    r = app.post("/api/jobs/barn_cam/revise", data={"spec": jetson, "dry": "true"}).json()
+    assert r["changed"] == ["hardware"] and "render" not in r["stages"] and "train" in r["stages"]
+    assert not app.launched and not (job.root / "versions").exists()  # dry: nothing happens
+    r = app.post("/api/jobs/barn_cam/revise", data={"spec": jetson}).json()
+    assert app.launched[-1][0] == "barn_cam" and app.launched[-1][3] is None and r["rerun_from"] == r["stages"][0]
+    s = app.get("/api/jobs/barn_cam").json()
+    assert s["version"]["reason"] == "changed hardware" and s["versions"][0]["n"] == 1
+    assert s["spec"]["hardware"] == "jetson_nano"
+    assert app.post("/api/jobs/barn_cam/revise", data={"spec": jetson}).status_code == 409  # running
+
+
 def test_chat_photos_travel_with_the_job(app, tmp_path):
     sid = app.post("/api/interview").json()["session"]
     files = [("photos", ("a.jpg", b"jpg", "image/jpeg")), ("photos", ("b.jpg", b"jpg", "image/jpeg"))]

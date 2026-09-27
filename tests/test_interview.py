@@ -162,3 +162,15 @@ def test_spec_sent_with_text_is_proposed():
     turn = s.reply("go")
     assert turn.kind == "confirm" and turn.spec.name == "barn" and turn.spec.labels == ["empty", "cow"]
     assert turn.text.startswith("Here is the setup, check it.\n\nSpec 'barn'")
+
+
+def test_revise_starts_from_the_trained_spec():
+    from sim2chip import spec as spec_mod
+    changed = {**GOOD, "hardware": "jetson_nano"}
+    client = Scripted([{"say": "Sure, anything else?", "spec": changed}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}))
+    first = s.revise(spec_mod.from_dict(GOOD))
+    assert first.kind == "say" and "change" in first.text and client.seen == []  # no model call yet
+    turn = s.reply("run it on a Jetson instead")
+    assert turn.kind == "confirm" and turn.spec.hardware == "jetson_nano" and turn.spec.name == "barn"
+    assert '"hardware"' in s.messages[-3]["content"] and "keep everything" in s.messages[-4]["content"]

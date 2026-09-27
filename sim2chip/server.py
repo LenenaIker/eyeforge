@@ -149,9 +149,27 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return {"backend": backend, "first_question": FIRST_QUESTION, "public": public, "busy": busy(),
                 "max_runs": max_runs if public else None, "budget": budget}
 
+    def check_paths(parsed: spec_mod.Spec, job: Job | None = None) -> None:
+        """On a public server, only photos uploaded here (or, revising a job, the job's own folders): a path
+        would let a spec read, and upload to the cloud, any file of the server."""
+        if not public:
+            return
+        uploads = (home / "uploads").resolve()
+
+        def ok(p: str) -> bool:
+            if p == "photos" or (Path(p).is_absolute() and Path(p).resolve().is_relative_to(uploads)):
+                return True
+            return job is not None and not Path(p).is_absolute() and ".." not in Path(p).parts \
+                and (job.input / p).exists() and not (job.input / p).is_symlink()
+        bad = [p for p in spec_paths(parsed) if not ok(p)]
+        if bad:
+            raise HTTPException(400, f"invalid spec: only photos uploaded here can be used, not {bad}")
+
     @app.post("/api/interview")
-    def interview_start():
+    def interview_start(request: Request, job: str | None = None):
+        """A new interview, or (job=<name>) one that revises a trained job's spec."""
         nonlocal new_session
+        revising = job_of(job, request) if job else None
         if new_session is None:
             new_session = default_interviewer(home, backend, public)
         now = time.time()
@@ -162,6 +180,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         sessions[sid] = new_session()
         sessions[sid].uploads = home / "uploads" / sid
         sessions[sid].transcript = home / "logs" / "interviews" / f"{sid}.json"
+        if revising:
+            turn = sessions[sid].revise(spec_mod.load(latest_spec(revising)))
+            return {"session": sid, "text": turn.text, "job": revising.name}
         return {"session": sid, "text": FIRST_QUESTION}
 
     locks: dict[str, threading.Lock] = {}
@@ -260,12 +281,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             parsed = spec_mod.from_dict(data)
         except (json.JSONDecodeError, spec_mod.SpecError) as e:
             raise HTTPException(400, f"invalid spec: {e}")
-        if public:  # only what was uploaded here: a path would let a spec read (and upload) any server file
-            uploads = (home / "uploads").resolve()
-            bad = [p for p in spec_paths(parsed) if p != "photos" and not (
-                Path(p).is_absolute() and Path(p).resolve().is_relative_to(uploads))]
-            if bad:
-                raise HTTPException(400, f"invalid spec: only photos uploaded here can be used, not {bad}")
+        check_paths(parsed)
         # The same setup sent twice (a double click, "Looks good" and Train together) must not pay for two runs.
         same = json.loads(parsed.to_json())
         for other, proc in runs.items():
@@ -286,10 +302,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         parsed = adopt_uploads(parsed, home / "uploads", job)
         req = job.root / "request.json"
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
-        folder = job.input / "photos"
-        for p in images:
-            folder.mkdir(parents=True, exist_ok=True)
-            (folder / Path(p.filename).name).write_bytes(p.file.read())
+        save_photos(job.input / "photos", images)
         start_run(job, req)
         return {"job": name, "photos": len(images)}
 
@@ -359,6 +372,67 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             req.write_text(job.spec_path.read_text())
         start_run(job, req, start)
         return {"rerun_from": start}
+
+    @app.post("/api/jobs/{name}/revise")
+    def revise(name: str, request: Request, spec: str = Form(...), dry: bool = Form(False)):
+        """A changed spec for a trained job: the job keeps its folder, the old model is kept as a version, and
+        only the stages whose inputs changed run again. dry: just the stages that would run."""
+        job = job_of(name, request)
+        if running(job):
+            raise HTTPException(409, f"job {job.name} is running")
+        try:
+            parsed = spec_mod.from_dict(json.loads(spec))
+        except (json.JSONDecodeError, spec_mod.SpecError) as e:
+            raise HTTPException(400, f"invalid spec: {e}")
+        check_paths(parsed, job)
+        old = spec_mod.load(latest_spec(job))
+        changed = [k for k, v in json.loads(parsed.to_json()).items()
+                   if k != "name" and json.loads(old.to_json()).get(k) != v]
+        if not dry:
+            parsed = adopt_uploads(parsed, home / "uploads", job)
+        todo = [p.stage.name for p in Pipeline(parsed, job, Cache(home / "cache")).plan() if p.action == "run"]
+        if dry or not todo:
+            return {"stages": todo, "changed": changed, "rerun_from": None}
+        budget_left()
+        if public and busy():
+            raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
+        req = job.root / "request.json"
+        req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": old.name}, indent=2))
+        snapshot(job, "changed " + (", ".join(changed) or "the setup"))
+        start_run(job, req)
+        return {"stages": todo, "changed": changed, "rerun_from": todo[0]}
+
+    @app.post("/api/jobs/{name}/photos")
+    def add_photos(name: str, request: Request, photos: list[UploadFile] = File(...), note: str = Form("")):
+        """More photos for a trained job, usually of what the model gets wrong. The teacher marks them, half
+        go to test (the rest to training), and only the real-photo branch reruns: the synthetic data stays."""
+        job = job_of(name, request)
+        if running(job):
+            raise HTTPException(409, f"job {job.name} is running")
+        budget_left()
+        if public and busy():
+            raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
+        images = [p for p in photos if Path(p.filename or "").suffix.lower() in IMAGE_EXT]
+        if not images:
+            raise HTTPException(400, "no photos (jpg, png, bmp or webp)")
+        req = latest_spec(job)
+        data = json.loads(req.read_text())
+        ud = data.setdefault("user_data", {})
+        raw = ud.get("raw") or "photos"
+        folder = job.input / raw
+        # Only a folder of the job's own: a linked folder is the user's, and a path may be anywhere on disk.
+        if Path(raw).is_absolute() or ".." in Path(raw).parts or folder.is_symlink():
+            raise HTTPException(400, f"this job reads its photos from {raw}: add them there and rerun from label")
+        have = sum(1 for f in folder.rglob("*") if f.suffix.lower() in IMAGE_EXT) if folder.is_dir() else 0
+        if public and have + len(images) > MAX_PHOTOS:
+            raise HTTPException(413, f"at most {MAX_PHOTOS} photos per model ({have} already)")
+        ud["raw"] = raw
+        saved = save_photos(folder / "added", images)
+        (job.root / "request.json").write_text(json.dumps({**data, "name": data.get("name", job.name)}, indent=2))
+        note = " ".join(note.split())[:120]
+        snapshot(job, f"added {saved} photos" + (f": {note}" if note else ""))
+        start_run(job, job.root / "request.json", "label")
+        return {"rerun_from": "label", "photos": saved}
 
     @app.get("/api/jobs/{name}/versions/{n}/files/{file}")
     def download_version(name: str, n: int, file: str, request: Request):
@@ -434,6 +508,27 @@ def cloud_job(job: Job) -> dict | None:
     except (OSError, ValueError):
         return None
     return cj if time.time() - cj["started"] < cj["hours"] * 3600 else None
+
+
+def save_photos(folder: Path, images: list[UploadFile]) -> int:
+    """Writes uploaded photos under their own names; a different photo with a name already there gets a
+    numbered one (phones reuse names like image.jpg)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    for p in images:
+        data, name = p.file.read(), Path(p.filename or "photo.jpg").name
+        dst, n = folder / name, 1
+        while dst.exists() and dst.read_bytes() != data:
+            n += 1
+            dst = folder / f"{Path(name).stem}_{n}{Path(name).suffix}"
+        dst.write_bytes(data)
+    return len(images)
+
+
+def latest_spec(job: Job) -> Path:
+    """A relaunched job has a new request.json while spec.json is still the previous run's until the run
+    starts: the newer one."""
+    paths = [p for p in (job.spec_path, job.root / "request.json") if p.exists()]
+    return max(paths, key=lambda p: p.stat().st_mtime)
 
 
 def adopt_uploads(spec: spec_mod.Spec, uploads: Path, job: Job) -> spec_mod.Spec:
@@ -572,10 +667,7 @@ def timing(job: Job, home: Path, stages: list[dict], running: bool, backend: str
 
 
 def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
-    # A relaunched job has a new request.json while spec.json is still the previous run's until the run
-    # starts: read the newer one.
-    paths = [p for p in (job.spec_path, job.root / "request.json") if p.exists()]
-    spec_path = max(paths, key=lambda p: p.stat().st_mtime)
+    spec_path = latest_spec(job)
     log_path = job.logs / "pipeline.log"
     log = log_path.read_text(errors="replace").splitlines() if log_path.exists() else []
     try:

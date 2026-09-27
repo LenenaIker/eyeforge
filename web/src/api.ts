@@ -104,6 +104,13 @@ export function createJob(spec: Spec) {
   return api<{ job: string; photos: number; already_running?: boolean }>("/api/jobs", { method: "POST", body: form });
 }
 
+export function addPhotos(job: string, files: File[], note: string) {
+  const form = new FormData();
+  form.append("note", note);
+  files.forEach((f) => form.append("photos", f, f.name));
+  return api<{ rerun_from: string; photos: number }>(`/api/jobs/${job}/photos`, { method: "POST", body: form });
+}
+
 export const listJobs = () => api<{ jobs: string[] }>("/api/jobs");
 export const jobStatus = (job: string) => api<Status>(`/api/jobs/${job}`);
 export const getReview = (job: string) => api<Review>(`/api/jobs/${job}/review`);

@@ -1,7 +1,9 @@
-import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, DollarSign, Loader2, Square, Zap } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, DollarSign, ImagePlus, Loader2, Sparkles, Square, X, Zap } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { enterCameraMode, isHandheld } from "../live/device";
+import { captureFile, clearCaptures, listCaptures, removeCapture, type Capture } from "../live/captures";
+import { prepareImages } from "../images";
 import * as API from "../api";
 import type { Report, Stage, Status, Version } from "../api";
 import { Badge, Button, Card, Notice, cx } from "../components/ui";
@@ -58,6 +60,7 @@ export default function JobPage() {
       {error && <Notice tone="bad">Lost contact with the server, retrying: {error}</Notice>}
       {(s.running || !s.report) && <Progress s={s} failed={failed} />}
       {s.report && <Result job={s.job} r={s.report} usd={s.cloud_usd} version={s.version} />}
+      {!s.running && s.report && <Improve job={s.job} counting={s.report.task === "count"} onRerun={restart} />}
       {s.report && s.versions.length > 0 && <Versions job={s.job} versions={s.versions} />}
       {!s.running && (s.report || failed) && <ReviewPanel key={reviewKey} job={s.job} onRerun={restart} />}
     </div>
@@ -218,6 +221,90 @@ function Compare({ p, counting }: { p: NonNullable<Report["previous"]>; counting
       <span className="text-xs text-muted">same test photos, shipped models</span>
     </p>
   );
+}
+
+// The loop after a first model: photos of what it gets wrong (picked here or saved in the live test), the
+// teacher marks them, and only the real-photo steps run again.
+function Improve({ job, counting, onRerun }: { job: string; counting: boolean; onRerun: () => void }) {
+  const [files, setFiles] = useState<File[]>([]);
+  const [caps, setCaps] = useState<Capture[]>([]);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const camera = useRef<HTMLInputElement>(null), gallery = useRef<HTMLInputElement>(null);
+  const card = useRef<HTMLDivElement>(null);
+  useEffect(() => { listCaptures(job).then(setCaps); }, [job]);
+  useEffect(() => {  // arriving from the live test's "Improve the model"
+    if (window.location.hash === "#improve") card.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+  const blobs = useMemo(() => [...caps.map((c) => c.blob), ...files], [caps, files]);
+  const previews = useObjectUrls(blobs);
+  const total = caps.length + files.length;
+
+  const pick = async (list: FileList | null) => {
+    if (list?.length) setFiles((f) => [...f, ...Array.from(list)]);
+  };
+  const drop = (i: number) => {
+    if (i < caps.length) { removeCapture(caps[i].id); setCaps((c) => c.filter((_, k) => k !== i)); }
+    else setFiles((f) => f.filter((_, k) => k !== i - caps.length));
+  };
+  const send = async () => {
+    setBusy(true); setError(null);
+    try {
+      await API.addPhotos(job, await prepareImages([...caps.map(captureFile), ...files]), note);
+      await clearCaptures(job);
+      onRerun();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <div ref={card} id="improve" className="scroll-mt-4"><Card className="p-5">
+      <p className="flex items-center gap-2 font-semibold"><Sparkles className="h-4 w-4 text-brand-600" /> Make it better</p>
+      <p className="mt-1 text-sm text-muted">
+        Missing something? Add photos of the cases it gets wrong. They are marked for you, half of them join the
+        test so the fix is measured, and only your photos are processed again: the synthetic images are reused,
+        so it takes minutes, not a full run.
+      </p>
+      <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={120}
+                placeholder={counting ? "What does it get wrong? e.g. misses pots in the shade" : "What does it get wrong? e.g. dry patches on the lawn"}
+                className="mt-3 w-full resize-none rounded-[var(--radius-control)] border border-line bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none" />
+      {total > 0 && (
+        <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-6">
+          {previews.map((url, i) => (
+            <div key={url} className="relative aspect-square overflow-hidden rounded-lg bg-stone-100">
+              <img src={url} alt={i < caps.length ? "Frame saved in the live test" : "Photo to add"} className="h-full w-full object-cover" />
+              {i < caps.length && <span className="absolute bottom-1 left-1 rounded bg-black/60 px-1 text-[10px] font-medium text-white">live</span>}
+              <button onClick={() => drop(i)} aria-label="Remove"
+                      className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full bg-black/55 text-white"><X className="h-3.5 w-3.5" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {isHandheld() && <Button variant="secondary" size="sm" onClick={() => camera.current?.click()}><Camera className="h-4 w-4" /> Take photos</Button>}
+        <Button variant="secondary" size="sm" onClick={() => gallery.current?.click()}><ImagePlus className="h-4 w-4" /> Choose photos</Button>
+        <Button size="sm" onClick={send} disabled={!total || busy}>
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} {total ? `Add ${total} photo${total > 1 ? "s" : ""} and retrain` : "Add photos and retrain"}
+        </Button>
+      </div>
+      <input ref={camera} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { pick(e.target.files); e.target.value = ""; }} />
+      <input ref={gallery} type="file" accept="image/*" multiple hidden onChange={(e) => { pick(e.target.files); e.target.value = ""; }} />
+      {error && <div className="mt-3"><Notice tone="bad">{error}</Notice></div>}
+    </Card></div>
+  );
+}
+
+/** Object URLs for blobs, revoked when the list changes or the card goes away. */
+function useObjectUrls(blobs: Blob[]): string[] {
+  const [urls, setUrls] = useState<string[]>([]);
+  useEffect(() => {
+    const u = blobs.map((b) => URL.createObjectURL(b));
+    setUrls(u);
+    return () => { u.forEach((x) => URL.revokeObjectURL(x)); };
+  }, [blobs]);
+  return urls;
 }
 
 function Versions({ job, versions }: { job: string; versions: Version[] }) {

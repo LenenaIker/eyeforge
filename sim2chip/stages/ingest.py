@@ -30,7 +30,7 @@ MIN_TEST = 20  # below this many test photos (per class) one photo moves the sco
 
 class Ingest(Stage):
     name = "ingest"
-    version = "6"  # v4: 3D source photos out of test; count split by photo content. v5: box sizes. v6: kept split
+    version = "5"  # v4: 3D source photos out of test; count split by photo content. v5: box sizes
     runtime = "cpu"
     reads_input = True
     rereads = (SPLIT,)  # earlier sides of each photo
@@ -57,7 +57,10 @@ class Ingest(Stage):
         test_src = [(self._folder(ctx, "test", ud.test), ud.class_map)] if ud.test else []
         size = ctx.hardware.input_size
         out = ctx.job.stage_dir(self.name)
-        prev = read_split(out)
+        prev, since = read_split(out), made_at(out)
+        # A job ingested before split.json existed: its sides are in the output's folders, by photo name.
+        old = {} if prev else {(f.parent.name, f.stem): f.parent.parent.name
+                               for f in out.glob("*/*/*.png") if f.parent.parent.name in ("test", "train")}
         shutil.rmtree(out, ignore_errors=True)
 
         def big_enough(f) -> bool:
@@ -74,6 +77,8 @@ class Ingest(Stage):
         for cls in ctx.spec.labels:
             by_key = files_of(sources, cls)
             files = list(by_key.values())
+            if old:
+                prev = {k: old.get((cls, f.stem), "unused") for k, f in by_key.items() if f.stat().st_mtime <= since}
             if test_src:  # the user's own test folder: only a training side to keep
                 s = split(list(by_key), set(), prev, 0, ud.train_per_class, lambda k: big_enough(by_key[k]))
                 t_key = files_of(test_src, cls)
@@ -115,6 +120,11 @@ class Ingest(Stage):
         held = held_out(ctx)
         out = ctx.job.stage_dir(self.name)
         prev = read_split(out)
+        if not prev and (out / "test" / "points.json").exists():  # ingested before split.json existed
+            since = made_at(out)
+            old = {v["key"]: side for side in ("test", "train")
+                   for v in json.loads((out / side / "points.json").read_text()).values()}
+            prev = {c: old.get(k, "unused") for k, c in ck.items() if (src_dir / k).stat().st_mtime <= since}
         shutil.rmtree(out, ignore_errors=True)
         sides = split(list(ck.values()), held, prev, ud.test_per_class, ud.train_per_class)
         keys = sorted(ck, key=lambda k: order(ck[k]))
@@ -182,6 +192,13 @@ def split(keys: list[str], held: set[str], prev: dict[str, str], test_cap: int, 
         n_test = min(room, sum(k not in held for k in fresh) // 2)
         sides |= {k: "test" for k in fresh[:n_test]} | {k: "train" for k in fresh[n_test:]}
     return {k: sides.get(k, "unused") for k in keys}
+
+
+def made_at(out) -> float:
+    """When the previous output was written: photos older than that were there, newer ones were added since.
+    (Not _done.json: the pipeline removes it before running the stage.)"""
+    times = [f.stat().st_mtime for f in out.rglob("*") if f.is_file()]
+    return max(times) if times else float("inf")
 
 
 def read_split(out) -> dict[str, str]:

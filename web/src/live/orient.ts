@@ -41,3 +41,12 @@ export function fit(fw: number, fh: number, vw: number, vh: number, mode: "cover
   const w = fw * k, h = fh * k;
   return { left: (vw - w) / 2, top: (vh - h) / 2, width: w, height: h };
 }
+
+/** Canvas setTransform arguments (and the canvas size) that draw a w x h frame upright, the same turn
+ * uprightRgb gives the model's input: used to save full-size frames the way the teacher and training see photos. */
+export function uprightTransform(w: number, h: number, turn: Turn) {
+  if (turn === 90) return { width: h, height: w, m: [0, 1, -1, 0, h, 0] as const };
+  if (turn === 270) return { width: h, height: w, m: [0, -1, 1, 0, 0, w] as const };
+  if (turn === 180) return { width: w, height: h, m: [-1, 0, 0, -1, w, h] as const };
+  return { width: w, height: h, m: [1, 0, 0, 1, 0, 0] as const };
+}

@@ -449,6 +449,19 @@ class Session:
             self._analyse(folder.rstrip("."))
         return self._advance()
 
+    def revise(self, spec: spec_mod.Spec) -> Turn:
+        """Start from a trained job's spec instead of from scratch: the model sees it as its own accepted
+        proposal, and the user's next message says what to change."""
+        self.goal = "; ".join(f"{c.id}: {c.description}" for c in spec.classes)[:400]
+        self.messages.append({"role": "user", "content": (
+            "[The user already trained a model with the spec below and wants to change something. Ask nothing "
+            "that the spec already answers. When they say what to change, change only that, keep everything "
+            "else exactly as it is (user_data paths included) and propose the full spec again.]")})
+        self.messages.append({"role": "assistant", "content": json.dumps({"spec": json.loads(spec.to_json())})})
+        self._save()
+        return Turn("say", "What would you like to change? For example the device, the camera height, the "
+                           "places it will see, or a class to add or merge.")
+
     def _analyse(self, folder: str) -> None:
         """Photo analysis of a folder the user gave, once per folder, before the model answers."""
         path = Path(folder).expanduser()
