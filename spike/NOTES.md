@@ -196,7 +196,7 @@ Arreglos baratos, unos 26 -> 13 min: bajar las conversiones USD de los assets de
 - Semillas en paralelo (`SIM2CHIP_PARALLEL_SEEDS`, 3 por defecto), cada una en su proceso en la misma GPU. En la 3090 con 8 núcleos (`taskset`): 194 s en serie, 140 s en paralelo.
 - El entrenamiento de conteo está limitado por CPU (aumento de datos imagen a imagen en `tf.data`): paso de 18 ms con 8 núcleos, 28 ms con 4, 72 ms con 2. En la L40S (8 vCPU) fue de 45 ms, así que allí las semillas en paralelo compiten por la misma CPU y ganarán menos. La palanca de verdad es hacer el aumento en la GPU por lote (recortes con `crop_and_resize`, color, ruido); el JPEG aleatorio solo existe en CPU. Cambia el entrenamiento: medir con 3 semillas antes de adoptarlo.
 
-## Conversor GLB -> USD sin Isaac: `scripts/glb2usd.py` (2026-09-27)
+## Conversor GLB -> USD sin Isaac: `sim2chip/glb2usd.py` (2026-09-27)
 
 Script del usuario con usd-core + trimesh, solo CPU y en varios procesos. Materiales glTF a UsdPreviewSurface, texturas en `<modelo>_textures/`, stage Z-up en metros. No soporta mallas con compresión Draco/meshopt ni animaciones.
 

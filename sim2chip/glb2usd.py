@@ -1,166 +1,28 @@
 #!/usr/bin/env python3
-"""
-glb2usd.py - Convierte GLB/glTF a USD sin Isaac Sim (solo usd-core + trimesh).
-==============================================================================
+"""GLB/glTF to USD without Isaac Sim (usd-core + trimesh only), for synthetic data in Isaac Sim.
 
-Pensado para pipelines de synthetic data generation (SDG) en Isaac Sim.
+sim2chip's convert_assets calls convert() on every downloaded model; Isaac's Asset Converter is only the
+fallback for what this cannot read. Also a standalone bulk converter:
 
-QUÉ HACE
---------
-  - Materiales PBR -> UsdPreviewSurface (baseColor, metallic/roughness, normal,
-    emissive, occlusion, alpha). Texturas en <modelo>_textures/ junto al .usd.
-  - Stage Z-up, metros, kilogramos, defaultPrim limpio (listo para referenciar).
-    La rotación Y-up -> Z-up va en el hijo /<Modelo>/geometry, así que poner la
-    pose en la raíz (Replicator, tu código) no la pisa.
-  - Opcional: colisiones UsdPhysics (--collision), RigidBody + masa, y etiqueta
-    semántica 'class' (--label) en formato nuevo (UsdSemantics.LabelsAPI,
-    Isaac 5.x) y/o legacy (SemanticsAPI, Isaac 4.x).
-  - Conversión en paralelo de carpetas enteras (bulk).
+    python -m sim2chip.glb2usd models/ -o usd/ -r -j 8
 
-POR QUÉ usd-core (OpenUSD de Pixar) Y NO ISAAC / BLENDER
---------------------------------------------------------
-  - Isaac Sim usa OpenUSD por dentro: el .usd resultante es el mismo formato.
-  - No arranca Kit, ni renderer, ni GPU: cada conversión tarda milisegundos
-    (vs. decenas de segundos solo en arrancar Isaac headless, o ~1-2 s por
-    archivo con Blender headless).
-  - Control total de ejes, unidades, nombres, colisiones y etiquetas.
-  - Lo que se pierde frente al Asset Converter de Isaac: GLB con compresión
-    Draco/meshopt y animaciones/skinning (solo se exporta malla estática).
-    Los materiales MDL/OmniPBR de Isaac se pueden generar con la opción
-    OPCIONAL --material omnipbr (ver sección MATERIALES).
-  Medido: 5 modelos de ejemplo de Khronos (casco, pato, zorro...) en 0,6 s.
+What it does:
+  - PBR materials to UsdPreviewSurface (base color, metallic/roughness, normal, emissive, occlusion, alpha);
+    textures in <model>_textures/ next to the .usd, each image written once. --material omnipbr (or both)
+    also writes an MDL OmniPBR material, not validated in Isaac yet.
+  - Z-up stage in meters and kilograms with a clean defaultPrim, ready to reference. The Y-up to Z-up
+    rotation and the scale sit on the child /<Model>/geometry, so a pose set on the root does not undo them.
+  - Optional UsdPhysics collisions (--collision), rigid body and mass, and a semantic 'class' label (--label)
+    in the new format (UsdSemantics.LabelsAPI, Isaac 5.x) and/or the legacy one (SemanticsAPI, Isaac 4.x).
+  - Whole folders in parallel, one process per core.
 
-INSTALACIÓN
------------
-    pip install usd-core trimesh pillow numpy
+Why not Isaac or Blender: Isaac Sim uses OpenUSD inside, so the file is the same format, but this starts no
+Kit, renderer or GPU: a model takes milliseconds (41 models in 5 s on 8 cores, against minutes through
+Isaac, spike/NOTES.md). What it loses against Isaac's converter: Draco/meshopt compressed GLBs and
+animation or skinning (static meshes only).
 
-  Si un .usd no abre en tu Isaac, instala una versión de usd-core cercana a la
-  de tu Isaac Sim, o exporta en texto con `-e usda` (siempre compatible).
-
-USO BÁSICO
-----------
-    python -m sim2chip.glb2usd modelo.glb -o salida/
-    python -m sim2chip.glb2usd carpeta_glbs/ -o salida/ -j 8 --collision convexHull --label auto
-
-BULK REQUEST (carpeta X -> carpeta Y, todo en paralelo)
--------------------------------------------------------
-    python -m sim2chip.glb2usd /datos/modelos_raw -o /datos/modelos_usd -r -j 32 \\
-        --skip-existing --label auto --collision convexHull
-
-  - -r              recorre subcarpetas y replica la estructura en la salida.
-  - -j N            N procesos en paralelo (multiproceso, no multithread: en
-                    Python el GIL impide que varios hilos procesen mallas a la
-                    vez; varios procesos sí, uno por núcleo, escala ~lineal).
-  - --skip-existing solo convierte lo nuevo. Convierte una vez, reutiliza en
-                    todas las ejecuciones de SDG.
-  - Errores: se registran en <salida>/glb2usd_errors.log sin parar el lote.
-
-  En paralelo al pipeline principal (no bloquea):
-
-    import subprocess
-    conv = subprocess.Popen(["python", "glb2usd.py", SRC, "-o", DST,
-                             "-r", "-j", "32", "--skip-existing"])
-    # ... el pipeline sigue: arrancar Isaac, preparar escena ...
-    conv.wait()   # esperar solo cuando necesites todos los modelos
-
-MATERIALES (--material)  -- OmniPBR ES OPCIONAL Y HAY QUE TESTEARLO
--------------------------------------------------------------------
-  --material preview  (por defecto) UsdPreviewSurface, el estándar genérico de
-                      USD. Isaac RTX lo renderiza bien. Es la opción probada.
-  --material omnipbr  (OPCIONAL) MDL OmniPBR, el formato nativo de Omniverse,
-                      el mismo tipo de material que genera el Asset Converter
-                      de Isaac. Se genera SIN Isaac: el shader apunta a
-                      OmniPBR.mdl y Isaac lo resuelve desde su librería al
-                      cargar. NO está validado en Isaac: hay que testearlo.
-  --material both     (OPCIONAL) los dos en el mismo material. Isaac RTX usa
-                      el MDL; cualquier otro visor USD usa el PreviewSurface.
-
-  Cuándo importa: solo si el pipeline MODIFICA parámetros del material original
-  (p.ej. diffuse_tint, reflection_roughness_constant de OmniPBR). Si solo
-  renderizas los modelos tal cual o los sustituyes por materiales aleatorios con
-  Replicator, 'preview' es suficiente. Con 'preview', los parámetros equivalentes
-  se llaman inputs:diffuseColor, inputs:roughness, inputs:metallic...
-
-  Cómo mapea omnipbr desde glTF:
-    - baseColorFactor -> diffuse_tint (multiplica la textura).
-    - metallicRoughness + occlusion -> textura ORM nueva (R=AO, G=roughness,
-      B=metallic) con los factores glTF ya horneados; enable_ORM_texture=1.
-    - normal -> normalmap_texture; emissive -> enable_emission + textura/color
-      (intensidad: --emissive-intensity, si no, la de OmniPBR por defecto).
-    - alpha BLEND/MASK -> enable_opacity + opacity_texture (alpha del
-      baseColor) + opacity_threshold para MASK.
-  Coste: ~2x más lento que preview (se genera y guarda la textura ORM).
-
-  TEST A HACER ANTES DE USARLO (decide si cambian mucho los resultados y si nos
-  importa que cambien):
-    1. Convierte los mismos 5-10 modelos representativos con
-       --material preview, --material omnipbr y con el Asset Converter de Isaac.
-    2. Renderiza los tres en Isaac con la misma escena, cámara y luces
-       (idealmente un frame de tu propio pipeline de Replicator).
-    3. Compara: color base, brillo/rugosidad, metales, relieve del normal map
-       (si el relieve parece invertido, el canal verde va al revés), emisivos
-       (intensidad) y transparencias (en RTX puede hacer falta activar la
-       opacidad fraccional / cutout en los ajustes de render).
-    4. Si omnipbr no aporta diferencias relevantes para el dataset, o las que
-       hay no afectan al modelo que vais a entrenar, quedaos con 'preview'.
-       Si necesitáis parámetros OmniPBR para randomizar, usad omnipbr/both.
-
-DIMENSIONADO (-j, RAM, disco)
------------------------------
-  - Solo usa CPU; la GPU no aporta nada a la conversión.
-  - -j = vCPUs que dejes libres para convertir. Si Isaac corre en la misma
-    máquina, resérvale ~8-16 vCPUs (Isaac también usa mucha CPU).
-  - RAM: ~4 GB por proceso va sobrado (más si hay muchas texturas 4K). Si ves
-    swapping, baja -j.
-  - Disco: entrada y salida en NVMe local, no en disco de red ni HDD.
-  - Las texturas son lo más lento (se recodifican). Mejora posible: copiar las
-    imágenes embebidas del GLB tal cual.
-  - Estimación: ~0,01-0,5 s por modelo y núcleo -> 10.000 modelos en ~2-5 min
-    con ~20 procesos. Mide antes con ~200 modelos reales y extrapola.
-
-  Local (desarrollo): Ryzen 9 7900X (24 hilos) -> -j 20-24, o -j 12-16 si
-  Isaac está renderizando a la vez.
-
-DESPLIEGUE EN NEBIUS (hackathon)
---------------------------------
-  IMPORTANTE: Isaac Sim necesita GPUs con RT cores. H100/H200/B200 NO sirven
-  para renderizar. En Nebius: L40S (eu-north1) o RTX PRO 6000 (us-central1,
-  uk-south2, eu-south1).
-
-  Opción A (recomendada): UNA sola VM con GPU para todo.
-    - L40S + AMD EPYC, 1 GPU, hasta 48 vCPU / 288 GiB RAM.
-      Isaac ~8-16 vCPU, conversión en segundo plano con -j 28-32.
-    - RTX PRO 6000 (1 GPU) trae solo 24 vCPU -> conversión con -j <=12.
-    - Sin almacenamiento compartido ni transferencias: menos cosas que fallen
-      en directo.
-
-  Opción B: VM solo-CPU para convertir + VM con GPU para Isaac.
-    - CPU: AMD EPYC Genoa (cpu-d3), presets 4 GB por vCPU; 32-64 vCPU basta.
-    - Compartir archivos: shared filesystem de Nebius montado en ambas VMs
-      (virtiofs, lectura/escritura desde varias VMs a la vez):
-          sudo mount -t virtiofs <nombre-fs> /mnt/fs
-      La VM CPU escribe en /mnt/fs/modelos_usd y la de Isaac lee de ahí.
-      Alternativa: rsync entre VMs de la misma región al terminar.
-    - Solo compensa con muchísimos modelos (decenas de miles con texturas 4K)
-      o si quieres que la GPU no gaste ni un ciclo en convertir.
-    - Recuerda copiar cada .usd JUNTO a su carpeta <modelo>_textures/
-      (las rutas de textura son relativas).
-
-FORMATOS
---------
-  Actualmente solo recoge .glb / .gltf. trimesh también lee OBJ (+mtl, solo
-  color/textura difusa), STL (sin materiales; suele venir Z-up y en mm), PLY
-  (colores por vértice) y DAE (con `pip install pycollada`), pero habría que
-  añadir la extensión y reglas de ejes/unidades por formato para no dejarlos
-  tumbados o 1000x más grandes. FBX no lo lee trimesh: pasarlo por Blender
-  headless (o convertir a GLB antes).
-
-CHECKLIST ANTES DE LANZAR EL LOTE
----------------------------------
-  - Abre 3-4 modelos convertidos en Isaac y compara materiales y escala con
-    los que convierte Isaac.
-  - Revisa glb2usd_errors.log (Draco/meshopt, archivos corruptos...).
-  - Si un modelo viene en cm, usa --scale 0.01.
+Formats: only .glb and .gltf. trimesh also reads OBJ, STL, PLY and DAE, but each would need its own axis and
+unit rules (STL often comes Z-up in mm); FBX needs Blender first.
 """
 import argparse
 import hashlib
@@ -178,7 +40,7 @@ from PIL import Image
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 try:
-    from pxr import UsdSemantics  # OpenUSD >= 25.x (Isaac Sim 5.x usa LabelsAPI)
+    from pxr import UsdSemantics  # OpenUSD >= 25.x (Isaac Sim 5.x uses LabelsAPI)
 except ImportError:
     UsdSemantics = None
 
@@ -196,7 +58,7 @@ _valid = re.compile(r"[^A-Za-z0-9_]")
 
 
 def safe_name(name, fallback="prim"):
-    """Nombre de prim válido en USD."""
+    """A valid USD prim name."""
     n = _valid.sub("_", str(name or "")) or fallback
     if n[0].isdigit():
         n = "_" + n
@@ -213,7 +75,7 @@ def unique(name, used):
 
 
 def as_float_color(c, n=4):
-    """trimesh guarda los factores a veces en uint8 (0-255) y a veces en float."""
+    """trimesh stores factors sometimes as uint8 (0-255), sometimes as float."""
     if c is None:
         return None
     c = np.asarray(c, dtype=np.float64).flatten()[:n]
@@ -224,7 +86,7 @@ def as_float_color(c, n=4):
 
 # ----------------------------------------------------------------------- textures
 class TextureWriter:
-    """Escribe cada imagen una sola vez (dedupe por contenido)."""
+    """Writes each image once (deduplicated by content)."""
 
     def __init__(self, tex_dir: Path, rel_prefix: str):
         self.tex_dir = tex_dir
@@ -245,7 +107,7 @@ class TextureWriter:
             if is_jpeg:
                 img.save(path, quality=95)
             else:
-                img.save(path, compress_level=1)  # rápido; el tamaño apenas cambia
+                img.save(path, compress_level=1)  # fast; the size barely changes
         rel = f"{self.rel_prefix}/{fname}"
         self.cache[key] = rel
         return rel
@@ -255,9 +117,9 @@ class TextureWriter:
 def make_material(stage, looks_path, mat, name, texw, used, mode="preview", emissive_intensity=None):
     """glTF material (trimesh) -> UsdShade.Material.
     mode: 'preview' = UsdPreviewSurface (outputs:surface)
-          'omnipbr' = MDL OmniPBR (outputs:mdl:surface)   [OPCIONAL, testear]
-          'both'    = los dos en el mismo material; Isaac RTX usa el MDL y
-                      cualquier otro visor USD usa el PreviewSurface."""
+          'omnipbr' = MDL OmniPBR (outputs:mdl:surface), not validated in Isaac yet
+          'both'    = both in the same material; Isaac RTX uses the MDL and any
+                      other USD viewer the PreviewSurface."""
     mname = unique(safe_name(getattr(mat, "name", None) or name, "Material"), used)
     mpath = looks_path.AppendChild(mname)
     material = UsdShade.Material.Define(stage, mpath)
@@ -269,14 +131,13 @@ def make_material(stage, looks_path, mat, name, texw, used, mode="preview", emis
 
 
 def _omnipbr(stage, material, mpath, mat, mname, texw, emissive_intensity):
-    """glTF PBR -> OmniPBR.mdl (lo resuelve Isaac desde su librería MDL al cargar).
+    """glTF PBR -> OmniPBR.mdl (Isaac resolves it from its MDL library when loading).
 
-    OPCIONAL / EXPERIMENTAL: generado sin Isaac, así que hay que validarlo en
-    Isaac (ver sección MATERIALES del README). Decisiones tomadas:
-      - baseColorFactor -> diffuse_tint (multiplica la textura).
-      - metallicRoughness (+ occlusion) -> un ORM nuevo (R=AO, G=rough, B=metal),
-        con los factores glTF ya horneados en la imagen.
-      - alpha (BLEND/MASK) -> opacity_texture = baseColor (canal alpha).
+    Experimental: written without Isaac, so it still has to be checked in Isaac. Choices:
+      - baseColorFactor -> diffuse_tint (multiplies the texture).
+      - metallicRoughness (+ occlusion) -> a new ORM image (R=AO, G=rough, B=metal) with the glTF
+        factors baked in.
+      - alpha (BLEND/MASK) -> opacity_texture = baseColor (alpha channel).
     """
     sh = UsdShade.Shader.Define(stage, mpath.AppendChild("OmniPBR"))
     sh.SetSourceAsset(Sdf.AssetPath("OmniPBR.mdl"), "mdl")
@@ -294,7 +155,7 @@ def _omnipbr(stage, material, mpath, mat, mname, texw, emissive_intensity):
 
     F, C3, B = Sdf.ValueTypeNames.Float, Sdf.ValueTypeNames.Color3f, Sdf.ValueTypeNames.Bool
 
-    # --- materiales no-PBR (SimpleMaterial: OBJ/MTL...): solo difuso
+    # --- non-PBR materials (SimpleMaterial: OBJ/MTL...): diffuse only
     if not isinstance(mat, trimesh.visual.material.PBRMaterial):
         img = getattr(mat, "image", None)
         diffuse = as_float_color(getattr(mat, "diffuse", None))
@@ -398,7 +259,7 @@ def _preview_surface(stage, material, mpath, mat, mname, texw):
     inp = shader.CreateInput
     F, C3 = Sdf.ValueTypeNames.Float, Sdf.ValueTypeNames.Color3f
 
-    # --- materiales no-PBR (SimpleMaterial): solo color difuso
+    # --- non-PBR materials (SimpleMaterial): diffuse color only
     if not isinstance(mat, trimesh.visual.material.PBRMaterial):
         img = getattr(mat, "image", None)
         diffuse = as_float_color(getattr(mat, "diffuse", None))
@@ -470,7 +331,7 @@ def _preview_surface(stage, material, mpath, mat, mname, texw):
     elif ef is not None and ef.max() > 0:
         inp("emissiveColor", C3).Set(_v3(ef[:3]))
 
-    # --- occlusion (glTF: canal R)
+    # --- occlusion (glTF: R channel)
     if mat.occlusionTexture is not None:
         t = texture(mat.occlusionTexture, "occlusionTex", "raw")
         t.CreateOutput("r", F)
@@ -488,37 +349,37 @@ def write_mesh(stage, path, geom: trimesh.Trimesh, xform, double_sided):
     mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(v))
     mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(np.full(len(f), 3, np.int32)))
     mesh.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(f.reshape(-1)))
-    mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)  # malla poligonal, sin subdiv
+    mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)  # polygon mesh, no subdivision
     mesh.CreateDoubleSidedAttr(bool(double_sided))
     mesh.CreateOrientationAttr(UsdGeom.Tokens.rightHanded)
 
-    # normales (las del glTF si existen; si no, las calcula trimesh)
+    # normals (the glTF's if present, else computed by trimesh)
     n = np.asarray(geom.vertex_normals, dtype=np.float32)
     mesh.CreateNormalsAttr(Vt.Vec3fArray.FromNumpy(n))
     mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
 
-    # extent (bounding box) - Isaac/Replicator lo usan para bboxes
+    # extent (bounding box): Isaac and Replicator use it for bounding boxes
     mesh.CreateExtentAttr(Vt.Vec3fArray([_v3(v.min(0)), _v3(v.max(0))]))
 
     pv = UsdGeom.PrimvarsAPI(mesh)
     vis = geom.visual
-    # UVs: trimesh ya las invierte a convención OpenGL (origen abajo-izq), igual que USD
+    # UVs: trimesh already flips them to the OpenGL convention (origin bottom left), as USD
     uv = getattr(vis, "uv", None)
     if uv is not None and len(uv) == len(v):
         st = pv.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
         st.Set(Vt.Vec2fArray.FromNumpy(np.asarray(uv, dtype=np.float32)))
 
-    # colores por vértice
+    # vertex colors
     if getattr(vis, "kind", None) == "vertex":
         vc = np.asarray(vis.vertex_colors, dtype=np.float32)[:, :3] / 255.0
         dc = pv.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray,
                               UsdGeom.Tokens.vertex)
         dc.Set(Vt.Vec3fArray.FromNumpy(vc))
 
-    # transform del nodo glTF (world, relativo a la raíz del archivo)
+    # the glTF node's transform (world, relative to the file's root)
     m = np.asarray(xform, dtype=np.float64)
     if not np.allclose(m, np.eye(4)):
-        UsdGeom.Xformable(mesh).AddTransformOp().Set(Gf.Matrix4d(m.T.tolist()))  # USD usa filas
+        UsdGeom.Xformable(mesh).AddTransformOp().Set(Gf.Matrix4d(m.T.tolist()))  # USD uses rows
     return mesh
 
 
@@ -540,8 +401,8 @@ def convert(src: Path, dst: Path, opts) -> dict:
     UsdModelAPI = Usd.ModelAPI(root.GetPrim())
     UsdModelAPI.SetKind("component")
 
-    # Nodo intermedio con la corrección de ejes + escala. Así la raíz queda en identidad
-    # y Replicator / tu código pueden poner la pose de la referencia sin pisar el giro.
+    # Intermediate node with the axis fix and the scale, so the root stays identity and a pose set on the
+    # reference (Replicator, the caller) does not undo the rotation.
     geo = UsdGeom.Xform.Define(stage, root.GetPath().AppendChild("geometry"))
     gx = UsdGeom.Xformable(geo)
     if not opts.keep_y_up:
@@ -560,7 +421,7 @@ def convert(src: Path, dst: Path, opts) -> dict:
         xform, geom_name = scene.graph[node]
         geom = scene.geometry[geom_name]
         if not isinstance(geom, trimesh.Trimesh) or len(geom.faces) == 0:
-            continue  # puntos / líneas: se ignoran
+            continue  # points and lines are skipped
 
         mname = unique(safe_name(node, "mesh"), used_meshes)
         mat = getattr(geom.visual, "material", None)
@@ -596,13 +457,13 @@ def convert(src: Path, dst: Path, opts) -> dict:
 
 
 def add_semantic_label(prim, label, fmt):
-    """Etiqueta 'class' para Replicator.
+    """'class' label for Replicator.
     new    -> UsdSemantics.LabelsAPI (Isaac Sim 5.x)
     legacy -> SemanticsAPI (Isaac Sim 4.x, attrs semantic:Semantics:params:*)
-    both   -> las dos (seguro si no sabes qué versión lo va a leer)"""
+    both   -> both (safe when unsure which version will read it)"""
     if fmt in ("new", "both"):
         if UsdSemantics is None:
-            print("  aviso: esta versión de usd-core no trae UsdSemantics; uso legacy",
+            print("  warning: this usd-core has no UsdSemantics, using the legacy format",
                   file=sys.stderr)
             fmt = "legacy"
         else:
@@ -627,32 +488,32 @@ def _job(args):
 
 def build_parser():
     ap = argparse.ArgumentParser(description="GLB/glTF -> USD sin Isaac Sim")
-    ap.add_argument("input", help="archivo .glb/.gltf o carpeta")
-    ap.add_argument("-o", "--out", required=True, help="carpeta de salida")
+    ap.add_argument("input", help=".glb/.gltf file or folder")
+    ap.add_argument("-o", "--out", required=True, help="output folder")
     ap.add_argument("-e", "--ext", default="usd", choices=["usd", "usda", "usdc"],
-                    help="usd/usdc = binario (rápido), usda = texto (depurar)")
+                    help="usd/usdc = binary (fast), usda = text (debugging)")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count(),
-                    help="procesos en paralelo (por defecto: todos los cores)")
-    ap.add_argument("-r", "--recursive", action="store_true", help="buscar en subcarpetas")
-    ap.add_argument("--skip-existing", action="store_true", help="no reconvertir si ya existe")
+                    help="parallel processes (default: every core)")
+    ap.add_argument("-r", "--recursive", action="store_true", help="look in subfolders")
+    ap.add_argument("--skip-existing", action="store_true", help="do not convert again when the output exists")
     ap.add_argument("--scale", type=float, default=1.0,
-                    help="factor de escala (p.ej. 0.01 si el GLB viene en cm)")
-    ap.add_argument("--keep-y-up", action="store_true", help="no rotar a Z-up")
-    ap.add_argument("--root-name", default=None, help="nombre del prim raíz (def: nombre archivo)")
+                    help="scale factor (e.g. 0.01 when the GLB is in cm)")
+    ap.add_argument("--keep-y-up", action="store_true", help="do not rotate to Z-up")
+    ap.add_argument("--root-name", default=None, help="root prim name (default: file name)")
     ap.add_argument("--no-materials", action="store_true")
     ap.add_argument("--material", default="preview", choices=["preview", "omnipbr", "both"],
-                    help="preview = UsdPreviewSurface (defecto, probado); omnipbr = MDL OmniPBR "
-                         "(OPCIONAL, testear en Isaac); both = ambos en el mismo material")
+                    help="preview = UsdPreviewSurface (default, tested); omnipbr = MDL OmniPBR "
+                         "(not validated in Isaac); both = both in the same material")
     ap.add_argument("--emissive-intensity", type=float, default=None,
-                    help="solo OmniPBR: emissive_intensity (si no, el valor por defecto de OmniPBR)")
+                    help="OmniPBR only: emissive_intensity (default: OmniPBR's own)")
     ap.add_argument("--collision", default=None,
                     choices=["none", "convexHull", "convexDecomposition", "boundingCube",
                              "boundingSphere", "meshSimplification"],
-                    help="añade UsdPhysics CollisionAPI con esa aproximación")
-    ap.add_argument("--rigid-body", action="store_true", help="RigidBodyAPI en la raíz")
-    ap.add_argument("--mass", type=float, default=None, help="masa en kg (con --rigid-body)")
+                    help="adds UsdPhysics CollisionAPI with this approximation")
+    ap.add_argument("--rigid-body", action="store_true", help="RigidBodyAPI on the root")
+    ap.add_argument("--mass", type=float, default=None, help="mass in kg (with --rigid-body)")
     ap.add_argument("--label", default=None,
-                    help="etiqueta semántica 'class'; 'auto' = nombre del archivo")
+                    help="semantic 'class' label; 'auto' = the file name")
     ap.add_argument("--semantics-format", default="both", choices=["new", "legacy", "both"])
     return ap
 
@@ -686,12 +547,12 @@ def main():
         jobs.append((f, dst, opts))
 
     if not jobs:
-        print("Nada que convertir.")
+        print("Nothing to convert.")
         return
 
     t0, ok, errors = time.perf_counter(), 0, []
     workers = max(1, min(opts.jobs or 1, len(jobs)))
-    print(f"Convirtiendo {len(jobs)} archivo(s) con {workers} proceso(s)...")
+    print(f"Converting {len(jobs)} file(s) with {workers} process(es)...")
 
     if workers == 1:
         results = map(_job, jobs)
@@ -705,14 +566,14 @@ def main():
             print(f"[{i}/{len(jobs)}] ERROR {err[0]}")
         else:
             ok += 1
-            print(f"[{i}/{len(jobs)}] {res['file']}: {res['meshes']} mallas, "
+            print(f"[{i}/{len(jobs)}] {res['file']}: {res['meshes']} meshes, "
                   f"{res['tris']:,} tris, {res['materials']} mats, {res['secs']:.2f}s")
 
-    print(f"\nListo: {ok} ok, {len(errors)} errores, {time.perf_counter() - t0:.1f}s en total")
+    print(f"\nDone: {ok} ok, {len(errors)} errors, {time.perf_counter() - t0:.1f}s in total")
     if errors:
         log = out / "glb2usd_errors.log"
         log.write_text("\n\n".join(f"== {n}\n{tb}" for n, tb in errors))
-        print(f"Detalle de errores en {log}")
+        print(f"Error details in {log}")
         sys.exit(1)
 
 
