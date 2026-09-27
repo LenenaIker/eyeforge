@@ -516,7 +516,9 @@ class Session:
             if not isinstance(action, dict):
                 self._note("Reply with exactly one JSON object as instructed.")
                 continue
-            if "say" in action:
+            # A spec wins over text sent with it: seen 2026-09-27, {"say": "check it", "spec": {...}} was shown as
+            # plain text, so the user never got the spec to confirm and the model kept saying it was ready.
+            if "say" in action and "spec" not in action:
                 if not str(action["say"]).strip():
                     self._note("Your say message was empty. Ask the user something or propose the spec.")
                     continue

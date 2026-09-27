@@ -151,3 +151,12 @@ def test_no_photo_models_on_a_server_without_them():
     assert "cannot be made from the user's photos" in client.seen[1]  # pick_photos refused
     assert "cannot be made from the user's photos" in client.seen[3]  # photo-made spec refused
     assert "cannot be made from the user's photos" in s.messages[0]["content"]
+
+
+def test_spec_sent_with_text_is_proposed():
+    cats = interview.CategoryIndex(counts={"cow": 62})
+    good = {"name": "barn", "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
+                                         "assets": {"categories": ["cow"], "count": 4}}]}
+    s = interview.Session(Scripted([{"say": "Here is the setup, check it.", "spec": good}]), "m", cats)
+    turn = s.reply("go")
+    assert turn.kind == "confirm" and turn.spec.name == "barn"
