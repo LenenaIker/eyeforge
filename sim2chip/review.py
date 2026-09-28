@@ -94,7 +94,7 @@ def apply(job: Job, cache: Cache, labels: dict[str, str], assets: dict[str, str]
     fixes = load_corrections(job)
     changed_labels = {k: v for k, v in labels.items() if fixes["labels"].get(k) != v}
     fixes["labels"] |= changed_labels
-    changed_points = {k: [[round(float(x), 4), round(float(y), 4), str(c)] for x, y, c in v]
+    changed_points = {k: [[round(float(x), 4), round(float(y), 4), str(c)] for x, y, c, *_ in v]
                       for k, v in (points or {}).items()}
     changed_points = {k: v for k, v in changed_points.items() if fixes["points"].get(k) != v}
     fixes["points"] |= changed_points

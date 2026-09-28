@@ -236,7 +236,9 @@ def test_count_review_points_and_big_thumbnail(app, tmp_path):
     small = app.get("/api/jobs/barn_cam/media/label/images/a.jpg")
     big = app.get("/api/jobs/barn_cam/media/label/images/a.jpg?size=1024")
     assert len(big.content) > len(small.content)
-    r = app.post("/api/jobs/barn_cam/corrections", json={"points": {"a.jpg": [[0.1, 0.2, "cow"], [0.5, 0.5, "cow"]]}})
+    # Test photos' marks also carry the box size ([x, y, class, w, h]): only the point is kept.
+    r = app.post("/api/jobs/barn_cam/corrections",
+                 json={"points": {"a.jpg": [[0.1, 0.2, "cow"], [0.5, 0.5, "cow", 0.2, 0.2]]}})
     assert r.json() == {"rerun_from": "label"}
     saved = json.loads((job / "input" / "corrections.json").read_text())
     assert saved["points"] == {"a.jpg": [[0.1, 0.2, "cow"], [0.5, 0.5, "cow"]]}
