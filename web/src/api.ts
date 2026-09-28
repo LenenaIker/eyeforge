@@ -69,6 +69,7 @@ export type Review = {
             decision?: string; reason: string; judge?: string; image: string | null }[];
   renders: string[];
   test: { key: string; file: string; image: string; truth: any; pred: any }[];
+  teacher_rules?: string[];  // what the teacher learned from the user's corrections
 };
 export type Fixes = { labels: Record<string, string>; assets: Record<string, string>; points: Record<string, Point[]> };
 

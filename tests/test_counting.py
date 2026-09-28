@@ -135,6 +135,9 @@ def test_label_marks_then_ingest_then_review_fix(tmp_path, monkeypatch):
     lock, n = threading.Lock(), iter(range(100))
 
     def answer(text):
+        if "general rule" in text:  # a lesson from the user's correction
+            assert "Red boxes" in text
+            return json.dumps({"lesson": "Box the pot, not the plant above it."})
         assert "400 x 200 pixels" in text
         with lock:
             i = next(n)
@@ -160,10 +163,18 @@ def test_label_marks_then_ingest_then_review_fix(tmp_path, monkeypatch):
     assert review.apply(ctx.job, ctx.cache, {}, {}, {key: [[0.2, 0.3, "pot"], [0.7, 0.3, "nothing"]]}) is None
     calls = len(FakeClient.calls)
     Label().run(ctx)
-    assert len(FakeClient.calls) - calls <= 2  # only the unsure photo is asked again
+    # The teacher disagreed with the user: one lesson, and its rule relabels every photo.
+    new = FakeClient.calls[calls:]
+    assert sum("general rule" in t for t in new) == 1 and sum("400 x 200 pixels" in t for t in new) >= 6
+    learned = json.loads((ctx.job.stage_dir("label") / "lessons.json").read_text())
+    assert learned["rules"] == ["Box the pot, not the plant above it."] and key in learned["lessons"]
     v = json.loads((ctx.job.stage_dir("label") / "verdicts.json").read_text())[key]
     assert v["judge"] == "user" and [(o["x"], o["class"]) for o in v["objects"]] == [(0.2, "pot")]
     assert "teacher_objects" in v
+    # Same corrections: the lesson and the relabeled answers are reused.
+    calls = len(FakeClient.calls)
+    Label().run(ctx)
+    assert not any("general rule" in t for t in FakeClient.calls[calls:]) and len(FakeClient.calls) - calls <= 2
 
 
 def test_best_threshold_drops_weak_false_positives():

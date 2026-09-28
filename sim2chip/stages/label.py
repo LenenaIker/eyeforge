@@ -7,7 +7,13 @@ without a valid answer go to "unsure"; photos with no objects are kept (they tea
 Teacher answers are kept in the shared cache by photo content, model and prompt: the same photo gets the
 same answer in every job (so test scores compare across jobs) and is never paid for twice. The user's
 corrections from review (input/corrections.json) override the teacher.
-Output: label/<class>/<photo> (copies) or, for count, label/images/<photo>; label/unsure/, label/verdicts.json
+The teacher also learns from them: each corrected photo where it disagreed with the user gives a lesson (the
+vision model sees its own marks next to the user's and writes the general rule it missed), and the lessons,
+merged into a few rules, go into the prompt. The rules change the prompt, so the next run relabels every
+photo with them. Lessons are kept per photo (label/lessons.json): a photo the teacher now gets right still
+teaches, so the rules do not flip back and forth between runs.
+Output: label/<class>/<photo> (copies) or, for count, label/images/<photo>; label/unsure/, label/verdicts.json,
+label/lessons.json
 """
 from __future__ import annotations
 
@@ -39,13 +45,49 @@ with everything that belongs to it (a pot and the plant growing in it), not just
 Answer only with JSON: {{"objects": [{{"class": "<one of: {ids}>", "box": [x0, y0, x1, y1]}}]}} with each box
 in pixel coordinates of this image, which is {w} x {h} pixels. Use an empty list when there are none."""
 
+RULES = """
+
+Rules learned from the user's corrections of earlier answers (they win over everything above):
+{rules}"""
+
+LESSON_COUNT = """A teacher model marked objects in this photo for a dataset that teaches a small camera model to
+count them, and the user corrected it. Objects to find:
+{classes}
+
+Red boxes: the {n_teacher} objects the teacher marked. Green dots: the {n_user} objects the user says are
+really there, one dot per object, on the object itself. Compare them: which objects did the teacher box wrongly
+(a part of the object, or the thing next to it, instead of the object), miss, or add?
+
+Write the general rule the teacher should follow from now on, in one sentence (which part of the scene is one
+object, what to include or leave out), not a description of this photo.
+Answer only with JSON: {{"lesson": "<rule>"}}"""
+
+LESSON_CLASS = """A teacher model labeled this photo for a dataset that teaches a small camera classifier, and the
+user corrected it. Classes:
+{classes}
+
+The teacher said "{teacher}" ({reason}). The user says "{user}". Write the general rule the teacher should
+follow from now on to tell these classes apart, in one sentence, not a description of this photo.
+Answer only with JSON: {{"lesson": "<rule>"}}"""
+
+MERGE = """A teacher model labels photos for a small camera model. The user corrected some of its answers, and
+each correction gave a lesson. Classes:
+{classes}
+
+Lessons:
+{lessons}
+
+Merge them into at most 5 short, general rules for the teacher: keep what the user wants, drop duplicates and
+anything that only fits one photo.
+Answer only with JSON: {{"rules": ["<rule>"]}}"""
+
 
 class Label(Stage):
     name = "label"
     runtime = "cpu"
     needs_llm = True
     reads_input = True
-    rereads = ("verdicts.json",)  # the user's corrections and earlier answers
+    rereads = ("verdicts.json", "lessons.json")  # the user's corrections, earlier answers and lessons
     uses_cache = True
     uses = ("user_data", "classes", "background_class", "task")
 
@@ -75,12 +117,18 @@ class Label(Stage):
             classes = "\n".join([f"- {spec.background_class}: none of the classes below, only background"] +
                                 [f"- {k}: {v}" for k, v in descr.items()])
             prompt = PROMPT.format(classes=classes, bg=spec.background_class, ids=", ".join(spec.labels))
-        prompt_id = hashlib.sha256(prompt.encode()).hexdigest()[:12]
         previous = json.loads((out / "verdicts.json").read_text()) if (out / "verdicts.json").exists() else {}
         # Corrected photos keep the teacher's own verdict next to the user's: restore it before reusing.
         teacher = {k: (({**v, "objects": v["teacher_objects"]} if "teacher_objects" in v else
                         {**v, "class": v["teacher"], "confidence": v["teacher_confidence"]}) | {"judge": "teacher"}
                        if v.get("judge") == "user" else v) for k, v in previous.items()}
+        corrections = review.load_corrections(ctx.job)
+        fixes, fix_points = corrections["labels"], corrections.get("points", {})
+        learned = learn(ctx, client, src, teacher, fixes, fix_points, descr, counting)
+        if learned["rules"]:
+            prompt += RULES.format(rules="\n".join(f"- {r}" for r in learned["rules"]))
+            ctx.log("teacher rules from your corrections:\n" + "\n".join(f"  - {r}" for r in learned["rules"]))
+        prompt_id = hashlib.sha256(prompt.encode()).hexdigest()[:12]
         reuse = {k: v for k, v in teacher.items() if v.get("model") == model and v.get("prompt") == prompt_id
                  and v.get("reason") != "no valid answer"}
         shared = ctx.cache.root / "labels" / prompt_id / re.sub(r"[^A-Za-z0-9_.-]+", "_", model)
@@ -137,8 +185,6 @@ class Label(Stage):
         if todo and all(failed for _, _, failed in answers):
             raise RuntimeError(f"the teacher failed on all {len(todo)} photos, see the lines above")
         fresh = {f: v for f, v, _ in answers}
-        corrections = review.load_corrections(ctx.job)
-        fixes, fix_points = corrections["labels"], corrections.get("points", {})
         results = []
         for f in files:
             key = str(f.relative_to(src))
@@ -165,6 +211,7 @@ class Label(Stage):
             counts[cls] = counts.get(cls, 0) + 1
             verdicts[str(f.relative_to(src))] = {**v, "assigned": cls}
         (out / "verdicts.json").write_text(json.dumps(verdicts, indent=1))
+        (out / "lessons.json").write_text(json.dumps(learned, indent=1))
         if counting:
             n = sum(len(v["objects"]) for v in verdicts.values() if v["objects"] is not None)
             ctx.log(f"{counts.get('images', 0)} photos with {n} objects marked, {counts.get('unsure', 0)} unsure")
@@ -186,3 +233,93 @@ def objects_from(answer: dict, ids: list[str], w: int, h: int) -> list[dict]:
         out.append({"x": round((x0 + x1) / 2 / w, 4), "y": round((y0 + y1) / 2 / h, 4), "class": cls,
                     "box": [round(x0 / w, 4), round(y0 / h, 4), round(x1 / w, 4), round(y1 / h, 4)]})
     return out
+
+
+def disagree(teacher: list[dict] | None, user: list, near: float = 0.06) -> bool:
+    """The teacher's objects differ from the user's marks: another count, or a mark with no teacher point
+    near it (the teacher boxed something else, like the plant above the pot)."""
+    if teacher is None or len(teacher) != len(user):
+        return True
+    left = [(o["x"], o["y"]) for o in teacher]
+    for x, y, *_ in user:
+        if not left:
+            return True
+        i = min(range(len(left)), key=lambda j: (left[j][0] - x) ** 2 + (left[j][1] - y) ** 2)
+        if (left[i][0] - x) ** 2 + (left[i][1] - y) ** 2 > near ** 2:
+            return True
+        left.pop(i)
+    return False
+
+
+def learn(ctx: Context, client, src, teacher: dict, fixes: dict, fix_points: dict, descr: dict,
+          counting: bool) -> dict:
+    """Lessons from the corrected photos where the teacher was wrong, and the rules merged from them.
+    A lesson is asked once per photo and correction; the merge only when the lessons change."""
+    from PIL import Image, ImageDraw, ImageOps
+
+    from ..llm import LLMError, ask_json, image_part
+
+    out = ctx.job.stage_dir("label")
+    path = out / "lessons.json"
+    old = json.loads(path.read_text()) if path.exists() else {}
+    lessons = {}
+    classes = "\n".join(f"- {k}: {v}" for k, v in descr.items())
+    model = None
+    for key, marks in sorted((fix_points if counting else fixes).items()):
+        mark_id = hashlib.sha256(json.dumps(marks).encode()).hexdigest()[:12]
+        if old.get("lessons", {}).get(key, {}).get("marks") == mark_id:
+            lessons[key] = old["lessons"][key]
+            continue
+        t = teacher.get(key)
+        f = src / key
+        if t is None or not f.exists():
+            continue
+        if counting and not disagree(t.get("objects"), marks) or not counting and t.get("class") == marks:
+            continue
+        model = model or client.model_for("vision")
+        out.mkdir(parents=True, exist_ok=True)
+        tmp = out / "_lesson.jpg"
+        with Image.open(f) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((1024, 1024))
+            w, h = im.size
+            if counting:  # the teacher's boxes in red, the user's points in green
+                d, r = ImageDraw.Draw(im), max(4, w // 90)
+                for o in t.get("objects") or []:
+                    if o.get("box"):
+                        x0, y0, x1, y1 = o["box"]
+                        d.rectangle([x0 * w, y0 * h, x1 * w, y1 * h], outline=(255, 0, 0), width=max(2, w // 300))
+                    else:
+                        d.ellipse([o["x"] * w - r, o["y"] * h - r, o["x"] * w + r, o["y"] * h + r], outline=(255, 0, 0))
+                for x, y, *_ in marks:
+                    d.ellipse([x * w - r, y * h - r, x * w + r, y * h + r], fill=(0, 255, 0), outline=(0, 0, 0))
+            im.save(tmp, quality=90)
+        if counting:
+            text = LESSON_COUNT.format(classes=classes, n_teacher=len(t.get("objects") or []), n_user=len(marks))
+        else:
+            text = LESSON_CLASS.format(classes=classes, teacher=t.get("class"), user=marks,
+                                       reason=t.get("reason", "no reason given"))
+        msg = [{"role": "user", "content": [{"type": "text", "text": text}, image_part(tmp)]}]
+        try:
+            v = ask_json(client, msg, model, "label_lesson", lambda v: isinstance(v.get("lesson"), str),
+                         temperature=0.0, max_tokens=2048)
+        except LLMError as e:  # no lesson this time: asked again on the next run
+            ctx.log(f"  lesson from {key}: {e}")
+            v = None
+        tmp.unlink(missing_ok=True)
+        if v:
+            lessons[key] = {"marks": mark_id, "lesson": " ".join(v["lesson"].split())[:300]}
+    texts = sorted({x["lesson"] for x in lessons.values()})
+    of = hashlib.sha256(json.dumps(texts).encode()).hexdigest()[:12]
+    rules = old.get("rules", []) if old.get("rules_of") == of else texts[:1]
+    if len(texts) > 1 and old.get("rules_of") != of:
+        try:
+            v = ask_json(client, [{"role": "user", "content": MERGE.format(
+                classes=classes, lessons="\n".join(f"- {x}" for x in texts))}], client.model_for("text"),
+                "label_rules", lambda v: isinstance(v.get("rules"), list) and v["rules"], temperature=0.0,
+                max_tokens=4096)
+        except LLMError as e:
+            ctx.log(f"  merging lessons: {e}")
+            v = None
+        rules = [" ".join(str(r).split())[:300] for r in v["rules"][:5]] if v else texts[:5]
+    return {"lessons": lessons, "rules": rules, "rules_of": of}

@@ -137,22 +137,32 @@ def test_label_reuses_verdicts_and_applies_corrections(tmp_path):
     raw = tmp_path / "raw"
     img(raw / "a.jpg")
     img(raw / "sub" / "b.jpg")
-    FakeClient.answer = staticmethod(lambda text: json.dumps({"class": "cow", "confidence": 0.9, "reason": "r"}))
+    prompts = []
+
+    def answer(text):
+        prompts.append(text)
+        if "general rule" in text:
+            assert 'The teacher said "cow"' in text and 'The user says "dog"' in text
+            return json.dumps({"lesson": "Small animals are dogs."})
+        return json.dumps({"class": "cow", "confidence": 0.9, "reason": "r"})
+    FakeClient.answer = staticmethod(answer)
     ctx = Context(from_dict({**SPEC, "user_data": {"raw": "raw"}}), open_job(tmp_path, "job"), Cache(tmp_path / "c"))
     link_input(ctx.job, "raw", raw)
     Label().run(ctx)
     assert len(FakeClient.calls) == 2
-    # The user fixes one photo in review: the rerun asks the teacher nothing and the user's label wins.
+    # The user fixes one photo in review: the teacher learns a rule from it and relabels with it, and the
+    # user's label wins on that photo.
     assert review.apply(ctx.job, ctx.cache, {"sub/b.jpg": "dog"}, {}) == "label"
     Label().run(ctx)
-    assert len(FakeClient.calls) == 2
+    assert FakeClient.calls[2:].count("label_lesson") == 1 and FakeClient.calls[2:].count("label") == 2
+    assert "- Small animals are dogs." in prompts[-1]
     out = ctx.job.stage_dir("label")
     assert (out / "dog" / "sub_b.jpg").exists() and (out / "cow" / "a.jpg").exists()
     v = json.loads((out / "verdicts.json").read_text())["sub/b.jpg"]
     assert v["judge"] == "user" and v["teacher"] == "cow"
-    # A third run still reuses the teacher's verdict behind the correction.
+    # A third run reuses the lesson and the teacher's verdicts.
     Label().run(ctx)
-    assert len(FakeClient.calls) == 2
+    assert len(FakeClient.calls) == 5
     photos = review.gather(ctx.job, ctx.cache, ctx.spec.labels)["photos"]
     assert {p["key"]: (p["label"], p["teacher"], p["image"] is not None) for p in photos} == {
         "a.jpg": ("cow", "cow", True), "sub/b.jpg": ("dog", "cow", True)}

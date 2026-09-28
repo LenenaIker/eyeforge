@@ -51,8 +51,15 @@ export default function ReviewPanel({ job, onRerun }: { job: string; onRerun: ()
     <section className="space-y-4">
       <div>
         <h2 className="text-xl font-bold tracking-tight">Check what the models decided</h2>
-        <p className="text-sm text-muted">Fix anything that looks wrong, then retrain. You never label from scratch.</p>
+        <p className="text-sm text-muted">Fix anything that looks wrong, then retrain. You never label from scratch.
+          The teacher learns from your fixes and relabels every photo with them, so a few corrected photos are enough.</p>
       </div>
+      {review.teacher_rules?.length ? (
+        <div className="rounded-lg border p-3 text-sm">
+          <p className="font-medium">What the teacher learned from your fixes</p>
+          <ul className="mt-1 list-disc pl-5 text-muted">{review.teacher_rules.map((r) => <li key={r}>{r}</li>)}</ul>
+        </div>
+      ) : null}
       <div className="-mx-4 flex gap-1 overflow-x-auto px-4 pb-1">
         {tabs.filter(([, , c]) => c > 0).map(([k, label, c]) => (
           <button key={k} onClick={() => setTab(k)}
