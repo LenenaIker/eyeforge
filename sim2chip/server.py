@@ -58,6 +58,8 @@ def default_interviewer(home: Path, backend: str = "local", public: bool = False
 
 MAX_PHOTOS = 400  # per upload on a public server
 SESSION_HOURS = 6
+CALIBRATION = "calibration.json"  # a new job whose teacher the user checks before the first run
+CALIBRATION_PHOTOS = 6  # photos the teacher marks per calibration round
 # Model calls are logged by purpose, which is the stage name except for qa's two-step strategy.
 PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets"}  # an interview left open longer is dropped
 
@@ -104,6 +106,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
 
     sessions: dict[str, object] = {}
     runs: dict[str, subprocess.Popen] = {}
+    calibrations: dict[str, threading.Thread] = {}
     started: dict[str, float] = {}  # interview session -> start time
     new_session = interviewer
     launch = launcher or _launch
@@ -122,6 +125,27 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if not job.spec_path.exists() and not (job.root / "request.json").exists() or not mine(job, request):
             raise HTTPException(404, f"no job {name}")
         return job
+
+    def calibrate(job: Job) -> None:
+        """Before any training, the teacher marks a few of the user's photos (here, Token Factory only, no GPU).
+        The user corrects them; the next round learns rules from the corrections, marks the same photos again
+        and a few new ones, so the user sees if it understood. The first run starts from these answers."""
+        from .stages import Context
+        from .stages.label import Label
+        state = job.root / CALIBRATION
+
+        def work():
+            stage = Label()
+            stage.sample = CALIBRATION_PHOTOS
+            try:
+                stage.run(Context(spec_mod.load(job.root / "request.json"), job, Cache(home / "cache")))
+                state.write_text(json.dumps({"state": "ready"}))
+            except Exception as e:  # shown on the job page, with the option to train anyway
+                state.write_text(json.dumps({"state": "failed", "error": str(e)[:300]}))
+
+        state.write_text(json.dumps({"state": "labeling"}))
+        calibrations[job.name] = threading.Thread(target=work, daemon=True)
+        calibrations[job.name].start()
 
     def start_run(job: Job, request: Path, start: str | None = None):
         (job.logs / "launched_at").write_text(f"{time.time():.3f}")
@@ -266,7 +290,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                                      "try again tomorrow")
 
     @app.post("/api/jobs")
-    def create_job(request: Request, spec: str = Form(...), photos: list[UploadFile] = File(default=[])):
+    def create_job(request: Request, spec: str = Form(...), photos: list[UploadFile] = File(default=[]),
+                   calibrate_first: bool = Form(False, alias="calibrate")):
+        """A new job. calibrate: when the teacher labels the user's raw photos, it first marks a few for the user
+        to check (see calibrate); the run starts from the job page."""
         budget_left()
         if public:
             if busy():
@@ -303,6 +330,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         req = job.root / "request.json"
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         save_photos(job.input / "photos", images)
+        if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled:
+            calibrate(job)
+            return {"job": name, "photos": len(images), "calibrating": True}
         start_run(job, req)
         return {"job": name, "photos": len(images)}
 
@@ -337,8 +367,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
 
     def running(job: Job) -> bool:
         """This server's run process, or a cloud job left by an earlier server process (still in time)."""
-        proc = runs.get(job.name)
-        return (proc is not None and proc.poll() is None) or cloud_job(job) is not None
+        proc, cal = runs.get(job.name), calibrations.get(job.name)
+        return (proc is not None and proc.poll() is None) or cloud_job(job) is not None or \
+            (cal is not None and cal.is_alive())
 
     @app.post("/api/jobs/{name}/cancel")
     def cancel(name: str, request: Request):
@@ -356,11 +387,34 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             f.write("FAILED: cancelled by the user\n")
         return {"cancelled": True, "cloud_job": cj["id"] if cj else None}
 
+    @app.post("/api/jobs/{name}/train")
+    def train_calibrated(name: str, body: dict, request: Request):
+        """The user is happy with the teacher: keep the last fixes and start the first run. Its label stage
+        learns from all the fixes and marks every photo."""
+        job = job_of(name, request)
+        if running(job):
+            raise HTTPException(409, f"job {job.name} is running")
+        if not (job.root / CALIBRATION).exists():
+            raise HTTPException(409, f"job {job.name} is not waiting for the teacher's check")
+        budget_left()
+        if public and busy():
+            raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
+        review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
+                     share=not public)
+        (job.root / CALIBRATION).unlink()
+        start_run(job, job.root / "request.json")
+        return {"rerun_from": None}
+
     @app.post("/api/jobs/{name}/corrections")
     def corrections(name: str, body: dict, request: Request):
         job = job_of(name, request)
         if running(job):
             raise HTTPException(409, f"job {job.name} is running")
+        if (job.root / CALIBRATION).exists():  # still calibrating the teacher: another round, no training
+            review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
+                         share=not public)
+            calibrate(job)
+            return {"rerun_from": "calibration"}
         budget_left()
         start = review.apply(job, Cache(home / "cache"), body.get("labels") or {}, body.get("assets") or {},
                              body.get("points") or {}, share=not public)
@@ -692,7 +746,9 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     cost = sum(json.loads(l)["usd_estimate"] for l in usage.read_text().splitlines()) if usage.exists() else 0.0
     report = job.stage_dir("export") / "report.json"
     fresh = any(st["name"] == "export" and st["state"] == "done" for st in stages)  # not a stale model
+    calibration = job.root / CALIBRATION
     return {"job": job.name, "spec": json.loads(spec.to_json()), "running": running,
+            "calibration": json.loads(calibration.read_text()) if calibration.exists() else None,
             "stages": stages, "log": log[-30:], "cloud_usd": round(cost, 2), "phase": phase(log, running),
             "timing": timing(job, home, stages, running, backend),
             "version": current_version(job), "versions": [{k: v for k, v in m.items() if k != "report_key"}

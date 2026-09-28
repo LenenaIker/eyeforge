@@ -365,3 +365,66 @@ def test_app_routes_serve_the_build(tmp_path, monkeypatch):
     assert client.get("/assets/app.js").text == "console.log(1)"
     assert client.get("/api/nothing").status_code == 404
     assert client.get("/../../etc/passwd").text == "<div id=root></div>"
+
+
+def test_calibrate_the_teacher_before_the_first_run(app, tmp_path, monkeypatch):
+    """A new job with raw photos: the teacher marks a few, the user corrects them, the next round learns a
+    rule and marks new ones, and only "train" launches the run."""
+    import io
+    import time
+
+    from PIL import Image
+
+    from sim2chip import llm
+    from sim2chip.server import CALIBRATION_PHOTOS
+
+    asked = []
+
+    class Teacher:
+        def __init__(self, **kw):
+            pass
+
+        def model_for(self, role):
+            return f"fake-{role}"
+
+        def chat(self, messages, model, purpose, **kw):
+            text = messages[0]["content"][0]["text"]
+            asked.append(text)
+            if "general rule" in text:
+                return json.dumps({"lesson": "Calves are cows too."})
+            return json.dumps({"class": "empty", "confidence": 0.9, "reason": "r"})
+    monkeypatch.setattr(llm, "Client", Teacher)
+
+    def photo(i):
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), (i * 9, 0, 0)).save(buf, "JPEG")
+        return ("photos", (f"p{i:02d}.jpg", buf.getvalue(), "image/jpeg"))
+
+    def settle(job):
+        for _ in range(200):
+            st = app.get(f"/api/jobs/{job}").json()
+            if not st["running"]:
+                return st
+            time.sleep(0.02)
+        raise AssertionError("calibration did not finish")
+
+    r = app.post("/api/jobs", data={"spec": json.dumps(GOOD), "calibrate": "true"},
+                 files=[photo(i) for i in range(20)]).json()
+    assert r["calibrating"] and not app.launched
+    st = settle(r["job"])
+    assert st["calibration"] == {"state": "ready"}
+    photos = app.get(f"/api/jobs/{r['job']}/review").json()["photos"]
+    assert len(photos) == CALIBRATION_PHOTOS and len(asked) == CALIBRATION_PHOTOS
+    # A correction: another round, with the learned rule, over those photos and new ones. Still no run.
+    first = photos[0]["key"]
+    assert app.post(f"/api/jobs/{r['job']}/corrections", json={"labels": {first: "cow"}}).json() == {
+        "rerun_from": "calibration"}
+    settle(r["job"])
+    review = app.get(f"/api/jobs/{r['job']}/review").json()
+    assert len(review["photos"]) == 2 * CALIBRATION_PHOTOS and review["teacher_rules"] == ["Calves are cows too."]
+    assert "- Calves are cows too." in asked[-1] and not app.launched
+    # Train: the run starts from the calibrated answers.
+    assert app.post(f"/api/jobs/{r['job']}/train", json={}).json() == {"rerun_from": None}
+    assert app.launched and app.launched[-1][3] is None
+    assert app.get(f"/api/jobs/{r['job']}").json()["calibration"] is None
+    assert app.post(f"/api/jobs/{r['job']}/train", json={}).status_code == 409

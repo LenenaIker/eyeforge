@@ -10,7 +10,8 @@ import { Badge, Button, Card, cx } from "../components/ui";
 type Tab = "photos" | "assets" | "renders" | "test";
 type Editing = { key: string; image: string; title: string; points: Point[] };
 
-export default function ReviewPanel({ job, onRerun }: { job: string; onRerun: () => void }) {
+// calibrating: before the first run, only the teacher's marks on a few photos; fixes teach it, then train.
+export default function ReviewPanel({ job, onRerun, calibrating = false }: { job: string; onRerun: () => void; calibrating?: boolean }) {
   const [review, setReview] = useState<Review | null>(null);
   const [tab, setTab] = useState<Tab>("test");
   const [fixes, setFixes] = useState<Fixes>({ labels: {}, assets: {}, points: {} });
@@ -33,10 +34,11 @@ export default function ReviewPanel({ job, onRerun }: { job: string; onRerun: ()
     return next;
   });
 
-  const apply = async () => {
+  const apply = async (train = false) => {
     setApplying(true);
     try {
-      const r = await API.applyFixes(job, fixes);
+      const r = train ? await API.trainCalibrated(job, fixes) : await API.applyFixes(job, fixes);
+      if (train) { onRerun(); return; }
       setFixes({ labels: {}, assets: {}, points: {} });
       if (r.rerun_from) onRerun();
     } catch (e) { alert((e as Error).message); }
@@ -49,11 +51,17 @@ export default function ReviewPanel({ job, onRerun }: { job: string; onRerun: ()
 
   return (
     <section className="space-y-4">
-      <div>
+      {calibrating ? (
+        <div>
+          <h2 className="text-xl font-bold tracking-tight">Check the teacher first</h2>
+          <p className="text-sm text-muted">Before training, a large model marked a few of your photos. Fix what it got wrong and
+            press "Teach it": it learns from your fixes and marks a few more photos. When they look right, train.</p>
+        </div>
+      ) : <div>
         <h2 className="text-xl font-bold tracking-tight">Check what the models decided</h2>
         <p className="text-sm text-muted">Fix anything that looks wrong, then retrain. You never label from scratch.
           The teacher learns from your fixes and relabels every photo with them, so a few corrected photos are enough.</p>
-      </div>
+      </div>}
       {review.teacher_rules?.length ? (
         <div className="rounded-lg border p-3 text-sm">
           <p className="font-medium">What the teacher learned from your fixes</p>
@@ -129,13 +137,16 @@ export default function ReviewPanel({ job, onRerun }: { job: string; onRerun: ()
         ))}
       </div>
 
-      {n > 0 && (
+      {(n > 0 || calibrating) && (
         <div className="sticky bottom-0 -mx-4 border-t border-line bg-white/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-sm text-muted">{n} correction{n > 1 ? "s" : ""}</span>
+            <span className="text-sm text-muted">{n} correction{n === 1 ? "" : "s"}</span>
             <div className="flex gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setFixes({ labels: {}, assets: {}, points: {} })}>Undo all</Button>
-              <Button size="sm" onClick={apply} disabled={applying}>Apply and retrain</Button>
+              {n > 0 && <Button variant="ghost" size="sm" onClick={() => setFixes({ labels: {}, assets: {}, points: {} })}>Undo all</Button>}
+              {calibrating ? <>
+                <Button variant="ghost" size="sm" onClick={() => apply()} disabled={applying || n === 0}>Teach it</Button>
+                <Button size="sm" onClick={() => apply(true)} disabled={applying}>{n ? "Keep fixes and train" : "Looks right, train"}</Button>
+              </> : <Button size="sm" onClick={() => apply()} disabled={applying}>Apply and retrain</Button>}
             </div>
           </div>
         </div>

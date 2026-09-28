@@ -108,7 +108,7 @@ export default function Interview() {
         navigate(`/app/job/${revising}`);
         return;
       }
-      const r = await API.createJob(s);
+      const r = await API.createJob(s, true);  // with raw photos, the user first checks the teacher
       refreshJobs();
       navigate(`/app/job/${r.job}`);
     } catch (e) {

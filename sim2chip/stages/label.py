@@ -90,6 +90,8 @@ class Label(Stage):
     rereads = ("verdicts.json", "lessons.json")  # the user's corrections, earlier answers and lessons
     uses_cache = True
     uses = ("user_data", "classes", "background_class", "task")
+    sample: int | None = None  # calibration: only the photos already answered and this many new ones
+
 
     def enabled(self, spec) -> bool:
         return bool(spec.user_data.raw)
@@ -122,6 +124,10 @@ class Label(Stage):
         teacher = {k: (({**v, "objects": v["teacher_objects"]} if "teacher_objects" in v else
                         {**v, "class": v["teacher"], "confidence": v["teacher_confidence"]}) | {"judge": "teacher"}
                        if v.get("judge") == "user" else v) for k, v in previous.items()}
+        if self.sample:  # new photos spread over the folder (names often follow places or days)
+            rest = [f for f in files if str(f.relative_to(src)) not in previous]
+            files = [f for f in files if str(f.relative_to(src)) in previous] + \
+                rest[::max(1, len(rest) // self.sample)][:self.sample]
         corrections = review.load_corrections(ctx.job)
         fixes, fix_points = corrections["labels"], corrections.get("points", {})
         learned = learn(ctx, client, src, teacher, fixes, fix_points, descr, counting)

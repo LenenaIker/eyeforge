@@ -48,6 +48,7 @@ export type Status = {
   job: string;
   spec: Spec | null;
   running: boolean;
+  calibration: { state: "labeling" | "ready" | "failed"; error?: string } | null;  // teacher check before the first run
   stages: Stage[];
   log: string[];
   cloud_usd: number;
@@ -101,10 +102,11 @@ export function uploadPhotos(sid: string, files: File[], purpose: string, cls: s
   return api<Turn>(`/api/interview/${sid}/photos`, { method: "POST", body: form });
 }
 
-export function createJob(spec: Spec) {
+export function createJob(spec: Spec, calibrate = false) {
   const form = new FormData();
   form.append("spec", JSON.stringify(spec));
-  return api<{ job: string; photos: number; already_running?: boolean }>("/api/jobs", { method: "POST", body: form });
+  if (calibrate) form.append("calibrate", "true");
+  return api<{ job: string; photos: number; already_running?: boolean; calibrating?: boolean }>("/api/jobs", { method: "POST", body: form });
 }
 
 export type RevisePlan = { stages: string[]; changed: string[]; rerun_from: string | null };
@@ -128,6 +130,8 @@ export const getReview = (job: string) => api<Review>(`/api/jobs/${job}/review`)
 export const cancelJob = (job: string) => api(`/api/jobs/${job}/cancel`, { method: "POST" });
 export const applyFixes = (job: string, fixes: Fixes) =>
   api<{ rerun_from: string | null }>(`/api/jobs/${job}/corrections`, json(fixes));
+export const trainCalibrated = (job: string, fixes: Fixes) =>
+  api<{ rerun_from: null }>(`/api/jobs/${job}/train`, json(fixes));
 export const mediaUrl = (job: string, path: string, big = false) =>
   `/api/jobs/${job}/media/${path}${big ? "?size=1024" : ""}`;
 export const fileUrl = (job: string, file: string) => `/api/jobs/${job}/files/${file}`;

@@ -58,13 +58,38 @@ export default function JobPage() {
         <h1 className="text-2xl font-bold tracking-tight">{(s.spec?.name ?? s.job).replace(/_/g, " ")}</h1>
       </div>
       {error && <Notice tone="bad">Lost contact with the server, retrying: {error}</Notice>}
-      {(s.running || !s.report) && <Progress s={s} failed={failed} />}
+      {s.calibration ? <Calibration s={s} reviewKey={reviewKey} onRerun={restart} /> :
+        (s.running || !s.report) && <Progress s={s} failed={failed} />}
       {s.report && <Result job={s.job} r={s.report} usd={s.cloud_usd} version={s.version} />}
       {!s.running && s.report && <Improve job={s.job} counting={s.report.task === "count"} onRerun={restart} />}
       {s.report && s.versions.length > 0 && <Versions job={s.job} versions={s.versions} />}
-      {!s.running && (s.report || failed) && <ReviewPanel key={reviewKey} job={s.job} onRerun={restart} />}
+      {!s.calibration && !s.running && (s.report || failed) && <ReviewPanel key={reviewKey} job={s.job} onRerun={restart} />}
     </div>
   );
+}
+
+// Before the first run: the teacher marks a few photos and the user checks it understood what to look for.
+function Calibration({ s, reviewKey, onRerun }: { s: Status; reviewKey: number; onRerun: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const train = () => API.trainCalibrated(s.job, { labels: {}, assets: {}, points: {} }).then(onRerun, (e) => setError((e as Error).message));
+  if (s.running) {
+    return (
+      <Card className="flex items-center gap-3 p-4 text-sm">
+        <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+        <span>The teacher is marking a few of your photos, so you can check it understood what to look for.</span>
+      </Card>
+    );
+  }
+  if (s.calibration?.state === "failed") {
+    return (
+      <div className="space-y-3">
+        <Notice tone="bad">The teacher could not mark the photos: {s.calibration.error}</Notice>
+        {error && <Notice tone="bad">{error}</Notice>}
+        <Button onClick={train}>Train anyway</Button>
+      </div>
+    );
+  }
+  return <ReviewPanel key={reviewKey} job={s.job} onRerun={onRerun} calibrating />;
 }
 
 function Skeleton() {
