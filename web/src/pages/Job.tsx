@@ -106,9 +106,10 @@ function Progress({ s, failed }: { s: Status; failed: boolean }) {
   const done = s.stages.filter((x) => x.state === "done").length;
   const pct = s.stages.length ? Math.round((done / s.stages.length) * 100) : 0;
   const [stopping, setStopping] = useState(false);
+  const [asking, setAsking] = useState(false);  // the Stop button asks once, in place
   const t = s.timing;
   const stop = async () => {
-    if (!confirm("Stop this run? The cloud GPU is released and the steps done so far are kept.")) return;
+    setAsking(false);
     setStopping(true);
     try { await API.cancelJob(s.job); } catch (e) { alert((e as Error).message); }
     setStopping(false);
@@ -127,7 +128,12 @@ function Progress({ s, failed }: { s: Status; failed: boolean }) {
               {s.cloud_usd > 0 && <span className="flex items-center gap-1"><DollarSign className="h-3.5 w-3.5" />{s.cloud_usd.toFixed(2)} of cloud GPU</span>}
             </div>
           </div>
-          {s.running && <Button variant="danger" size="sm" onClick={stop} disabled={stopping}><Square className="h-3.5 w-3.5" /> Stop</Button>}
+          {s.running && (asking ? (
+            <div className="flex shrink-0 gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setAsking(false)}>Keep going</Button>
+              <Button variant="danger" size="sm" onClick={stop}><Square className="h-3.5 w-3.5" /> Stop run</Button>
+            </div>
+          ) : <Button variant="danger" size="sm" onClick={() => setAsking(true)} disabled={stopping}><Square className="h-3.5 w-3.5" /> Stop</Button>)}
         </div>
         <div className="h-2 overflow-hidden rounded-full bg-stone-100">
           <div className={cx("h-full rounded-full transition-all duration-700", failed ? "bg-red-400" : "bg-gradient-to-r from-brand-500 to-ember-500")}
