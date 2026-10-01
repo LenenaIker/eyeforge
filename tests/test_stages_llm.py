@@ -1,7 +1,6 @@
 """Stages that call Token Factory, with a fake client (no network, no key)."""
 import hashlib
 import json
-import threading
 
 import pytest
 from PIL import Image
@@ -9,10 +8,8 @@ from PIL import Image
 from sim2chip import llm
 from sim2chip.spec import from_dict
 from sim2chip.stages import Context
-from sim2chip.stages.ingest import Ingest
-from sim2chip.stages.label import Label
 from sim2chip.stages.qa_assets import QAAssets
-from sim2chip.workspace import Cache, link_input, open_job
+from sim2chip.workspace import Cache, open_job
 
 SPEC = {"name": "t", "classes": [{"id": "cow", "description": "cows", "size_m": {"measure": "length", "range": [2, 2.5]},
                                   "assets": {"categories": ["cow"]}},
@@ -50,31 +47,6 @@ def img(path, color=(120, 120, 120)):
     im = Image.new("RGB", (64, 64), color)
     im.paste(tuple(hashlib.sha256(str(path).encode()).digest()[:3]), (48, 48, 64, 64))  # survives JPEG
     im.save(path)
-
-
-def test_label_then_ingest(tmp_path):
-    raw = tmp_path / "raw"
-    for i in range(6):
-        img(raw / f"cow_{i}.jpg")
-        img(raw / f"dog_{i}.jpg")
-        img(raw / f"blur_{i}.jpg")
-    # the fake teacher cannot see file names, so it answers in turn: cow, dog, unsure-by-confidence
-    seq = iter([{"class": "cow", "confidence": 0.9}, {"class": "dog", "confidence": 0.9},
-                {"class": "cow", "confidence": 0.2}] * 6)
-    lock = threading.Lock()
-
-    def answer(text):
-        with lock:  # the stage calls the teacher from several threads
-            return json.dumps(next(seq))
-    FakeClient.answer = staticmethod(answer)
-    ctx = Context(from_dict({**SPEC, "user_data": {"raw": "raw", "test_per_class": 2, "train_per_class": 2}}),
-                  open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
-    link_input(ctx.job, "raw", raw)
-    info = Label().run(ctx)
-    assert sum(info["labels"].values()) == 18 and info["labels"]["unsure"] == 6
-    counts = Ingest().run(ctx)["counts"]
-    assert counts["cow"] == {"test": 2, "train": 2} and counts["dog"]["train"] == 2
-    assert FakeClient.calls.count("label") == 18
 
 
 def test_qa_auto_with_manual_on_top(tmp_path):
@@ -130,42 +102,6 @@ def test_qa_describe_then_decide(tmp_path):
     info = QAAssets().run(ctx)
     assert info["kept"] == {"cow": 1, "dog": 1}
     assert FakeClient.calls.count("qa_describe") == 3 and FakeClient.calls.count("qa_decide") == 3
-
-
-def test_label_reuses_verdicts_and_applies_corrections(tmp_path):
-    from sim2chip import review
-    raw = tmp_path / "raw"
-    img(raw / "a.jpg")
-    img(raw / "sub" / "b.jpg")
-    prompts = []
-
-    def answer(text):
-        prompts.append(text)
-        if "general rule" in text:
-            assert 'The teacher said "cow"' in text and 'The user says "dog"' in text
-            return json.dumps({"lesson": "Small animals are dogs."})
-        return json.dumps({"class": "cow", "confidence": 0.9, "reason": "r"})
-    FakeClient.answer = staticmethod(answer)
-    ctx = Context(from_dict({**SPEC, "user_data": {"raw": "raw"}}), open_job(tmp_path, "job"), Cache(tmp_path / "c"))
-    link_input(ctx.job, "raw", raw)
-    Label().run(ctx)
-    assert len(FakeClient.calls) == 2
-    # The user fixes one photo in review: the teacher learns a rule from it and relabels with it, and the
-    # user's label wins on that photo.
-    assert review.apply(ctx.job, ctx.cache, {"sub/b.jpg": "dog"}, {}) == "label"
-    Label().run(ctx)
-    assert FakeClient.calls[2:].count("label_lesson") == 1 and FakeClient.calls[2:].count("label") == 2
-    assert "- Small animals are dogs." in prompts[-1]
-    out = ctx.job.stage_dir("label")
-    assert (out / "dog" / "sub_b.jpg").exists() and (out / "cow" / "a.jpg").exists()
-    v = json.loads((out / "verdicts.json").read_text())["sub/b.jpg"]
-    assert v["judge"] == "user" and v["teacher"] == "cow"
-    # A third run reuses the lesson and the teacher's verdicts.
-    Label().run(ctx)
-    assert len(FakeClient.calls) == 5
-    photos = review.gather(ctx.job, ctx.cache, ctx.spec.labels)["photos"]
-    assert {p["key"]: (p["label"], p["teacher"], p["image"] is not None) for p in photos} == {
-        "a.jpg": ("cow", "cow", True), "sub/b.jpg": ("dog", "cow", True)}
 
 
 def test_review_asset_decisions_go_to_the_knowledge_base(tmp_path):

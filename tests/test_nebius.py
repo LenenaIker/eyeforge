@@ -194,6 +194,8 @@ def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
     from sim2chip.spec import from_dict
 
     monkeypatch.setenv("SIM2CHIP_NEBIUS_SECRET", "tf-key")
+    monkeypatch.setenv("SIM2CHIP_HF_SECRET", "hf-key")
+    monkeypatch.setenv("SIM2CHIP_LABEL_SAMPLE", "6")
     spec = from_dict({"name": "j", "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
                                                 "assets": {"categories": ["cow"]}}], "user_data": {"raw": "photos"}})
     job = Job(tmp_path / "jobs" / "j")
@@ -206,7 +208,8 @@ def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
 
     class WorkerCLI(FakeCLI):
         def create_job(self, name, runtime, env, script, timeout_h, env_secrets):
-            self.jobs.append({"name": name, "image": runtime.image, "script": script.read_text(), "secrets": env_secrets})
+            self.jobs.append({"name": name, "image": runtime.image, "script": script.read_text(), "secrets": env_secrets,
+                              "env": env})
             for st, fp in fps.items():  # the worker ran every stage and pushed its marker
                 store.objects[("sim2chip-j", f"{st}/{DONE}")] = json.dumps({"fingerprint": fp}).encode()
             store.objects[("sim2chip-j", "logs/cloud_pipeline.log")] = b"> label (x)\n  label: done\nnoise\n"
@@ -223,7 +226,9 @@ def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
     assert len(be.cli.jobs) == 1 and be.cli.jobs[0]["image"].startswith("nvcr.io/nvidia/isaac-sim")
     script = be.cli.jobs[0]["script"]
     assert "sim2chip.cloud_worker" in script and "tensorflow[and-cuda]" in script and "SIM2CHIP_ISAAC_PYTHON" in script
-    assert "NEBIUS_API_KEY=tf-key" in be.cli.jobs[0]["secrets"]  # label calls Token Factory
+    # label runs SAM 3: its own Python in the job, the gated weights' token, and the calibration sample
+    assert "SIM2CHIP_SAM3_PYTHON" in script and "transformers==" in script
+    assert "HF_TOKEN=hf-key" in be.cli.jobs[0]["secrets"] and be.cli.jobs[0]["env"]["SIM2CHIP_LABEL_SAMPLE"] == "6"
     assert "> label (x)" in lines and "noise" not in lines
     assert all(job.done(st) for st in fps) and (job.root / "export" / "model.tflite").exists()
     assert (job.root / "render" / "rgb_0001.png").exists()

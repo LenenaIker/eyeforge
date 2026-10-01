@@ -18,6 +18,7 @@ Configuration (environment or the repo's .env):
     SIM2CHIP_BUCKET_PREFIX     bucket name prefix (default sim2chip)
     SIM2CHIP_S3_SECRET         MysteryBox secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for the jobs
     SIM2CHIP_NEBIUS_SECRET     MysteryBox secret holding NEBIUS_API_KEY, for stages that call Token Factory
+    SIM2CHIP_HF_SECRET         MysteryBox secret holding HF_TOKEN, for the teacher's gated weights (SAM 3)
     SIM2CHIP_MAX_USD           spend cap for one run, estimated from GPU time (default 5)
     AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY   Object Storage key, to upload input and fetch results
 """
@@ -49,6 +50,9 @@ WORKER_HOURS = int(config.env("SIM2CHIP_WORKER_HOURS", "3"))  # timeout of a who
 UV_URL = "https://github.com/astral-sh/uv/releases/download/0.8.22/uv-x86_64-unknown-linux-gnu.tar.gz"
 WORKER_DEPS = ["tensorflow[and-cuda]==2.18.1", "numpy<2.1", "pillow", "objaverse", "boto3", "usd-core==26.8",
                "trimesh==5.1.0"]  # the last two convert models (glb2usd)
+# The teacher (SAM 3, label stage) gets its own environment: torch in the same one as TensorFlow, each with its
+# own CUDA libraries, is not worth the risk. Only installed when the run labels photos.
+TEACHER_DEPS = ["torch==2.11.0", "torchvision==0.26.0", "transformers==5.17.0", "accelerate", "pillow"]
 # Brought back for the web (status, report, review) after a worker run; the rest stays in the bucket.
 WORKER_RESULTS = ("*.json", "export/*", "label/*", "ingest/test/*", "qa_assets/sheets/*", "preview_assets/*_0.png",
                   "generate_assets/*", "logs/*")
@@ -185,9 +189,10 @@ def portable_spec(spec, job: Job):
     return spec_mod.from_dict(data)
 
 
-def worker_script(job_name: str, plan_args: list[str]) -> str:
+def worker_script(job_name: str, plan_args: list[str], teacher: bool = False) -> str:
     """Shell script for the worker job, in the stock Isaac Sim image: the code from a presigned URL, a Python
-    with TensorFlow next to Isaac's own (uv, a couple of minutes), then the whole pipeline."""
+    with TensorFlow next to Isaac's own (uv, a couple of minutes), then the whole pipeline. teacher: also a
+    Python for SAM 3, when the run labels the user's photos."""
     isaac = RUNTIMES["isaac"].python
     fetch = f"{isaac} -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])'"
     py = "/tmp/s2c/py/bin/python"
@@ -203,6 +208,13 @@ def worker_script(job_name: str, plan_args: list[str]) -> str:
         "export UV_CACHE_DIR=/tmp/s2c/uv-cache UV_PYTHON_INSTALL_DIR=/tmp/s2c/pythons",
         "/tmp/s2c/bin/uv venv -q --python 3.11 /tmp/s2c/py",
         f"/tmp/s2c/bin/uv pip install -q --python {py} " + " ".join(shlex.quote(d) for d in WORKER_DEPS),
+    ]
+    if teacher:
+        lines += ["/tmp/s2c/bin/uv venv -q --python 3.11 /tmp/s2c/sam3",
+                  "/tmp/s2c/bin/uv pip install -q --python /tmp/s2c/sam3/bin/python "
+                  + " ".join(shlex.quote(d) for d in TEACHER_DEPS),
+                  "export SIM2CHIP_SAM3_PYTHON=/tmp/s2c/sam3/bin/python HF_HUB_CACHE=/tmp/s2c/hf"]
+    lines += [
         f"export PYTHONUNBUFFERED=1 SIM2CHIP_ISAAC_PYTHON={isaac} SIM2CHIP_PYTHON={py} PYTHONPATH=/tmp/s2c/code "
         "SIM2CHIP_RUNS_ON=nebius S2C_SETUP_S=$(( $(date +%s) - S2C_T0 ))",
         f"{py} -m sim2chip.cloud_worker --home /tmp/s2c/home --job {shlex.quote(job_name)} "
@@ -384,10 +396,13 @@ class NebiusBackend:
         plan_args += ["--force"] if force else []
         script = job.logs / "worker.nebius.sh"
         script.parent.mkdir(parents=True, exist_ok=True)
-        script.write_text(worker_script(job.name, plan_args))
-        secrets = self._secrets(any(st.calls_llm(pipe.spec) for st in todo))
+        teacher = any(st.name == "label" for st in todo)
+        script.write_text(worker_script(job.name, plan_args, teacher))
+        secrets = self._secrets(any(st.calls_llm(pipe.spec) for st in todo), teacher)
         env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url,
                "SIM2CHIP_REGION": REGION}
+        if os.environ.get("SIM2CHIP_LABEL_SAMPLE"):  # calibration: the teacher marks only a few photos
+            env["SIM2CHIP_LABEL_SAMPLE"] = os.environ["SIM2CHIP_LABEL_SAMPLE"]
         name = f"s2c-{job.name}-run".lower().replace("_", "-")[:63]
         job.timeline("upload job", time.time() - t_up, "local")
         t0 = time.time()
@@ -486,7 +501,7 @@ class NebiusBackend:
         for prefix in ("db", "labels"):  # what the run learned, for later runs here
             self.store.download(cache_bucket, prefix, cache.root / prefix, ("*",), overwrite=False)
 
-    def _secrets(self, llm: bool) -> list[str]:
+    def _secrets(self, llm: bool, teacher: bool = False) -> list[str]:
         s3_secret = _env("SIM2CHIP_S3_SECRET", "sim2chip-s3")
         secrets = [f"AWS_ACCESS_KEY_ID={s3_secret}", f"AWS_SECRET_ACCESS_KEY={s3_secret}"]
         if llm:
@@ -494,6 +509,11 @@ class NebiusBackend:
             if not secret and not self.dry_run:
                 raise RuntimeError("the run calls Token Factory: set SIM2CHIP_NEBIUS_SECRET")
             secrets.append(f"NEBIUS_API_KEY={secret or '<secret>'}")
+        if teacher:
+            secret = _env("SIM2CHIP_HF_SECRET")
+            if not secret and not self.dry_run:
+                raise RuntimeError("the run labels photos with SAM 3 (gated on Hugging Face): set SIM2CHIP_HF_SECRET")
+            secrets.append(f"HF_TOKEN={secret or '<secret>'}")
         return secrets
 
     def run_stage(self, stage: Stage, job: Job, cache: Cache, fp: str) -> None:

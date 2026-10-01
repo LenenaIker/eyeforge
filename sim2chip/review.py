@@ -36,9 +36,9 @@ def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str =
     fixes = load_corrections(job)
     out: dict = {"task": task, "labels": labels, "photos": [], "assets": [], "renders": [], "test": [],
                  "teacher_rules": []}
-    lessons = job.stage_dir("label") / "lessons.json"
-    if lessons.exists():  # what the teacher learned from earlier corrections
-        out["teacher_rules"] = json.loads(lessons.read_text()).get("rules", [])
+    learned = job.stage_dir("label") / "teacher.json"
+    if learned.exists():  # the threshold the teacher chose from the user's corrections
+        out["teacher_rules"] = [json.loads(learned.read_text())["note"]]
 
     verdicts = job.stage_dir("label") / "verdicts.json"
     if verdicts.exists():
