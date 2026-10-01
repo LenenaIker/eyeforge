@@ -9,7 +9,7 @@ a textured mesh, and we save a light GLB (the size Isaac Sim would use) plus a
 render sheet of that GLB from 4 sides.
 
 Usage:
-    python run_trellis.py --root ~/work/nvidia/data/img2mesh_test [--only wrench_1,bee_1]
+    python run_trellis.py --root ~/work/eyeforge/data/img2mesh_test [--only wrench_1,bee_1]
 """
 import argparse
 import json
