@@ -344,7 +344,8 @@ def check_photos(s: spec_mod.Spec) -> str | None:
             continue
         d = Path(rel)
         if not d.is_dir():
-            return f"user_data.{key}: folder {d} does not exist; ask the user for the right path"
+            return (f"user_data.{key}: folder {d} does not exist on this machine. Tell the user this exact path "
+                    f"was not found (it may have been moved or renamed) and ask for the right one; do not resend it")
         if key in ("labeled", "test"):
             subs = sorted(x.name for x in d.iterdir() if x.is_dir())
             missing = [f for c in s.labels for f in ud.class_map.get(c, [c]) if not photos_in(d / f)]
@@ -642,7 +643,8 @@ class Session:
             self._note(UPLOADS_ONLY.strip())
             return None
         if not folder.is_dir():
-            self._note(f"pick_photos: folder {folder} does not exist. Ask the user where the photos are.")
+            self._note(f"pick_photos: folder {folder} does not exist. Tell the user this exact path was not found "
+                       "and ask where the photos are.")
             return None
         step = self._step(f"Looking for clear photos of {query} for 3D models")
         ranked = self._counting(self.photo_ranker, step, str(folder), query)
