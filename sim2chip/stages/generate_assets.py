@@ -51,7 +51,7 @@ class GenerateAssets(Stage):
     results = ("*.json", "*/*.png")
 
     def enabled(self, spec) -> bool:
-        return any(c.assets and c.assets.photos for c in spec.classes)
+        return spec.synthetic and any(c.assets and c.assets.photos for c in spec.classes)
 
     def photos_of(self, ctx: Context, c) -> list:
         """The class's photos: its own folder, or the user's photos of that class."""

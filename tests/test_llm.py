@@ -97,3 +97,24 @@ def test_image_part(tmp_path):
     f.write_bytes(b"\x89PNG")
     part = image_part(f)
     assert part["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_map_within_keeps_what_answered_in_time():
+    import threading
+    import time
+
+    from sim2chip.llm import map_within
+    release = threading.Event()
+
+    def look(n):
+        if n == 1:
+            raise RuntimeError("model error")
+        if n == 2:
+            release.wait(5)  # a photo the model never answers in time
+        return n * 10
+    seen = []
+    t0 = time.time()
+    out = map_within(look, [0, 1, 2, 3], seconds=0.3, workers=4, progress=lambda d, t: seen.append((d, t)))
+    release.set()
+    assert out == [0, None, None, 30] and time.time() - t0 < 2
+    assert seen[-1] == (3, 4)  # the failed one counts as looked at, the late one does not

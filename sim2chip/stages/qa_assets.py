@@ -88,7 +88,7 @@ class QAAssets(Stage):
     after = ("convert_assets", "preview_assets")
 
     def enabled(self, spec) -> bool:
-        return any(c.assets for c in spec.classes)
+        return spec.synthetic
 
     def calls_llm(self, spec) -> bool:
         return spec.qa.mode == "auto"

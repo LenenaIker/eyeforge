@@ -22,8 +22,8 @@ FURNITURE_COLORS = [(0.35, 0.2, 0.1), (0.8, 0.78, 0.72), (0.15, 0.15, 0.15), (0.
 
 class PlacesScene(GenericScene):
     def __init__(self, stage, props, rng, skies: list[str], distractors: list[str], ground: list[str] = (),
-                 walls: list[str] = (), contexts=(), railings: list[str] = ()):
-        super().__init__(stage, props, rng, skies, distractors, ground)
+                 walls: list[str] = (), contexts=(), railings: list[str] = (), ground_tile: float | None = None):
+        super().__init__(stage, props, rng, skies, distractors, ground, ground_tile)
         self.walls, self.railings = list(walls), list(railings)
         self.contexts = {c.kind: c for c in contexts}
         self.parts: dict[str, dict[str, tuple]] = {}

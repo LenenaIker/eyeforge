@@ -60,7 +60,7 @@ class GenericScene(OutdoorScene):
     def build(self) -> None:
         if self.ground:
             self.ground_file, self.ground_scale, self.ground_prim = make_textured_ground(
-                self.stage, "/World/Ground", HALF, TILE)
+                self.stage, "/World/Ground", HALF, self.ground_tile or TILE)
         else:
             self.ground_color, self.ground_prim = make_quad(self.stage, "/World/Ground", HALF, HALF, 0.0)
         self.build_sky_and_distractors()

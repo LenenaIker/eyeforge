@@ -3,6 +3,7 @@
 Targets: crop around the tight bbox with a random margin. Background frames: boxes drawn from the target
 boxes of this same render (size, aspect and height in the image, jittered), so where and how big a crop
 is tells nothing about its class, whatever the scene (a road, a balcony, a table).
+With spec.look, every crop gets the color, sharpness and noise of the user's camera (look.py).
 Output: crops/<class>/*.png
 """
 from __future__ import annotations
@@ -11,6 +12,7 @@ import json
 import random
 import shutil
 
+from ..spec import to_dict
 from .base import Context, Stage
 
 MIN_SIDE = 0.2  # of the model's input size: a target smaller than this in the render carries no useful detail
@@ -20,11 +22,11 @@ class Crops(Stage):
     name = "crops"
     version = "2"  # background boxes from the target boxes, not a road-sized band
     runtime = "cpu"
-    uses = ("hardware", "background_class", "generation")
+    uses = ("hardware", "background_class", "generation", "look")
     after = ("render",)
 
     def enabled(self, spec) -> bool:
-        return spec.task == "roi_classification" and any(c.assets for c in spec.classes)
+        return spec.task == "roi_classification" and spec.synthetic
 
     def run(self, ctx: Context) -> dict:
         import numpy as np
@@ -37,14 +39,23 @@ class Crops(Stage):
         bg = ctx.spec.background_class
         rng = random.Random(ctx.spec.generation.seed)
         counts: dict[str, int] = {}
+        labels = json.loads((src / "labels.json").read_text())
+        tf, look_rng = None, random.Random(f"look-{ctx.spec.generation.seed}")  # own rng: same crops with or without
+        if ctx.spec.look:
+            from .. import look
+            tf = look.for_renders(to_dict(ctx.spec.look), [src / f"rgb_{lab['frame']:04d}.png" for lab in labels], size)
+            ctx.log(f"camera look: {tf}")
 
         def save(img, box, cls, name):
             d = out / cls
             d.mkdir(parents=True, exist_ok=True)
-            img.crop(tuple(int(round(v)) for v in box)).resize((size, size), Image.BILINEAR).save(d / name)
+            crop = img.crop(tuple(int(round(v)) for v in box)).resize((size, size), Image.BILINEAR)
+            if tf:
+                from ..look import apply
+                crop = apply(crop, tf, look_rng)
+            crop.save(d / name)
             counts[cls] = counts.get(cls, 0) + 1
 
-        labels = json.loads((src / "labels.json").read_text())
         boxes = []  # (w, h, center y), as fractions of the image, of every target crop
         empty = []
         for lab in labels:

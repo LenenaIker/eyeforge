@@ -41,7 +41,7 @@ class ConvertAssets(Stage):
     version = str(NORM_VERSION)
 
     def enabled(self, spec) -> bool:
-        return any(c.assets for c in spec.classes)
+        return spec.synthetic
 
     def run(self, ctx: Context) -> dict:
         manifest = json.loads((ctx.job.stage_dir("fetch_assets") / "manifest.json").read_text())

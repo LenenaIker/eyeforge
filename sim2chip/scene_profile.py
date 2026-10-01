@@ -13,12 +13,12 @@ import random
 import shutil
 import tempfile
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .spec import CONTEXTS, RAILINGS, WALLS
 
-SAMPLE = 16         # photos looked at
+SAMPLE = 16         # photos looked at, drawn at random
+DEADLINE_S = 90     # the user waits: describe what answered by then and go on with it
 MIN_SHARE = 0.1     # contexts seen in fewer photos than this are left out
 
 # What each context of spec.CONTEXTS looks like in a photo (a new context needs its words here).
@@ -55,11 +55,12 @@ LIGHT_WEATHER = {"sun": "clear", "overcast": "cloudy", "evening": "evening", "ni
 MIN_OTHER = 0.15  # things seen near the objects in fewer photos than this are not proposed as props
 
 
-def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0) -> list[dict]:
-    """One description per sampled photo (photos without a valid answer are skipped)."""
+def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0, progress=None) -> list[dict]:
+    """One description per sampled photo (photos without a valid answer are skipped). progress(done, total)
+    is called as photos finish."""
     from PIL import Image, ImageOps
 
-    from .llm import WORKERS, ask_json, image_part
+    from .llm import PHOTO_CALL, ask_json, image_part, map_within
 
     sample = sorted(photos)
     random.Random(seed).shuffle(sample)
@@ -76,14 +77,14 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
         msg = [{"role": "user", "content": [{"type": "text", "text": PROMPT.format(classes=classes)},
                                             image_part(small)]}]
         v = ask_json(client, msg, model, "scene_profile", lambda v: v.get("context") in CONTEXTS,
-                     temperature=0.0, max_tokens=4096)
+                     tries=1, temperature=0.0, max_tokens=4096, **PHOTO_CALL)
         return {**v, "photo": f.name} if v else None
 
     try:
-        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-            return [d for d in pool.map(one, enumerate(sample)) if d]
+        out = map_within(one, list(enumerate(sample)), DEADLINE_S, progress=progress)
+        return [d for d in out if d]
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)  # late threads then fail on their own, harmlessly
 
 
 def aggregate(descriptions: list[dict]) -> dict:
@@ -177,12 +178,12 @@ def summary(profile: dict, n_photos: int) -> str:
     return text
 
 
-def profile_folder(folder: Path, classes: str, client, model: str) -> tuple[dict, str]:
+def profile_folder(folder: Path, classes: str, client, model: str, progress=None) -> tuple[dict, str]:
     from .workspace import IMAGE_EXT
     photos = [f for f in Path(folder).rglob("*") if f.suffix.lower() in IMAGE_EXT]
     if not photos:
         raise FileNotFoundError(f"no photos in {folder}")
-    d = describe(photos, classes, client, model)
+    d = describe(photos, classes, client, model, progress=progress)
     prof = aggregate(d)
     return prof, summary(prof, len(d))
 

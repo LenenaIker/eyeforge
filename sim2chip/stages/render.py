@@ -27,7 +27,7 @@ class Render(Stage):
     after = ("qa_assets", "fetch_assets")  # fetch_assets: scene.json with skies and ground textures
 
     def enabled(self, spec) -> bool:
-        return any(c.assets for c in spec.classes)
+        return spec.synthetic
 
     def run(self, ctx: Context) -> dict:
         import shutil
@@ -63,6 +63,8 @@ class Render(Stage):
         make = scenes.load(scenes.template_for(spec.scene))
         kw = {"walls": [str(ctx.cache.root / p) for p in chosen.get("walls", [])], "contexts": spec.scene.contexts,
               "railings": spec.scene.railings} if spec.scene.contexts else {}
+        if chosen.get("ground_tile_m"):  # mixed ground layouts (ground_mix.py) cover more than one texture
+            kw["ground_tile"] = chosen["ground_tile_m"]
         scene = make(stage, props, rng, skies=[str(ctx.cache.root / p) for p in chosen["skies"]],
                      distractors=spec.scene.distractors, ground=[str(ctx.cache.root / p) for p in chosen["ground"]],
                      **kw)
@@ -121,6 +123,17 @@ class Render(Stage):
             c = by_id[a["class"]]
             return paint.apply(prim, rng, force=a.get("no_color", False), p=c.repaint_p, metallic=c.metallic_range)
 
+        def ground_view(size: float):
+            """(distance to the target, its horizontal part, camera height or None to draw it later). With
+            camera.pitch_deg the camera looks down at that angle from its height (a phone over a lawn); else the
+            distance comes from the target's size and target_fill."""
+            if cam_spec.pitch_deg:
+                h = rng.uniform(*cam_spec.height_m)
+                p = math.radians(min(rng.uniform(*cam_spec.pitch_deg), 89.0))  # 90: look_at has no up vector
+                return h / math.sin(p), h / math.tan(p), h
+            d = camera_distance(size, rng.uniform(*cam_spec.target_fill), cam_spec.hfov_deg, cam_spec.distance_m)
+            return d, d, None
+
         places = bool(spec.scene.contexts)
         visible, labels = [], []
         for f in range(gen.frames):
@@ -131,10 +144,11 @@ class Render(Stage):
                     scene.new_layout()
                 kind = scene.pick_context()
                 scene.show(None if kind == "ground" else kind)
-            cls = spec.background_class if rng.random() < gen.empty_ratio else rng.choice(classes)
+            bg = spec.background_class  # None: every frame shows a class
+            cls = bg if bg and rng.random() < gen.empty_ratio else rng.choice(classes)
             shown, painted, a, radius, height = [], False, None, 0.0, 0.0
             group, placed, hidden = [], [], 0.0
-            if cls != spec.background_class:
+            if cls != bg:
                 if counting:  # several models at once, each prim at most once per frame
                     first = rng.choice(targets[cls])
                     rest = [t for t in pool if t is not first]
@@ -161,8 +175,7 @@ class Render(Stage):
                     shown.append(prim)
                     radius, height = math.hypot(*a["dims"][:2]) / 2 * scale, a["dims"][2] * scale
                     aim_h = height
-                    dist = camera_distance(size, rng.uniform(*cam_spec.target_fill), cam_spec.hfov_deg,
-                                           cam_spec.distance_m)
+                    dist, hdist, ch = ground_view(size)
                     if len(group) > 1:
                         # Spread over the ground seen around the first one; the props then keep out of the group.
                         spread = min(0.9 * dist * math.tan(math.radians(cam_spec.hfov_deg) / 2), 0.8 * dist)
@@ -178,11 +191,11 @@ class Render(Stage):
                     target = (0.0, 0.0, 0.0)
                     ea, _, escale, size = rng.choice(pool)
                     aim_h = ea["dims"][2] * escale
-                    dist = camera_distance(size, rng.uniform(*cam_spec.target_fill), cam_spec.hfov_deg,
-                                           cam_spec.distance_m)
+                    dist, hdist, ch = ground_view(size)
                 az = math.radians(rng.uniform(0, 360))
-                ch = rng.uniform(*cam_spec.height_m)
-                eye = (target[0] + dist * math.cos(az), target[1] + dist * math.sin(az), ch)
+                if ch is None:
+                    ch = rng.uniform(*cam_spec.height_m)
+                eye = (target[0] + hdist * math.cos(az), target[1] + hdist * math.sin(az), ch)
                 j = dist * 0.12
                 # Aim at the body of the object (a car's doors, a pot's middle), not a fixed height.
                 look_at(cam.GetPrim(), eye, (target[0] + rng.uniform(-j, j), target[1] + rng.uniform(-j, j),

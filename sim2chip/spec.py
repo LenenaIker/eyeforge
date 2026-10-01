@@ -17,6 +17,11 @@ ASSET_SOURCES = ("objaverse_lvis", "search", "photos")
 # roi_classification: one class per image (the object filling most of it, or none).
 # count: how many objects of each class are in the image and where (a point per object).
 TASKS = ("roi_classification", "count")
+ERRORS = ("find_more", "balanced", "fewer_false")  # which mistake hurts the user more (Spec.errors)
+# Which rotations and mirrors keep a photo's answer (TrainingSpec.orientation): "upright" scenes have an up
+# (sky, horizon, standing objects); "any" when up does not exist (a camera looking straight down, a microscope,
+# loose objects on a table); "fixed" when also left and right matter (text, arrows, one-sided parts).
+ORIENTATIONS = ("upright", "any", "fixed")
 DISTRACTORS = ("tree", "person")  # what the scene templates can place
 WEATHER = ("clear", "cloudy", "evening", "storm", "night")
 # Places the generic scene can build (scene.contexts): open ground, a building front seen from the street, a
@@ -71,6 +76,9 @@ class ClassSpec:
     description: str = ""
     size_m: SizeSpec | None = None
     assets: AssetQuery | None = None
+    # Short English noun phrases the counting teacher (SAM 3, English only) looks for in the user's photos.
+    # None: the 3D model search names (assets.queries or categories), else the id put in English.
+    names: list[str] | None = None
     # Solid paint over the model's own colors, for classes whose real instances come in many colors (cars):
     # the chance per frame (None: never; models without color are always painted) and the metallic range.
     repaint: float | None = None
@@ -108,6 +116,9 @@ class CameraSpec:
     # derived from it, so nobody has to guess a distance per class.
     target_fill: tuple[float, float] = (0.15, 0.55)
     distance_m: tuple[float, float] = (4.0, 80.0)  # hard limits on the derived distance
+    # Degrees below the horizon the camera looks at the target, for cameras looking down at the ground (a phone
+    # over a lawn: 60-89). Open-ground frames then place the camera by height and pitch, not by target_fill.
+    pitch_deg: tuple[float, float] | None = None
 
 
 @dataclass
@@ -142,17 +153,27 @@ class SceneSpec:
     contexts: list[ContextSpec] = field(default_factory=list)
     wall_tags: list[str] = field(default_factory=list)
     railings: list[str] = field(default_factory=list)
+    # Mixed ground (ground_mix.py), generic template: patches of other materials on the ground_tags base (bare
+    # spots, fallen leaves; one Poly Haven tag per material), the share of ground they cover and their size, and
+    # a hard-edged strip (a path, a pavement; edge_tags) in edge_share of the layouts. Defaults in ground_mix.
+    ground_patches: list[str] = field(default_factory=list)
+    patch_cover: tuple[float, float] | None = None
+    patch_size_m: tuple[float, float] | None = None
+    edge_tags: list[str] = field(default_factory=list)
+    edge_share: float | None = None
 
 
 @dataclass
 class UserData:
     """Photos from the user. `labeled` is a folder with one subfolder per source class and `class_map`
     maps each spec class to the source subfolders that belong to it. `raw` is a folder of unlabeled
-    photos that the teacher model labels; answers below `label_min_confidence` are set aside. `test` is an
-    optional labeled folder (same layout and class_map as `labeled`) used only for the real test."""
+    photos that the teacher model labels. `test` is an optional labeled folder (same layout and class_map as
+    `labeled`) used only for the real test."""
     labeled: str | None = None
     raw: str | None = None
     test: str | None = None
+    # No longer used, kept so older specs load: the teacher always commits to a class, there is no "unsure" pile
+    # (user, 2026-09-30).
     label_min_confidence: float = 0.6
     class_map: dict[str, list[str]] = field(default_factory=dict)
     test_per_class: int = 400
@@ -184,10 +205,23 @@ class GenerationSpec:
 
 
 @dataclass
+class LookSpec:
+    """How the user's camera sees: color (Lab mean and spread), edge sharpness and noise of their photos at
+    the model's input size (look.py), measured by `sim2chip match`. Synthetic images are moved towards it
+    before training (points, crops)."""
+    lab_mean: list[float]
+    lab_std: list[float]
+    sharpness: float
+    noise: float
+    n: int = 0  # photos measured
+
+
+@dataclass
 class TrainingSpec:
     seeds: list[int] = field(default_factory=lambda: [0, 1, 2])
     epochs: int = 25
     real_weight: int = 4  # real photos are repeated to weigh ~1/real_weight of the synthetic set
+    orientation: str | None = None  # one of ORIENTATIONS; None is "upright". Chooses the training augmentation
 
 
 @dataclass
@@ -197,18 +231,30 @@ class Spec:
     props: list[PropSpec] = field(default_factory=list)
     hardware: str = "esp32cam"
     task: str = "roi_classification"
-    background_class: str = "empty"
+    # Which mistake hurts the user more: "find_more" (missing an object is worse), "balanced" (None: default) or
+    # "fewer_false" (a false alarm is worse). Sets the teacher's threshold (teacher.py).
+    errors: str | None = None
+    # The class for "none of the objects": right when the classes are objects that may be absent. None when every
+    # photo is one of the classes (surfaces, scenes, states: lawn, border, no grass), so no extra class is invented.
+    background_class: str | None = "empty"
     camera: CameraSpec = field(default_factory=CameraSpec)
     scene: SceneSpec = field(default_factory=SceneSpec)
     user_data: UserData = field(default_factory=UserData)
     qa: QASpec = field(default_factory=QASpec)
     generation: GenerationSpec = field(default_factory=GenerationSpec)
     training: TrainingSpec = field(default_factory=TrainingSpec)
+    look: LookSpec | None = None
 
     @property
     def labels(self) -> list[str]:
-        """Model output order: background first, then the spec classes."""
-        return [self.background_class] + [c.id for c in self.classes]
+        """Model output order: background first (when there is one), then the spec classes."""
+        return ([self.background_class] if self.background_class else []) + [c.id for c in self.classes]
+
+    @property
+    def synthetic(self) -> bool:
+        """Whether the job renders images from 3D models: some class has models and frames are asked for.
+        generation.frames 0 means the user's photos only (the 3D stages would run for nothing, 2026-09-30)."""
+        return self.generation.frames > 0 and any(c.assets for c in self.classes)
 
     def cls(self, class_id: str) -> ClassSpec:
         for c in self.classes:
@@ -345,7 +391,9 @@ def _from_dict(data: dict) -> Spec:
         sc["contexts"] = [_build(ContextSpec, c, f"scene.contexts[{i}]") for i, c in enumerate(sc["contexts"])]
         data["scene"] = sc
     sections = {"camera": CameraSpec, "scene": SceneSpec, "user_data": UserData, "qa": QASpec,
-                "generation": GenerationSpec, "training": TrainingSpec}
+                "generation": GenerationSpec, "training": TrainingSpec, "look": LookSpec}
+    if data.get("look") is None:
+        data.pop("look", None)
     for key, cls in sections.items():
         if key in data:
             data[key] = _build(cls, data[key], key)
@@ -361,9 +409,16 @@ def validate(spec: Spec) -> None:
     ids = [c.id for c in spec.classes]
     if len(set(ids)) != len(ids):
         raise SpecError("classes: duplicated ids")
-    if spec.background_class in ids:
+    if spec.background_class is not None and spec.background_class in ids:
         raise SpecError("background_class cannot also be a class")
+    if spec.background_class is None and spec.task == "count":
+        raise SpecError("background_class: counting needs one (the places with no object)")
+    if spec.background_class is None and len(ids) < 2:
+        raise SpecError("background_class: with no background class, list at least two classes")
     for c in spec.classes:
+        if c.names is not None and (not isinstance(c.names, list) or not c.names
+                                    or not all(isinstance(n, str) and n.strip() for n in c.names)):
+            raise SpecError(f"class {c.id}: names must be a list of short English noun phrases")
         if c.repaint is not None and not 0 <= c.repaint <= 1:
             raise SpecError(f"class {c.id}: repaint must be between 0 and 1")
         if c.metallic is not None and not 0 <= c.metallic[0] <= c.metallic[1] <= 1:
@@ -421,9 +476,14 @@ def validate(spec: Spec) -> None:
         if not dirs or any(not str(d).strip() for d in dirs):
             raise SpecError(f"user_data.class_map: '{k}' needs subfolder names; unsorted photos go in user_data.raw")
     _validate_contexts(spec.scene)
+    _validate_ground_mix(spec.scene)
     bad = [d for d in spec.scene.distractors if d not in DISTRACTORS]
     if bad:
         raise SpecError(f"scene.distractors {bad} are not available, only {list(DISTRACTORS)}")
+    if spec.errors is not None and spec.errors not in ERRORS:
+        raise SpecError(f"errors must be one of {ERRORS}")
+    if spec.training.orientation is not None and spec.training.orientation not in ORIENTATIONS:
+        raise SpecError(f"training.orientation must be one of {ORIENTATIONS}")
     if spec.task not in TASKS:
         raise SpecError(f"task must be one of {TASKS}")
     if spec.task == "count":
@@ -436,13 +496,30 @@ def validate(spec: Spec) -> None:
         raise SpecError("qa.mode must be 'none', 'manual' or 'auto'")
     if spec.qa.strategy not in ("vision", "describe_then_decide"):
         raise SpecError("qa.strategy must be 'vision' or 'describe_then_decide'")
+    if spec.camera.pitch_deg and not 0 < spec.camera.pitch_deg[0] <= spec.camera.pitch_deg[1] <= 90:
+        raise SpecError("camera.pitch_deg must be [min, max] within (0, 90]")
     lo, hi = spec.camera.target_fill
     if not 0 < lo <= hi <= 1:
         raise SpecError("camera.target_fill must be within (0, 1]")
     if not 0 <= spec.generation.empty_ratio < 1:
         raise SpecError("generation.empty_ratio must be in [0, 1)")
+    if spec.look and not (len(spec.look.lab_mean) == len(spec.look.lab_std) == 3):
+        raise SpecError("look: lab_mean and lab_std need 3 values (L, a, b)")
     if not spec.training.seeds:
         raise SpecError("training.seeds cannot be empty")
+
+
+def _validate_ground_mix(sc: SceneSpec) -> None:
+    if not (sc.ground_patches or sc.edge_tags):
+        return
+    if sc.template != "generic" or not sc.ground_tags:
+        raise SpecError("scene.ground_patches and edge_tags need the generic template and ground_tags (the base)")
+    if sc.patch_cover and not 0 <= sc.patch_cover[0] <= sc.patch_cover[1] <= 0.9:
+        raise SpecError("scene.patch_cover must be [min, max] within 0..0.9")
+    if sc.patch_size_m and not 0 < sc.patch_size_m[0] <= sc.patch_size_m[1]:
+        raise SpecError("scene.patch_size_m must be 0 < min <= max")
+    if sc.edge_share is not None and not 0 <= sc.edge_share <= 1:
+        raise SpecError("scene.edge_share must be within 0..1")
 
 
 def _validate_contexts(sc: SceneSpec) -> None:

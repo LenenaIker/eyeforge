@@ -154,9 +154,11 @@ class OutdoorScene:
     build, after_load, randomize(change_sky), place_target(prim, scale) and place_distractors(eye)."""
     SUN_SHARE = 1.0  # frames with a sun besides the sky map's own light
 
-    def __init__(self, stage, props, rng, skies: list[str], distractors: list[str], ground: list[str] = ()):
+    def __init__(self, stage, props, rng, skies: list[str], distractors: list[str], ground: list[str] = (),
+                 ground_tile: float | None = None):
         self.stage, self.props, self.rng = stage, props, rng
         self.skies, self.ground = list(skies), list(ground)
+        self.ground_tile = ground_tile  # meters one ground texture covers (None: the template's default)
         self.want = set(distractors)
         self.trees, self.people = [], []
 

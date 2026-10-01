@@ -1,0 +1,29 @@
+{
+  "name": "grass_park",
+  "task": "count",
+  "hardware": "generic",
+  "classes": [
+    {
+      "id": "leaf",
+      "description": "fallen dry leaves on the ground of a park",
+      "size_m": {"measure": "length", "range": [0.06, 0.2]},
+      "assets": {"source": "search", "queries": ["autumn leaf", "dry leaf", "fallen leaf"], "count": 8}
+    }
+  ],
+  "camera": {
+    "height_m": [1.0, 1.6],
+    "hfov_deg": 55,
+    "resolution": [240, 320],
+    "target_fill": [0.03, 0.12],
+    "distance_m": [0.1, 2.0]
+  },
+  "scene": {
+    "template": "generic",
+    "weather": ["cloudy", "clear"],
+    "distractors": [],
+    "ground_tags": ["grass"]
+  },
+  "user_data": {"raw": "/home/lenena-iker/work/nvidia/data/real/grass"},
+  "qa": {"mode": "auto"},
+  "generation": {"frames": 2000, "empty_ratio": 0.2, "seed": 0, "max_targets": 8}
+}

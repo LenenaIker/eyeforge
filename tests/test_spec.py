@@ -26,6 +26,9 @@ def test_example_specs_load():
 def test_defaults_and_labels():
     spec = from_dict(minimal())
     assert spec.labels == ["empty", "cow"]
+    two = minimal(background_class=None)
+    two["classes"] = two["classes"] + [{**two["classes"][0], "id": "horse"}]
+    assert from_dict(two).labels == ["cow", "horse"]
     assert spec.camera.hfov_deg == 60
     assert spec.cls("cow").size_m.range == (2.0, 2.5)
 
@@ -37,10 +40,13 @@ def test_defaults_and_labels():
     ({"qa": {"mode": "magic"}}, "qa.mode"),
     ({"user_data": {"labeled": "x", "class_map": {"horse": ["h"]}}}, "class_map"),
     ({"background_class": "cow"}, "background_class"),
+    ({"background_class": None}, "at least two classes"),
+    ({"background_class": None, "task": "count"}, "counting needs one"),
     # Specs come from an LLM: wrong types and names must be SpecErrors, not crashes later on.
     ({"hardware": "esp8266"}, "hardware"),
     ({"scene": {"weather": ["night"]}}, "sky_tags"),
     ({"generation": {"frames": "many"}}, "generation.frames"),
+    ({"training": {"orientation": "sideways"}}, "training.orientation"),
     ({"classes": ["cow"]}, "classes"),
     ({"classes": [{"id": "cow", "size_m": {"measure": "length", "range": ["a", 2]}}]}, "range"),
     ({"classes": [{"id": "cow", "assets": {"categories": ["cow"], "count": "12"}}]}, "count"),

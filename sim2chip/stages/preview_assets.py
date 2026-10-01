@@ -27,7 +27,7 @@ class PreviewAssets(Stage):
     after = ("convert_assets",)
 
     def enabled(self, spec) -> bool:
-        return spec.qa.mode == "auto" and any(c.assets for c in spec.classes)
+        return spec.qa.mode == "auto" and spec.synthetic
 
     def run(self, ctx: Context) -> dict:
         import shutil

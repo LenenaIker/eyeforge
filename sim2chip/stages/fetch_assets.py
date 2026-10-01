@@ -35,7 +35,7 @@ class FetchAssets(Stage):
     version = "5"
 
     def enabled(self, spec) -> bool:
-        return any(c.assets for c in spec.classes)
+        return spec.synthetic
 
     @staticmethod
     def searched(spec) -> list[dict]:
@@ -155,14 +155,16 @@ class FetchAssets(Stage):
             skies = [rel(polyhaven.download(i, "hdris", ctx.cache.hdri / "polyhaven")) for i in ids]
         else:
             skies = [rel(ctx.cache.hdri / s.file) for s in self._road_skies(ctx)]
-        ground = []
+        ground, extra = [], {}
         if sc.ground_tags:
             ids = polyhaven.pick_textures(polyhaven.catalog("textures"), sc.ground_tags, 8, seed)
             if not ids:
                 raise ValueError(f"no Poly Haven texture matches ground_tags {sc.ground_tags}")
             ctx.log(f"ground textures for {sc.ground_tags}: {', '.join(ids)}")
             ground = [rel(polyhaven.download(i, "textures", ctx.cache.root / "textures")) for i in ids]
-        out = {"skies": skies, "ground": ground}
+            if sc.ground_patches or sc.edge_tags:
+                ground, extra = self.mixed_ground(ctx, ids), {"ground_tile_m": _ground_mix_size()}
+        out = {"skies": skies, "ground": ground, **extra}
         if sc.wall_tags:  # buildings and rooms of scene.contexts: a few textures per wall material
             cat, ids = polyhaven.catalog("textures"), []
             for w in sc.wall_tags:
@@ -170,6 +172,29 @@ class FetchAssets(Stage):
             ctx.log(f"wall textures for {sc.wall_tags}: {', '.join(ids)}")
             out["walls"] = [rel(polyhaven.download(i, "textures", ctx.cache.root / "textures")) for i in ids]
         return out
+
+    def mixed_ground(self, ctx: Context, base_ids: list[str]) -> list[str]:
+        """Layouts of the base ground with patches and strips (ground_mix.py), at the textures' real size."""
+        from .. import ground_mix, polyhaven
+
+        sc, seed = ctx.spec.scene, ctx.spec.generation.seed
+        cat, dest = polyhaven.catalog("textures"), ctx.cache.root / "textures"
+
+        def get(ids):  # (file, side in meters); Poly Haven gives the real size in millimeters
+            return [(polyhaven.download(i, "textures", dest), (cat[i].get("dimensions") or [2000])[0] / 1000)
+                    for i in ids]
+
+        patches, edges = [], []
+        for tags, into in ((sc.ground_patches, patches), (sc.edge_tags, edges)):
+            for t in tags:
+                ids = polyhaven.pick_textures(cat, [t], 3, seed)
+                if not ids:
+                    raise ValueError(f"no Poly Haven texture matches ground tag {t!r}")
+                into += get(ids)
+        files = ground_mix.make(get(base_ids), patches, edges, dest / "mix", seed, sc.patch_cover,
+                                sc.patch_size_m, sc.edge_share)
+        ctx.log(f"mixed ground: {len(files)} layouts, patches {sc.ground_patches}, strips {sc.edge_tags}")
+        return [str(f.resolve().relative_to(ctx.cache.root.resolve())) for f in files]
 
     def _road_skies(self, ctx: Context) -> list:
         """The curated skies of the road template (NVIDIA's bucket), as in the spike."""
@@ -189,3 +214,8 @@ class FetchAssets(Stage):
                     raise RuntimeError(f"sky download failed: {s.url}")
                 tmp.rename(f)
         return wanted
+
+
+def _ground_mix_size() -> float:
+    from ..ground_mix import SIZE_M
+    return SIZE_M

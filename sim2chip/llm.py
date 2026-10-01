@@ -9,6 +9,9 @@ Configuration (environment, or the repo's .env file for the key):
     SIM2CHIP_TEXT_MODEL      model for text tasks (interview); default: a Nemotron text model
     SIM2CHIP_VISION_MODEL    model for image tasks (asset QA, labeling); default: see PREFERENCES
     SIM2CHIP_DESCRIBE_MODEL  describer for the describe_then_decide QA strategy
+    SIM2CHIP_SCENE_MODEL     model that looks at the user's photos during the interview (scene_profile)
+    SIM2CHIP_COMPARE_MODEL   vision model that compares renders with the user's photos (match.py)
+    SIM2CHIP_REASON_MODEL    reasoning model that turns those differences into spec changes (match.py)
 """
 from __future__ import annotations
 
@@ -33,11 +36,55 @@ PREFERENCES = {
     "vision": [r"nemotron.*omni", r"nemotron.*vl", r"GLM-5\.3-Flash", r"MiniCPM-V"],
     # Fast describer for describe_then_decide, where Nemotron makes the decision.
     "describe": [r"MiniCPM-V", r"GLM-5\.3-Flash"],
+    # The user's photos while they wait in the interview (scene_profile, and ranking photos for 3D models:
+    # Kimi 11 s for 6 photos, GLM timed out on all). 2026-09-30, one facade photo: Kimi-K2.6
+    # 10 s and right (brick facade, two balconies, several pots), MiniCPM-V 1.5 s but saw one pot on a railing,
+    # gemma-3-27b 86 s, GLM-5.3-Flash no answer in 120 s.
+    "scene": [r"nemotron.*omni", r"Kimi-K2\.6", r"GLM-5\.3-Flash", r"MiniCPM-V"],
+    # Renders beside photos: a strong vision model. Its differences go to the biggest Nemotron to reason on.
+    # Kimi-K2.6: as concrete as K3 and 30 s instead of 4 to 24 min per comparison (2026-09-29).
+    "compare": [r"nemotron.*omni", r"Kimi-K2\.6", r"Kimi-K3", r"GLM-5\.3-Flash"],
+    "reason": [r"nemotron-3-ultra", r"nemotron-3-super"],
 }
 
 
 # Model calls in flight at once per stage (photos to label, assets to judge): Token Factory rate limits.
 WORKERS = int(os.environ.get("SIM2CHIP_LLM_WORKERS", "8"))
+
+
+# One photo looked at while the user waits in the interview: a slow answer is dropped, not retried for minutes.
+# Seen 2026-09-30: GLM-5.3-Flash took 75 to 571 s per photo and the default 120 s x 5 attempts, twice, kept
+# the user 20 minutes on "Looking at your photos".
+PHOTO_CALL = {"timeout": 45.0, "retries": 1}
+
+
+def map_within(fn, items: list, seconds: float, workers: int | None = None, progress=None) -> list:
+    """fn over items in threads, for at most `seconds`: results in the order of items, None for an item that
+    failed or had not finished in time (its thread is left to end on its own, nothing waits for it).
+    progress(done, total) is called as items finish, in any order."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import TimeoutError as Late
+
+    out: list = [None] * len(items)
+    if not items:
+        return out
+    pool = ThreadPoolExecutor(max_workers=workers or WORKERS)
+    futures = {pool.submit(fn, item): i for i, item in enumerate(items)}
+    done = 0
+    try:
+        for f in as_completed(futures, timeout=seconds):
+            done += 1
+            try:
+                out[futures[f]] = f.result()
+            except Exception:  # one photo failing must not lose the others
+                pass
+            if progress:
+                progress(done, len(items))
+    except Late:
+        pass
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return out
 
 
 class LLMError(RuntimeError):
@@ -98,23 +145,25 @@ class Client:
     retries: int = 4
     _models: list[str] | None = None
 
-    def _request(self, method: str, path: str, body: dict | None = None) -> dict:
+    def _request(self, method: str, path: str, body: dict | None = None, timeout: float | None = None,
+                 retries: int | None = None) -> dict:
         url = self.base_url.rstrip("/") + path
         data = json.dumps(body).encode() if body is not None else None
         headers = {"Authorization": f"Bearer {self.key or api_key()}", "Content-Type": "application/json"}
-        for attempt in range(self.retries + 1):
+        retries = self.retries if retries is None else retries
+        for attempt in range(retries + 1):
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                with urllib.request.urlopen(req, timeout=timeout or self.timeout) as r:
                     return json.loads(r.read())
             except urllib.error.HTTPError as e:
                 detail = e.read().decode(errors="replace")[:500]
-                if e.code in (429, 500, 502, 503, 504) and attempt < self.retries:
+                if e.code in (429, 500, 502, 503, 504) and attempt < retries:
                     time.sleep(min(2 ** attempt, 30))
                     continue
                 raise LLMError(f"{method} {path}: HTTP {e.code} {detail}") from None
             except (urllib.error.URLError, TimeoutError) as e:
-                if attempt < self.retries:
+                if attempt < retries:
                     time.sleep(min(2 ** attempt, 30))
                     continue
                 raise LLMError(f"{method} {path}: {e}") from None
@@ -124,6 +173,17 @@ class Client:
         if self._models is None:
             self._models = sorted(m["id"] for m in self._request("GET", "/models").get("data", []))
         return self._models
+
+    def prices(self) -> dict[str, dict[str, float]]:
+        """Dollars per token of each model, input and output, as Token Factory lists them."""
+        out = {}
+        for m in self._request("GET", "/models?verbose=true").get("data", []):
+            p = m.get("pricing") or {}
+            try:
+                out[m["id"]] = {"input": float(p["prompt"]), "output": float(p["completion"])}
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
 
     def model_for(self, role: str) -> str:
         env = os.environ.get(f"SIM2CHIP_{role.upper()}_MODEL")
@@ -137,12 +197,14 @@ class Client:
         raise LLMError(f"no {role} model found among {len(ids)} models; set SIM2CHIP_{role.upper()}_MODEL")
 
     def chat(self, messages: list[dict], model: str, purpose: str, temperature: float = 0.2,
-             max_tokens: int = 2048, json_mode: bool = False) -> str:
+             max_tokens: int = 2048, json_mode: bool = False, timeout: float | None = None,
+             retries: int | None = None) -> str:
+        """timeout and retries: tighter than the client's for calls a user waits on (see PHOTO_CALL)."""
         body = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         t0 = time.time()
-        resp = self._request("POST", "/chat/completions", body)
+        resp = self._request("POST", "/chat/completions", body, timeout=timeout, retries=retries)
         latency = time.time() - t0
         try:
             text = resp["choices"][0]["message"]["content"] or ""
