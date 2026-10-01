@@ -55,6 +55,6 @@ Deadline: **2026-10-30, 10:00 PDT**.
 
 - Prueba de viabilidad hecha (2026-09-23): código en `experiments/legacy/`, hallazgos y resultados en `experiments/NOTES.md`; los bancos de pruebas actuales (FSC-147, profesor, densidad) en `experiments/`. Specs: `specs/examples/` para usuarios y `specs/benchmarks/` para pruebas internas.
 - Entorno conda `edge-sdg` (objaverse, usd-core, TensorFlow 2.18 GPU). Scripts de Isaac con `/opt/isaacsim/isaac-sim-5.1.0-20260318-clean/python.sh`.
-- `data/` es un enlace simbólico a `/media/lenena-iker/Crucial/datasets/nvidia/` (SSD secundario, gitignorado, ~13 GB): assets Objaverse y USD, HDRIs locales, renders, recortes, MIO-TCD. Todo lo pesado o de escritura masiva va ahí, nunca al SSD del sistema. Los scripts usan `ROOT/data` y las rutas absolutas guardadas (JSON, USD) pasan por el enlace: no quitarlo.
-- `runs/` (modelos entrenados y resultados) es un enlace simbólico a `/media/lenena-iker/Crucial/runs/nvidia/`.
+- `data/` es un enlace simbólico a `/media/lenena-iker/Crucial/datasets/eyeforge/` (SSD secundario, gitignorado, ~13 GB): assets Objaverse y USD, HDRIs locales, renders, recortes, MIO-TCD. Todo lo pesado o de escritura masiva va ahí, nunca al SSD del sistema. Los scripts usan `ROOT/data` y las rutas absolutas guardadas (JSON, USD) pasan por el enlace: no quitarlo.
+- `runs/` (modelos entrenados y resultados) es un enlace simbólico a `/media/lenena-iker/Crucial/runs/eyeforge/`.
 - La caché de Isaac Sim (`~/.cache/ov`) se queda donde está: decisión del usuario, no moverla. `data/usd/exclude.txt` es la lista manual de assets descartados. MIO-TCD solo para evaluación (licencia de investigación, no redistribuir).
