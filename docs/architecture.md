@@ -1,6 +1,6 @@
 # Arquitectura de EyeForge (motor `sim2chip`, 2026-09-24)
 
-Estado: aprobada por el usuario e implementada en `sim2chip/` (semana 1). Sustituye a los scripts sueltos de `spike/`, que se conservan como histórico.
+Estado: aprobada por el usuario e implementada en `sim2chip/` (semana 1). Sustituye a los scripts sueltos de `experiments/legacy/`, que se conservan como histórico.
 
 Cambios respecto a la propuesta inicial, decididos al implementar:
 - **`convert_assets` no depende de la clase**: solo endereza, centra y mide (largo, ancho, alto). La escala real del spec se aplica en `render`. Una reclasificación en QA no obliga a reconvertir y la caché sirve a cualquier trabajo. El USD normalizado referencia el crudo con ruta relativa, para que la caché se pueda montar en otro sitio (Nebius).
@@ -18,7 +18,7 @@ Cambios respecto a la propuesta inicial, decididos al implementar:
 ## Vista general
 
 ```
-sim2chip run specs/lora_alarm_traffic.json --backend local
+sim2chip run specs/examples/lora_alarm_traffic.json --backend local
         │
         ▼
    Pipeline  ── construye la lista de etapas a partir del spec (las opcionales solo si aplican)
@@ -136,15 +136,15 @@ sim2chip/
   stages/    ingest.py fetch_assets.py convert_assets.py qa_assets.py render.py crops.py train.py evaluate.py export.py
   scenes/    road.py
   backends/  local.py  (nebius.py en semana 3)
-specs/       lora_alarm_traffic.json
+specs/       examples/ (para usuarios) y benchmarks/ (pruebas internas)
 tests/       spec, pipeline y caché (sin GPU)
-spike/       histórico de la prueba de viabilidad
+experiments/ bancos de pruebas; legacy/ guarda la prueba de viabilidad
 docs/
 ```
 
 ## Criterio de hecho de la semana 1
 
-`sim2chip run specs/lora_alarm_traffic.json --backend local` de principio a fin, sin pasos a mano, reproduce el híbrido del spike (77.3 ± 1.7 con 3 semillas, dentro del ruido).
+`sim2chip run specs/examples/lora_alarm_traffic.json --backend local` de principio a fin, sin pasos a mano, reproduce el híbrido del spike (77.3 ± 1.7 con 3 semillas, dentro del ruido).
 
 ## Fuera de la semana 1
 

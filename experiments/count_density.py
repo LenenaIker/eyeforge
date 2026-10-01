@@ -4,7 +4,7 @@ The density head outputs, per output cell, how many objects it holds; the count 
 as the points model (MobileNetV2 cut at stride 8). Targets: every point a Gaussian of SIGMA cells summing to 1.
 Augmentation is done offline in numpy so the points move with the pixels exactly (flip, crop, color, blur).
 
-  python spike/count_density.py JOB [SEED ...]     # also scores the job's own points models (train/seed_*)
+  python experiments/count_density.py JOB [SEED ...]     # also scores the job's own points models (train/seed_*)
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT), str(ROOT / "spike")]
+sys.path[:0] = [str(ROOT), str(ROOT / "experiments")]
 
 import numpy as np  # noqa: E402
 import tensorflow as tf  # noqa: E402
@@ -22,7 +22,7 @@ import tensorflow as tf  # noqa: E402
 from count_arch import load  # noqa: E402
 from fsc147_count import CLASS, job_dir, truth_of  # noqa: E402
 from sim2chip import counting, hardware  # noqa: E402
-from sim2chip.stages import tflite_utils as tu  # noqa: E402
+from sim2chip import student as tu  # noqa: E402
 
 SIZE = 224
 GRID = SIZE // counting.STRIDE

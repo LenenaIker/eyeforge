@@ -1,7 +1,7 @@
 """Qwen3-VL-8B, two roles. Env: teacher-bench.
 
-    python spike/teacher_bench/run_qwen.py detect            -> qwen.json (Qwen boxes the pots itself)
-    python spike/teacher_bench/run_qwen.py verify locate     -> locate+qwen.json (keeps the boxes Qwen confirms)
+    python experiments/teacher_bench/run_qwen.py detect            -> qwen.json (Qwen boxes the pots itself)
+    python experiments/teacher_bench/run_qwen.py verify locate     -> locate+qwen.json (keeps the boxes Qwen confirms)
 
 The verifier sees each candidate in context (the box drawn in red on a crop around it) with the user's own
 description of the object, so it can reject the plant above a pot or a pot-shaped thing that is not one.

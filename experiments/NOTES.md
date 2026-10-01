@@ -68,7 +68,7 @@ Azar: 0.20.
 
 ## Paso al paquete `sim2chip` (2026-09-24)
 
-Mismo experimento híbrido lanzado con `sim2chip run specs/lora_alarm_traffic.json` de principio a fin, sin pasos a mano (job en `data/jobs/lora_alarm_traffic/`):
+Mismo experimento híbrido lanzado con `sim2chip run specs/examples/lora_alarm_traffic.json` de principio a fin, sin pasos a mano (job en `data/jobs/lora_alarm_traffic/`):
 
 | | Acc. real int8 (3 semillas) | Por semilla |
 |---|---|---|
@@ -108,7 +108,7 @@ En Token Factory ningún Nemotron acepta imágenes (Nano 30B, 3.5 Lightning, Sup
 
 ## Imagen a 3D con TRELLIS v1 (2026-09-25)
 
-Objetivo: generar assets 3D a partir de fotos cuando la búsqueda en internet no encuentra el objeto. Script `spike/img2mesh/run_trellis.py` (entorno conda `trellis2`; código, extensiones y pesos en `/media/lenena-iker/Crucial/tools/`, cachés con `HF_HUB_CACHE` y `TORCH_HOME` apuntando allí). Resultados y hojas en `data/img2mesh_test/out_trellis1/`.
+Objetivo: generar assets 3D a partir de fotos cuando la búsqueda en internet no encuentra el objeto. Script `experiments/img2mesh/run_trellis.py` (entorno conda `trellis2`; código, extensiones y pesos en `/media/lenena-iker/Crucial/tools/`, cachés con `HF_HUB_CACHE` y `TORCH_HOME` apuntando allí). Resultados y hojas en `data/img2mesh_test/out_trellis1/`.
 
 - Flujo: OWLv2 detecta el objeto por texto y lo recorta, BiRefNet quita el fondo y TRELLIS genera la malla con textura; se exporta un GLB ligero (textura 1024, 2k-16k caras, ~1 MB).
 - Descartados: TRELLIS.2 (necesita DINOv3, gated en Hugging Face; el acceso no llegó) y el quitafondos por defecto de TRELLIS.2, RMBG-2.0 (gated y CC BY-NC). Hunyuan3D: su licencia excluye la UE. El código y los pesos usados son MIT o Apache, PERO la exportación a GLB (`to_glb`) usa nvdiffrast y el rasterizador de mip-splatting, ambos solo no comerciales (corregido 2026-09-26, ver TODO 3.E).
@@ -140,7 +140,7 @@ Nueva tarea `task: "count"` (contar y localizar, estilo FOMO): MobileNetV2 corta
 
 ## Nebius: arranque de 4 jobs en paralelo (2026-09-26)
 
-`spike/nebius_parallel_probe.py --jobs 4` (imagen de Isaac Sim, L40S en eu-north1, on-demand). Resultado: los 4 estuvieron ~25 min en PROVISIONING; 3 acabaron en ERROR "NotEnoughResources: VM schedule timeout, most likely due to insufficient hardware resources" y 1 arrancó (imagen descargada en ~2.5 min). La cuota (32 L40S) no garantiza capacidad: en eu-north1 no hay L40S on-demand libres de forma fiable. Repartir el render en muchas GPUs no es viable así; hay que mirar reservas, otras regiones o plataformas, o un worker caliente que se quede con una GPU una vez conseguida.
+`experiments/nebius_parallel_probe.py --jobs 4` (imagen de Isaac Sim, L40S en eu-north1, on-demand). Resultado: los 4 estuvieron ~25 min en PROVISIONING; 3 acabaron en ERROR "NotEnoughResources: VM schedule timeout, most likely due to insufficient hardware resources" y 1 arrancó (imagen descargada en ~2.5 min). La cuota (32 L40S) no garantiza capacidad: en eu-north1 no hay L40S on-demand libres de forma fiable. Repartir el render en muchas GPUs no es viable así; hay que mirar reservas, otras regiones o plataformas, o un worker caliente que se quede con una GPU una vez conseguida.
 
 ## Escenas desde las fotos: fachadas, balcones, interiores (2026-09-26)
 

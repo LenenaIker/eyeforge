@@ -1,6 +1,6 @@
 """Convierte los GLB de Objaverse a USD con Isaac Sim y normaliza escala y orientación.
 
-Uso: <isaac_sim>/python.sh spike/convert_assets.py
+Uso: <isaac_sim>/python.sh experiments/legacy/convert_assets.py
 Cada modelo se escala para que su dimensión horizontal mayor coincida con la longitud
 típica de su clase, se apoya en el suelo (z=0) y se centra en el origen.
 """
@@ -173,7 +173,7 @@ async def run(args) -> None:
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     p = argparse.ArgumentParser()
     p.add_argument("--manifest", type=Path, default=root / "data" / "objaverse" / "manifest.json")
     p.add_argument("--out", type=Path, default=root / "data" / "usd")

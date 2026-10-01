@@ -6,7 +6,7 @@ planters on them and renders a few frames from street level looking up. No build
 the same search would work on any building model.
 
 Run with Isaac Sim's python:
-    /opt/isaacsim/isaac-sim-5.1.0-20260318-clean/python.sh spike/facade/facade_test.py --out data/facade_test
+    /opt/isaacsim/isaac-sim-5.1.0-20260318-clean/python.sh experiments/facade/facade_test.py --out data/facade_test
 """
 import argparse
 import math

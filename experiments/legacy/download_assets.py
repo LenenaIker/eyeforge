@@ -29,7 +29,7 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--per-category", type=int, default=12)
     p.add_argument("--extra", nargs="*", default=[], help="clase=N para pedir más modelos de una clase")
-    p.add_argument("--out", type=Path, default=Path(__file__).resolve().parents[1] / "data" / "objaverse")
+    p.add_argument("--out", type=Path, default=Path(__file__).resolve().parents[2] / "data" / "objaverse")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 

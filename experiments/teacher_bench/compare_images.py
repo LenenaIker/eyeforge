@@ -1,6 +1,6 @@
 """One comparison image per photo: the user's marks and each model's boxes side by side.
 
-    python spike/teacher_bench/compare_images.py   -> runs/teacher_bench/compare/<photo>.jpg
+    python experiments/teacher_bench/compare_images.py   -> runs/teacher_bench/compare/<photo>.jpg
 Green dot: user's pot found; orange: missed. Blue box: found a pot; red: false; grey: rejected by the verifier.
 """
 import json

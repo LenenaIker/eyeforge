@@ -1,7 +1,7 @@
 """Count student architectures on FSC-147 geese: train on a job's ingested train photos, score the int8 model on
-its test photos against the dataset's own points (spike/fsc147_count.py).
+its test photos against the dataset's own points (experiments/fsc147_count.py).
 
-  SIZE=320 python spike/count_arch.py JOB VARIANT [SEED ...]     # VARIANT: s8 (current), fpn, fpn_wide
+  SIZE=320 python experiments/count_arch.py JOB VARIANT [SEED ...]     # VARIANT: s8 (current), fpn, fpn_wide
 Photos are read from the job's label copies (full size), so SIZE is a real resolution, not an upscale.
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "spike"))
+sys.path.insert(0, str(ROOT / "experiments"))
 
 import dataclasses  # noqa: E402
 import os  # noqa: E402
@@ -23,7 +23,7 @@ import tensorflow as tf  # noqa: E402
 from count_decode_lib import peaks  # noqa: E402
 from fsc147_count import CLASS, job_dir, truth_of  # noqa: E402
 from sim2chip import counting, hardware  # noqa: E402
-from sim2chip.stages import tflite_utils as tu  # noqa: E402
+from sim2chip import student as tu  # noqa: E402
 
 
 def build(variant: str):

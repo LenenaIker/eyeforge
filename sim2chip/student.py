@@ -1,4 +1,5 @@
-"""TensorFlow helpers shared by train and evaluate (imported only inside the TF runtime)."""
+"""The student model: build, train, quantize to int8 and run it (TensorFlow; train and evaluate import it
+only inside the TF runtime)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
-from ..hardware import Hardware
+from .hardware import Hardware
 
 
 def list_dir(d: Path, labels: list[str]) -> list[tuple[Path, int]]:
@@ -260,7 +261,7 @@ DENSITY_WEIGHT = 1.0   # of the density loss next to the points loss, for the sh
 def load_points(d: Path, labels: list[str], size: int):
     """Images of d/images with their points (d/points.json). Returns x, point maps (class index on each
     object's box core, or its single pixel without a box size; 0 elsewhere), the file names and the points."""
-    from ..counting import TRAIN_CORE
+    from .counting import TRAIN_CORE
     import json
 
     table = json.loads((d / "points.json").read_text())
@@ -294,7 +295,7 @@ def count_target(p, n_classes: int):
 def _blur(objects):
     """Per-class point masks (size, size, k) -> density images: every point a Gaussian of DENSITY_SIGMA cells
     that sums to 1 (less at the borders, where part of it falls outside). Smooth, so it survives resampling."""
-    from ..counting import STRIDE
+    from .counting import STRIDE
     sigma = DENSITY_SIGMA * STRIDE
     r = int(3 * sigma)
     g = tf.exp(-tf.square(tf.range(-r, r + 1, dtype=tf.float32)) / (2 * sigma ** 2))
@@ -307,13 +308,13 @@ def _blur(objects):
 
 def _cells(density):
     """Density image (size, size, k) -> objects per output cell."""
-    from ..counting import STRIDE
+    from .counting import STRIDE
     return tf.nn.avg_pool2d(density[None], STRIDE, STRIDE, "VALID")[0] * STRIDE ** 2
 
 
 def _grid(objects):
     """Per-class object masks (size, size, n_classes - 1) -> the one-hot grid of count_target."""
-    from ..counting import STRIDE
+    from .counting import STRIDE
     cells = tf.nn.max_pool2d(objects[None], STRIDE, STRIDE, "VALID")[0]
     y = tf.concat([1.0 - tf.reduce_max(cells, -1, keepdims=True), cells], -1)
     return y / tf.reduce_sum(y, -1, keepdims=True)
@@ -422,7 +423,7 @@ COUNT_LOSS_WEIGHTS = {"points": 1.0, "density": DENSITY_WEIGHT}
 
 def train_count(x, pmap, pts, labels: list[str], hw: Hardware, epochs: int, seed: int,
                 orientation: str | None = None):
-    from .. import counting
+    from . import counting
 
     tf.keras.utils.set_random_seed(seed)
     n, size = len(labels), hw.input_size
@@ -507,7 +508,7 @@ def train_count_head(xs, ms, xr, mr, pr, labels: list[str], hw: Hardware, seed: 
                      orientation: str | None = None):
     """Head only, for count. xs, ms: synthetic frames and point maps (may be empty); xr, mr, pr: real photos, maps
     and points. The real photos weigh about 1/real_weight of the synthetic set, as in fine-tuning."""
-    from .. import counting
+    from . import counting
 
     n = len(labels)
     tf.keras.utils.set_random_seed(seed)

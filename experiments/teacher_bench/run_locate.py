@@ -1,6 +1,6 @@
 """LocateAnything-3B (NVIDIA) as a detector. Env: teacher-bench.
 
-    python spike/teacher_bench/run_locate.py [--tiles]
+    python experiments/teacher_bench/run_locate.py [--tiles]
 """
 from __future__ import annotations
 

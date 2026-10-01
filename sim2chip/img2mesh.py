@@ -2,7 +2,7 @@
 
 An open-vocabulary detector (OWLv2, Apache 2.0) finds the object named by a text query and crops it,
 BiRefNet (MIT) cuts it out and TRELLIS v1 (MIT) generates the mesh. Feasibility test and timings in
-spike/NOTES.md ("Imagen a 3D con TRELLIS v1").
+experiments/NOTES.md ("Imagen a 3D con TRELLIS v1").
 
 License note: TRELLIS bakes the texture with nvdiffrast and a Gaussian rasterizer (mip-splatting), both
 non-commercial. Replace that export before any commercial use (TODO.md, 3.E).

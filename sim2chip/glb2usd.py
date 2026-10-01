@@ -18,7 +18,7 @@ What it does:
 
 Why not Isaac or Blender: Isaac Sim uses OpenUSD inside, so the file is the same format, but this starts no
 Kit, renderer or GPU: a model takes milliseconds (41 models in 5 s on 8 cores, against minutes through
-Isaac, spike/NOTES.md). What it loses against Isaac's converter: Draco/meshopt compressed GLBs and
+Isaac, experiments/NOTES.md). What it loses against Isaac's converter: Draco/meshopt compressed GLBs and
 animation or skinning (static meshes only).
 
 Formats: only .glb and .gltf. trimesh also reads OBJ, STL, PLY and DAE, but each would need its own axis and

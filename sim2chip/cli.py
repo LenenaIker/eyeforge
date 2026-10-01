@@ -1,12 +1,12 @@
 """Command line interface.
 
-    sim2chip run specs/lora_alarm_traffic.json --input mio_tcd=data/real/train
-    sim2chip run specs/lora_alarm_traffic.json --from train
+    sim2chip run specs/examples/lora_alarm_traffic.json --input mio_tcd=data/real/train
+    sim2chip run specs/examples/lora_alarm_traffic.json --from train
     sim2chip status lora_alarm_traffic
-    sim2chip stages specs/lora_alarm_traffic.json
+    sim2chip stages specs/examples/lora_alarm_traffic.json
     sim2chip interview
     sim2chip describe-scene data/real/maceta --classes "flower pots"
-    sim2chip match specs/macetas.json --job maceta_counter_11
+    sim2chip match specs/examples/pots_count.json --job maceta_counter_11
     sim2chip serve --backend nebius
 """
 from __future__ import annotations

@@ -1,12 +1,12 @@
 """Counting task helpers without TensorFlow: the model's output grid to points, and points against the truth.
 
-The count model (see stages/tflite_utils.py) outputs a grid of class probabilities, one cell per STRIDE x
+The count model (see student.py) outputs a grid of class probabilities, one cell per STRIDE x
 STRIDE pixels of the input, background first. A blob of neighbouring cells whose best class is not the
 background is one object: its probability-weighted centre is the object's point. Points are (x, y, class)
 with x and y in 0..1 of the image width and height, so they survive any resize of the image.
 The same decoding runs in evaluate, in review and in any app that uses the exported model.
 The model also outputs a density grid (objects per cell and class): its sum is the count, steadier than the
-number of points in crowds and with big objects (see tflite_utils.DENSITY_SIGMA). Points say where, the
+number of points in crowds and with big objects (see student.DENSITY_SIGMA). Points say where, the
 density how many.
 True points may carry the object's box size, (x, y, class, w, h) in 0..1: a prediction anywhere in the box's
 core (CORE of its width and height) counts as found, which is fair to big objects close to the camera.

@@ -1,14 +1,14 @@
 """Blob vs peak decoding of count grids on FSC-147 geese: the target grids themselves (ceiling) and a job's
-trained int8 models, scored against the dataset's points.  python spike/count_decode.py JOB"""
+trained int8 models, scored against the dataset's points.  python experiments/count_decode.py JOB"""
 import json, sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT), str(ROOT / "spike")]
+sys.path[:0] = [str(ROOT), str(ROOT / "experiments")]
 import numpy as np
 from count_decode_lib import peaks
 from fsc147_count import job_dir, truth_of
 from sim2chip import counting
-from sim2chip.stages import tflite_utils as tu
+from sim2chip import student as tu
 
 job = job_dir(sys.argv[1]); labels = ["empty", "goose"]; size = 224; grid = counting.grid_size(size)
 xt, mt, names, _ = tu.load_points(job / "ingest" / "test", labels, size)

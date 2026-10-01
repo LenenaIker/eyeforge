@@ -4,7 +4,7 @@ Las decisiones se descargan del db del artifact como JSON (un fichero por asset,
 en --reviews-dir. La decisión humana manda sobre la de Claude; lo no revisado se queda como estaba.
 Guarda copia del exclude anterior y un resumen con las notas en data/review/.
 
-Uso: python spike/apply_review.py --reviews-dir data/review/db/reviews
+Uso: python experiments/legacy/apply_review.py --reviews-dir data/review/db/reviews
 """
 import argparse
 import json
@@ -12,7 +12,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> None:

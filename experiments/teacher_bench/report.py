@@ -1,6 +1,6 @@
 """Scores every runs/teacher_bench/*.json against the user's marks and writes a review page to look at them.
 
-    python spike/teacher_bench/report.py     -> runs/teacher_bench/review/index.html
+    python experiments/teacher_bench/report.py     -> runs/teacher_bench/review/index.html
 
 A true pot is found when a box contains the user's point; each box finds at most one pot (the nearest).
 Unmatched boxes are false marks. Env: any with Pillow.

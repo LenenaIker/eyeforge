@@ -51,7 +51,7 @@ class Evaluate(Stage):
     def run(self, ctx: Context) -> dict:
         import numpy as np
 
-        from . import tflite_utils as tu
+        from .. import student as tu
 
         if ctx.spec.task == "count":
             return self._count(ctx)
@@ -95,7 +95,7 @@ class Evaluate(Stage):
         import numpy as np
 
         from .. import counting
-        from . import tflite_utils as tu
+        from .. import student as tu
 
         labels, size = ctx.spec.labels, ctx.hardware.input_size
         test_dir = ctx.job.stage_dir("ingest") / "test"

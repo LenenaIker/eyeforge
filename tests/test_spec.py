@@ -17,7 +17,7 @@ def minimal(**over):
 
 
 def test_example_specs_load():
-    for f in (REPO / "specs").glob("*.json"):
+    for f in (REPO / "specs").rglob("*.json"):
         spec = load(f)
         hardware.get(spec.hardware)
         assert spec.labels[0] == spec.background_class

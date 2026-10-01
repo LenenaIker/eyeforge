@@ -48,7 +48,7 @@ def test_snapshot_keeps_the_model_once(tmp_path):
 
 def test_evaluate_scores_the_previous_model_on_the_same_photos(tmp_path, monkeypatch):
     pytest.importorskip("tensorflow")
-    from sim2chip.stages import tflite_utils
+    from sim2chip import student
     from sim2chip.stages.evaluate import Evaluate
     from sim2chip.stages.export import Export
 
@@ -67,7 +67,7 @@ def test_evaluate_scores_the_previous_model_on_the_same_photos(tmp_path, monkeyp
     snapshot(ctx.job, "added photos")
     cow = ctx.spec.labels.index("cow")
     # The new model says cow for everything (3 of 4 right), the old one says empty (1 of 4).
-    monkeypatch.setattr(tflite_utils, "predict_int8",
+    monkeypatch.setattr(student, "predict_int8",
                         lambda blob, x: np.full(len(x), cow if blob == b"new" else 1 - cow))
     Evaluate().run(ctx)
     Export().run(ctx)

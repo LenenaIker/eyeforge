@@ -33,7 +33,7 @@ Detector que maximiza la recuperación (SAM 3 o LocateAnything) y VLM que verifi
 
 ## Benchmark local (2026-09-28, RTX 3090)
 
-Verdad: las 31 fotos corregidas por el usuario en `maceta_counter_8` (219 macetas, un punto por maceta). Una maceta cuenta como encontrada si una caja contiene su punto (una caja, una maceta). Código en `spike/teacher_bench/`, resultados en `runs/teacher_bench/` (`review/index.html` y una imagen comparativa por foto en `compare/`). Texto de búsqueda sacado del spec (`assets.queries`), sin ajustes por clase.
+Verdad: las 31 fotos corregidas por el usuario en `maceta_counter_8` (219 macetas, un punto por maceta). Una maceta cuenta como encontrada si una caja contiene su punto (una caja, una maceta). Código en `experiments/teacher_bench/`, resultados en `runs/teacher_bench/` (`review/index.html` y una imagen comparativa por foto en `compare/`). Texto de búsqueda sacado del spec (`assets.queries`), sin ajustes por clase.
 
 | Profesor | F1 | Precisión | Recall | s/foto |
 |---|---|---|---|---|

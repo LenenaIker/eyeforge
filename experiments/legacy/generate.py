@@ -4,7 +4,7 @@ Modos:
   preview  renderiza cada asset una vez con cámara fija, para revisión visual
   dataset  genera N frames aleatorios (una clase por frame, o vacío) con bbox 2D
 
-Uso: <isaac_sim>/python.sh spike/generate.py --mode dataset --frames 2000 --out data/sdg/run_01
+Uso: <isaac_sim>/python.sh experiments/legacy/generate.py --mode dataset --frames 2000 --out data/sdg/run_01
 """
 import argparse
 import json
@@ -15,7 +15,7 @@ from pathlib import Path
 
 from isaacsim import SimulationApp
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 p = argparse.ArgumentParser()
 p.add_argument("--mode", choices=["preview", "review", "dataset"], default="dataset")

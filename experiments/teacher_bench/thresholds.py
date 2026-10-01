@@ -1,6 +1,6 @@
 """The user's preference picks the threshold: find more (F2), balanced (F1) or fewer false marks (F0.5).
 
-    python spike/teacher_bench/thresholds.py
+    python experiments/teacher_bench/thresholds.py
 
 The threshold is chosen on the calibration photos only (split.json, from run_sam3_exemplars.py) and scored on the
 rest; models without scores are scored on the same test photos for comparison.

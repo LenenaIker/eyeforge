@@ -2,8 +2,8 @@
 the dataset's own points, and write ground-truth corrections to simulate a user who reviewed some photos.
 The dataset lives in data/fsc147 (or FSC_DIR).
 
-  [FSC_CLASS=apples FSC_NAME=apple] python spike/fsc147_count.py score JOB                 # teacher (all photos, test) and student vs truth
-  python spike/fsc147_count.py fix JOB N                 # truth as corrections for N train photos (all: -1)
+  [FSC_CLASS=apples FSC_NAME=apple] python experiments/fsc147_count.py score JOB                 # teacher (all photos, test) and student vs truth
+  python experiments/fsc147_count.py fix JOB N                 # truth as corrections for N train photos (all: -1)
 
 Truth points get the mean size of the photo's exemplar boxes, as the teacher's marks do, so a prediction
 anywhere in the object's core matches it in both cases.

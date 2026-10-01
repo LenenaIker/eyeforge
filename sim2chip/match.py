@@ -14,7 +14,7 @@ Only the user's training photos are used (never the test side). Trial jobs live 
 copies of the parent job's asset stages, so assets are not fetched or made again.
 Output: <job>/match/report.json, <job>/match/spec.json (the proposed spec), mosaics per round.
 
-    sim2chip match specs/macetas.json --job maceta_counter_11
+    sim2chip match specs/examples/pots_count.json --job maceta_counter_11
 """
 from __future__ import annotations
 

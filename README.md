@@ -104,12 +104,12 @@ sim2chip serve --backend nebius        # web app on http://127.0.0.1:8000: inter
 sim2chip interview                     # the same interview in the terminal, writes a spec
 
 # Full pipeline; --input exposes a folder of the user's photos inside the job
-sim2chip run specs/macetas_count.json --input maceta=/path/to/photos
-sim2chip run specs/macetas_count.json --input maceta=/path/to/photos --backend nebius
+sim2chip run specs/examples/pots_count.json --input maceta=/path/to/photos
+sim2chip run specs/examples/pots_count.json --input maceta=/path/to/photos --backend nebius
 
-sim2chip stages specs/lora_alarm_traffic.json             # which stages are done or pending
-sim2chip run specs/lora_alarm_traffic.json --from train   # retrain without rendering again
-sim2chip run specs/lora_alarm_traffic.json --only render  # one stage (upstream must be done)
+sim2chip stages specs/examples/lora_alarm_traffic.json             # which stages are done or pending
+sim2chip run specs/examples/lora_alarm_traffic.json --from train   # retrain without rendering again
+sim2chip run specs/examples/lora_alarm_traffic.json --only render  # one stage (upstream must be done)
 ```
 
 To let others use it (judges, testers), serve it in public mode: every visitor needs the access link, specs

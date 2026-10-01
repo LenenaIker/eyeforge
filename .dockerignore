@@ -1,6 +1,6 @@
 data
 runs
-spike
+experiments
 tests
 web/node_modules
 sim2chip/web/dist

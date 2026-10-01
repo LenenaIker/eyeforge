@@ -1,5 +1,5 @@
 {
-  "name": "macetas_3d_check",
+  "name": "pots_3d_check",
   "hardware": "generic",
   "classes": [
     {"id": "maceta", "description": "potted plants on balconies and terraces",

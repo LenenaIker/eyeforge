@@ -4,7 +4,7 @@ Model: the hardware profile's backbone (MobileNetV2 for microcontrollers), pretr
 quantized to int8: one model with int8 input and output for TFLite Micro, and the same with float32
 input and output for phones and PCs. The recipe follows the data, not the spec: with only real photos and fewer
 than HEAD_ONLY_BELOW per class, the backbone stays frozen and only the last layer learns, scored by cross-
-validation (tflite_utils.train_head; for count, tflite_utils.train_count_head, with or without synthetic frames and
+validation (student.train_head; for count, student.train_count_head, with or without synthetic frames and
 its threshold also chosen on the real photos); otherwise the whole network is fine-tuned and validated on a held-out 10%
 of the training mix. The real test set is never used here.
 Count task: whole images with their points (synthetic from the points stage, real from ingest), and a model
@@ -86,7 +86,7 @@ class Train(Stage):
     def _class_data(ctx: Context):
         import numpy as np
 
-        from . import tflite_utils as tu
+        from .. import student as tu
 
         labels = ctx.spec.labels
         size = ctx.hardware.input_size
@@ -116,7 +116,7 @@ class Train(Stage):
         recipe (its cross-validation holds out real photos only); otherwise one mix with the real repeated."""
         import numpy as np
 
-        from . import tflite_utils as tu
+        from .. import student as tu
 
         labels, size = ctx.spec.labels, ctx.hardware.input_size
         empty = (np.zeros((0, size, size, 3), np.uint8), np.zeros((0, size, size), np.uint8), [])
@@ -183,7 +183,7 @@ def _fit_seed_from_file(args: dict, seed: int, path: str) -> dict:
 
 def _fit_seed(args: dict, seed: int, data) -> dict:
     from ..hardware import get as get_hardware
-    from . import tflite_utils as tu
+    from .. import student as tu
 
     labels, hw, epochs = args["labels"], get_hardware(args["hardware"]), args["epochs"]
     d = Path(args["out"]) / f"seed_{seed}"

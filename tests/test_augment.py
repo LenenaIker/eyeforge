@@ -1,4 +1,4 @@
-"""Training helpers (tflite_utils): augmentation by spec.training.orientation, last-layer-only head."""
+"""Training helpers (student): augmentation by spec.training.orientation, last-layer-only head."""
 import numpy as np
 import pytest
 
@@ -9,7 +9,7 @@ tf = pytest.importorskip("tensorflow")
 def test_count_augment_keeps_every_point(orientation):
     """Turns and tilts move the points with the pixels; a one-pixel point near the centre is never lost."""
     from sim2chip.hardware import get
-    from sim2chip.stages import tflite_utils as tu
+    from sim2chip import student as tu
 
     hw, rng = get("esp32cam"), np.random.default_rng(0)
     size = hw.input_size
@@ -33,7 +33,7 @@ def test_count_augment_keeps_every_point(orientation):
 
 def test_augment_runs_in_a_dataset():
     from sim2chip.hardware import get
-    from sim2chip.stages import tflite_utils as tu
+    from sim2chip import student as tu
 
     hw = get("esp32cam")
     x = np.zeros((4, hw.input_size, hw.input_size, 3), np.uint8)
@@ -43,7 +43,7 @@ def test_augment_runs_in_a_dataset():
 
 def test_head_classifies_raw_features():
     """The head classifies raw features through its own standardization."""
-    from sim2chip.stages import tflite_utils as tu
+    from sim2chip import student as tu
 
     rng = np.random.default_rng(0)
     y = np.repeat([0, 1, 2], 20)
@@ -57,7 +57,7 @@ def test_head_classifies_raw_features():
 
 def test_count_targets_hold_one_object_per_point():
     """The density grid of a photo sums to its number of points, by class."""
-    from sim2chip.stages import tflite_utils as tu
+    from sim2chip import student as tu
 
     m = np.zeros((96, 96, 1), np.float32)
     m[40, 30], m[50, 60], m[20, 70] = 1, 1, 2
@@ -69,7 +69,7 @@ def test_count_targets_hold_one_object_per_point():
 def test_count_model_has_points_and_density_outputs():
     """Two outputs in the int8 model, found by their channels whatever order the converter gives them."""
     from sim2chip.hardware import get
-    from sim2chip.stages import tflite_utils as tu
+    from sim2chip import student as tu
 
     hw = get("esp32cam")
     model, _ = tu.build_count_model(3, hw)

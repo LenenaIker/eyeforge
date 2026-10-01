@@ -1,7 +1,7 @@
 """Baseline: the current teacher (vision model on Token Factory) with COUNT_PROMPT minus the plant phrase and
 without the learned rules (they came from these same photos). Env: edge-sdg.
 
-    python spike/teacher_bench/run_glm.py
+    python experiments/teacher_bench/run_glm.py
 """
 from __future__ import annotations
 

@@ -32,7 +32,7 @@ DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 PREFERENCES = {
     "text": [r"nemotron-3-super", r"nemotron-3.*nano-30b", r"nemotron"],
     # No Nemotron on Token Factory accepts images (checked 2026-09-24); prefer one if it appears. GLM-5.3-Flash
-    # agreed best with the human asset review (88.9%), see spike/NOTES.md.
+    # agreed best with the human asset review (88.9%), see experiments/NOTES.md.
     "vision": [r"nemotron.*omni", r"nemotron.*vl", r"GLM-5\.3-Flash", r"MiniCPM-V"],
     # Fast describer for describe_then_decide, where Nemotron makes the decision.
     "describe": [r"MiniCPM-V", r"GLM-5\.3-Flash"],

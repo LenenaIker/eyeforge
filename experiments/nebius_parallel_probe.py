@@ -4,7 +4,7 @@ Launches N jobs with the Isaac Sim image in parallel. Each one prints when its c
 and how long a headless Isaac Sim app takes to start cold, then exits. The script polls the jobs and
 records when each state change was first seen.
 
-    python spike/nebius_parallel_probe.py --jobs 4
+    python experiments/nebius_parallel_probe.py --jobs 4
 """
 from __future__ import annotations
 

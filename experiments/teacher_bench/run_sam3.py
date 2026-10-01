@@ -1,6 +1,6 @@
 """SAM 3 (Meta) as a detector: one text prompt per query, merged. Env: teacher-sam3.
 
-    python spike/teacher_bench/run_sam3.py [--threshold 0.4]
+    python experiments/teacher_bench/run_sam3.py [--threshold 0.4]
 """
 from __future__ import annotations
 

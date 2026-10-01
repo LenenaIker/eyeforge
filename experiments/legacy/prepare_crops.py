@@ -3,7 +3,7 @@
 - Sintético: recorte alrededor del bbox del objetivo con margen aleatorio; frames vacíos -> recortes al azar.
 - Real (MIO-TCD, solo evaluación y modo híbrido): se agrupan sus clases en las nuestras.
 
-Uso: python spike/prepare_crops.py
+Uso: python experiments/legacy/prepare_crops.py
 """
 import argparse
 import json
@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SIZE = 96
 MIO_MAP = {
     "small_vehicle": ["car", "pickup_truck", "work_van"],

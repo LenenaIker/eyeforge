@@ -1,4 +1,4 @@
-"""Peak decoding of count grids (spike): one point per local maximum."""
+"""Peak decoding of count grids (experiment): one point per local maximum."""
 import numpy as np
 
 

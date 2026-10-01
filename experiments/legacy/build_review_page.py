@@ -1,9 +1,9 @@
 """Genera la página de revisión humana de assets (4 vistas por modelo + veredicto de Claude).
 
 Las decisiones del usuario se guardan en el db del artifact (colección `reviews`, id = uid de Objaverse)
-y se vuelcan a data/usd/exclude.txt con spike/apply_review.py.
+y se vuelcan a data/usd/exclude.txt con experiments/legacy/apply_review.py.
 
-Uso: python spike/build_review_page.py  ->  data/review/criba.html
+Uso: python experiments/legacy/build_review_page.py  ->  data/review/criba.html
 """
 import base64
 import io
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
 CLASS_ES = {"small_vehicle": "Vehículo pequeño", "large_vehicle": "Vehículo grande",
             "motorcycle": "Moto", "bicycle": "Bici"}

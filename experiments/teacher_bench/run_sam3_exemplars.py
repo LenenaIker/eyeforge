@@ -1,6 +1,6 @@
 """SAM 3 with visual exemplars from the calibration photos. Env: teacher-sam3.
 
-    python spike/teacher_bench/run_sam3_exemplars.py      -> sam3_ex.json (+ split.json)
+    python experiments/teacher_bench/run_sam3_exemplars.py      -> sam3_ex.json (+ split.json)
 
 SAM 3 takes exemplar boxes only inside the image it segments, so the exemplars travel with the photo: crops of
 the calibration photos (same scale as the photo) go in a strip on its right, with positive boxes on the user's

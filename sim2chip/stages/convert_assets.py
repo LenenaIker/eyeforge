@@ -5,7 +5,7 @@ reclassified asset needs no reconversion and the cache is shared by every job.
 
 The converter is glb2usd (usd-core and trimesh, CPU only, one process per core): 536 models in 21 s where
 Isaac Sim's Asset Converter needed about 2 s per model plus Kit's start, and the same renders and trained
-model (spike/NOTES.md, 2026-09-27). Models it cannot read (Draco or meshopt compression) go to the Asset
+model (experiments/NOTES.md, 2026-09-27). Models it cannot read (Draco or meshopt compression) go to the Asset
 Converter in an Isaac Sim process, when there is one.
 
 Cache:  usd/glb2usd/<uid>.usd (+ <uid>_textures/)   glb2usd output, in meters

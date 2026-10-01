@@ -48,7 +48,7 @@ Lectura: el look ayuda un poco y es gratis; el cambio de escena acerca los rende
 - [ ] Nebius: el bucle llama a `LocalBackend`; en la nube, mantener Isaac vivo entre rondas.
 - [ ] Coste por ejecución (tokens de Kimi y Ultra) en el panel de uso.
 
-## Segunda prueba: césped del parque (`specs/grass_park.json`, 69 fotos cenitales, 2026-09-29)
+## Segunda prueba: césped del parque (`specs/examples/grass_park.json`, 69 fotos cenitales, 2026-09-29)
 
 Objetivo provisional: hojas caídas (conteo), porque la tarea `grid` aún no existe; lo que se mide es el suelo. Cambios para esta prueba: suelo mezclado (`ground_mix.py`: base con parches de otras texturas de Poly Haven a su tamaño real y franja con borde recto), `camera.pitch_deg`, Kimi-K2.6 en vez de K3 (30 s frente a 4-24 min por comparación), 2 cambios por ronda y palancas bloqueadas (`--lock camera.height_m`: hechos del usuario que el bucle no puede contradecir).
 

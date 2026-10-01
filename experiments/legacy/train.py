@@ -4,9 +4,9 @@ Modelo: MobileNetV2 alpha=0.35, 96x96 RGB, preentrenado en ImageNet, cuantizado 
 TFLite Micro (ESP32). La métrica que importa es la del modelo int8 sobre datos reales.
 
 Uso:
-  python spike/train.py --name synth_only
-  python spike/train.py --name hybrid --few-real      # + 50 fotos reales por clase
-  python spike/train.py --name real_only --real-only  # referencia: solo las 50 reales por clase
+  python experiments/legacy/train.py --name synth_only
+  python experiments/legacy/train.py --name hybrid --few-real      # + 50 fotos reales por clase
+  python experiments/legacy/train.py --name real_only --real-only  # referencia: solo las 50 reales por clase
 """
 import argparse
 import json
@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 CLASSES = ["empty", "small_vehicle", "large_vehicle", "motorcycle", "bicycle"]
 SIZE = 96
 
