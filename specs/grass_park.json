@@ -23,7 +23,7 @@
     "distractors": [],
     "ground_tags": ["grass"]
   },
-  "user_data": {"raw": "/home/lenena-iker/work/nvidia/data/real/grass"},
+  "user_data": {"raw": "grass"},
   "qa": {"mode": "auto"},
   "generation": {"frames": 2000, "empty_ratio": 0.2, "seed": 0, "max_targets": 8}
 }

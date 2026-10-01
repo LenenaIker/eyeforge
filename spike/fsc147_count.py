@@ -1,5 +1,6 @@
 """Count benchmark on FSC-147 (one class): score the teacher's marks and the student's test predictions against
 the dataset's own points, and write ground-truth corrections to simulate a user who reviewed some photos.
+The dataset lives in data/fsc147 (or FSC_DIR).
 
   [FSC_CLASS=apples FSC_NAME=apple] python spike/fsc147_count.py score JOB                 # teacher (all photos, test) and student vs truth
   python spike/fsc147_count.py fix JOB N                 # truth as corrections for N train photos (all: -1)
@@ -21,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 from sim2chip import counting  # noqa: E402
 from sim2chip.workspace import content_key  # noqa: E402
 
-FSC = Path("/media/lenena-iker/Crucial/datasets/nvidia/fsc147")
+FSC = Path(os.environ.get("FSC_DIR", ROOT / "data" / "fsc147"))
 # The FSC-147 class (its folder of photos under FSC) and the name our spec gives it.
 FOLDER = os.environ.get("FSC_CLASS", "geese")
 CLASS = os.environ.get("FSC_NAME", "goose")

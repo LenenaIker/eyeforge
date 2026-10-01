@@ -27,7 +27,7 @@ from PIL import Image, ImageDraw
 from torchvision import transforms
 from transformers import AutoModelForImageSegmentation, Owlv2ForObjectDetection, Owlv2Processor
 
-TRELLIS_DIR = '/media/lenena-iker/Crucial/tools/TRELLIS'
+TRELLIS_DIR = os.environ['SIM2CHIP_TRELLIS_DIR']  # the TRELLIS checkout
 
 # Input file prefix -> detector query.
 QUERIES = {
