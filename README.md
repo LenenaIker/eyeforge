@@ -16,14 +16,24 @@ Status: work in progress for the Nebius x NVIDIA Global AI Hackathon (Physical A
 
 ```
 interview ──► spec.json ──► label ──► ingest ──► fetch_assets ──► convert_assets ──► preview/qa_assets ──► render ──► crops/points ──► train ──► evaluate ──► export
-(Nemotron)                  (teacher  (user      (3D models:     (GLB to USD,       (vision model       (Isaac Sim  (model input)  (student   (real test   (.tflite,
-                             labels    photos)    web search,     upright,           keeps or drops      Replicator)                model)     photos)      C header)
-                             raw                  optional 3D     measured)          each model)
-                             photos)              from photos)
+(Nemotron)                  (SAM 3    (user      (3D models:     (GLB to USD,       (vision model       (Isaac Sim  (model input)  (student   (real test   (.tflite,
+                             teacher   photos)    web search,     upright,           keeps or drops      Replicator)                model)     photos)      C header)
+                             labels               optional 3D     measured)          each model)
+                             raw photos)          from photos)
 ```
 
 - **An interview writes the spec**: Nemotron on Nebius Token Factory asks about the objects, the place,
   the camera and the hardware, and can look at the user's photos. `sim2chip serve` runs it in the browser.
+- **The interview looks facts up** (Tavily, optional with `TAVILY_API_KEY`): the real size of an object or a
+  part and its English name, instead of guesses, so the check "can this camera see it from there" uses real numbers.
+- **Each model shows what it took**: the Token Factory models it called (tokens and dollars, the interview
+  included), web searches and GPU minutes on Nebius AI Cloud or the local GPU.
+- **A teacher labels the user's photos**, chosen by task. To classify, SigLIP 2 puts each photo with the
+  class it looks closest to: the class description plus the few photos the user corrects before the first
+  run, so it learns their own criterion (on a lawn test: 48% right from the descriptions, 83% after 6
+  corrections). It always commits to one of the user's classes. To count, SAM 3 finds every object of
+  each class and scores it; how sure it must be follows what hurts the user more (missing an object or a
+  false alarm) and is tuned to the corrected photos.
 - **One spec drives everything**: classes, real-world sizes, scene, camera, target hardware and the
   user's photos. No stage hardcodes a class or an environment. See `specs/`.
 - **Stages** read and write only inside the job folder, so each one can run on a different machine.
@@ -76,9 +86,15 @@ to the server. Design notes in `web/DESIGN.md`.
 On a phone or tablet, a finished model can be tried live with the camera ("Try it live"): it runs in the
 browser with LiteRT.js, on the device, and keeps working offline once opened.
 
+The teachers (SigLIP 2, SAM 3) run in their own Python with a GPU: `pip install torch transformers>=5 accelerate
+pillow` in another environment and set `SIM2CHIP_SAM3_PYTHON`. Its weights are gated: accept the license on
+https://huggingface.co/facebook/sam3 and log in (`hf auth login`) or set `HF_TOKEN`. With the Nebius backend
+and no local GPU, the teacher runs in the cloud job.
+
 For the Nebius backend: install the `nebius` CLI and log in (a service account on a server), create an
 object storage key and two MysteryBox secrets (the storage key for the jobs, `SIM2CHIP_S3_SECRET`, and the
-Token Factory key, `SIM2CHIP_NEBIUS_SECRET`), and set `SIM2CHIP_NEBIUS_PROJECT`. Nothing else is installed
+Token Factory key, `SIM2CHIP_NEBIUS_SECRET`), and set `SIM2CHIP_NEBIUS_PROJECT`. For the teacher, a third
+secret with a Hugging Face token, `SIM2CHIP_HF_SECRET`. Nothing else is installed
 in advance: each job starts from NVIDIA's public Isaac Sim image.
 
 ## Usage
@@ -114,5 +130,9 @@ The result lands in `<SIM2CHIP_HOME>/jobs/<name>/export/`: `model_int8.tflite`, 
   Their authors are listed in each job's `export/report.json`.
 - Sky maps and textures come from Poly Haven (CC0) and NVIDIA's public Omniverse asset bucket.
 - 3D from photos (optional, local only) uses TRELLIS (MIT); its GLB export depends on non-commercial code.
-- The code is MIT licensed (`LICENSE`).
+- The teachers are SigLIP 2 (Google, Apache 2.0) and SAM 3 (Meta, SAM License: commercial use allowed; the
+  license travels with the weights). Both are downloaded from Hugging Face and not redistributed here.
+- Copyright (c) 2026 Iker Lenena. The code is licensed under the GNU Affero General Public License v3.0
+  (`LICENSE`): anyone may use, change and share it, and whoever offers a changed version as a network
+  service must publish its source under the same license. For other terms, contact the author.
 - MIO-TCD is used only for evaluation and is not redistributed (non-commercial research license).

@@ -1,0 +1,123 @@
+// Pipeline de EyeForge (sim2chip). Regenerar: dot -Tpng -Gdpi=130 docs/esquema_pipeline.dot -o docs/esquema_pipeline.png
+digraph pipeline {
+  graph [rankdir=TB, fontname="Helvetica", fontsize=13, bgcolor="white", nodesep=0.3, ranksep=0.45,
+         newrank=true, compound=true, pad=0.3,
+         label=<<b>EyeForge / sim2chip: pipeline actual (2026-09-30)</b><br/><font point-size="11">Carriles = ramas independientes del grafo de dependencias. Recuadro gris = paralelismo interno de la etapa. <br/>Hoy el ejecutor (pipeline.py) corre las etapas una detrás de otra: las ramas paralelas son posibles, no reales.</font>>,
+         labelloc=t];
+  node  [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#eeeeee", color="#888888", margin="0.12,0.06"];
+  edge  [color="#555555", arrowsize=0.7];
+
+  // Colores por dónde corre
+  // Token Factory: verde, GPU RTX (Isaac): naranja, GPU cualquiera: azul, CPU: gris, usuario: amarillo
+
+  user [label=<<b>Usuario</b><br/>web React / CLI<br/>texto + fotos + hardware>, fillcolor="#fff3b0", shape=box];
+
+  subgraph cluster_interview {
+    label=<<b>Entrevista</b> (interview.py)>; style="rounded"; color="#4c9a2a"; fontcolor="#2d6a14";
+    chat   [label=<Nemotron 3 Super<br/>conversación JSON>, fillcolor="#cfe8c1"];
+    subgraph cluster_iv_par {
+      label="en paralelo, bajo demanda"; style="rounded,dashed"; color="#999999"; fontcolor="#666666"; fontsize=10;
+      search [label=<search<br/>categorías LVIS + tamaños>, fillcolor="#eeeeee"];
+      tavily [label=<research<br/>Tavily (máx. 6)>, fillcolor="#eeeeee"];
+      scenep [label=<scene_profile<br/>VLM describe fotos ×8 hilos>, fillcolor="#cfe8c1"];
+      look   [label=<look.py<br/>color, nitidez, ruido>, fillcolor="#eeeeee"];
+    }
+    chat -> search [dir=both, style=dashed];
+    chat -> tavily [dir=both, style=dashed];
+    chat -> scenep [dir=both, style=dashed];
+    chat -> look   [dir=both, style=dashed];
+  }
+
+  spec [label=<<b>spec.json</b><br/>fuente única de verdad>, shape=note, fillcolor="#fff3b0"];
+  user -> chat;
+  chat -> spec [label="valida spec.py", fontsize=9];
+
+  // Carril A: fotos del usuario
+  subgraph cluster_photos {
+    label=<<b>A. Fotos reales</b>>; style="rounded,filled"; fillcolor="#f4f8ff"; color="#6b8fd6"; fontcolor="#34569c";
+    label_st [label=<<b>label</b><br/>profesor por tarea:<br/>clasificar SigLIP 2 + correcciones<br/>contar SAM 3, umbral por spec.errors>, fillcolor="#c9daf8"];
+    ingest   [label=<<b>ingest</b><br/>mapear clases<br/>split train/test estable>];
+  }
+
+  // Carril B: assets 3D
+  subgraph cluster_assets {
+    label=<<b>B. Assets 3D</b>>; style="rounded,filled"; fillcolor="#fff8f0"; color="#d39b52"; fontcolor="#8a5a17";
+    gen     [label=<<b>generate_assets</b><br/>OWLv2 → BiRefNet → TRELLIS<br/>(opcional, solo local)>, fillcolor="#c9daf8"];
+    subgraph cluster_fetch {
+      label="fetch_assets"; style="rounded,dashed"; color="#999999"; fontcolor="#666666"; fontsize=10;
+      fetch3d [label=<modelos 3D<br/>Sketchfab → espejo Objaverse>];
+      fetchsc [label=<escena<br/>cielos HDRI, suelos (ground_mix),<br/>paredes (Poly Haven)>];
+    }
+    convert [label=<<b>convert_assets</b><br/>glb2usd ×N núcleos>];
+    preview [label=<<b>preview_assets</b><br/>Isaac, 4 vistas<br/>(solo qa auto)>, fillcolor="#fbd3a6"];
+    qa      [label=<<b>qa_assets</b><br/>VLM ×8 hilos<br/>+ base cache/db>, fillcolor="#cfe8c1"];
+  }
+
+  // Carril C: datos sintéticos
+  subgraph cluster_synth {
+    label=<<b>C. Datos sintéticos</b>>; style="rounded,filled"; fillcolor="#fff4f4"; color="#d66b6b"; fontcolor="#9c3434";
+    render [label=<<b>render</b><br/>Isaac Sim Replicator<br/>plantilla road | generic | places<br/>+ props (scatter)>, fillcolor="#fbd3a6"];
+    crops  [label=<<b>crops</b><br/>roi_classification<br/>+ look>];
+    points [label=<<b>points</b><br/>count<br/>+ look>];
+  }
+
+  // Carril D: modelo
+  subgraph cluster_model {
+    label=<<b>D. Alumno</b>>; style="rounded,filled"; fillcolor="#f6f2fb"; color="#8a6bd6"; fontcolor="#553499";
+    subgraph cluster_seeds {
+      label="train: semillas en paralelo en la misma GPU"; style="rounded,dashed"; color="#999999"; fontcolor="#666666"; fontsize=10;
+      s0 [label="semilla 0", fillcolor="#c9daf8"];
+      s1 [label="semilla 1", fillcolor="#c9daf8"];
+      s2 [label="semilla 2", fillcolor="#c9daf8"];
+    }
+    train [label=<<b>train</b><br/>MobileNetV2 del perfil, int8<br/>sintético + real>, fillcolor="#c9daf8"];
+    best [label="mejor semilla por validación", fillcolor="#c9daf8"];
+    evaluate [label=<<b>evaluate</b><br/>en test REAL<br/>vs versión anterior>, fillcolor="#c9daf8"];
+    export   [label=<<b>export</b><br/>.tflite int8 + float IO<br/>model_data.h, créditos>];
+  }
+
+  device [label=<<b>Hardware</b><br/>ESP32-CAM / S3 (96 px)<br/>Jetson / genérico (224 px)<br/>móvil (LiteRT.js)>, fillcolor="#fff3b0"];
+
+  review [label=<<b>Revisión humana</b> (review.py)<br/>corrige etiquetas, veredictos de assets<br/>añade fotos, cambia setup, reentrena>, fillcolor="#fff3b0"];
+
+  // Dependencias reales (atributo `after` de cada etapa)
+  spec -> label_st;
+  spec -> gen [style=dashed, label="si hay\nassets.photos", fontsize=9];
+  spec -> fetch3d;
+  spec -> fetchsc;
+  label_st -> gen;
+  label_st -> ingest;
+  gen -> ingest [label="fotos usadas en 3D\nno van a test", fontsize=9];
+  gen -> fetch3d;
+  fetch3d -> convert -> preview -> qa;
+  convert -> qa;
+  qa -> render;
+  fetchsc -> render;
+  render -> crops;
+  render -> points;
+  crops  -> train;
+  points -> train;
+  ingest -> train;
+  train -> s0; train -> s1; train -> s2;
+  s0 -> best; s1 -> best; s2 -> best;
+  best -> evaluate;
+  ingest -> evaluate [style=dashed, label="test real", fontsize=9];
+  evaluate -> export;
+  qa -> export [style=dotted, label="licencias", fontsize=9];
+  export -> device;
+  export -> review;
+  review -> label_st [style=dashed, color="#b08900", label="corrections.json", fontsize=9, constraint=false];
+  review -> qa [style=dashed, color="#b08900", label="cache/db", fontsize=9, constraint=false];
+
+  // Leyenda
+  subgraph cluster_legend {
+    label=<<b>Dónde corre</b>>; style="rounded"; color="#bbbbbb"; fontsize=11;
+    l1 [label="Token Factory (Nebius)", fillcolor="#cfe8c1"];
+    l2 [label="GPU RTX (Isaac Sim)", fillcolor="#fbd3a6"];
+    l3 [label="GPU cualquiera", fillcolor="#c9daf8"];
+    l4 [label="CPU", fillcolor="#eeeeee"];
+    l5 [label="Usuario / E/S", fillcolor="#fff3b0"];
+    { rank=same; l1; l2; l3; l4; l5; }
+  }
+  device -> l1 [style=invis];
+}

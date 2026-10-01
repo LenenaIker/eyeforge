@@ -22,7 +22,7 @@ Proyecto para el **Nebius x NVIDIA Global AI Hackathon** (https://nebiusglobalai
 Detalle, subprocesos opcionales y tareas abiertas en `TODO.md`.
 
 1. **Entrevista inicial (Nemotron, Token Factory)**: preguntas al usuario para fijar el spec del dataset (clases, iluminación, tiempo, entorno, cámara, detalles como personas montadas en motos, hardware objetivo). Sale un spec estructurado.
-2. **Datos propios del usuario (opcional)**: etiquetados se usan directos; crudos los etiqueta un modelo grande genérico en Nebius (profesor) y se reparten en train, validación y test.
+2. **Datos propios del usuario (opcional)**: etiquetados se usan directos; crudos los etiqueta un profesor elegido por tarea (benchmark en `docs/profesor_modelos.md`): SigLIP 2 para clasificar (aprende el criterio del usuario de unas pocas correcciones, decisión 2026-09-30) y SAM 3 para contar (umbral según la preferencia de errores). Los modelos siempre eligen una de las clases del usuario, nunca "duda" ni una clase de fondo inventada si las clases cubren toda la foto (usuario, 2026-09-30). Se reparten en train, validación y test.
 3. **Generación sintética**: Isaac Sim (Replicator, headless) guiado por el spec. Assets de Objaverse-LVIS. Opcional: Cosmos para realismo.
 4. **Control de calidad**: Nemotron VL filtra assets y renders malos.
 5. **Entrenamiento del modelo pequeño (alumno)** con sintético + datos del usuario, cuantizado int8.
@@ -40,6 +40,8 @@ Desarrollo en la RTX 3090 local; el producto final lanza los trabajos en **Nebiu
 - **Caso de demo: `~/work/multi-platform/lora_alarm`** (proyecto hermano e independiente: ESP32-CAM clasifica en el borde, destruye la imagen y manda unos pocos bits por LoRa a un gateway ESP32; pensado para cruces en carreras ciclistas). Este proyecto no modifica lora_alarm; solo le suministra modelos. La integración en lora_alarm la trabaja el usuario (2026-09-24): aquí no hay tareas de lora_alarm.
 
 ## Requisitos de entrega del hackathon
+
+- **Licencia: AGPL-3.0-only** (decisión del usuario, 2026-09-28): las bases exigen repo público con licencia open source; AGPL protege el negocio (quien lo ofrezca como servicio debe publicar su código) y el autor puede vender licencias comerciales aparte. Se publica el proyecto entero, web incluida, cerca de la entrega. Pendiente confirmar con la organización que "such as Apache 2.0, MIT, or MPL 2.0" admite AGPL (si no, MPL 2.0). No aceptar contribuciones externas sin un acuerdo que permita esa doble licencia.
 
 Deadline: **2026-10-30, 10:00 PDT**.
 
