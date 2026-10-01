@@ -1,0 +1,56 @@
+{
+  "name": "strawberries_count",
+  "classes": [
+    {
+      "id": "strawberry",
+      "names": [
+        "strawberry"
+      ],
+      "description": "strawberries, in boxes, bowls, on plants or plates",
+      "size_m": {
+        "measure": "length",
+        "range": [
+          0.03,
+          0.15
+        ]
+      },
+      "assets": {
+        "source": "search",
+        "categories": [],
+        "queries": [
+          "strawberry"
+        ],
+        "count": 1,
+        "photos": null,
+        "generate": null
+      }
+    }
+  ],
+  "hardware": "generic",
+  "task": "count",
+  "background_class": "empty",
+  "user_data": {
+    "labeled": null,
+    "raw": "strawberries",
+    "test": null,
+    "label_min_confidence": 0.6,
+    "class_map": {},
+    "test_per_class": 60,
+    "train_per_class": 200,
+    "min_side_px": 32
+  },
+  "generation": {
+    "frames": 0,
+    "empty_ratio": 0.2,
+    "seed": 0
+  },
+  "training": {
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "epochs": 25,
+    "real_weight": 4
+  }
+}

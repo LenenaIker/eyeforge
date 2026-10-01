@@ -72,7 +72,9 @@ def test_evaluate_scores_the_previous_model_on_the_same_photos(tmp_path, monkeyp
     Evaluate().run(ctx)
     Export().run(ctx)
     report = json.loads((ctx.job.stage_dir("export") / "report.json").read_text())
-    assert report["previous"] == {"version": 1, "score": 0.25, "now": 0.75}
+    # then: v1's score when it was trained (its report), the same here since the test did not change.
+    assert report["previous"] == {"version": 1, "score": 0.25, "now": 0.75, "then": 0.25}
+    assert report["shipped_test"] == {"score": 0.75}
 
     fake_export(ctx.job, 0.75, labels=("empty", "cow", "dog"))  # the classes changed since
     snapshot(ctx.job, "spec changed")

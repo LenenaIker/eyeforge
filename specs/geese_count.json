@@ -1,0 +1,56 @@
+{
+  "name": "geese_count",
+  "classes": [
+    {
+      "id": "goose",
+      "names": [
+        "goose"
+      ],
+      "description": "geese (the bird), standing, swimming or flying, alone or in flocks",
+      "size_m": {
+        "measure": "length",
+        "range": [
+          0.6,
+          1.0
+        ]
+      },
+      "assets": {
+        "source": "search",
+        "categories": [],
+        "queries": [
+          "goose"
+        ],
+        "count": 1,
+        "photos": null,
+        "generate": null
+      }
+    }
+  ],
+  "hardware": "generic",
+  "task": "count",
+  "background_class": "empty",
+  "user_data": {
+    "labeled": null,
+    "raw": "geese",
+    "test": null,
+    "label_min_confidence": 0.6,
+    "class_map": {},
+    "test_per_class": 80,
+    "train_per_class": 200,
+    "min_side_px": 32
+  },
+  "generation": {
+    "frames": 0,
+    "empty_ratio": 0.2,
+    "seed": 0
+  },
+  "training": {
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "epochs": 25,
+    "real_weight": 4
+  }
+}

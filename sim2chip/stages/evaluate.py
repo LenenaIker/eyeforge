@@ -5,7 +5,8 @@ Output: evaluate/seed_<n>.json (accuracy, per class, confusion, prediction per p
 Count task: points F1 as the headline (`metric`), plus count error and exact counts, and the predicted and
 true points of every photo.
 When the job had a model before this run (input/previous/, see workspace.snapshot), that model is scored on
-the same test photos: evaluate/previous.json {version, score, count_mae} or {version, skipped: why}.
+the same test photos: evaluate/previous.json {version, score, count_mae, then} or {version, skipped: why}. then is
+its score when it was trained: it differs from score when the test photos or their labels changed since.
 """
 from __future__ import annotations
 
@@ -29,9 +30,15 @@ def previous_model(ctx: Context):
     return n, (d / "model_int8.tflite").read_bytes(), rep
 
 
+def score_then(rep: dict) -> dict:
+    """{then: the shipped model's score on its own test photos}, or nothing for reports without it."""
+    then = ((rep.get("real_test") or {}).get("per_seed") or {}).get(str(rep.get("seed")))
+    return {} if then is None else {"then": then}
+
+
 class Evaluate(Stage):
     name = "evaluate"
-    version = "2"
+    version = "4"  # 3: the previous model's score when it was trained; 4: count from the density output
     runtime = "tf"
     uses = ("task",)
     after = ("train", "ingest")
@@ -73,7 +80,7 @@ class Evaluate(Stage):
         n, model, rep = previous_model(ctx)
         if n is not None:
             prev = {"version": n, "skipped": rep} if model is None else \
-                {"version": n, "score": round(float((tu.predict_int8(model, xt) == yt).mean()), 4)}
+                {"version": n, "score": round(float((tu.predict_int8(model, xt) == yt).mean()), 4), **score_then(rep)}
             (out / "previous.json").write_text(json.dumps(prev, indent=1))
             ctx.log(f"previous model (v{n}) on the same test photos: {prev}")
         vals = list(accs.values())
@@ -102,13 +109,16 @@ class Evaluate(Stage):
         chosen = json.loads((ctx.job.stage_dir("train") / "summary.json").read_text())
         for d in sorted(ctx.job.stage_dir("train").glob("seed_*")):
             th = chosen[d.name.split("_")[1]].get("threshold", counting.THRESHOLD)
-            preds = [counting.decode(g, labels, th) for g in tu.predict_int8_grid((d / "model_int8.tflite").read_bytes(), xt)]
-            sc = counting.score(preds, truth, grid)
+            grids, dens = tu.predict_int8_count((d / "model_int8.tflite").read_bytes(), xt)
+            preds = [counting.decode(g, labels, th) for g in grids]
+            counts = None if dens is None else [counting.density_counts(x, labels) for x in dens]
+            sc = counting.score(preds, truth, grid, counts)
             seed = int(d.name.split("_")[1])
             scores[seed] = sc
             predictions = [{"file": n, "key": info[n]["key"], "source": info[n]["source"],
-                            "truth": [list(t) for t in tr], "pred": [list(p) for p in pr]}
-                           for n, tr, pr in zip(names, truth, preds)]
+                            "truth": [list(t) for t in tr], "pred": [list(p) for p in pr],
+                            **({"count": counts[i]} if counts else {})}
+                           for i, (n, tr, pr) in enumerate(zip(names, truth, preds))]
             (out / f"{d.name}.json").write_text(json.dumps({**sc, "labels": labels, "predictions": predictions},
                                                            indent=1))
             ctx.log(f"seed {seed}: real int8 {sc}")
@@ -118,9 +128,10 @@ class Evaluate(Stage):
                 prev = {"version": n, "skipped": rep}
             else:
                 th = (rep.get("output") or {}).get("threshold", counting.THRESHOLD)
-                sc = counting.score([counting.decode(g, labels, th) for g in tu.predict_int8_grid(model, xt)],
-                                    truth, grid)
-                prev = {"version": n, "score": sc["f1"], "count_mae": sc["count_mae"]}
+                grids, dens = tu.predict_int8_count(model, xt)
+                sc = counting.score([counting.decode(g, labels, th) for g in grids], truth, grid,
+                                    None if dens is None else [counting.density_counts(x, labels) for x in dens])
+                prev = {"version": n, "score": sc["f1"], "count_mae": sc["count_mae"], **score_then(rep)}
             (out / "previous.json").write_text(json.dumps(prev, indent=1))
             ctx.log(f"previous model (v{n}) on the same test photos: {prev}")
         f1 = [s["f1"] for s in scores.values()]

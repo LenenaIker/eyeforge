@@ -151,9 +151,12 @@ def snapshot(job: Job, reason: str) -> dict | None:
     kept = next((m for m in versions(job) if m.get("report_key") == content_key(report)), None)
     if kept is None:
         real = rep.get("real_test") or {}
+        shipped = (real.get("per_seed") or {}).get(str(rep.get("seed")))
+        # The headline is the shipped model's score (the one the user got), not the mean of the seeds.
         kept = {"n": cur["n"], "reason": cur["reason"], "created": round(report.stat().st_mtime),
-                "metric": rep.get("metric"), "headline": real.get("mean", rep.get("val_score")),
-                "shipped": (real.get("per_seed") or {}).get(str(rep.get("seed"))),
+                "metric": rep.get("metric"),
+                "headline": shipped if shipped is not None else real.get("mean", rep.get("val_score")),
+                "shipped": shipped, "seeds_mean": real.get("mean"),
                 "test_size": real.get("test_size"), "report_key": content_key(report)}
         d = job.root / "versions" / f"v{cur['n']}"
         d.mkdir(parents=True, exist_ok=True)

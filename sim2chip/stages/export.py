@@ -18,7 +18,7 @@ from .base import Context, Stage
 
 class Export(Stage):
     name = "export"
-    version = "4"  # fixed batch 1 in the .tflite files (live test in the browser)
+    version = "8"  # 4: fixed batch 1 in the .tflite files (live test in the browser); 5: shipped_test; 6: advice; 7: crowd advice; 8: density output
     runtime = "cpu"
     results = ("*",)
     after = ("train", "evaluate", "qa_assets")
@@ -49,7 +49,7 @@ class Export(Stage):
         credits = sorted({(a["name"], a["author"], a["license"], a["source"]) for a in json.loads(qa.read_text())}) \
             if qa.exists() else []
         report = {
-            "job": ctx.spec.name, "hardware": hw.name, "labels": ctx.spec.labels, "input": [hw.input_size] * 2 + [3],
+            "job": ctx.spec.name, "hardware": hw.name, "labels": ctx.spec.labels, "background": ctx.spec.background_class, "input": [hw.input_size] * 2 + [3],
             "quantization": hw.quantization, "model_path": "model_int8.tflite", "model_kb": kb,
             # model.tflite: float32 RGB 0-255 in (no normalization, the model does it), probabilities out.
             "portable_model_path": "model.tflite", "portable_input": "float32 RGB 0-255, no normalization",
@@ -60,10 +60,28 @@ class Export(Stage):
             **({"output": count_output(hw.input_size, summary[seed].get("threshold"))} if counting else {}),
             "asset_credits": [{"name": n, "author": a, "license": lic, "source": s} for n, a, lic, s in credits],
         }
+        report["shipped_test"] = shipped_test(ctx, seed)
         report["previous"] = compare_previous(ctx, seed)
+        learned = ctx.job.stage_dir("label") / "teacher.json"
+        taught = json.loads(learned.read_text()) if learned.exists() else {}
+        # The likeliest reasons for a low count score: say them next to the score.
+        advice = [taught[k]["note"] for k in ("small_objects", "crowded") if taught.get(k)]
+        if advice:
+            report["advice"] = advice
         (out / "report.json").write_text(json.dumps(report, indent=2))
         ctx.log(f"exported seed {seed}: {kb} KB, labels {ctx.spec.labels}")
         return {"seed": int(seed), "model_kb": kb}
+
+
+def shipped_test(ctx: Context, seed) -> dict | None:
+    """The shipped model's own score on the real test photos: the headline, since it is the model the user gets.
+    real_test holds the mean and spread of all seeds."""
+    f = ctx.job.stage_dir("evaluate") / f"seed_{seed}.json"
+    if not f.exists():
+        return None
+    now = json.loads(f.read_text())
+    return {"score": now.get("f1", now.get("accuracy")),
+            **({"count_mae": now["count_mae"]} if "count_mae" in now else {})}
 
 
 def compare_previous(ctx: Context, seed) -> dict | None:
@@ -124,6 +142,10 @@ def count_output(size: int, threshold: float | None) -> dict:
     from ..counting import STRIDE, THRESHOLD, grid_size
     g, th = grid_size(size), threshold or THRESHOLD
     return {"shape": [g, g, "classes"], "stride_px": STRIDE, "threshold": th,
-            "how_to_read": f"A {g}x{g} grid of class probabilities, labels.txt order, background first. A cell is "
-                           f"an object when its best other class reaches {th}; neighbouring object cells of "
-                           "the same class are one object, at their centre. The number of blobs is the count."}
+            "density": {"shape": [g, g, "classes - 1"]},
+            "how_to_read": f"Two outputs, told apart by their channels. Points: a {g}x{g} grid of class "
+                           "probabilities, labels.txt order, background first. A cell is an object when its best "
+                           f"other class reaches {th}; neighbouring object cells of the same class are one object, "
+                           f"at their centre. Density: a {g}x{g} grid with one channel per class (labels.txt order "
+                           "without the background), the number of objects in each cell. Its sum per class, "
+                           "rounded, is the count: steadier than the number of points in crowds."}

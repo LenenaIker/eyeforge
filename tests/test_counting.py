@@ -1,18 +1,17 @@
-"""Count task without TensorFlow or Isaac Sim: decoding, scoring, placement, points, teacher marks, review."""
+"""Count task without TensorFlow, Isaac Sim or a GPU: decoding, scoring, placement, points, teacher marks, review."""
 import json
 import random
-import threading
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from sim2chip import counting, llm, review
+from sim2chip import counting, review, teacher
 from sim2chip.scenes.scatter import cluster
 from sim2chip.spec import SpecError, from_dict
 from sim2chip.stages import Context
 from sim2chip.stages.ingest import Ingest
-from sim2chip.stages.label import Label, objects_from
+from sim2chip.stages.label import Label
 from sim2chip.stages.points import Points
 from sim2chip.workspace import Cache, link_input, open_job
 
@@ -102,79 +101,106 @@ def test_points_from_renders(tmp_path):
     assert Image.open(ctx.job.stage_dir("points") / "images" / "00000.png").size == (96, 96)
 
 
-class FakeClient:
-    answer = staticmethod(lambda text: "{}")
-    calls = []
+def fake_sam3(monkeypatch, answer):
+    """SAM 3 without a GPU: answer(photo path) gives its detections; returns the photos it was asked about."""
+    asked = []
 
-    def __init__(self, usage_log=None, **kw):
-        pass
+    def detect(items, phrases, log=print):
+        assert phrases["pot"] == ["flower pot"] and phrases["cat"] == ["cat"]  # queries, else categories
+        for path, out in items:
+            asked.append(path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(answer(path)))
+    monkeypatch.setattr(teacher, "detect", detect)
+    return asked
 
-    def model_for(self, role):
-        return f"fake-{role}"
 
-    def chat(self, messages, model, purpose, **kw):
-        FakeClient.calls.append(messages[0]["content"][0]["text"])
-        return FakeClient.answer(messages[0]["content"][0]["text"])
+def box(x0, y0, x1, y1, score, cls="pot"):
+    return {"class": cls, "box": [x0, y0, x1, y1], "score": score}
 
 
-def test_objects_from_boxes():
-    ans = {"objects": [{"class": "pot", "box": [100, 50, 300, 150]}, {"class": "dog", "box": [0, 0, 10, 10]},
-                       {"class": "cat", "box": [390, 190, 900, 900]}, {"class": "pot", "box": [5, 5, 5, 20]}]}
-    objs = objects_from(ans, ["pot", "cat"], 400, 200)
-    assert [(o["x"], o["y"], o["class"]) for o in objs] == [(0.5, 0.5, "pot"), (0.9875, 0.975, "cat")]
-    assert objs[0]["box"] == [0.25, 0.25, 0.75, 0.75]
+def test_teacher_threshold_follows_the_user_preference():
+    dets = {"a": [box(0.1, 0.1, 0.3, 0.3, 0.9), box(0.5, 0.5, 0.7, 0.7, 0.3)],
+            "b": [box(0.1, 0.1, 0.3, 0.3, 0.8), box(0.6, 0.1, 0.8, 0.3, 0.4), box(0.6, 0.5, 0.8, 0.7, 0.35)]}
+    truth = {"a": [[0.2, 0.2, "pot"], [0.6, 0.6, "pot"]], "b": [[0.2, 0.2, "pot"]]}
+    # Only the 0.3 box among the weak ones is a pot: balanced drops all three (ties go to the default).
+    assert teacher.choose("balanced", dets, truth)["threshold"] == 0.5
+    # Missing a pot hurts more: a lower threshold keeps it and pays two false marks.
+    assert teacher.choose("find_more", dets, truth)["threshold"] == 0.3
+    # Too few corrected photos: the default of the preference.
+    assert teacher.choose("fewer_false", dets, {"a": truth["a"]}) == {
+        "threshold": 0.6, "preference": "fewer_false", "photos": 1}
+    objs = teacher.objects(dets["a"], 0.5)
+    assert [(o["x"], o["y"], o["class"]) for o in objs] == [(0.2, 0.2, "pot")] and objs[0]["box"] == [0.1, 0.1, 0.3, 0.3]
 
 
 def test_label_marks_then_ingest_then_review_fix(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "Client", FakeClient)
-    FakeClient.calls = []
     raw = tmp_path / "raw"
     raw.mkdir()
     for i in range(6):
         Image.new("RGB", (400, 200), (10 * i, 0, 0)).save(raw / f"p{i}.jpg")
-    lock, n = threading.Lock(), iter(range(100))
 
-    def answer(text):
-        if "general rule" in text:  # a lesson from the user's correction
-            assert "Red boxes" in text
-            return json.dumps({"lesson": "Box the pot, not the plant above it."})
-        assert "400 x 200 pixels" in text
-        with lock:
-            i = next(n)
+    def answer(path):
+        i = int(path.stem[1:])
         if i == 0:
-            return "no idea"  # twice for the same photo: it ends up unsure
-        return json.dumps({"objects": [{"class": "pot", "box": [0, 0, 40, 20]}] * (i % 3)})
-    FakeClient.answer = staticmethod(answer)
+            return {"error": "OSError: broken"}  # that photo ends up unsure
+        # i % 3 sure pots and one doubtful box below the default threshold
+        return {"detections": [box(0.1 * j, 0, 0.1 * j + 0.1, 0.1, 0.9) for j in range(i % 3)] +
+                [box(0.6, 0.2, 0.8, 0.4, 0.35)]}
+    asked = fake_sam3(monkeypatch, answer)
     ctx = ctx_for(tmp_path, user_data={"raw": "raw", "test_per_class": 2, "train_per_class": 10})
     link_input(ctx.job, "raw", raw)
     info = Label().run(ctx)
-    assert info["labels"]["images"] + info["labels"].get("unsure", 0) == 6
+    assert info["labels"] == {"images": 5, "unsure": 1} and info["threshold"] == 0.5 and len(asked) == 6
+    assert info["objects"] == sum(i % 3 for i in range(1, 6))
     counts = Ingest().run(ctx)["counts"]
-    assert counts["test"]["photos"] == 2 and counts["test"]["photos"] + counts["train"]["photos"] == \
-        info["labels"]["images"]
+    assert counts["test"]["photos"] == 2 and counts["test"]["photos"] + counts["train"]["photos"] == 5
     table = json.loads((ctx.job.stage_dir("ingest") / "test" / "points.json").read_text())
     some = next(iter(table.values()))
     assert some["source"].startswith("label/images/") and all(p[2] == "pot" for p in some["points"])
 
     got = review.gather(ctx.job, ctx.cache, ctx.spec.labels, task="count")
-    assert got["task"] == "count" and len(got["photos"]) == 6
-    key = got["photos"][0]["key"]
-    assert review.apply(ctx.job, ctx.cache, {}, {}, {key: [[0.2, 0.3, "pot"], [0.7, 0.3, "nothing"]]}) == "label"
-    assert review.apply(ctx.job, ctx.cache, {}, {}, {key: [[0.2, 0.3, "pot"], [0.7, 0.3, "nothing"]]}) is None
-    calls = len(FakeClient.calls)
-    Label().run(ctx)
-    # The teacher disagreed with the user: one lesson, and its rule relabels every photo.
-    new = FakeClient.calls[calls:]
-    assert sum("general rule" in t for t in new) == 1 and sum("400 x 200 pixels" in t for t in new) >= 6
-    learned = json.loads((ctx.job.stage_dir("label") / "lessons.json").read_text())
-    assert learned["rules"] == ["Box the pot, not the plant above it."] and key in learned["lessons"]
-    v = json.loads((ctx.job.stage_dir("label") / "verdicts.json").read_text())[key]
-    assert v["judge"] == "user" and [(o["x"], o["class"]) for o in v["objects"]] == [(0.2, "pot")]
-    assert "teacher_objects" in v
-    # Same corrections: the lesson and the relabeled answers are reused.
-    calls = len(FakeClient.calls)
-    Label().run(ctx)
-    assert not any("general rule" in t for t in FakeClient.calls[calls:]) and len(FakeClient.calls) - calls <= 2
+    assert got["task"] == "count" and len(got["photos"]) == 6 and "50%" in got["teacher_rules"][0]
+    # The user marks the doubtful box as a pot on two photos: the teacher lowers its threshold for all.
+    fixes = {"p1.jpg": [[0.05, 0.05, "pot"], [0.7, 0.3, "pot"], [0.9, 0.9, "nothing"]],
+             "p2.jpg": [[0.05, 0.05, "pot"], [0.15, 0.05, "pot"], [0.7, 0.3, "pot"]]}
+    assert review.apply(ctx.job, ctx.cache, {}, {}, fixes) == "label"
+    assert review.apply(ctx.job, ctx.cache, {}, {}, fixes) is None
+    info = Label().run(ctx)
+    assert info["threshold"] <= 0.35 and len(asked) == 7  # only the failed photo asked again
+    v = json.loads((ctx.job.stage_dir("label") / "verdicts.json").read_text())
+    assert v["p1.jpg"]["judge"] == "user" and [(o["x"], o["class"]) for o in v["p1.jpg"]["objects"]] == [
+        (0.05, "pot"), (0.7, "pot")]
+    assert len(v["p1.jpg"]["teacher_objects"]) == 2 and len(v["p4.jpg"]["objects"]) == 2
+    assert "2 corrected photos" in review.gather(ctx.job, ctx.cache, ctx.spec.labels, task="count")["teacher_rules"][0]
+
+
+def test_class_without_3d_models_is_looked_for_in_english(tmp_path, monkeypatch):
+    """No 3D search, so no English queries: the id "maceta" is translated once, cached, then given to SAM 3."""
+    spec = {"name": "t", "task": "count", "classes": [
+        {"id": "maceta", "description": "macetas desde cualquier ángulo", "size_m": {"measure": "length", "range": [0.1, 0.5]}}]}
+    asked = []
+    monkeypatch.setattr(teacher, "english_phrases", lambda m: asked.append(m) or {"maceta": ["flower pot", "plant pot"]})
+    ctx = Context(from_dict(spec), open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
+    assert Label._phrases(ctx) == {"maceta": ["flower pot", "plant pot"]}
+    assert Label._phrases(ctx) == {"maceta": ["flower pot", "plant pot"]} and len(asked) == 1
+    assert asked[0] == {"maceta": "macetas desde cualquier ángulo"}
+    # Classes with English queries are never sent.
+    assert Label._phrases(ctx_for(tmp_path / "b")) == {"pot": ["flower pot"], "cat": ["cat"]}
+
+
+def test_label_stops_when_the_teacher_finds_nothing_the_user_marked(tmp_path, monkeypatch):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    for i in range(3):
+        Image.new("RGB", (400, 200), (10 * i, 0, 0)).save(raw / f"p{i}.jpg")
+    fake_sam3(monkeypatch, lambda path: {"detections": []})
+    ctx = ctx_for(tmp_path, user_data={"raw": "raw", "test_per_class": 1, "train_per_class": 10})
+    link_input(ctx.job, "raw", raw)
+    Label().run(ctx)  # nothing marked by the user yet: nothing to contradict
+    review.apply(ctx.job, ctx.cache, {}, {}, {"p1.jpg": [[0.5, 0.5, "pot"]]})
+    with pytest.raises(RuntimeError, match="found nothing in any of the 3 photos"):
+        Label().run(ctx)
 
 
 def test_best_threshold_drops_weak_false_positives():
@@ -186,9 +212,7 @@ def test_best_threshold_drops_weak_false_positives():
 def test_split_is_by_content_and_3d_photos_stay_out_of_test(tmp_path, monkeypatch):
     """Same photos under other names in another job: same teacher answers (shared cache), same test side;
     photos a 3D model was made from never land in test."""
-    monkeypatch.setattr(llm, "Client", FakeClient)
-    FakeClient.calls = []
-    FakeClient.answer = staticmethod(lambda text: json.dumps({"objects": [{"class": "pot", "box": [0, 0, 40, 20]}]}))
+    asked = fake_sam3(monkeypatch, lambda path: {"detections": [box(0, 0, 0.1, 0.1, 0.9)]})
     colors = [(20 * i, 5, 5) for i in range(10)]
     three_d = tmp_path / "three_d"
     three_d.mkdir()
@@ -209,7 +233,7 @@ def test_split_is_by_content_and_3d_photos_stay_out_of_test(tmp_path, monkeypatc
         Ingest().run(ctx)
         table = json.loads((ctx.job.stage_dir("ingest") / "test" / "points.json").read_text())
         tests.append(sorted(Image.open(raw / v["key"]).getpixel((0, 0)) for v in table.values()))
-    assert len(FakeClient.calls) == 10  # job b reused all ten answers
+    assert len(asked) == 10  # job b reused all ten answers
     assert tests[0] == tests[1] and len(tests[0]) == 3
     assert colors[0] not in tests[0]  # the 3D photo is in train
 
@@ -218,3 +242,55 @@ def test_big_objects_match_within_their_core():
     big = (0.5, 0.5, "pot", 0.6, 0.8)  # a pot filling most of the picture
     assert counting.match([(0.6, 0.62, "pot")], [big], radius=2 / 28) == (1, 0, 0)
     assert counting.match([(0.6, 0.62, "pot")], [big[:3]], radius=2 / 28) == (0, 1, 1)  # a bare point is strict
+
+
+def test_objects_smaller_than_a_cell_are_reported():
+    """Pots in street photos: median 6 px at 224 and F1 9% (2026-10-01). Say why before the user wonders."""
+    from sim2chip import counting
+    tiny = [[0.02, 0.03]] * 7 + [[0.3, 0.3]] * 3  # 5 px and 67 px at 224
+    small = counting.small_objects(tiny, 224)
+    assert small["share"] == 0.7 and small["median_px"] < 8 and "224 px" in small["note"]
+    assert counting.small_objects(tiny, 1024) is None  # the same photos at a bigger input are fine
+    assert counting.small_objects([], 224) is None
+
+
+def test_crowded_photos_warn_the_user():
+    """FSC-147: over 30 per photo the count was off by 15 to 70% (2026-10-01). Say what to expect."""
+    from sim2chip import counting
+    dense = counting.crowded([5, 12, 40, 80])
+    assert dense["share"] == 0.5 and dense["max"] == 80 and "a third to a half" in dense["note"]
+    assert counting.crowded([40] + [8] * 24) is None  # one crowded photo in 25: no warning
+    assert counting.crowded([]) is None
+
+
+def test_few_photos_keep_the_threshold_near_the_middle():
+    """Cross-validation on 19 photos chose 0.9 by a hair; 0.5 scored twice as well on the test (2026-10-01)."""
+    from sim2chip import counting
+    assert counting.steady_threshold({0.3: 0.2, 0.5: 0.33, 0.7: 0.34, 0.9: 0.35}) == 0.5
+    assert counting.steady_threshold({0.3: 0.1, 0.5: 0.2, 0.7: 0.3, 0.9: 0.35}) == 0.9  # a clear winner stays
+
+
+def test_count_seeds_share_one_threshold():
+    from sim2chip.stages.train import common_threshold
+
+    class Ctx:
+        log = staticmethod(lambda m: None)
+    curve = lambda a, b: {"0.5": {"f1": a, "count_mae": 1.0}, "0.9": {"f1": b, "count_mae": 2.0}}
+    summary = {0: {"cv_curve": curve(0.30, 0.40), "threshold": 0.9}, 1: {"cv_curve": curve(0.30, 0.20), "threshold": 0.5}}
+    common_threshold(Ctx(), summary)
+    assert {r["threshold"] for r in summary.values()} == {0.5} and summary[1]["val_f1"] == 0.30
+
+
+def test_count_error_comes_from_the_density_when_given():
+    """Points merge a crowd into fewer blobs; the density's rounded sum is the count that is scored."""
+    import numpy as np
+    from sim2chip import counting
+    truth = [[(0.1, 0.1, "a"), (0.12, 0.1, "a"), (0.5, 0.5, "a")]]
+    pred = [[(0.11, 0.1, "a"), (0.5, 0.5, "a")]]
+    assert counting.score(pred, truth, 28)["count_mae"] == 1
+    d = np.zeros((28, 28, 1))
+    d[2, 2, 0], d[14, 14, 0] = 1.8, 1.1
+    counts = [counting.density_counts(d, ["empty", "a"])]
+    assert counts == [{"a": 3}]
+    sc = counting.score(pred, truth, 28, counts)
+    assert sc["count_mae"] == 0 and sc["exact"] == 1 and sc["f1"] == counting.score(pred, truth, 28)["f1"]
