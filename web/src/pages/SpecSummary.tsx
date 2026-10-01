@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { Spec } from "../api";
 
 // Plain-language names for what the spec says; the JSON stays under "Advanced".
-const DEVICES: Record<string, string> = {
+export const DEVICES: Record<string, string> = {
   esp32cam: "ESP32-CAM (about $10 microcontroller)",
   esp32s3: "ESP32-S3 camera board",
   jetson_nano: "NVIDIA Jetson Nano",
@@ -42,14 +42,24 @@ export function SpecSummary({ spec }: { spec: Spec }) {
           {cam.height_m && <span className="text-muted">, {cam.height_m[0]} to {cam.height_m[1]} m high</span>}
         </Row>
         <Row icon={<Image />} label="Training images">
-          {(spec.generation?.frames ?? 0).toLocaleString()} made to measure
-          {(ud.raw || ud.labeled) && <span className="text-muted"> + your photos{ud.raw ? " (labelled for you)" : ""}</span>}
+          {usesSynthetic(spec) ? <>
+            {(spec.generation?.frames ?? 2000).toLocaleString()} made to measure
+            {hasPhotos(spec) && <span className="text-muted"> + your photos{ud.raw ? " (labelled for you)" : ""}</span>}
+          </> : <>Your photos only{ud.raw && <span className="text-muted"> (labelled for you)</span>}</>}
         </Row>
         <Row icon={<Cpu />} label="Device">{DEVICES[spec.hardware ?? "generic"] ?? spec.hardware}</Row>
       </dl>
     </div>
   );
 }
+
+// Synthetic images are made only for classes with 3D models to find (assets) and frames asked for; without them,
+// the run trains on the user's photos alone and skips the 3D models and the rendering (spec.synthetic).
+export const usesSynthetic = (spec: Spec) => (spec.generation?.frames ?? 2000) > 0 && spec.classes.some((c: any) => c.assets);
+export const hasPhotos = (spec: Spec) => {
+  const ud = spec.user_data ?? {};
+  return Boolean(ud.raw || ud.test || (ud.labeled && Object.keys(ud.labeled).length));
+};
 
 function Row({ icon, label, children }: { icon: ReactNode; label: string; children: ReactNode }) {
   return (

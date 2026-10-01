@@ -109,6 +109,30 @@ def test_interview_proposes_the_users_own_photos_for_3d(tmp_path):
     assert "1 photos to build 3D models of class pot" in client.seen[-1]
 
 
+def test_turn_steps_show_what_the_interview_is_doing():
+    client = Scripted(["not json", {"search": ["cow"]}, {"spec": {"name": "x"}}, {"say": "Where is the camera?"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}))
+    s.begin("t1")
+    assert s.reply("cows").text == "Where is the camera?"
+    steps = [(a["text"], a["state"]) for a in s.activity]
+    assert steps[0] == ("Thinking", "failed") and ("Searching the 3D model catalog: cow", "done") in steps
+    assert ("Checking the proposed setup", "failed") in steps and steps[-1] == ("Thinking about what it found", "done")
+    assert all(a["ended"] >= a["started"] for a in s.activity) and s.activity_id == "t1"
+    s.begin("t2")
+    assert s.activity == [] and s.activity_id == "t2"
+
+
+def test_photo_steps_count_photos_when_the_helper_can():
+    s = interview.Session(Scripted([]), "m", interview.CategoryIndex(counts={}))
+    step = s._step("Looking at your photos")
+
+    def helper(folder, progress=None):
+        progress(3, 8)
+        return folder
+    assert s._counting(helper, step, "f") == "f" and (step["done"], step["total"]) == (3, 8)
+    assert s._counting(lambda folder: folder, step, "g") == "g"  # helpers without progress still work
+
+
 def test_interview_asks_for_photos_when_none_fit(tmp_path):
     (tmp_path / "phone").mkdir()
     pick = {"pick_photos": {"class": "pot", "query": "flower pot", "folder": str(tmp_path / "phone")}}
@@ -187,3 +211,98 @@ def test_revise_does_not_reword_settled_queries():
     turn = s.reply("on a Jetson")
     assert turn.kind == "confirm" and len(client.seen) == 1
     assert turn.spec.props[0].queries == ["railings"] and turn.spec.classes[0].assets.queries == ["cow", "vaca"]
+
+
+def test_research_looks_facts_up_and_is_logged(tmp_path):
+    """Nemotron asks the web instead of guessing a size; the search is logged for the usage panel and capped."""
+    from sim2chip.research import ResearchError
+    asked = []
+
+    def researcher(q):
+        asked.append(q)
+        if "fail" in q:
+            raise ResearchError("Tavily: HTTP 432")
+        return {"answer": "A Holstein cow is about 2.4 m long.",
+                "sources": [{"title": "Cattle", "url": "https://example.org/cow", "content": "Length 2.3-2.5 m"}]}
+    client = Scripted([{"research": "Holstein cow body length"}, {"research": "fail please"},
+                       {"say": "Where is the camera?"}] + [{"research": "more"}] * interview.MAX_RESEARCH
+                      + [{"say": "ok"}])
+    client.usage_log = tmp_path / "usage.jsonl"
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}), researcher=researcher)
+    assert '"research"' in s.messages[0]["content"]
+    assert s.reply("cows").text == "Where is the camera?"
+    assert "2.4 m long" in client.seen[1] and "https://example.org/cow" in client.seen[1]
+    assert "research failed" in client.seen[2]
+    assert s.reply("on a post").text == "ok"
+    assert len(asked) == interview.MAX_RESEARCH and "No more research" in client.seen[-1]
+    logged = [json.loads(line) for line in client.usage_log.read_text().splitlines()]
+    assert len(logged) == interview.MAX_RESEARCH - 1 and logged[0]["model"] == "tavily/search"  # failures not billed
+    # Without a key the action is not offered.
+    assert '"research"' not in interview.Session(Scripted([]), "m", interview.CategoryIndex(counts={})).messages[0][
+        "content"]
+
+
+def test_folder_layout_is_read_not_asked(tmp_path):
+    """A folder written in the message: its layout goes to the model before it answers, so it never asks."""
+    raw, sorted_ = tmp_path / "raw", tmp_path / "sorted"
+    for d, names in ((raw, ["a.jpg", "b.jpg"]), (sorted_ / "grass", ["c.jpg"]), (sorted_ / "edge", ["d.png", "e.png"])):
+        d.mkdir(parents=True)
+        for n in names:
+            (d / n).write_bytes(b"x")
+    assert "2 photos, no subfolders" in interview.folder_layout(raw)
+    assert "edge (2), grass (1)" in interview.folder_layout(sorted_)
+    (sorted_ / "loose.jpg").write_bytes(b"x")
+    assert "mixed" in interview.folder_layout(sorted_)
+
+    client = Scripted([{"say": "What device?"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}))
+    s.reply(f"lawn, border or no grass; photos in {raw}")
+    assert "[Folder layout" in client.seen[-1] and "no subfolders" in client.seen[-1]
+
+
+def test_counting_asks_for_english_names_for_sam3():
+    """SAM 3 marks the user's photos and reads only English: a count spec without class names goes back."""
+    cls = {"id": "maceta", "description": "macetas", "size_m": {"measure": "length", "range": [0.1, 0.5]}}
+    spec = {"name": "pots", "task": "count", "background_class": "empty", "classes": [cls],
+            "user_data": {"raw": "x"}}
+    named = {**spec, "classes": [{**cls, "names": ["flower pot"]}]}
+    client = Scripted([{"spec": spec}, {"spec": named}, {"flower pot": "flower pot"}])  # the last: English check
+    t = interview.Session(client, "m", interview.CategoryIndex(counts={})).reply("cuenta mis macetas")
+    assert "understands only English" in client.seen[1]
+    assert t.kind == "confirm" and t.spec.classes[0].names == ["flower pot"]
+
+
+def test_a_failed_photo_check_lets_the_user_choose(tmp_path):
+    """The vision model timed out on every photo (2026-09-30): that is not "no photo shows the pot"."""
+    photos = [str(tmp_path / f"{i}.jpg") for i in range(3)]
+    ranker = lambda f, q: [{"file": p, "score": 0.0, "reason": interview.NO_VERDICT[1]} for p in photos]
+    pick = {"pick_photos": {"class": "pot", "query": "flower pot", "folder": str(tmp_path)}}
+    s = interview.Session(Scripted([pick]), "m", interview.CategoryIndex(counts={}), photo_ranker=ranker)
+    t = s.reply("pots")
+    assert t.kind == "pick" and [c["file"] for c in t.request["candidates"]] == photos
+    assert "could not check" in t.text
+
+
+def test_counting_names_keep_only_english():
+    """SAM 3 gets the names: the user's word is replaced, not kept after the English one."""
+    cls = {"id": "pot", "size_m": {"measure": "length", "range": [0.1, 0.5]},
+           "names": ["maceta", "flower pot"]}
+    spec = {"name": "pots", "task": "count", "background_class": "empty", "classes": [cls], "user_data": {"raw": "x"}}
+    client = Scripted([{"spec": spec}, {"maceta": "flower pot", "flower pot": "flower pot"}])
+    t = interview.Session(client, "m", interview.CategoryIndex(counts={})).reply("cuenta mis macetas")
+    assert t.kind == "confirm" and t.spec.classes[0].names == ["flower pot"]
+
+
+def test_no_synthetic_images_means_no_3d_stages():
+    """frames 0 with models built from photos (2026-09-30) ran the 3D stages for nothing."""
+    from sim2chip.spec import from_dict
+    from sim2chip.stages import STAGES
+    cls = {"id": "pot", "size_m": {"measure": "length", "range": [0.1, 0.5]}, "names": ["flower pot"],
+           "assets": {"source": "photos", "queries": ["flower pot"], "photos": "/nowhere"}}
+    spec = {"name": "pots", "task": "count", "background_class": "empty", "classes": [cls], "user_data": {"raw": "x"}}
+    run = lambda s: [st.name for st in STAGES if st.enabled(from_dict(s))]
+    assert "render" in run(spec) and "generate_assets" in run(spec)
+    only_photos = run({**spec, "generation": {"frames": 0}})
+    assert not {"fetch_assets", "generate_assets", "render", "points"} & set(only_photos)
+    assert {"label", "ingest", "train", "export"} <= set(only_photos)
+    assert "synthetic images: none" in interview.summary(from_dict({**spec, "generation": {"frames": 0}}))

@@ -3,14 +3,18 @@
 Every model turn is one JSON action:
   {"say": "..."}                         ask the user something (or explain)
   {"search": ["cow", "cattle"]}          look up 3D model categories (Objaverse-LVIS) and their sizes
+  {"research": "..."}                    look up facts on the web (Tavily), when a key is set
   {"spec": {...}}                        propose the full spec
 A proposed spec is validated; errors go back to the model. A valid spec is summarized and saved only
 after the user confirms it.
 """
 from __future__ import annotations
 
+import inspect
 import json
+import random
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -36,6 +40,10 @@ there are no photos), send the spec directly, with one or two plain sentences in
 saw in their photos and what the synthetic images will show: {{"say": "...", "spec": {{...}}}}. The user sees
 them above a summary and confirms once.
 
+Synthetic images are optional: if the user wants only their own photos, set "generation": {{"frames": 0}}, give
+no "assets" and no "props", and say it plainly; never ask about synthetic images again after they said it.
+Before any question, reread the user's messages: never ask what they already answered, even in other words.
+
 What the spec must settle (decide it; ask only as said above):
 - What the camera must recognize and what counts as "nothing". On a microcontroller 2 to 5 coarse classes
   work best: suggest merging classes it cannot tell apart at low resolution. Bigger devices allow more
@@ -43,17 +51,32 @@ What the spec must settle (decide it; ask only as said above):
 - The task. "roi_classification" (default) says which class the picture shows, or none. "task": "count"
   says how many objects of each class are in the picture and where: use it when the user wants to count, or
   when several objects appear at once (a balcony with pots, a flock). For counting, photos always go in
-  user_data.raw: the teacher marks every object and the user fixes the marks in review. Counting small or far
+  user_data.raw: the teacher marks every object and the user fixes the marks in review. The teacher (SAM 3)
+  understands only English: give every counted class "names", 1 to 3 short English noun phrases, most common
+  first ("names": ["flower pot", "plant pot"]), whatever language the user speaks. Counting small or far
   objects needs pixels: on a microcontroller (96 px) only objects that fill a good part of the picture can be
-  counted; say so if the user expects more.
+  counted; say so if the user expects more. Crowds are hard too: past 30 objects per photo (a flock, a crowd)
+  the count is often off by a third to a half; suggest a narrower view if they expect crowds.
+- Which mistake hurts more ("errors"): "find_more" when missing an object is worse than a false alarm
+  (a pest, a defect, an animal they study), "fewer_false" when a false alarm is worse (an alert that wakes
+  someone, a robot that stops), "balanced" otherwise. Decide it from their goal; when the goal does not tell,
+  this is worth one short question.
 - Where the camera is: environment, mounting height, typical distance, lighting and weather.
+- Whether turning or mirroring a photo keeps its answer ("training": {{"orientation": ...}}); training shows
+  the model turned and mirrored copies of every photo, so this must match what the camera will really see.
+  "upright" (default, may be omitted) when the view has an up: sky or horizon, walls, standing people, animals
+  or vehicles, a camera looking forward or at an angle. "any" when up does not exist: a camera looking
+  straight down (ground from a drone or a ceiling, a conveyor belt, a table from above), a microscope, loose
+  objects in any position. "fixed" when left and right also matter: text, digits, signs, arrows, a part that
+  is only correct one way round. Decide it from the goal and the photo analysis, never ask.
 - Target hardware, one of these profiles:
 {hardware}
   If the user has no device, has not decided, or only wants to test on a phone or PC, use "generic".
 - Whether they have photos and the folder path. "labeled" ONLY when the folder has one subfolder per class
   (class_map maps each class to its subfolder names). Unsorted photos, even if every photo shows the object,
   are "raw": the teacher model labels them and also finds the ones without the object (background class).
-  Folder layouts are checked when you send the spec.
+  You are told each folder's layout (subfolders and photo counts) as soon as the user names it: never ask the
+  user how their photos are organised. Folder layouts are checked again when you send the spec.
   A few real photos improve accuracy a lot compared with synthetic images only; say so. For an honest score,
   suggest a separate labeled test folder (user_data.test) with photos taken on another day or place.
 - Real-world size of each class: from the photo analysis, or typical sizes you know.
@@ -101,7 +124,9 @@ Spec format (JSON, defaults shown; omit a field to keep its default):
 Notes: size_m.measure is "length" (long side from above), "width" (short side from above) or "height";
 choose the one that varies least across the class. assets.count is the number of models per class.
 classes lists only the objects to find: the background class ("empty", no object) is added by itself, never
-list it as a class or ask the user about it.
+list it as a class or ask the user about it. When every photo is one of the classes (surfaces, scenes or
+states that cover the whole view, like lawn / border / no grass, or day / night), set "background_class": null
+so no extra class is added: the model must always pick one of the user's classes.
 repaint (0-1) is how often a model is painted a random solid color: set it (e.g. 0.35) only when real
 instances of the class come in many colors (cars), with metallic [0.2, 0.8] for shiny paint; omit both otherwise.
 user_data.labeled / user_data.raw / user_data.test are folder paths; class_map maps each class id to the subfolder names of
@@ -227,18 +252,22 @@ MAX_INVALID_SPECS = 4  # rejected proposals in a row before the model must ask t
 PICK_MAX = 8
 
 
+NO_VERDICT = ("no valid answer", "no answer in time")  # the vision model failed, the photo was not judged
+PICK_DEADLINE_S = 120  # ranking photos for 3D models: the user waits, photos not answered by then score 0
+
+
 def photo_ranker(client, model: str, limit: int = 80, workers: int | None = None):
     """Vision-model ranking of a folder's photos for building 3D models of a query (Token Factory)."""
     import tempfile
-    from concurrent.futures import ThreadPoolExecutor
 
     from PIL import Image, ImageOps
 
-    from .llm import WORKERS, image_part, parse_json
+    from .llm import PHOTO_CALL, image_part, map_within, parse_json
     from .workspace import IMAGE_EXT
 
-    def rank(folder: str, query: str) -> list[dict]:
-        files = sorted(f for f in Path(folder).rglob("*") if f.suffix.lower() in IMAGE_EXT)[:limit]
+    def rank(folder: str, query: str, progress=None) -> list[dict]:
+        files = sorted(f for f in Path(folder).rglob("*") if f.suffix.lower() in IMAGE_EXT)
+        files = sorted(random.sample(files, limit)) if len(files) > limit else files  # a random sample, not the first
         prompt = PICK_PROMPT.format(query=query)
         with tempfile.TemporaryDirectory() as tmp:
             def one(item):
@@ -250,14 +279,16 @@ def photo_ranker(client, model: str, limit: int = 80, workers: int | None = None
                     im.save(small, quality=85)
                 msg = [{"role": "user", "content": [{"type": "text", "text": prompt}, image_part(small)]}]
                 try:
-                    v = parse_json(client.chat(msg, model, purpose="pick_photos", temperature=0.0, max_tokens=1024))
+                    # 4096: Kimi-K2.6 reasons first and returned nothing within 1024 (2026-10-01)
+                    v = parse_json(client.chat(msg, model, purpose="pick_photos", temperature=0.0, max_tokens=4096,
+                                               **PHOTO_CALL))
                     ok = v.get("shows") and v.get("whole")
                     return {"file": str(f.resolve()), "score": float(v.get("score", 0)) if ok else 0.0,
                             "reason": str(v.get("reason", ""))}
                 except (ValueError, TypeError, AttributeError):
-                    return {"file": str(f.resolve()), "score": 0.0, "reason": "no valid answer"}
-            with ThreadPoolExecutor(max_workers=workers or WORKERS) as pool:
-                out = list(pool.map(one, enumerate(files)))
+                    return {"file": str(f.resolve()), "score": 0.0, "reason": NO_VERDICT[0]}
+            got = map_within(one, list(enumerate(files)), PICK_DEADLINE_S, workers, progress)
+        out = [c or {"file": str(f.resolve()), "score": 0.0, "reason": NO_VERDICT[1]} for c, f in zip(got, files)]
         return sorted(out, key=lambda c: -c["score"])
     return rank
 
@@ -265,6 +296,37 @@ def photo_ranker(client, model: str, limit: int = 80, workers: int | None = None
 def count_photos(folder: Path) -> int:
     from .workspace import IMAGE_EXT
     return sum(1 for f in folder.rglob("*") if f.suffix.lower() in IMAGE_EXT)
+
+
+def folder_layout(folder: Path, limit: int = 20) -> str:
+    """How a photo folder is organised, for the model: photos loose in it and per subfolder (with everything
+    below). The interview asked users whether their photos were sorted by class; the disk already says."""
+    from .workspace import IMAGE_EXT
+    loose = sum(1 for f in folder.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXT)
+    subs = {d.name: count_photos(d) for d in sorted(folder.iterdir()) if d.is_dir() and not d.name.startswith(".")}
+    subs = {k: v for k, v in subs.items() if v}
+    listed = ", ".join(f"{k} ({v})" for k, v in list(subs.items())[:limit]) + (" ..." if len(subs) > limit else "")
+    if not subs:
+        return (f"{folder}: {loose} photos, no subfolders: unsorted, so user_data.raw (the teacher labels them).")
+    how = ("If the subfolder names are the classes, this is user_data.labeled with class_map; if they are places, "
+           "days or anything else, it is user_data.raw (the teacher labels them).")
+    if loose:
+        return f"{folder}: {loose} photos loose and subfolders {listed}: mixed, so user_data.raw."
+    return f"{folder}: no loose photos, subfolders {listed}. {how}"
+
+
+def sam3_names_problem(s: spec_mod.Spec) -> str | None:
+    """Counting with the user's raw photos: SAM 3 marks them and understands only English, so every class needs
+    English names. Without them it got "maceta" and found nothing in 25 photos (2026-09-30)."""
+    from . import teacher
+    if s.task != "count" or not s.user_data.raw:
+        return None
+    missing = [c.id for c in s.classes if not teacher.names(c)]
+    if not missing:
+        return None
+    return (f"classes {missing} have no \"names\". The teacher that marks the objects in the user's photos (SAM 3) "
+            "understands only English: give each counted class \"names\": 1 to 3 short English noun phrases, most "
+            "common first, e.g. \"names\": [\"flower pot\", \"plant pot\"]")
 
 
 def check_photos(s: spec_mod.Spec) -> str | None:
@@ -327,7 +389,9 @@ any disk, so never ask for a folder path and use only the folders you are told a
 def _drop_background_class(spec: dict) -> None:
     """The model sometimes lists the background ("empty") as one more class (2026-09-27); the pipeline adds it by
     itself, so drop it instead of rejecting the whole spec."""
-    bg = spec.get("background_class") or "empty"
+    bg = spec.get("background_class", "empty")
+    if bg is None:
+        return
     if isinstance(spec.get("classes"), list):
         spec["classes"] = [c for c in spec["classes"] if not (isinstance(c, dict) and c.get("id") == bg)]
 
@@ -344,6 +408,14 @@ NO_PHOTO_MODELS = """
 On this server 3D models cannot be made from the user's photos yet: never set assets.photos, never use
 "source": "photos" or pick_photos; find models with "search" (English queries). The user's photos still
 train and test the model (user_data)."""
+
+RESEARCH = """
+You can look facts up on the web: {{"research": "<one precise question>"}} returns a short answer and its sources.
+Use it instead of guessing when a number matters and you are not sure of it: the real size of an object or a
+part (it sets size_m and whether the camera can see it at that distance and resolution), its English or technical
+name (for the 3D model search), or what it looks like. At most {n} per interview; the user never sees them.
+"""
+MAX_RESEARCH = 6
 
 ENGLISH_PROMPT = """These are search terms for 3D models and for an English-only object detector. Translate
 each term into the English words a 3D model site would use, keeping every detail the term gives (kind, place,
@@ -365,7 +437,8 @@ def is_yes(answer: str) -> bool:
 def summary(s: spec_mod.Spec) -> str:
     what = "counts and locates" if s.task == "count" else "classifies"
     lines = [f"Spec '{s.name}' for {s.hardware}, {what}:",
-             f"  classes: {', '.join(s.labels)} (background: {s.background_class})"]
+             f"  classes: {', '.join(s.labels)} "
+             + (f"(background: {s.background_class})" if s.background_class else "(no background class)")]
     for c in s.classes:
         size = f"{c.size_m.measure} {c.size_m.range[0]}-{c.size_m.range[1]} m" if c.size_m else "no 3D size"
         a = c.assets
@@ -391,7 +464,12 @@ def summary(s: spec_mod.Spec) -> str:
     photos = [f"sorted by class {ud.labeled}" if ud.labeled else "",
               f"unsorted {ud.raw} (the teacher model labels them)" if ud.raw else "",
               f"test {ud.test}" if ud.test else ""]
+    turns = {"any": "turned any way and mirrored (no up in the view)",
+             "fixed": "slightly turned and tilted, never mirrored (left and right matter)"}
+    lines.append(f"  training copies: {turns.get(s.training.orientation, 'slightly turned, tilted and mirrored left-right')}")
     lines.append(f"  photos: {', '.join(p for p in photos if p) or 'none (synthetic only)'}")
+    if not s.synthetic:
+        lines.append("  synthetic images: none, the model learns from your photos only")
     return "\n".join(lines)
 
 
@@ -414,19 +492,22 @@ class Session:
 
     def __init__(self, client, model: str, categories: CategoryIndex, max_turns: int = 60, scene_check=None,
                  photo_ranker=None, uploads: Path | None = None, scene_profiler=None, photo_models: bool = True,
-                 uploads_only: bool = False):
+                 uploads_only: bool = False, researcher=None):
         self.client, self.model, self.categories, self.max_turns = client, model, categories, max_turns
         # False where 3D models cannot be made from photos (the Nebius backend has no TRELLIS runtime yet).
         self.photo_models = photo_models
         # True on a public server: only photos uploaded in this chat, never a folder of the server's disk.
         self.uploads_only = uploads_only
+        self.researcher = researcher  # question -> {"answer", "sources"} (research.searcher), or None
+        self.researched = 0
         self.scene_check = scene_check  # scene -> error message or None (live Poly Haven check)
         self.photo_ranker = photo_ranker  # (folder, query) -> [{"file", "score", "reason"}], best first
         self.uploads = uploads            # where chosen photos are gathered
         self.scene_profiler = scene_profiler  # (folder, classes) -> (scene fields, summary)
         self.candidates: list[dict] = []  # the last photos proposed to the user
         self.messages = [{"role": "system", "content": system_prompt() + ("" if photo_models else NO_PHOTO_MODELS)
-                          + (UPLOADS_ONLY if uploads_only else "")}]
+                          + (UPLOADS_ONLY if uploads_only else "")
+                          + (RESEARCH.format(n=MAX_RESEARCH) if researcher else "")}]
         self.proposed: spec_mod.Spec | None = None
         self.transcript: Path | None = None  # set by the server: logs/interviews/<session>.json
         self.finished = False
@@ -434,6 +515,37 @@ class Session:
         self.goal = ""  # the user's first message: what the photo analysis looks for
         self.analysed: set[str] = set()  # folders already analysed
         self.settled: list[list[str]] = []  # query lists of the job being revised (see revise)
+        # What the current turn is doing, step by step, for a front end to show while it waits (see _step).
+        # `activity_id` is the caller's id for the turn, so a poll never shows the steps of the previous one.
+        self.activity: list[dict] = []
+        self.activity_id: str | None = None
+
+    def begin(self, activity_id: str | None = None) -> None:
+        """Start a new turn's activity list; call before reply, add_photos or choose."""
+        self.activity, self.activity_id = [], activity_id
+
+    def _step(self, text: str, total: int | None = None) -> dict:
+        """A step the user sees while the turn runs: running until _end marks it done or failed."""
+        step = {"text": text, "state": "running", "started": time.time()}
+        if total:
+            step |= {"done": 0, "total": total}
+        self.activity.append(step)
+        return step
+
+    @staticmethod
+    def _end(step: dict, state: str = "done", detail: str | None = None) -> None:
+        step["state"], step["ended"] = state, time.time()
+        if detail:
+            step["detail"] = detail
+
+    @staticmethod
+    def _counting(fn, step: dict, *args):
+        """Call a photo helper, letting it count finished photos into the step when it can."""
+        if "progress" not in inspect.signature(fn).parameters:
+            return fn(*args)
+        def progress(done: int, total: int) -> None:
+            step["done"], step["total"] = done, total
+        return fn(*args, progress=progress)
 
     def reply(self, user_text: str) -> Turn:
         if self.finished:
@@ -466,15 +578,21 @@ class Session:
                            "places it will see, or a class to add or merge.")
 
     def _analyse(self, folder: str) -> None:
-        """Photo analysis of a folder the user gave, once per folder, before the model answers."""
+        """Layout and photo analysis of a folder the user gave, once per folder, before the model answers."""
         path = Path(folder).expanduser()
-        if self.scene_profiler is None or not path.is_dir() or self._foreign(path):
+        if not path.is_dir() or self._foreign(path):
             return
         key = str(path.resolve())
         if key in self.analysed or any(key.startswith(a + "/") for a in self.analysed):
             return
         self.analysed.add(key)
-        self._describe({"folder": key, "classes": self.goal or "the objects the user wants"})
+        try:
+            self._note(f"[Folder layout, read from the disk; never ask the user how it is organised] "
+                       f"{folder_layout(path)}")
+        except OSError as e:
+            self._note(f"[Folder layout] could not read {key}: {e}")
+        if self.scene_profiler is not None:
+            self._describe({"folder": key, "classes": self.goal or "the objects the user wants"})
 
     def add_photos(self, folder: str, count: int, purpose: str, cls: str | None = None) -> Turn:
         """The user uploaded (or pointed to) photos, asked for or not: tell the model and continue."""
@@ -526,8 +644,18 @@ class Session:
         if not folder.is_dir():
             self._note(f"pick_photos: folder {folder} does not exist. Ask the user where the photos are.")
             return None
-        ranked = self.photo_ranker(str(folder), query)
+        step = self._step(f"Looking for clear photos of {query} for 3D models")
+        ranked = self._counting(self.photo_ranker, step, str(folder), query)
         self.candidates = [c for c in ranked if c["score"] >= PICK_MIN_SCORE][:PICK_MAX]
+        if ranked and all(c["reason"] in NO_VERDICT for c in ranked):
+            # Seen 2026-09-30: GLM timed out on all 6 photos and the model was told none showed a pot, so it asked
+            # the user for photos they had already given. A failed check is not a verdict: the user chooses.
+            self._end(step, "failed", "the photo check did not answer; you choose")
+            self.candidates = ranked[:PICK_MAX]
+            return Turn("pick", "I could not check your photos automatically. Choose the ones that show the "
+                        f"{query} whole and big in the frame:",
+                        request={"for": "3d", "class": cls, "query": query, "candidates": self.candidates})
+        self._end(step, detail=f"{len(self.candidates)} of {len(ranked)} photos could work")
         if not self.candidates:
             self._note(f"pick_photos: none of the {len(ranked)} photos in {folder} shows a clear {query} "
                        "(whole, big, clean background). Ask the user for such photos with the photos action.")
@@ -545,14 +673,19 @@ class Session:
         elif not folder.is_dir():
             self._note(f"describe_scene: folder {folder} does not exist.")
         else:
+            step = self._step("Looking at your photos: place, distance, where the objects stand")
             try:
-                fields, text = self.scene_profiler(str(folder), str(req.get("classes") or "the objects"))
+                fields, text = self._counting(self.scene_profiler, step, str(folder),
+                                              str(req.get("classes") or "the objects"))
             except (OSError, ValueError, RuntimeError) as e:
+                self._end(step, "failed", str(e))
                 self._note(f"describe_scene failed ({e}); keep the default open ground scene.")
                 return
             if not fields.get("contexts"):
+                self._end(step, "failed", "no photo could be described")
                 self._note("describe_scene: no photo could be described; keep the default open ground scene.")
                 return
+            self._end(step)
             sug = fields.pop("suggest", {})
             photos = "\n".join(sug.pop("photos", []))
             self._note(f"[Photo analysis of the user's photos in {folder}] {text}\nWhat each photo shows:\n{photos}\n"
@@ -565,18 +698,25 @@ class Session:
         from .llm import parse_json
 
         invalid = 0  # spec proposals rejected in a row
-        for _ in range(self.max_turns):
-            text = self.client.chat(self.messages, self.model, purpose="interview", temperature=0.3, max_tokens=4096)
+        for i in range(self.max_turns):
+            step = self._step("Thinking" if i == 0 else "Thinking about what it found")
+            try:
+                text = self.client.chat(self.messages, self.model, purpose="interview", temperature=0.3,
+                                        max_tokens=4096)
+            except Exception as e:
+                self._end(step, "failed", str(e))
+                raise
             self.messages.append({"role": "assistant", "content": text})
             self._save()
             try:
                 action = parse_json(text)
             except ValueError:
-                self._note("Reply with exactly one JSON object as instructed.")
-                continue
+                action = None
             if not isinstance(action, dict):
+                self._end(step, "failed", "the answer was not in the expected format, asking again")
                 self._note("Reply with exactly one JSON object as instructed.")
                 continue
+            self._end(step)
             # A spec wins over text sent with it: seen 2026-09-27, {"say": "check it", "spec": {...}} was shown as
             # plain text, so the user never got the spec to confirm and the model kept saying it was ready.
             if "say" in action and "spec" not in action:
@@ -597,16 +737,22 @@ class Session:
                 purpose = req.get("for") if req.get("for") in ("3d", "training") else "training"
                 return Turn("photos", str(req.get("say") or "Do you have photos for this?"),
                             request={"for": purpose, "class": req.get("class")})
+            if "research" in action:
+                self._research(str(action["research"]))
+                continue
             if "search" in action:
                 q = action["search"] if isinstance(action["search"], list) else [action["search"]]
+                step = self._step("Searching the 3D model catalog: " + ", ".join(map(str, q)))
                 found = self.categories.search(q)
+                self._end(step, detail=f"{len(found)} categories found" if found else "nothing found")
                 self._note("search results (category: number of models): "
                            + json.dumps(found or "nothing found, try other words"))
             elif "spec" in action:
+                if isinstance(action["spec"], dict):
+                    self._english_queries(action["spec"])
+                    _drop_background_class(action["spec"])
+                step = self._step("Checking the proposed setup")
                 try:
-                    if isinstance(action["spec"], dict):
-                        self._english_queries(action["spec"])
-                        _drop_background_class(action["spec"])
                     s = spec_mod.from_dict(action["spec"])
                     unknown = [cat for c in s.classes if c.assets and c.assets.source == "objaverse_lvis"
                                for cat in c.assets.categories if cat not in self.categories.counts]
@@ -616,12 +762,14 @@ class Session:
                     problem = (f"these folders are not photos uploaded in this chat: {foreign}. "
                                + UPLOADS_ONLY.strip()) if foreign else None
                     problem = problem or (self.scene_check(s.scene) if self.scene_check else None) or check_photos(s)
+                    problem = problem or sam3_names_problem(s)
                     if not self.photo_models and any(c.assets and c.assets.photos for c in s.classes):
                         problem = problem or NO_PHOTO_MODELS.strip()
                     if problem:
                         raise spec_mod.SpecError(problem)
                 except spec_mod.SpecError as e:
                     # Seen 2026-09-27: 25 rejected proposals in a row, 4 minutes of "thinking" for the user.
+                    self._end(step, "failed", f"{e} (fixing it)")
                     invalid += 1
                     if invalid >= MAX_INVALID_SPECS * 2:
                         self.finished = True
@@ -633,6 +781,7 @@ class Session:
                     else:
                         self._note(f"The spec is invalid: {e}. Fix it and send it again.")
                     continue
+                self._end(step)
                 self.proposed = s
                 intro = str(action.get("say") or "").strip()
                 return Turn("confirm", (intro + "\n\n" if intro else "") + summary(s), s, intro=intro)
@@ -651,6 +800,9 @@ class Session:
                  and isinstance(a.get("queries"), list)]
         lists += [p["queries"] for p in spec.get("props") or [] if isinstance(p, dict)
                   and isinstance(p.get("queries"), list)]
+        names_lists = [c["names"] for c in spec.get("classes") or [] if isinstance(c, dict)
+                       and isinstance(c.get("names"), list)]
+        lists += names_lists
         # Revising a job: lists kept as they were are already settled. Rewording them (railings -> railing)
         # would change the spec and send the job back to searching 3D models and rendering for nothing.
         lists = [qs for qs in lists if qs not in self.settled]
@@ -658,22 +810,57 @@ class Session:
         if not terms:
             return
         msg = [{"role": "user", "content": ENGLISH_PROMPT + json.dumps(terms, ensure_ascii=False)}]
+        step = self._step("Putting the search words in English")
         try:
             names = parse_json(self.client.chat(msg, self.model, purpose="english_queries", temperature=0.0,
                                                 max_tokens=1024))
         except Exception as e:  # a failed translation must not stop the interview: keep the queries as they are
             self.translation_error = f"{type(e).__name__}: {e}"  # kept in the transcript
+            self._end(step, "failed", "kept the words as they are")
             return
+        self._end(step)
         if not isinstance(names, dict):
             return
         for qs in lists:
             out = []
             for q in qs:
                 en = names.get(q)
-                for t in ([en] if isinstance(en, str) and en.strip() else []) + [q]:
+                en = [en] if isinstance(en, str) and en.strip() else []
+                # names go to SAM 3, which understands only English: the original word is dropped, not kept after
+                # (seen 2026-09-30: "names": ["maceta", "flower pot"] despite the prompt)
+                keep = [] if en and any(qs is n for n in names_lists) else [q]
+                for t in en + keep:
                     if t.strip().lower() not in {o.lower() for o in out}:
                         out.append(t.strip())
             qs[:] = out
+
+    def _research(self, question: str) -> None:
+        """A web search for the model; logged with the model calls so the job's usage shows it."""
+        from .research import ResearchError
+        if self.researcher is None:
+            self._note("research is not available here: use what you know and say when a number is a guess.")
+            return
+        if self.researched >= MAX_RESEARCH:
+            self._note(f"No more research in this interview (limit {MAX_RESEARCH}): use what you found.")
+            return
+        self.researched += 1
+        step = self._step(f"Searching the web: {question}")
+        try:
+            found = self.researcher(question)
+        except ResearchError as e:
+            self._end(step, "failed", str(e))
+            self._note(f"research failed ({e}): use what you know and say when a number is a guess.")
+            return
+        self._end(step, detail=f"{len(found['sources'])} sources")
+        log = getattr(self.client, "usage_log", None)
+        if log is not None:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, "a") as f:
+                f.write(json.dumps({"model": "tavily/search", "purpose": "research", "prompt_tokens": 0,
+                                    "completion_tokens": 0}) + "\n")
+        sources = "\n".join(f"- {x['title']} ({x['url']}): {x['content']}" for x in found["sources"])
+        self._note(f"[Web research: {question}]\nAnswer: {found['answer'] or 'none'}\nSources:\n{sources}\n"
+                   "Trust numbers the sources agree on; the user did not see this.")
 
     def _note(self, text: str) -> None:
         self.messages.append({"role": "user", "content": text})
@@ -729,6 +916,6 @@ def scene_profiler(client, model: str):
     """(folder, classes) -> (proposed scene fields, summary) with a vision model."""
     from . import scene_profile
 
-    def profile(folder: str, classes: str):
-        return scene_profile.profile_folder(Path(folder), classes, client, model)
+    def profile(folder: str, classes: str, progress=None):
+        return scene_profile.profile_folder(Path(folder), classes, client, model, progress=progress)
     return profile

@@ -16,7 +16,8 @@ import { loadModel, type LiveModel } from "../live/runtime";
 // Pillow's filter to the model's square input, as ingest did with the photos it was trained and scored on.
 // "This one is wrong" saves the frame (upright, full size) for the job page's "Make it better", offline too.
 
-type Seen = { points: LivePoint[]; top: { label: string; p: number } | null; ms: number };
+// count: from the density output, steadier than the number of points in crowds (models before it: the points).
+type Seen = { points: LivePoint[]; count: number; top: { label: string; p: number } | null; ms: number };
 const SMOOTH = 5;  // frames in the median count shown, so the number does not flicker
 const SAVE_SIDE = 1600;  // long side of a saved frame, as images.ts shrinks uploads
 const IOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (/macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
@@ -164,7 +165,7 @@ export default function Live() {
   }
 
   function show(r: Seen) {
-    counts.current = [...counts.current.slice(-(SMOOTH - 1)), r.points.length];
+    counts.current = [...counts.current.slice(-(SMOOTH - 1)), r.count];
     setSeen(r);
   }
 
@@ -173,7 +174,10 @@ export default function Live() {
   const counting = model?.report.task === "count";
   const sorted = [...counts.current].sort((a, b) => a - b);
   const count = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
-  const what = model?.report.labels.slice(1).map((l) => l.replace(/_/g, " ")).join(", ");
+  // Older reports have no "background" field: their background was always the first label.
+  const report = model?.report;
+  const bg = report && ("background" in report ? report.background : report.labels[0]);
+  const what = report?.labels.filter((l) => l !== bg).map((l) => l.replace(/_/g, " ")).join(", ");
   // Where the frame is drawn: filling the screen for the camera, whole for a photo. Until its size is known it
   // is mounted out of sight, so the stream or the photo can report it.
   const box = frame ? fit(frame.w, frame.h, view.w, view.h, photo ? "contain" : "cover") : null;
@@ -309,15 +313,20 @@ async function infer(model: LiveModel, src: HTMLVideoElement | HTMLImageElement,
   ctx.drawImage(src, 0, 0, w, h);
   // Stretching to a square and turning by 90 degree steps commute, so turn the small image: much cheaper.
   const small = uprightRgb(resizeBilinear(ctx.getImageData(0, 0, w, h).data, w, h, s), s, turn);
-  const out = await model.run(Float32Array.from(small));
+  const outs = await model.run(Float32Array.from(small));
   const ms = performance.now() - t0;
   const labels = model.report.labels;
   if (model.report.task === "count") {
     const g = s / (model.report.output?.stride_px ?? 8);
-    const points = decode(out, g, g, labels, threshold).map(([u, v, c]): LivePoint => [...toFrame(u, v, turn), c]);
-    return { points, top: null, ms };
+    // Told apart by size: the points grid has one channel per label, the density one less (no background).
+    const grid = outs.find((o) => o.length === g * g * labels.length) ?? outs[0];
+    const density = outs.find((o) => o.length === g * g * (labels.length - 1));
+    const points = decode(grid, g, g, labels, threshold).map(([u, v, c]): LivePoint => [...toFrame(u, v, turn), c]);
+    const count = density ? Math.round(density.reduce((a, b) => a + b, 0)) : points.length;
+    return { points, count, top: null, ms };
   }
+  const out = outs[0];
   let b = 0;
   for (let c = 1; c < labels.length; c++) if (out[c] > out[b]) b = c;
-  return { points: [], top: { label: labels[b], p: out[b] }, ms };
+  return { points: [], count: 0, top: { label: labels[b], p: out[b] }, ms };
 }

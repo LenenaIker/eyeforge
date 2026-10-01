@@ -119,13 +119,14 @@ export default function ReviewPanel({ job, onRerun, calibrating = false }: { job
         {tab === "renders" && review.renders.map((r) => <Tile key={r} src={media(r)} />)}
         {tab === "test" && counting && review.test.map((t) => {
           const truth: Point[] = fixes.points[t.key] ?? t.truth;
-          const ok = t.pred.length === t.truth.length;
+          const found = t.count ? Object.values(t.count).reduce((a, b) => a + b, 0) : t.pred.length;
+          const ok = found === truth.length;
           return (
             <Tile key={t.key} src={media(t.image)} changed={t.key in fixes.points}
                   overlay={<><Dots points={truth} hue={hue} ring /><Dots points={t.pred} hue={hue} predicted /></>}
                   onClick={() => setEditing({ key: t.key, image: t.image, title: "Fix the marks the model is scored against", points: truth.map((x) => [...x] as Point) })}>
-              <Badge tone={ok ? "good" : "bad"}>found {t.pred.length}</Badge>
-              <span className="text-xs text-muted">real {t.truth.length}</span>
+              <Badge tone={ok ? "good" : "bad"}>counted {found}</Badge>
+              <span className="text-xs text-muted">real {truth.length}</span>
             </Tile>
           );
         })}

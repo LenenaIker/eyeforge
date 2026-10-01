@@ -5,10 +5,13 @@ export type Spec = Record<string, any> & {
   name: string;
   task?: string;
   hardware?: string;
-  classes: { id: string; description?: string }[];
+  classes: { id: string; description?: string; assets?: Record<string, any> | null }[];
 };
 
 export type Candidate = { file: string; score: number; reason: string };
+// One step of an interview turn (thinking, searching, checking the setup); times are the server's epoch seconds.
+export type Step = { text: string; state: "running" | "done" | "failed"; started: number; ended?: number;
+                     detail?: string; done?: number; total?: number };
 export type Turn = {
   kind: "say" | "confirm" | "done" | "failed" | "photos" | "pick";
   text: string;
@@ -16,6 +19,7 @@ export type Turn = {
   spec?: Spec;
   request?: { for?: "training" | "3d"; class?: string | null; candidates?: Candidate[] };
   photos?: number;
+  activity?: Step[];  // what the turn did, step by step
 };
 
 export type Config = {
@@ -31,18 +35,28 @@ export type StageState = "done" | "running" | "pending" | "failed";
 export type Stage = { name: string; runtime: string; state: StageState; powered_by: string; seconds: number | null };
 
 export type RealTest = { metric: string; mean: number; std: number; count_mae?: number; exact?: number;
-                         test_size?: number; objects?: number };
+                         test_size?: number; objects?: number; per_seed?: Record<string, number> };
 export type Report = {
-  job: string; hardware: string; labels: string[]; input: number[]; model_kb: number; task: string;
+  job: string; hardware: string; labels: string[]; background?: string | null; input: number[]; model_kb: number; task: string;
   val_score?: number; val_accuracy?: number; real_test?: RealTest; real_accuracy?: RealTest;
   c_array_path: string | null; portable_model_path?: string;
+  // The shipped model's own score on the real test photos (the headline); real_test is the mean of the seeds.
+  shipped_test?: { score: number; count_mae?: number } | null;
+  advice?: string[];  // what most likely held the score back, in plain words
   // The model this one replaced, scored on the same test photos (or why it could not be).
+  // then: its score when it was trained, which differs when the test photos or their labels changed since.
   previous?: { version: number; score?: number; now?: number; count_mae?: number; now_count_mae?: number;
-               skipped?: string } | null;
+               then?: number; skipped?: string } | null;
 };
 
 export type Version = { n: number; reason: string; created?: number; started?: number; metric?: string;
                         headline?: number | null; shipped?: number | null; test_size?: number | null };
+
+// What a job used of Nebius and NVIDIA (sim2chip/usage.py): model calls and GPU time, in dollars when known.
+export type ModelUsage = { model: string; name: string; steps: string[]; calls: number; input_tokens: number;
+                           output_tokens: number; usd: number | null; nvidia: boolean; service?: string };
+export type Usage = { models: ModelUsage[]; gpu: { where: string; minutes: number; usd: number }[]; usd: number;
+                      priced: boolean };
 
 export type Status = {
   job: string;
@@ -57,6 +71,7 @@ export type Status = {
   report: Report | null;
   version: Version | null;  // the model export holds or the run in progress will make
   versions: Version[];      // earlier models, oldest first
+  usage?: Usage;
 };
 
 export type Point = [number, number, string, ...number[]];
@@ -69,7 +84,8 @@ export type Review = {
   assets: { uid: string; class: string; role: string; name?: string; generated: boolean; kept: boolean;
             decision?: string; reason: string; judge?: string; image: string | null }[];
   renders: string[];
-  test: { key: string; file: string; image: string; truth: any; pred: any }[];
+  // count (count task): the model's count by class, from its density output; older models have none.
+  test: { key: string; file: string; image: string; truth: any; pred: any; count?: Record<string, number> }[];
   teacher_rules?: string[];  // what the teacher learned from the user's corrections
 };
 export type Fixes = { labels: Record<string, string>; assets: Record<string, string>; points: Record<string, Point[]> };
@@ -89,30 +105,38 @@ export const getConfig = () => api<Config>("/api/config");
 // With a job: an interview that starts from that job's spec, to change something and retrain it.
 export const startInterview = (job?: string | null) =>
   api<{ session: string; text: string; job?: string }>(`/api/interview${job ? `?job=${encodeURIComponent(job)}` : ""}`, { method: "POST" });
-export const reply = (sid: string, text: string) => api<Turn>(`/api/interview/${sid}`, json({ text }));
-export const pick = (sid: string, files: string[], cls: string) =>
-  api<Turn>(`/api/interview/${sid}/pick`, json({ files, class: cls }));
+// act: an id the caller makes up for the turn, to follow its steps with activity() while it runs.
+export const reply = (sid: string, text: string, act?: string) =>
+  api<Turn>(`/api/interview/${sid}${actQuery(act)}`, json({ text }));
+export const pick = (sid: string, files: string[], cls: string, act?: string) =>
+  api<Turn>(`/api/interview/${sid}/pick${actQuery(act)}`, json({ files, class: cls }));
+export const activity = (sid: string, act: string) =>
+  api<{ steps: Step[]; now: number }>(`/api/interview/${sid}/activity?act=${encodeURIComponent(act)}`);
+const actQuery = (act?: string) => (act ? `?act=${encodeURIComponent(act)}` : "");
 export const thumbUrl = (sid: string, file: string) => `/api/interview/${sid}/thumb?file=${encodeURIComponent(file)}`;
 
-export function uploadPhotos(sid: string, files: File[], purpose: string, cls: string | null) {
+export function uploadPhotos(sid: string, files: File[], purpose: string, cls: string | null, act?: string) {
   const form = new FormData();
   form.append("purpose", purpose);
   form.append("cls", cls || "");
   files.forEach((f) => form.append("photos", f, f.name));
-  return api<Turn>(`/api/interview/${sid}/photos`, { method: "POST", body: form });
+  return api<Turn>(`/api/interview/${sid}/photos${actQuery(act)}`, { method: "POST", body: form });
 }
 
-export function createJob(spec: Spec, calibrate = false) {
+// session: the interview that wrote the spec, so the job shows what it used.
+export function createJob(spec: Spec, calibrate = false, session?: string | null) {
   const form = new FormData();
   form.append("spec", JSON.stringify(spec));
+  if (session) form.append("session", session);
   if (calibrate) form.append("calibrate", "true");
   return api<{ job: string; photos: number; already_running?: boolean; calibrating?: boolean }>("/api/jobs", { method: "POST", body: form });
 }
 
 export type RevisePlan = { stages: string[]; changed: string[]; rerun_from: string | null };
-export function reviseJob(job: string, spec: Spec, dry = false) {
+export function reviseJob(job: string, spec: Spec, dry = false, session?: string | null) {
   const form = new FormData();
   form.append("spec", JSON.stringify(spec));
+  if (session) form.append("session", session);
   form.append("dry", String(dry));
   return api<RevisePlan>(`/api/jobs/${job}/revise`, { method: "POST", body: form });
 }

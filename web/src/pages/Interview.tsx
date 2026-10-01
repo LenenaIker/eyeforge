@@ -1,11 +1,11 @@
-import { ArrowUp, Check, ImagePlus, Pencil, Sparkles, Upload } from "lucide-react";
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { ArrowUp, Check, ChevronRight, ImagePlus, LoaderCircle, Pencil, Sparkles, Upload, X } from "lucide-react";
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as API from "../api";
-import type { RevisePlan, Spec, Turn } from "../api";
+import type { RevisePlan, Spec, Step, Turn } from "../api";
 import { Button, Card, Notice, Spinner, cx } from "../components/ui";
 import { prepareImages } from "../images";
-import { SpecSummary } from "./SpecSummary";
+import { DEVICES, SpecSummary, hasPhotos, usesSynthetic } from "./SpecSummary";
 import { useApp } from "./AppShell";
 
 type Msg = { id: number; from: "bot" | "me" | "sys"; text: string; photos?: string[]; turn?: Turn };
@@ -19,7 +19,9 @@ export default function Interview() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState<string | null>(null);  // what we are waiting for, shown as a typing bubble
-  const [spec, setSpec] = useState<Spec | null>(null);
+  const [live, setLive] = useState<Live | null>(null);    // the steps of the turn in progress, polled
+  const [spec, setSpec] = useState<Spec | null>(null);          // the setup to train, with the user's tweaks
+  const [proposal, setProposal] = useState<Spec | null>(null);  // as the interview proposed it
   const [photoRequest, setPhotoRequest] = useState<Turn["request"] | null>(null);
   const [dragging, setDragging] = useState(false);
   const [trainError, setTrainError] = useState<string | null>(null);
@@ -43,32 +45,52 @@ export default function Interview() {
     setPlan(null);
     if (revising && spec) API.reviseJob(revising, spec, true).then(setPlan).catch(() => {});
   }, [revising, spec]);
-  useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [msgs, busy]);
+  useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [msgs, busy, live?.steps.length]);
 
   const ensureSession = async () => {
     if (!session.current) session.current = (await API.startInterview(revising)).session;
     return session.current;
   };
 
-  async function ask(label: string, call: () => Promise<Turn>) {
+  // One turn of the interview. While it runs, its steps (thinking, searching, checking the setup) are polled
+  // under an id made up here, so the user sees it working instead of a bare "Thinking".
+  async function ask(label: string, call: (act: string) => Promise<Turn>) {
+    const act = Math.random().toString(36).slice(2) + Date.now().toString(36);
     setBusy(label);
+    setLive(null);
+    let polling = true;
+    const poll = async () => {
+      while (polling) {
+        if (session.current) {
+          try {
+            const r = await API.activity(session.current, act);
+            if (polling) setLive({ steps: r.steps, offset: Date.now() / 1000 - r.now });
+          } catch { /* a missed poll only delays the next update */ }
+        }
+        await new Promise((ok) => setTimeout(ok, 700));
+      }
+    };
+    poll();
     try {
-      showTurn(await call());
+      showTurn(await call(act));
     } catch (e) {
       push({ from: "sys", text: `Something went wrong: ${(e as Error).message}` });
     }
+    polling = false;
+    setLive(null);
     setBusy(null);
   }
 
   function showTurn(t: Turn) {
     setPhotoRequest(t.kind === "photos" ? t.request ?? { for: "training" } : null);
     if (t.kind === "done") {
+      const sid = session.current;
       session.current = null;
-      if (t.spec) { setSpec(t.spec); train(t.spec); }
+      if (t.spec) { setSpec(t.spec); train(t.spec, sid); }
       return;
     }
     if (t.kind === "failed") { session.current = null; push({ from: "sys", text: t.text }); return; }
-    if (t.kind === "confirm" && t.spec) setSpec(t.spec);
+    if (t.kind === "confirm" && t.spec) { setSpec(t.spec); setProposal(t.spec); }
     const text = t.kind === "confirm" && t.intro !== undefined ? (t.intro || "Here is the setup I propose.") : t.text;
     push({ from: "bot", text, turn: t });
   }
@@ -77,7 +99,7 @@ export default function Interview() {
     if (!value || busy) return;
     push({ from: "me", text: value });
     setText("");
-    await ask("Thinking", async () => API.reply(await ensureSession(), value));
+    await ask("Thinking", async (act) => API.reply(await ensureSession(), value, act));
   }
 
   async function addPhotos(list: FileList | File[]) {
@@ -87,28 +109,31 @@ export default function Interview() {
     const previews = raw.slice(0, 8).map((f) => URL.createObjectURL(f));
     push({ from: "me", text: `${raw.length} photo${raw.length > 1 ? "s" : ""}` +
                             (req.for === "3d" ? ` of ${req.class || "the object"} for 3D models` : ""), photos: previews });
-    await ask("Uploading and looking at your photos", async () => {
+    await ask("Uploading your photos", async (act) => {
       const files = await prepareImages(raw);
-      return API.uploadPhotos(await ensureSession(), files, req.for ?? "training", req.class ?? null);
+      return API.uploadPhotos(await ensureSession(), files, req.for ?? "training", req.class ?? null, act);
     });
   }
 
-  async function confirm() {
-    if (!session.current) { if (spec) train(spec); return; }
-    await ask("Starting", async () => API.reply(session.current!, "yes"));
+  // Trains the setup as shown, with the user's tweaks in the card (the interview only knows its own proposal).
+  function confirm() {
+    if (!spec) return;
+    const sid = session.current;
+    session.current = null;
+    train(spec, sid);
   }
 
-  async function train(s: Spec) {
+  async function train(s: Spec, sid?: string | null) {
     if (starting.current) return;
     starting.current = true;
     setTrainError(null);
     try {
       if (revising) {
-        await API.reviseJob(revising, s);
+        await API.reviseJob(revising, s, false, sid);
         navigate(`/app/job/${revising}`);
         return;
       }
-      const r = await API.createJob(s, true);  // with raw photos, the user first checks the teacher
+      const r = await API.createJob(s, true, sid);  // with raw photos, the user first checks the teacher
       refreshJobs();
       navigate(`/app/job/${r.job}`);
     } catch (e) {
@@ -132,19 +157,22 @@ export default function Interview() {
           <Message key={m.id} m={m} session={session.current}
                    onPick={(files, cls) => {
                      push({ from: "me", text: `${files.length} photo${files.length === 1 ? "" : "s"} chosen for 3D models` });
-                     ask("Thinking", async () => API.pick(session.current!, files, cls));
+                     ask("Thinking", async (act) => API.pick(session.current!, files, cls, act));
                    }}
                    onAddPhotos={() => fileInput.current?.click()}
                    confirm={m.id === lastConfirm && spec ? {
-                     spec, blocked, onYes: confirm, plan: revising ? plan : undefined,
+                     spec, proposal: proposal ?? spec, onEdit: setSpec, blocked, onYes: confirm,
+                     plan: revising ? plan : undefined,
                      onChange: () => { textInput.current?.focus(); setText(""); },
                    } : undefined} />
         ))}
         {busy && (
-          <div className="flex items-center gap-3 text-sm text-muted">
-            <BotAvatar /> <span className="rounded-2xl rounded-tl-sm bg-white px-4 py-3 shadow-sm ring-1 ring-line">
-              <Spinner className="mr-2 text-brand-500" />{busy}
-            </span>
+          <div className="flex items-start gap-3 text-sm text-muted">
+            <BotAvatar />
+            <div className="min-w-0 max-w-[85%] rounded-2xl rounded-tl-sm bg-white px-4 py-3 shadow-sm ring-1 ring-line">
+              {live?.steps.length ? <Steps steps={live.steps} offset={live.offset} /> :
+                <span><Spinner className="mr-2 text-brand-500" />{busy}</span>}
+            </div>
           </div>
         )}
         {trainError && <Notice tone="bad">Could not start the training: {trainError}</Notice>}
@@ -180,7 +208,58 @@ function BotAvatar() {
   </div>;
 }
 
-type Confirm = { spec: Spec; blocked: string | null; onYes: () => void; onChange: () => void; plan?: RevisePlan | null };
+type Live = { steps: Step[]; offset: number };  // offset: client clock minus server clock, in seconds
+
+const seconds = (s: number) => (s < 60 ? `${Math.max(0, Math.round(s))} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`);
+
+// The steps of a turn, like an agent's task list: a spinner on the running one with its time so far.
+function Steps({ steps, offset = 0 }: { steps: Step[]; offset?: number }) {
+  const [, tick] = useState(0);
+  const running = steps.some((s) => s.state === "running");
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+  const now = Date.now() / 1000 - offset;
+  return (
+    <ol className="space-y-1.5">
+      {steps.map((s, i) => (
+        <li key={i} className="flex items-start gap-2">
+          <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center">
+            {s.state === "running" ? <LoaderCircle className="h-4 w-4 animate-spin text-brand-500" /> :
+             s.state === "done" ? <Check className="h-4 w-4 text-brand-600" /> : <X className="h-4 w-4 text-amber-600" />}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className={cx(s.state === "running" ? "text-ink" : "text-muted")}>
+              {s.text}{s.total ? ` (${s.done ?? 0}/${s.total})` : ""}
+            </span>
+            {s.detail && <span className="block text-xs text-stone-400">{s.detail}</span>}
+          </span>
+          <span className="shrink-0 text-xs tabular-nums text-stone-400">{seconds((s.ended ?? now) - s.started)}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+// Above an answer: how long the turn took, and its steps on demand.
+function WorkedFor({ steps }: { steps: Step[] }) {
+  const [open, setOpen] = useState(false);
+  const took = Math.max(...steps.map((s) => s.ended ?? s.started)) - steps[0].started;
+  return (
+    <div className="text-sm text-muted">
+      <button onClick={() => setOpen(!open)} className="flex items-center gap-1 hover:text-ink">
+        <ChevronRight className={cx("h-4 w-4 transition", open && "rotate-90")} />
+        Worked for {seconds(took)}, {steps.length} step{steps.length === 1 ? "" : "s"}
+      </button>
+      {open && <div className="mt-2 ml-5"><Steps steps={steps} /></div>}
+    </div>
+  );
+}
+
+type Confirm = { spec: Spec; proposal: Spec; onEdit: (s: Spec) => void; blocked: string | null; onYes: () => void;
+                 onChange: () => void; plan?: RevisePlan | null };
 
 function Message({ m, session, onPick, onAddPhotos, confirm }: {
   m: Msg; session: string | null; onPick: (files: string[], cls: string) => void; onAddPhotos: () => void;
@@ -204,6 +283,7 @@ function Message({ m, session, onPick, onAddPhotos, confirm }: {
     <div className="flex items-start gap-3">
       <BotAvatar />
       <div className="min-w-0 max-w-[85%] flex-1 space-y-3">
+        {t?.activity && t.activity.length > 0 && <WorkedFor steps={t.activity} />}
         <p className="w-fit rounded-2xl rounded-tl-sm bg-white px-4 py-2.5 whitespace-pre-wrap shadow-sm ring-1 ring-line">{m.text}</p>
         {t?.kind === "photos" && (
           <button onClick={onAddPhotos}
@@ -235,7 +315,7 @@ function PickPhotos({ turn, session, onPick }: { turn: Turn; session: string; on
           <button key={c.file} title={c.reason} onClick={() => toggle(c.file)} disabled={sent}
                   className={cx("relative overflow-hidden rounded-lg ring-2 transition", chosen.has(c.file) ? "ring-brand-500" : "opacity-40 ring-transparent")}>
             <img src={API.thumbUrl(session, c.file)} alt="" className="aspect-square w-full object-cover" />
-            <span className="absolute right-1 bottom-1 rounded bg-black/60 px-1.5 text-xs text-white">{Math.round(c.score * 100)}%</span>
+            {c.score > 0 && <span className="absolute right-1 bottom-1 rounded bg-black/60 px-1.5 text-xs text-white">{Math.round(c.score * 100)}%</span>}
             {chosen.has(c.file) && <Check className="absolute top-1 right-1 h-5 w-5 rounded-full bg-brand-600 p-0.5 text-white" />}
           </button>
         ))}
@@ -248,13 +328,14 @@ function PickPhotos({ turn, session, onPick }: { turn: Turn; session: string; on
   );
 }
 
-function ConfirmCard({ spec, blocked, onYes, onChange, plan }: Confirm) {
+function ConfirmCard({ spec, proposal, onEdit, blocked, onYes, onChange, plan }: Confirm) {
   const [sent, setSent] = useState(false);
   const revise = plan !== undefined;
   const nothing = plan && plan.stages.length === 0;
   return (
     <Card className="overflow-hidden">
       <SpecSummary spec={spec} />
+      {!sent && <SpecOptions spec={spec} proposal={proposal} onEdit={onEdit} />}
       <div className="space-y-3 border-t border-line bg-stone-50 p-4">
         {blocked && <Notice>{blocked}</Notice>}
         {plan && (nothing ? <Notice>That is the setup your model already has: nothing to retrain.</Notice> : (
@@ -272,6 +353,80 @@ function ConfirmCard({ spec, blocked, onYes, onChange, plan }: Confirm) {
         </div>
       </div>
     </Card>
+  );
+}
+
+const FRAMES = [500, 1000, 2000, 4000];
+const MISTAKES: [string, string][] = [["find_more", "Miss fewer objects"], ["balanced", "Balanced"],
+                                      ["fewer_false", "Fewer false alarms"]];
+
+// The choices a user may want to make before paying for a run, without going back to the chat.
+function SpecOptions({ spec, proposal, onEdit }: { spec: Spec; proposal: Spec; onEdit: (s: Spec) => void }) {
+  const synthetic = usesSynthetic(spec);
+  const canSynth = usesSynthetic(proposal);  // 3D models to search come from the interview's proposal
+  const photos = hasPhotos(spec);
+  const setSynthetic = (on: boolean) => onEdit(on
+    ? { ...spec, classes: spec.classes.map((c) => ({ ...c, assets: proposal.classes.find((p) => p.id === c.id)?.assets ?? null })),
+        props: proposal.props ?? [] }
+    : { ...spec, classes: spec.classes.map((c) => ({ ...c, assets: null })), props: [] });
+  const frames = spec.generation?.frames ?? 2000;
+  return (
+    <div className="space-y-4 border-t border-line p-4 text-sm">
+      <Option label="Training data">
+        <Choice options={[["photos", "Your photos only"], ["synthetic", "Photos + synthetic images"]]}
+                value={synthetic ? "synthetic" : "photos"} onChange={(v) => setSynthetic(v === "synthetic")}
+                disabled={{ photos: !photos, synthetic: !canSynth }} />
+        <p className="mt-1.5 text-xs text-muted">
+          {!photos ? "Add some of your photos in the chat to train on them alone." :
+           !canSynth ? "To add synthetic images, ask for them in the chat." :
+           synthetic ? "Synthetic images cover cases your photos miss, but finding 3D models and rendering them on a GPU makes the run longer and more expensive." :
+           "Faster and cheaper: no 3D models and no rendering. It needs photos of every case the camera will see."}
+        </p>
+        {synthetic && (
+          <label className="mt-2 flex items-center gap-2 text-muted">
+            Synthetic images
+            <select value={frames} onChange={(e) => onEdit({ ...spec, generation: { ...spec.generation, frames: Number(e.target.value) } })}
+                    className="rounded-[var(--radius-control)] border border-line bg-white px-2 py-1 text-ink">
+              {[...new Set([...FRAMES, frames])].sort((a, b) => a - b).map((n) => <option key={n} value={n}>{n.toLocaleString()}</option>)}
+            </select>
+            <span className="text-xs">fewer is cheaper</span>
+          </label>
+        )}
+      </Option>
+      <Option label="Device">
+        <select value={spec.hardware ?? "generic"} onChange={(e) => onEdit({ ...spec, hardware: e.target.value })}
+                className="w-full rounded-[var(--radius-control)] border border-line bg-white px-2 py-1.5">
+          {Object.entries(DEVICES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+      </Option>
+      {spec.user_data?.raw && spec.task === "count" && (
+        <Option label="Which mistake is worse">
+          <Choice options={MISTAKES} value={spec.errors ?? "balanced"}
+                  onChange={(v) => onEdit({ ...spec, errors: v === "balanced" ? null : v })} />
+        </Option>
+      )}
+    </div>
+  );
+}
+
+function Option({ label, children }: { label: string; children: ReactNode }) {
+  return <div><p className="mb-1.5 font-medium">{label}</p>{children}</div>;
+}
+
+function Choice({ options, value, onChange, disabled = {} }: {
+  options: [string, string][]; value: string; onChange: (v: string) => void; disabled?: Record<string, boolean>;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map(([k, label]) => (
+        <button key={k} onClick={() => onChange(k)} disabled={disabled[k] || k === value}
+                className={cx("rounded-full px-3 py-1.5 ring-1 transition",
+                              k === value ? "bg-brand-600 text-white ring-brand-600" :
+                              disabled[k] ? "text-stone-400 ring-line" : "bg-white text-ink ring-line hover:ring-brand-500")}>
+          {label}
+        </button>
+      ))}
+    </div>
   );
 }
 

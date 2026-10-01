@@ -33,7 +33,7 @@ export default function Landing() {
 
       <footer className="border-t border-line">
         <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-8 text-sm text-muted sm:flex-row sm:justify-between sm:px-6">
-          <span>EyeForge, open source under the MIT license.</span>
+          <span>EyeForge, open source under the AGPL-3.0 license.</span>
           <span>Built for the Nebius x NVIDIA Global AI Hackathon.</span>
         </div>
       </footer>

@@ -11,7 +11,7 @@ export type LiveModel = {
   report: Report & { output?: { threshold: number; stride_px: number } };
   size: number;          // input side in pixels (square)
   accelerator: "webgpu" | "wasm";
-  run: (rgb: Float32Array) => Promise<Float32Array>;  // size x size x 3, RGB 0-255, row-major
+  run: (rgb: Float32Array) => Promise<Float32Array[]>;  // size x size x 3, RGB 0-255, row-major; every output
   close: () => void;
 };
 
@@ -70,9 +70,12 @@ export async function loadModel(job: string): Promise<LiveModel> {
       const input = new Tensor(rgb, [1, size, size, 3]);
       const outs = await model.run(input);
       input.delete();
-      const out = accelerator === "wasm" ? outs[0] : await outs[0].moveTo("wasm");
-      const data = new Float32Array(out.toTypedArray() as Float32Array);  // copy: the tensor memory is freed next
-      if (out !== outs[0]) out.delete();
+      const data: Float32Array[] = [];
+      for (const t of outs) {
+        const out = accelerator === "wasm" ? t : await t.moveTo("wasm");
+        data.push(new Float32Array(out.toTypedArray() as Float32Array));  // copy: the tensor memory is freed next
+        if (out !== t) out.delete();
+      }
       outs.forEach((t) => t.delete());
       return data;
     },

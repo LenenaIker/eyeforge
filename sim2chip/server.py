@@ -12,6 +12,7 @@ from the job folder (done markers, the pipeline log and the cloud usage log).
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -23,7 +24,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
-from . import review
+from . import config, review, usage
 from . import spec as spec_mod
 from .pipeline import Pipeline
 from .workspace import IMAGE_EXT, Cache, Job, current_version, open_job, snapshot, versions
@@ -43,17 +44,26 @@ def slug(name: str) -> str:
 
 
 def default_interviewer(home: Path, backend: str = "local", public: bool = False):
-    from . import interview
+    from . import interview, research
     from .llm import Client
 
-    client = Client(usage_log=home / "logs" / "llm_usage.jsonl")
-    model = client.model_for("text")
+    from dataclasses import replace
+
+    base = Client(usage_log=home / "logs" / "llm_usage.jsonl")
+    model, scene = base.model_for("text"), base.model_for("scene")
     objaverse_dir = home / "cache" / "objaverse"
     cats = interview.CategoryIndex(cache_dir=objaverse_dir, live=interview.live_searcher(objaverse_dir))
-    ranker = interview.photo_ranker(client, client.model_for("vision"))
-    profiler = interview.scene_profiler(client, client.model_for("vision"))
-    return lambda: interview.Session(client, model, cats, scene_check=interview.check_scene, photo_ranker=ranker,
-                                     scene_profiler=profiler, photo_models=backend != "nebius", uploads_only=public)
+    researcher = research.searcher()  # None without a Tavily key
+
+    def session():
+        # Its own client, so its calls (the interview and the photo analysis) are logged apart: the job it
+        # creates shows what its interview used (interview_start sets the log).
+        client = replace(base)
+        return interview.Session(client, model, cats, scene_check=interview.check_scene,
+                                 photo_ranker=interview.photo_ranker(client, scene),
+                                 scene_profiler=interview.scene_profiler(client, scene),
+                                 photo_models=backend != "nebius", uploads_only=public, researcher=researcher)
+    return session
 
 
 MAX_PHOTOS = 400  # per upload on a public server
@@ -127,18 +137,39 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return job
 
     def calibrate(job: Job) -> None:
-        """Before any training, the teacher marks a few of the user's photos (here, Token Factory only, no GPU).
-        The user corrects them; the next round learns rules from the corrections, marks the same photos again
-        and a few new ones, so the user sees if it understood. The first run starts from these answers."""
+        """Before any training, the teacher marks a few of the user's photos. The user corrects them; the next
+        round tunes the teacher to the corrections, marks the same photos again and a few new ones, so the user
+        sees if it understood. The first run starts from these answers. The teacher (SAM 3) needs a GPU: this
+        machine's when it has one, else a short Nebius job (the photos wait for the GPU to start)."""
+        from . import teacher
         from .stages import Context
         from .stages.label import Label
         state = job.root / CALIBRATION
 
-        def work():
+        def here():
             stage = Label()
             stage.sample = CALIBRATION_PHOTOS
+            stage.run(Context(spec_mod.load(job.root / "request.json"), job, Cache(home / "cache")))
+
+        def cloud():
+            cmd = [sys.executable, "-m", "sim2chip.cli", "--home", str(home), "run", str(job.root / "request.json"),
+                   "--job", job.name, "--backend", backend, "--only", "label"]
+            if max_usd is not None:
+                cmd += ["--max-usd", str(max_usd)]
+            job.logs.mkdir(parents=True, exist_ok=True)
+            with open(job.logs / "pipeline.log", "a") as log:
+                proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=Path(__file__).resolve().parents[1],
+                                        env={**os.environ, "SIM2CHIP_LABEL_SAMPLE": str(CALIBRATION_PHOTOS)})
+                runs[job.name] = proc  # cancel stops it like a run
+                if proc.wait() != 0:
+                    lines = (job.logs / "pipeline.log").read_text(errors="replace").splitlines()
+                    raise RuntimeError(next((l for l in reversed(lines) if "error" in l.lower() or "FAILED" in l),
+                                            f"the teacher's cloud job failed (exit {proc.returncode})"))
+            job.clear_done("label")  # a sample, not the whole folder: the first run labels every photo
+
+        def work():
             try:
-                stage.run(Context(spec_mod.load(job.root / "request.json"), job, Cache(home / "cache")))
+                here() if teacher.available() or backend != "nebius" else cloud()
                 state.write_text(json.dumps({"state": "ready"}))
             except Exception as e:  # shown on the job page, with the option to train anyway
                 state.write_text(json.dumps({"state": "failed", "error": str(e)[:300]}))
@@ -146,6 +177,18 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         state.write_text(json.dumps({"state": "labeling"}))
         calibrations[job.name] = threading.Thread(target=work, daemon=True)
         calibrations[job.name].start()
+
+    def interview_usage(sid: str) -> Path:
+        return home / "logs" / "interviews" / f"{sid}.usage.jsonl"
+
+    def credit_interview(job: Job, sid: str | None) -> None:
+        """The model calls of the interview that wrote this job's spec go with the job (usage panel)."""
+        if not sid or not re.fullmatch(r"[0-9a-f]{32}", sid) or not interview_usage(sid).exists():
+            return
+        job.logs.mkdir(parents=True, exist_ok=True)
+        with open(job.logs / "interview_usage.jsonl", "a") as f:
+            f.write(interview_usage(sid).read_text())
+        interview_usage(sid).unlink()  # counted once, even if the chat goes on
 
     def start_run(job: Job, request: Path, start: str | None = None):
         (job.logs / "launched_at").write_text(f"{time.time():.3f}")
@@ -204,6 +247,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         sessions[sid] = new_session()
         sessions[sid].uploads = home / "uploads" / sid
         sessions[sid].transcript = home / "logs" / "interviews" / f"{sid}.json"
+        if hasattr(getattr(sessions[sid], "client", None), "usage_log"):
+            sessions[sid].client.usage_log = interview_usage(sid)
         if revising:
             turn = sessions[sid].revise(spec_mod.load(latest_spec(revising)))
             return {"session": sid, "text": turn.text, "job": revising.name}
@@ -211,11 +256,15 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
 
     locks: dict[str, threading.Lock] = {}
 
-    def guarded(sid: str, fn, *args):
+    def guarded(sid: str, fn, *args, act: str | None = None):
         """One call at a time per interview (a double submit would interleave two model turns), and the
-        right status: 502 when the model service fails, 409 when the interview is already over."""
+        right status: 502 when the model service fails, 409 when the interview is already over.
+        act: the front end's id for this turn, under which its steps are shown (see interview_activity)."""
         from .llm import LLMError
         with locks.setdefault(sid, threading.Lock()):
+            session = sessions.get(sid)
+            if hasattr(session, "begin"):
+                session.begin(act)
             try:
                 return fn(*args)
             except LLMError as e:
@@ -225,6 +274,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
 
     def turn_out(sid: str, turn) -> dict:
         out = {"kind": turn.kind, "text": turn.text}
+        steps = getattr(sessions.get(sid), "activity", None)
+        if steps:
+            out["activity"] = [dict(s) for s in steps]
         if turn.spec is not None:
             out["spec"] = json.loads(turn.spec.to_json())
         if turn.request is not None:
@@ -237,15 +289,26 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return out
 
     @app.post("/api/interview/{sid}")
-    def interview_reply(sid: str, body: dict):
+    def interview_reply(sid: str, body: dict, act: str | None = None):
         session = sessions.get(sid)
         if session is None:
             raise HTTPException(404, "unknown interview session")
-        return turn_out(sid, guarded(sid, session.reply, str(body.get("text", ""))))
+        return turn_out(sid, guarded(sid, session.reply, str(body.get("text", "")), act=act))
+
+    @app.get("/api/interview/{sid}/activity")
+    def interview_activity(sid: str, act: str):
+        """What the turn `act` is doing right now: its steps so far (thinking, searching, checking the setup),
+        polled by the web while it waits. No lock: it must answer while the turn holds it. `now` lets the
+        client time running steps with the server's clock."""
+        session = sessions.get(sid)
+        if session is None:
+            raise HTTPException(404, "unknown interview session")
+        steps = list(getattr(session, "activity", [])) if getattr(session, "activity_id", None) == act else []
+        return {"steps": [dict(s) for s in steps], "now": time.time()}
 
     @app.post("/api/interview/{sid}/photos")
     def interview_photos(sid: str, purpose: str = Form("training"), cls: str = Form(""),
-                               photos: list[UploadFile] = File(...)):
+                               photos: list[UploadFile] = File(...), act: str | None = None):
         """Photos uploaded in the chat, asked for by the interview or not. They wait in uploads/<session>
         until a job adopts them. Sync on purpose: the model calls after the upload block, and FastAPI runs
         sync handlers in a thread pool instead of the event loop (async stalled every other request)."""
@@ -262,7 +325,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 n += 1
         if not n:
             raise HTTPException(400, "no images among the files")
-        return {**turn_out(sid, guarded(sid, session.add_photos, str(folder), n, purpose, cls or None)), "photos": n}
+        return {**turn_out(sid, guarded(sid, session.add_photos, str(folder), n, purpose, cls or None,
+                                         act=act)), "photos": n}
 
     @app.get("/api/interview/{sid}/thumb")
     def interview_thumb(sid: str, file: str):
@@ -273,12 +337,12 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return FileResponse(photo_thumb(home / "uploads" / sid / "_thumbs", Path(file)))
 
     @app.post("/api/interview/{sid}/pick")
-    def interview_pick(sid: str, body: dict):
+    def interview_pick(sid: str, body: dict, act: str | None = None):
         session = sessions.get(sid)
         if session is None:
             raise HTTPException(404, "unknown interview session")
         return turn_out(sid, guarded(sid, session.choose, [str(f) for f in body.get("files") or []],
-                                     str(body.get("class", ""))))
+                                     str(body.get("class", "")), act=act))
 
     def budget_left() -> None:
         if daily_usd is None or backend != "nebius":
@@ -291,7 +355,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
 
     @app.post("/api/jobs")
     def create_job(request: Request, spec: str = Form(...), photos: list[UploadFile] = File(default=[]),
-                   calibrate_first: bool = Form(False, alias="calibrate")):
+                   calibrate_first: bool = Form(False, alias="calibrate"), session: str | None = Form(None)):
         """A new job. calibrate: when the teacher labels the user's raw photos, it first marks a few for the user
         to check (see calibrate); the run starts from the job page."""
         budget_left()
@@ -330,6 +394,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         req = job.root / "request.json"
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         save_photos(job.input / "photos", images)
+        credit_interview(job, session)
         if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled:
             calibrate(job)
             return {"job": name, "photos": len(images), "calibrating": True}
@@ -428,7 +493,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return {"rerun_from": start}
 
     @app.post("/api/jobs/{name}/revise")
-    def revise(name: str, request: Request, spec: str = Form(...), dry: bool = Form(False)):
+    def revise(name: str, request: Request, spec: str = Form(...), dry: bool = Form(False),
+               session: str | None = Form(None)):
         """A changed spec for a trained job: the job keeps its folder, the old model is kept as a version, and
         only the stages whose inputs changed run again. dry: just the stages that would run."""
         job = job_of(name, request)
@@ -444,6 +510,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                    if k != "name" and json.loads(old.to_json()).get(k) != v]
         if not dry:
             parsed = adopt_uploads(parsed, home / "uploads", job)
+            credit_interview(job, session)
         todo = [p.stage.name for p in Pipeline(parsed, job, Cache(home / "cache")).plan() if p.action == "run"]
         if dry or not todo:
             return {"stages": todo, "changed": changed, "rerun_from": None}
@@ -742,8 +809,8 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
             state = "running" if running else ("failed" if failed else "pending")
         stages.append({"name": p.stage.name, "runtime": p.stage.runtime, "state": state,
                        "powered_by": p.stage.powered_by(spec, backend, models.get(p.stage.name))})
-    usage = job.logs / "cloud_usage.jsonl"
-    cost = sum(json.loads(l)["usd_estimate"] for l in usage.read_text().splitlines()) if usage.exists() else 0.0
+    cloud_log = job.logs / "cloud_usage.jsonl"
+    cost = sum(json.loads(l)["usd_estimate"] for l in cloud_log.read_text().splitlines()) if cloud_log.exists() else 0.0
     report = job.stage_dir("export") / "report.json"
     fresh = any(st["name"] == "export" and st["state"] == "done" for st in stages)  # not a stale model
     calibration = job.root / CALIBRATION
@@ -751,6 +818,7 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
             "calibration": json.loads(calibration.read_text()) if calibration.exists() else None,
             "stages": stages, "log": log[-30:], "cloud_usd": round(cost, 2), "phase": phase(log, running),
             "timing": timing(job, home, stages, running, backend),
+            "usage": usage.summary(job, usage.saved_prices(home / "cache"), config.gpu_name()),
             "version": current_version(job), "versions": [{k: v for k, v in m.items() if k != "report_key"}
                                                           for m in versions(job)],
             "report": json.loads(report.read_text()) if fresh and report.exists() else None}
@@ -759,5 +827,7 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
 def serve(home: Path, backend: str, host: str, port: int, max_usd: float | None, public: bool = False,
           key: str | None = None, max_runs: int = 2, daily_usd: float | None = None) -> None:
     import uvicorn
+    # Token Factory's prices for the usage panel, in the background: the server starts without waiting.
+    threading.Thread(target=usage.refresh_prices, args=(home / "cache",), daemon=True).start()
     uvicorn.run(create_app(home, backend, max_usd, public=public, key=key, max_runs=max_runs, daily_usd=daily_usd),
                 host=host, port=port)

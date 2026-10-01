@@ -58,10 +58,16 @@ def app(tmp_path):
 
 def test_interview_over_http(app):
     sid = app.post("/api/interview").json()["session"]
-    assert app.post(f"/api/interview/{sid}", json={"text": "cows"}).json() == {"kind": "say",
-                                                                                "text": "Where is the camera?"}
-    t = app.post(f"/api/interview/{sid}", json={"text": "on a post"}).json()
+    t = app.post(f"/api/interview/{sid}", json={"text": "cows"}).json()
+    assert (t["kind"], t["text"]) == ("say", "Where is the camera?")
+    t = app.post(f"/api/interview/{sid}?act=turn2", json={"text": "on a post"}).json()
     assert t["kind"] == "confirm" and t["spec"]["name"] == "Barn Cam" and t["intro"] == ""
+    # The turn's steps come with the answer and, under its id, from the activity poll (not under another id).
+    assert [s["text"] for s in t["activity"]][:2] == ["Thinking", "Searching the 3D model catalog: cow"]
+    assert t["activity"][-1]["text"] == "Checking the proposed setup" and t["activity"][-1]["state"] == "done"
+    polled = app.get(f"/api/interview/{sid}/activity", params={"act": "turn2"}).json()
+    assert [s["text"] for s in polled["steps"]] == [s["text"] for s in t["activity"]] and polled["now"] > 0
+    assert app.get(f"/api/interview/{sid}/activity", params={"act": "old"}).json()["steps"] == []
     t = app.post(f"/api/interview/{sid}", json={"text": "sí, adelante"}).json()
     assert t["kind"] == "done"
     assert app.post(f"/api/interview/{sid}", json={"text": "x"}).status_code == 404
@@ -368,32 +374,30 @@ def test_app_routes_serve_the_build(tmp_path, monkeypatch):
 
 
 def test_calibrate_the_teacher_before_the_first_run(app, tmp_path, monkeypatch):
-    """A new job with raw photos: the teacher marks a few, the user corrects them, the next round learns a
-    rule and marks new ones, and only "train" launches the run."""
+    """A new job with raw photos: the teacher marks a few, the user corrects them, the next round tunes the
+    teacher to them and marks new ones, and only "train" launches the run."""
     import io
     import time
 
     from PIL import Image
 
-    from sim2chip import llm
+    from sim2chip import teacher
     from sim2chip.server import CALIBRATION_PHOTOS
 
     asked = []
 
-    class Teacher:
-        def __init__(self, **kw):
-            pass
-
-        def model_for(self, role):
-            return f"fake-{role}"
-
-        def chat(self, messages, model, purpose, **kw):
-            text = messages[0]["content"][0]["text"]
-            asked.append(text)
-            if "general rule" in text:
-                return json.dumps({"lesson": "Calves are cows too."})
-            return json.dumps({"class": "empty", "confidence": 0.9, "reason": "r"})
-    monkeypatch.setattr(llm, "Client", Teacher)
+    def embed(items, texts, text_out, log=print):  # SigLIP 2 without a GPU: every photo along its own axis
+        for path, out in items:
+            asked.append(path)
+            i = int(path.stem[1:])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps({"embedding": [1.0 if j == i else 0.0 for j in range(22)]}))
+        text_out.parent.mkdir(parents=True, exist_ok=True)
+        text_out.write_text(json.dumps({"embeddings": [[1.0 if j == 20 + k else 0.0 for j in range(22)]
+                                                       for k in range(len(texts))]}))
+    monkeypatch.setattr(teacher, "embed", embed)
+    monkeypatch.setattr(teacher, "prompts", lambda spec, client=None: {k: k for k in spec.labels})
+    monkeypatch.setattr(teacher, "available", lambda: True)
 
     def photo(i):
         buf = io.BytesIO()
@@ -414,17 +418,45 @@ def test_calibrate_the_teacher_before_the_first_run(app, tmp_path, monkeypatch):
     st = settle(r["job"])
     assert st["calibration"] == {"state": "ready"}
     photos = app.get(f"/api/jobs/{r['job']}/review").json()["photos"]
-    assert len(photos) == CALIBRATION_PHOTOS and len(asked) == CALIBRATION_PHOTOS
-    # A correction: another round, with the learned rule, over those photos and new ones. Still no run.
-    first = photos[0]["key"]
-    assert app.post(f"/api/jobs/{r['job']}/corrections", json={"labels": {first: "cow"}}).json() == {
+    # Every photo is embedded (cheap, and needed to pick varied ones); the user sees only a few.
+    assert len(photos) == CALIBRATION_PHOTOS and len(asked) == 20
+    # Corrections: another round over those photos and new ones, tuned to them. Still no run.
+    fixes = {photos[0]["key"]: "cow", photos[1]["key"]: "empty"}
+    assert app.post(f"/api/jobs/{r['job']}/corrections", json={"labels": fixes}).json() == {
         "rerun_from": "calibration"}
     settle(r["job"])
     review = app.get(f"/api/jobs/{r['job']}/review").json()
-    assert len(review["photos"]) == 2 * CALIBRATION_PHOTOS and review["teacher_rules"] == ["Calves are cows too."]
-    assert "- Calves are cows too." in asked[-1] and not app.launched
+    assert len(review["photos"]) == 2 * CALIBRATION_PHOTOS and len(asked) == 20
+    assert "2 photos you corrected" in review["teacher_rules"][0] and not app.launched
     # Train: the run starts from the calibrated answers.
     assert app.post(f"/api/jobs/{r['job']}/train", json={}).json() == {"rerun_from": None}
     assert app.launched and app.launched[-1][3] is None
     assert app.get(f"/api/jobs/{r['job']}").json()["calibration"] is None
     assert app.post(f"/api/jobs/{r['job']}/train", json={}).status_code == 409
+
+
+def test_the_interview_is_credited_to_the_job_it_creates(tmp_path):
+    """The usage panel shows the interview's model calls in the job its spec became, once."""
+    class Logged(Scripted):
+        usage_log = None
+
+        def chat(self, messages, model, purpose, **kw):
+            self.usage_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.usage_log, "a") as f:
+                f.write(json.dumps({"model": "nvidia/nemotron-3-super-120b-a12b", "purpose": purpose,
+                                    "prompt_tokens": 100, "completion_tokens": 10}) + "\n")
+            return super().chat(messages, model, purpose, **kw)
+
+    def interviewer():
+        return interview.Session(Logged([{"say": "Where is the camera?"}]), "m", interview.CategoryIndex(counts={}))
+
+    app = TestClient(create_app(tmp_path, backend="nebius", interviewer=interviewer,
+                                launcher=lambda *a, **k: FakeProc()))
+    sid = app.post("/api/interview").json()["session"]
+    app.post(f"/api/interview/{sid}", json={"text": "cows"})
+    job = app.post("/api/jobs", data={"spec": json.dumps(GOOD), "session": sid}).json()["job"]
+    [m] = app.get(f"/api/jobs/{job}").json()["usage"]["models"]
+    assert (m["steps"], m["calls"], m["input_tokens"], m["nvidia"]) == (["interview"], 1, 100, True)
+    other = app.post("/api/jobs", data={"spec": json.dumps({**GOOD, "background_class": "nothing"}), "session": sid}).json()["job"]
+    assert app.get(f"/api/jobs/{other}").json()["usage"]["models"] == []  # counted once
+    assert app.post("/api/jobs", data={"spec": json.dumps(GOOD), "session": "../../x"}).status_code == 200
