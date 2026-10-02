@@ -1,0 +1,41 @@
+# PicoDet-S 320 fine-tuned from its COCO weights on one count job (experiments/count_detector.py export).
+_BASE_: [
+  '/media/lenena-iker/Crucial/envs/PaddleDetection/configs/picodet/picodet_s_320_coco_lcnet.yml',
+]
+pretrain_weights: https://paddledet.bj.bcebos.com/models/picodet_s_320_coco_lcnet.pdparams
+num_classes: 1
+epoch: 150
+snapshot_epoch: 10
+log_iter: 50
+TrainDataset:
+  name: COCODataSet
+  image_dir: images/train
+  anno_path: train.json
+  dataset_dir: /media/lenena-iker/Crucial/runs/eyeforge/bench/count_detector/strawberries_C
+  data_fields: ['image', 'gt_bbox', 'gt_class', 'is_crowd']
+EvalDataset:
+  name: COCODataSet
+  image_dir: images/val
+  anno_path: val.json
+  dataset_dir: /media/lenena-iker/Crucial/runs/eyeforge/bench/count_detector/strawberries_C
+TestDataset:
+  name: ImageFolder
+  anno_path: val.json
+  dataset_dir: /media/lenena-iker/Crucial/runs/eyeforge/bench/count_detector/strawberries_C
+TrainReader:
+  batch_size: 16
+LearningRate:
+  base_lr: 0.02
+  schedulers:
+  - !CosineDecay
+    max_epochs: 150
+  - !LinearWarmup
+    start_factor: 0.1
+    steps: 100
+PicoHeadV2:
+  nms:
+    name: MultiClassNMS
+    nms_top_k: 2000
+    keep_top_k: 1000
+    score_threshold: 0.025
+    nms_threshold: 0.6

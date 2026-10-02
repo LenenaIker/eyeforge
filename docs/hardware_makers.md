@@ -146,10 +146,42 @@ Conclusiones:
 3. **ONNX Runtime Web no aporta nada aquí**: solo gana en WebGPU con fp16 (36 ms), y en int8 en WebGPU es inservible. No merece cambiar de runtime.
 4. Decisión propuesta: perfil "generic" (móvil) con EfficientNetV2-B0 int8 a 224 px en LiteRT.js, con WASM directo para no perder tiempo intentando WebGPU. Falta medir un móvil de gama baja (estimado, sin medir: unas 3 veces más lento, unos 200 ms, aceptable para clasificar).
 
+### Resultado de la prueba de conteo con detectores (2026-10-02)
+
+`experiments/count_detector.py` (exporta el trabajo `geese_C` a formato YOLO y COCO y puntúa), `count_detector_yolo.py` y `count_detector_picodet.py` con las configuraciones de `experiments/picodet/` (entrenan en sus entornos, en el Crucial: `envs/eyeforge-yolo`, `envs/eyeforge-picodet` y la copia de PaddleDetection 2.8.1). Gansos de FSC-147: las mismas 80 fotos de test que nuestra cabeza, puntuadas con el mismo emparejamiento de puntos (tolerancia de la rejilla de 224 px) contra la verdad del dataset. Los detectores entrenan con 109 de las 136 fotos (las otras 27 eligen el umbral y el mejor modelo) y cajas del tamaño medio de los ejemplos de cada foto. Media de 3 ejecuciones, modelos en float salvo donde se dice.
+
+| Modelo | F1 de puntos | Error de conteo por foto | Recall con 15 o menos / 16-30 / más de 30 | Error con más de 30 |
+|---|---|---|---|---|
+| Nuestra cabeza, 224 px, int8 | 0,64 | 7,4 | 0,80 / sin medir / 0,29 | 21-26 (densidad) |
+| YOLO11n 224 px | 0,82 | 4,6 | 0,89 / 0,80 / 0,77 | 10,6 |
+| PicoDet-S 224 px | 0,82 | 4,9 | 0,89 / 0,79 / 0,70 | 15,6 |
+| YOLO11n 320 px | 0,86 | 3,4 | 0,90 / 0,81 / 0,83 | 7,7 |
+| **PicoDet-S 320 px** | **0,86** | **3,2** | 0,90 / 0,85 / 0,89 | **4,5** |
+
+Cuantización (YOLO11n 224 px, una ejecución, TFLite exportado por Ultralytics): float 0,81 / 4,9; solo pesos int8 (2,8 MB) 0,81 / 5,0; int8 completo 0,78 / 6,6. El int8 completo pierde porque la salida junta coordenadas y puntuaciones en un solo tensor int8.
+
+Las otras tres clases de FSC-147 (trabajos `<clase>_C`, PicoDet-S 320 px, 3 ejecuciones; entre paréntesis, nuestra cabeza con la misma verdad):
+
+| Clase | F1 | Error por foto | Recall con 15 o menos / 16-30 / más de 30 (fotos de test) |
+|---|---|---|---|
+| Gansos | 0,86 (0,64) | 3,2 (7,4) | 0,90 / 0,85 / 0,89 (49 / 24 / 7) |
+| Fresas | 0,91 (0,80) | 3,8 (12,0) | 0,86 / 0,85 / 0,91 (11 / 16 / 33) |
+| Manzanas | 0,83 (0,41) | 16,3 (37) | 0,91 / 0,86 / 0,77 (11 / 16 / 33) |
+| Panecillos | 0,65 (0,45) | 13,9 (16,7) | 0,98 / 0,84 / 0,09 (35 / 12 / 2) |
+
+En panecillos, dos fotos de unos 650 panecillos diminutos se llevan casi todos los puntos del test y el error (310 por foto en ellas); en las otras 47 fotos el error es de 0,4 y 3,8. Ahí no llega ningún modelo a 320 px: haría falta trocear la foto.
+
+Conclusiones:
+1. **Un detector preentrenado rompe el techo de nuestra cabeza** en las cuatro clases. En gansos, de 0,64 a 0,82 de F1 a la misma resolución y el error de conteo a la mitad; donde más gana es en las multitudes, donde la cabeza perdía casi todo.
+2. **La resolución sí ayuda a los detectores** (de 224 a 320 px, +4 puntos y menos error en multitudes), al contrario que en nuestra cabeza.
+3. **PicoDet-S y YOLO11n empatan.** PicoDet-S es Apache 2.0 y YOLO es AGPL (ver la tabla de detectores): para el móvil y el PC, PicoDet-S a 320 px.
+4. **En el móvil no hace falta int8 completo:** solo pesos int8 no pierde nada, y en LiteRT WASM fp16 ya era tan rápido como int8 al clasificar.
+5. Falta: la velocidad de PicoDet-S en el Pixel 7a (exportar Paddle -> ONNX -> TFLite o ORT Web), trocear la foto para multitudes de objetos diminutos y cómo entrenarlo dentro del pipeline (hoy todo es Keras).
+
 ### Qué mediría primero (antes de tocar el catálogo)
 
 1. **Clasificar en R0-R1:** MobileNetV2 0,35 frente a 0,5 y 1,0, y a 96 frente a 160 px, contra MobileNetV3 Small minimalistic. Todo está en Keras, así que la prueba es barata. Pruebas: césped y un dataset abierto, con tamaño y RAM medidos en TFLite.
-2. **Contar en R2 o más:** PicoDet-S preentrenado en COCO frente a nuestra cabeza, en los gansos de FSC-147. Nuestra cabeza se estancó en un F1 de 0,60-0,65 y su cuello y su cabeza no traen nada preentrenado; un detector preentrenado podría pasar ese techo. Es la prueba con más potencial y también la más cara (Paddle u ONNX, no Keras).
+2. **Contar en R2 o más:** PicoDet-S preentrenado en COCO frente a nuestra cabeza, en los gansos de FSC-147. Nuestra cabeza se estancó en un F1 de 0,60-0,65 y su cuello y su cabeza no traen nada preentrenado; un detector preentrenado podría pasar ese techo. Es la prueba con más potencial y también la más cara (Paddle u ONNX, no Keras). Hecha el 2026-10-02: F1 de 0,64 a 0,86 (ver arriba).
 3. Después de medir: perfiles nuevos (P4, Pi 5, móvil), quitar `jetson_nano` y separar la elección de resolución y ancho según la tarea.
 
 ## Fuentes

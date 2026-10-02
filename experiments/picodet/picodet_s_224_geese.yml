@@ -1,0 +1,55 @@
+# PicoDet-S at 224 px (the 320 reader with smaller sizes) fine-tuned from its COCO weights on one count job (experiments/count_detector.py export).
+_BASE_: [
+  '/media/lenena-iker/Crucial/envs/PaddleDetection/configs/picodet/picodet_s_320_coco_lcnet.yml',
+]
+pretrain_weights: https://paddledet.bj.bcebos.com/models/picodet_s_320_coco_lcnet.pdparams
+num_classes: 1
+eval_height: 224
+eval_width: 224
+eval_size: [224, 224]
+epoch: 150
+snapshot_epoch: 10
+log_iter: 50
+TrainDataset:
+  name: COCODataSet
+  image_dir: images/train
+  anno_path: train.json
+  dataset_dir: /media/lenena-iker/Crucial/runs/eyeforge/bench/count_detector/geese_C
+  data_fields: ['image', 'gt_bbox', 'gt_class', 'is_crowd']
+EvalDataset:
+  name: COCODataSet
+  image_dir: images/val
+  anno_path: val.json
+  dataset_dir: /media/lenena-iker/Crucial/runs/eyeforge/bench/count_detector/geese_C
+TestDataset:
+  name: ImageFolder
+  anno_path: val.json
+  dataset_dir: /media/lenena-iker/Crucial/runs/eyeforge/bench/count_detector/geese_C
+LearningRate:
+  base_lr: 0.02
+  schedulers:
+  - !CosineDecay
+    max_epochs: 150
+  - !LinearWarmup
+    start_factor: 0.1
+    steps: 100
+PicoHeadV2:
+  nms:
+    name: MultiClassNMS
+    nms_top_k: 1000
+    keep_top_k: 300
+    score_threshold: 0.025
+    nms_threshold: 0.6
+TrainReader:
+  batch_size: 16
+  batch_transforms:
+  - BatchRandomResize: {target_size: [160, 192, 224, 256, 288], random_size: True, random_interp: True, keep_ratio: False}
+  - NormalizeImage: {is_scale: true, mean: [0.485,0.456,0.406], std: [0.229, 0.224,0.225]}
+  - Permute: {}
+  - PadGT: {}
+EvalReader:
+  sample_transforms:
+  - Decode: {}
+  - Resize: {interp: 2, target_size: [224, 224], keep_ratio: False}
+  - NormalizeImage: {is_scale: true, mean: [0.485,0.456,0.406], std: [0.229, 0.224,0.225]}
+  - Permute: {}
