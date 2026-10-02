@@ -8,8 +8,8 @@ from dataclasses import dataclass
 class Hardware:
     name: str
     input_size: int         # square RGB input, pixels
-    backbone: str           # model family understood by the train stage
-    alpha: float            # width multiplier of the backbone
+    backbone: str           # classification model family understood by the train stage (counting is MobileNetV2)
+    alpha: float            # width multiplier of MobileNetV2
     quantization: str       # "int8" for microcontrollers
     max_model_kb: int       # flash budget for the model blob
     runtime: str            # what runs the model on the device
@@ -27,8 +27,11 @@ PROFILES = {
                         "ESP32-S3 microcontroller: 96 px, 2 to 5 coarse classes", (0.2, 0.67)),
     "jetson_nano": Hardware("jetson_nano", 224, "mobilenetv2", 1.0, "int8", 16384, "tflite",
                             "NVIDIA Jetson Nano: 224 px, finer distinctions"),
-    # No device, or not decided yet: a model to download and run on a phone or a PC.
-    "generic": Hardware("generic", 224, "mobilenetv2", 1.0, "int8", 16384, "tflite",
+    # No device, or not decided yet: a model to download and run on a phone or a PC. EfficientNetV2-B0 classifies
+    # better than MobileNetV2 1.0 with the few-photos recipe (lawn 84.6 vs 75.4%, MIO-TCD 73.0 vs 69.7%, int8) and
+    # takes 64 ms a photo in a Pixel 7a's browser (docs/hardware_makers.md, 2026-10-02). Counting keeps MobileNetV2
+    # (alpha below), the only backbone measured for it.
+    "generic": Hardware("generic", 224, "efficientnetv2b0", 1.0, "int8", 16384, "tflite",
                         "no specific device (phone, PC, testing): 224 px model to download"),
 }
 

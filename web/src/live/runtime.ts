@@ -1,6 +1,6 @@
-// The trained model running in the browser with LiteRT.js: WebGPU when the phone has it, else WebAssembly on
-// the CPU. The model and its report are kept in the Cache API per job, so the live test works offline after
-// the first download (the WebAssembly runtime itself is cached by the service worker).
+// The trained model running in the browser with LiteRT.js, with WebAssembly on the CPU. The model and its report
+// are kept in the Cache API per job, so the live test works offline after the first download (the WebAssembly
+// runtime itself is cached by the service worker).
 import { loadAndCompile, loadLiteRt, Tensor, type CompiledModel } from "@litertjs/core";
 import { fileUrl, type Report } from "../api";
 import { CACHE } from "./saved";
@@ -56,14 +56,10 @@ export async function loadModel(job: string): Promise<LiveModel> {
   if (!report.portable_model_path) throw new Error("This model was trained before live testing existed: train it again.");
   const bytes = new Uint8Array(await (await cached(job, "model.tflite")).arrayBuffer());
   const size = report.input[0];
-  let model: CompiledModel, accelerator: LiveModel["accelerator"] = "webgpu";
-  try {
-    if (!("gpu" in navigator)) throw new Error("no WebGPU");
-    model = await loadAndCompile(bytes, { accelerator: "webgpu" });
-  } catch {
-    accelerator = "wasm";
-    model = await loadAndCompile(bytes, { accelerator: "wasm" });
-  }
+  // The CPU, not WebGPU: on a Pixel 7a the CPU was as fast or faster for these models (MobileNetV2 28 ms against
+  // 32, EfficientNetV2-B0 64 ms; the latter does not compile for WebGPU), see docs/hardware_makers.md.
+  const accelerator: LiveModel["accelerator"] = "wasm";
+  const model: CompiledModel = await loadAndCompile(bytes, { accelerator });
   return {
     report, size, accelerator,
     run: async (rgb) => {

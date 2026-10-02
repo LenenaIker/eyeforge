@@ -111,13 +111,18 @@ def make_augment(hw: Hardware, orientation: str | None = None):
 
 
 def build_model(n_classes: int, hw: Hardware):
-    if hw.backbone != "mobilenetv2":
-        raise ValueError(f"backbone {hw.backbone} not supported")
     size = hw.input_size
-    base = tf.keras.applications.MobileNetV2(input_shape=(size, size, 3), alpha=hw.alpha, include_top=False,
-                                             weights="imagenet")
     inp = tf.keras.Input((size, size, 3))
-    x = tf.keras.applications.mobilenet_v2.preprocess_input(inp)
+    if hw.backbone == "mobilenetv2":
+        base = tf.keras.applications.MobileNetV2(input_shape=(size, size, 3), alpha=hw.alpha, include_top=False,
+                                                 weights="imagenet")
+        x = tf.keras.applications.mobilenet_v2.preprocess_input(inp)
+    elif hw.backbone == "efficientnetv2b0":  # takes RGB 0-255 and normalizes inside the model
+        base = tf.keras.applications.EfficientNetV2B0(input_shape=(size, size, 3), include_top=False,
+                                                      weights="imagenet")
+        x = inp
+    else:
+        raise ValueError(f"backbone {hw.backbone} not supported")
     x = tf.keras.layers.GlobalAveragePooling2D()(base(x))
     x = tf.keras.layers.Dropout(0.3)(x)
     out = tf.keras.layers.Dense(n_classes, activation="softmax")(x)
@@ -360,9 +365,8 @@ def make_count_augment(hw: Hardware, n_classes: int, orientation: str | None = N
 def build_count_model(n_classes: int, hw: Hardware):
     """MobileNetV2 cut at stride 8 (block_6_expand) plus two 1x1 heads: small, int8 friendly, fits a microcontroller
     at 96 px and keeps enough resolution to separate objects that stand close. Outputs "points" (class
-    probabilities per cell, background first) and "density" (objects per cell and class, background left out)."""
-    if hw.backbone != "mobilenetv2":
-        raise ValueError(f"backbone {hw.backbone} not supported")
+    probabilities per cell, background first) and "density" (objects per cell and class, background left out).
+    MobileNetV2 whatever hw.backbone says: the only backbone measured for counting."""
     size = hw.input_size
 
     def cut(name):

@@ -1,6 +1,7 @@
 """Train the student model on synthetic crops plus the user's real photos, one model per seed.
 
-Model: the hardware profile's backbone (MobileNetV2 for microcontrollers), pretrained on ImageNet,
+Model: the hardware profile's backbone (MobileNetV2 for microcontrollers, EfficientNetV2-B0 for phones and PCs;
+counting is always MobileNetV2), pretrained on ImageNet,
 quantized to int8: one model with int8 input and output for TFLite Micro, and the same with float32
 input and output for phones and PCs. The recipe follows the data, not the spec: with only real photos and fewer
 than HEAD_ONLY_BELOW per class, the backbone stays frozen and only the last layer learns, scored by cross-
@@ -34,7 +35,7 @@ DATA_FILE = "_train_set.pkl"  # the training arrays, handed to the seed processe
 
 class Train(Stage):
     name = "train"
-    version = "7"  # 3: blur from the hardware profile; 4: turns and tilts, last layer only with few photos; 5: same for count; 6: one steady count threshold; 7: count density output
+    version = "8"  # 3: blur from the hardware profile; 4: turns and tilts, last layer only with few photos; 5: same for count; 6: one steady count threshold; 7: count density output; 8: EfficientNetV2-B0 on generic
     runtime = "tf"
     gpu = "any"
     max_hours = 2
@@ -168,10 +169,10 @@ def _pretrained_weights(hardware: str) -> None:
 
     from ..hardware import get as get_hardware
     hw = get_hardware(hardware)
-    if hw.backbone != "mobilenetv2":  # build_model says what is missing
-        return
-    tf.keras.applications.MobileNetV2(input_shape=(hw.input_size, hw.input_size, 3), alpha=hw.alpha,
-                                      include_top=False, weights="imagenet")
+    shape = (hw.input_size, hw.input_size, 3)
+    tf.keras.applications.MobileNetV2(input_shape=shape, alpha=hw.alpha, include_top=False, weights="imagenet")
+    if hw.backbone == "efficientnetv2b0":
+        tf.keras.applications.EfficientNetV2B0(input_shape=shape, include_top=False, weights="imagenet")
 
 
 def _fit_seed_from_file(args: dict, seed: int, path: str) -> dict:
