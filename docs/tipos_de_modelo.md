@@ -45,6 +45,30 @@ No es un tipo de modelo nuevo. Primera versión (A): la imagen se parte en N tro
 
 B queda como mejora si hace falta velocidad o contexto. En los dos, el profesor etiqueta igual: la clase de cada celda sale de la máscara de SAM 3 (qué parte de la celda cubre cada clase), sin mirar celda a celda.
 
+### Prueba A frente a B: caminos (2026-10-02)
+
+Dataset del usuario `data/real/roads`: 74 fotos de móvil (calles, aceras, carriles bici, caminos), rejilla 3x3, dos clases: transitable (todo lo que se puede andar, rodar o conducir) o no. Etiquetas de SAM 3 sin revisar (`experiments/road_grid/sam3_masks.py`: unión de las máscaras de "road", "sidewalk", "bike lane", "footpath", "dirt path", "crosswalk", "parking lot"); una celda es transitable si al menos la mitad lo es. A simple vista las máscaras salen muy bien, con fallos pequeños (árboles en primer plano, una franja lejana). Comparación en `experiments/road_grid/compare.py`, 5 repartos por foto, int8, resultados en `runs/road_grid/cmp/results.json`.
+
+B es la foto entera con 9 salidas (el mapa de rasgos reducido a 3x3 y aplanado, así cada salida ve posición y contexto). Cada fila es la mejor de dos recetas (solo la última capa o la red entera). Solo con la posición de la celda ya se acierta el 91% (arriba nunca hay camino, abajo en el 80% de las fotos), así que la columna que manda es el acierto en las celdas donde la posición falla (unas 60 de 666).
+
+| Hardware | Variante | Acierto | Donde la posición falla | Fotos con las 9 bien | ms por foto (PC, 1 hilo) | Tamaño |
+|---|---|---|---|---|---|---|
+| | Solo la posición | 91,0% | 0% | 47% | | |
+| ESP32 | A: recortes a 96 px | 91,6% | **57%** | 51% | 1,3 | 612 KB |
+| ESP32 | B: foto a 96 px | 92,6% | 22% | 54% | 0,2 | 710 KB |
+| ESP32 | B: foto a 288 px (mismo cómputo que A) | **94,0%** | 43% | 61% | 1,3 | 710 KB |
+| Móvil/PC | A: recortes a 224 px | **96,6%** | **78%** | **72%** | 39,7 | 6,8 MB |
+| Móvil/PC | B: foto a 224 px | 93,7% | 52% | 57% | 4,4 | 6,9 MB |
+| Móvil/PC | B: foto a 672 px (mismo cómputo que A) | 92,3% | 37% | 54% | 40,2 | 6,9 MB |
+
+- B con la misma entrada aprende sobre todo la posición: en la ESP32 acierta el 22% de las celdas donde hay que mirar, A el 57%.
+- Con el mismo cómputo, en móvil y PC gana A con claridad (96,6 frente a 92,3%); más resolución no ayuda a B con tan pocas fotos. Causa probable: A entrena con 666 trozos y B con 74 fotos.
+- En la ESP32 queda dividido: B a 288 px acierta más en total, A más donde hace falta mirar.
+- El precio de A es la velocidad: 9 pasadas (unos 0,6 s por foto en el Pixel 7a con el clasificador del móvil, 64 ms cada una). En la ESP32 real sin medir.
+- Cautela: etiquetas sin revisar y solo unas 60 celdas difíciles (cada una vale casi 2 puntos en esa columna); diferencias de 2 o 3 puntos son ruido.
+- Decisión (usuario, 2026-10-02): ofrecer las dos según prefiera calidad (A) o velocidad (B).
+- Pendiente para B: el aumento de datos de la prueba evita desplazamientos y giros porque mueven objetos de celda. Con las máscaras guardadas se pueden desplazar o recortar las fotos y recalcular la etiqueta de cada celda, lo que rompería la dependencia de la posición (camino también arriba). Sin probar.
+
 ## Regresión
 
 Una cabeza con 1 a N salidas continuas y pérdida de error cuadrático o absoluto. El profesor lo tiene difícil (un VLM estima mal ángulos y distancias), así que aquí el valor lo pone Isaac: cada render sabe el ángulo, la distancia o el nivel exactos. Las fotos del usuario sirven de test, marcadas a mano (por ejemplo, arrastrando una línea en Review).
