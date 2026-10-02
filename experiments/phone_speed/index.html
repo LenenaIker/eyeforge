@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phone speed test</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+    table { border-collapse: collapse; width: 100%; }
+    td, th { border-bottom: 1px solid #ddd; padding: 4px; text-align: right; }
+    td:first-child, th:first-child { text-align: left; }
+    input { width: 100%; margin-bottom: 8px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <h3>Phone speed test</h3>
+  <input id="device" placeholder="device name">
+  <button id="go">Start</button>
+  <p id="status">Keep the screen on and this tab in front while it runs.</p>
+  <table><thead><tr><th>model</th><th>runtime</th><th>load ms</th><th>median ms</th><th>p90 ms</th><th>top</th></tr></thead>
+    <tbody id="rows"></tbody></table>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

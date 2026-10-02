@@ -1,0 +1,15 @@
+{
+  "hash": "34f36452",
+  "configHash": "8c54c0f6",
+  "lockfileHash": "e3b0c442",
+  "browserHash": "073634fb",
+  "optimized": {
+    "@litertjs/core": {
+      "src": "../../../../web/node_modules/@litertjs/core/dist/index.js",
+      "file": "@litertjs_core.js",
+      "fileHash": "ed0ecd5a",
+      "needsInterop": false
+    }
+  },
+  "chunks": {}
+}

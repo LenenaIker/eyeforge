@@ -127,7 +127,24 @@ Mismo script y particiones (`classify_backbones.py all 10 phone`), todos a 224 p
 Conclusiones:
 1. **EfficientNetV2-B0 es el candidato para móvil**: gana en los dos datasets, en int8 y en float, y el int8 no pierde nada. Licencia Apache 2.0 (Keras).
 2. **MobileNetV3 Large y ConvNeXt-Tiny se rompen en int8** con la cuantización tras el entrenamiento (hard-swish y LayerNorm). En float son buenos troncos, pero no mejores que EfficientNetV2-B0, y ConvNeXt pesa 4 veces más. Descartados.
-3. Falta la velocidad: EfficientNetV2-B0 hace unas 2,3 veces las operaciones de MobileNetV2 1,0 (0,72 frente a 0,3 GFLOPs). Medir en un móvil barato con LiteRT.js frente a ONNX Runtime Web, en int8 y float16, antes de cambiar el perfil "generic".
+3. Velocidad medida en un Pixel 7a (abajo): EfficientNetV2-B0 int8 tarda 64 ms por foto con LiteRT.js, de sobra para la prueba en vivo.
+
+### Velocidad en el navegador del móvil (2026-10-02, Pixel 7a, Chrome 154)
+
+`experiments/phone_speed/` (`export.py` genera los modelos, `vite.config.mjs` sirve la página y guarda los resultados en `runs/bench/phone_speed/`). Mediana de ms por foto a 224 px, contando la lectura de la salida, como la prueba en vivo. WebAssembly en un hilo, como la app (sin aislamiento entre orígenes).
+
+| Modelo | LiteRT.js WASM | LiteRT.js WebGPU | ORT Web WASM | ORT Web WebGPU |
+|---|---|---|---|---|
+| MobileNetV2 1,0 int8 (actual) | 28 | 32 | 80 | 426 |
+| MobileNetV2 1,0 fp16 | 23 | 30 | 57 | 30 |
+| EfficientNetV2-B0 int8 | **64** | no compila | 126 | 1972 |
+| EfficientNetV2-B0 fp16 | 56 | no compila | 112 | 36 |
+
+Conclusiones:
+1. **LiteRT.js en WASM (XNNPACK) es lo más rápido en CPU**, 2 veces más que ONNX Runtime Web. En WebGPU no gana a la CPU en modelos de este tamaño.
+2. **EfficientNetV2-B0 no compila en LiteRT.js WebGPU** (error sin detalle en `litert_compiled_model_next.h`). La app ya cae a WASM si WebGPU falla, así que funcionaría tal cual, a 64 ms.
+3. **ONNX Runtime Web no aporta nada aquí**: solo gana en WebGPU con fp16 (36 ms), y en int8 en WebGPU es inservible. No merece cambiar de runtime.
+4. Decisión propuesta: perfil "generic" (móvil) con EfficientNetV2-B0 int8 a 224 px en LiteRT.js, con WASM directo para no perder tiempo intentando WebGPU. Falta medir un móvil de gama baja (estimado, sin medir: unas 3 veces más lento, unos 200 ms, aceptable para clasificar).
 
 ### Qué mediría primero (antes de tocar el catálogo)
 
