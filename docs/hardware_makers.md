@@ -139,6 +139,10 @@ Conclusiones:
 | MobileNetV2 1,0 fp16 | 23 | 30 | 57 | 30 |
 | EfficientNetV2-B0 int8 | **64** | no compila | 126 | 1972 |
 | EfficientNetV2-B0 fp16 | 56 | no compila | 112 | 36 |
+| PicoDet-S 320 px fp16 (contar, 2026-10-02) | 57 | 67 | sin medir | sin medir |
+| PicoDet-S 320 px fp32 | 57 | 67 | sin medir | sin medir |
+
+PicoDet-S es el modelo que exporta el pipeline (Paddle a ONNX a TFLite con onnx2tf, `experiments/phone_speed/` con `?models=picodet_s`), leyendo sus dos salidas; la NMS en JavaScript va aparte. Cuesta lo mismo que el clasificador EfficientNetV2-B0 int8 (63 ms en la misma tanda), y fp16 no es más lento que fp32: los pesos float16 solo ahorran tamaño (2,3 frente a 4,5 MB).
 
 Conclusiones:
 1. **LiteRT.js en WASM (XNNPACK) es lo más rápido en CPU**, 2 veces más que ONNX Runtime Web. En WebGPU no gana a la CPU en modelos de este tamaño.
@@ -176,7 +180,7 @@ Conclusiones:
 2. **La resolución sí ayuda a los detectores** (de 224 a 320 px, +4 puntos y menos error en multitudes), al contrario que en nuestra cabeza.
 3. **PicoDet-S y YOLO11n empatan.** PicoDet-S es Apache 2.0 y YOLO es AGPL (ver la tabla de detectores): para el móvil y el PC, PicoDet-S a 320 px.
 4. **En el móvil no hace falta int8 completo:** solo pesos int8 no pierde nada, y en LiteRT WASM fp16 ya era tan rápido como int8 al clasificar.
-5. Falta: la velocidad de PicoDet-S en el Pixel 7a (exportar Paddle -> ONNX -> TFLite o ORT Web), trocear la foto para multitudes de objetos diminutos y cómo entrenarlo dentro del pipeline (hoy todo es Keras).
+5. Hecho el 2026-10-02: PicoDet-S entra en el pipeline para `generic` (`sim2chip/detector.py`) y tarda 57 ms por foto en el Pixel 7a (LiteRT.js en CPU, ver la tabla de velocidad). Falta trocear la foto para multitudes de objetos diminutos.
 
 ### Qué mediría primero (antes de tocar el catálogo)
 

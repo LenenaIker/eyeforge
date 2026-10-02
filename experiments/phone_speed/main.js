@@ -4,17 +4,22 @@
 import { loadAndCompile, loadLiteRt, Tensor } from "@litertjs/core";
 import * as ort from "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.min.mjs";
 
-const SIZE = 224, WARMUP = 5, BUDGET_MS = 10_000;
+const WARMUP = 5, BUDGET_MS = 10_000;
 ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
 ort.env.wasm.numThreads = 1;
 
-// The same input for every model, so their outputs can be compared (same backbone, same untrained head).
-const input = new Float32Array(SIZE * SIZE * 3);
-for (let y = 0; y < SIZE; y++)
-  for (let x = 0; x < SIZE; x++) {
-    const i = (y * SIZE + x) * 3;
-    input[i] = (x * 255) / SIZE; input[i + 1] = (y * 255) / SIZE; input[i + 2] = ((x ^ y) & 255);
-  }
+// The same input for every model of a size, so their outputs can be compared (same backbone, same untrained head).
+// The size is in the file name when it is not 224 (picodet_s-320-fp16).
+const sizeOf = (name) => +(name.match(/-(\d{3})-/)?.[1] ?? 224);
+function pattern(size) {
+  const input = new Float32Array(size * size * 3);
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 3;
+      input[i] = (x * 255) / size; input[i + 1] = (y * 255) / size; input[i + 2] = ((x ^ y) & 255);
+    }
+  return input;
+}
 
 const $ = (id) => document.getElementById(id);
 const status = (s) => ($("status").textContent = s);
@@ -33,20 +38,25 @@ async function bench(run) {
   }
   t.sort((a, b) => a - b);
   return { median: t[Math.floor(n / 2)], p90: t[Math.floor(n * 0.9)], runs: n, first: one,
-           out: Array.from(out, (v) => +v.toFixed(4)) };
+           out: Array.from(out.slice(0, 16), (v) => +v.toFixed(4)) };
 }
 
-async function litert(bytes, accelerator) {
+async function litert(bytes, accelerator, size) {
+  const input = pattern(size);
   const t0 = performance.now();
   const model = await loadAndCompile(bytes, { accelerator });
   const load = performance.now() - t0;
   const r = await bench(async () => {
-    const x = new Tensor(input, [1, SIZE, SIZE, 3]);
+    const x = new Tensor(input, [1, size, size, 3]);
     const outs = await model.run(x);
     x.delete();
-    const o = accelerator === "wasm" ? outs[0] : await outs[0].moveTo("wasm");
-    const data = new Float32Array(o.toTypedArray());
-    if (o !== outs[0]) o.delete();
+    let data;  // every output read back, as the live test does (a detector has two); the first one returned
+    for (const t of outs) {
+      const o = accelerator === "wasm" ? t : await t.moveTo("wasm");
+      const copy = new Float32Array(o.toTypedArray());
+      data ??= copy;
+      if (o !== t) o.delete();
+    }
     outs.forEach((t) => t.delete());
     return data;
   });
@@ -54,11 +64,12 @@ async function litert(bytes, accelerator) {
   return { load, ...r };
 }
 
-async function onnx(bytes, ep) {
+async function onnx(bytes, ep, size) {
+  const input = pattern(size);
   const t0 = performance.now();
   const s = await ort.InferenceSession.create(bytes, { executionProviders: [ep] });
   const load = performance.now() - t0;
-  const x = new ort.Tensor("float32", input, [1, SIZE, SIZE, 3]);
+  const x = new ort.Tensor("float32", input, [1, size, size, 3]);
   const r = await bench(async () => (await s.run({ [s.inputNames[0]]: x }))[s.outputNames[0]].data);
   await s.release();
   return { load, ...r };
@@ -74,6 +85,7 @@ async function main() {
   const jobs = [];
   for (const f of files) {
     const [name, ext] = f.split(".");
+    if (params.has("models") && !params.get("models").split(",").some((m) => name.startsWith(m))) continue;
     const accs = gpu ? ["webgpu", "wasm"] : ["wasm"];
     const rt = ext === "tflite" ? "litert" : "ort";
     if (!params.has("only") || params.get("only") === rt) for (const a of accs) jobs.push({ f, name, rt, a });
@@ -83,7 +95,8 @@ async function main() {
     const row = { model: j.name, runtime: `${j.rt}-${j.a}` };
     try {
       const bytes = new Uint8Array(await (await fetch(`/models/${j.f}`)).arrayBuffer());
-      Object.assign(row, j.rt === "litert" ? await litert(bytes, j.a) : await onnx(bytes, j.a));
+      const size = sizeOf(j.name);
+      Object.assign(row, j.rt === "litert" ? await litert(bytes, j.a, size) : await onnx(bytes, j.a, size));
     } catch (e) {
       row.error = String(e?.message ?? e).slice(0, 300);
     }
