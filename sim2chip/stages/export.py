@@ -5,7 +5,8 @@ The shipped model is the seed with the best validation accuracy (the real test s
 The report lists the 3D models used and their authors, as their CC-BY licenses require.
 Both .tflite files get a fixed batch of 1: Keras exports a dynamic one (-1), which runtimes that cannot resize
 inputs, such as LiteRT.js in the web app's live test, refuse.
-Output: export/{model_int8.tflite, model.tflite, labels.txt, report.json}, export/model_data.h (TFLite Micro)
+Output: export/{model_int8.tflite, model.tflite, labels.txt, report.json}, export/model_data.h (TFLite Micro);
+a count detector (hardware counter) ships model.tflite only, float16 weights, read as report output says.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from .base import Context, Stage
 
 class Export(Stage):
     name = "export"
-    version = "8"  # 4: fixed batch 1 in the .tflite files (live test in the browser); 5: shipped_test; 6: advice; 7: crowd advice; 8: density output
+    version = "9"  # 4: fixed batch 1 in the .tflite files (live test in the browser); 5: shipped_test; 6: advice; 7: crowd advice; 8: density output; 9: count detector
     runtime = "cpu"
     results = ("*",)
     after = ("train", "evaluate", "qa_assets")
@@ -31,12 +32,17 @@ class Export(Stage):
         val = "val_f1" if counting else "val_acc"
         seed = max(summary, key=lambda s: summary[s][val])
         src = ctx.job.stage_dir("train") / f"seed_{seed}"
-        blob = fixed_batch((src / "model_int8.tflite").read_bytes())
+        boxes = summary[seed].get("counter", "grid") != "grid"
         out = ctx.job.stage_dir(self.name)
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
-        (out / "model_int8.tflite").write_bytes(blob)
-        (out / "model.tflite").write_bytes(fixed_batch((src / "model_float_io.tflite").read_bytes()))
+        if boxes:  # a count detector: one float16 model for phones and PCs, nothing for a chip
+            blob = (src / "model.tflite").read_bytes()
+            (out / "model.tflite").write_bytes(blob)
+        else:
+            blob = fixed_batch((src / "model_int8.tflite").read_bytes())
+            (out / "model_int8.tflite").write_bytes(blob)
+            (out / "model.tflite").write_bytes(fixed_batch((src / "model_float_io.tflite").read_bytes()))
         (out / "labels.txt").write_text("\n".join(ctx.spec.labels) + "\n")
         if hw.runtime == "tflite-micro":
             (out / "model_data.h").write_text(c_array(blob, ctx.spec.labels, hw.input_size))
@@ -49,15 +55,18 @@ class Export(Stage):
         credits = sorted({(a["name"], a["author"], a["license"], a["source"]) for a in json.loads(qa.read_text())}) \
             if qa.exists() else []
         report = {
-            "job": ctx.spec.name, "hardware": hw.name, "labels": ctx.spec.labels, "background": ctx.spec.background_class, "input": [hw.input_size] * 2 + [3],
-            "quantization": hw.quantization, "model_path": "model_int8.tflite", "model_kb": kb,
+            "job": ctx.spec.name, "hardware": hw.name, "labels": ctx.spec.labels, "background": ctx.spec.background_class,
+            "input": [summary[seed].get("input", hw.input_size)] * 2 + [3],
+            "quantization": "float16" if boxes else hw.quantization,
+            "model_path": "model.tflite" if boxes else "model_int8.tflite", "model_kb": kb,
             # model.tflite: float32 RGB 0-255 in (no normalization, the model does it), probabilities out.
             "portable_model_path": "model.tflite", "portable_input": "float32 RGB 0-255, no normalization",
             "c_array_path": "model_data.h" if hw.runtime == "tflite-micro" else None,
             "seed": int(seed), "task": ctx.spec.task, "metric": "f1" if counting else "accuracy",
             "val_score": summary[seed][val], "val_accuracy": None if counting else summary[seed]["val_acc"],
             "real_test": json.loads(ev.read_text()) if ev.exists() else None,
-            **({"output": count_output(hw.input_size, summary[seed].get("threshold"))} if counting else {}),
+            **({"output": box_output(summary[seed]) if boxes else count_output(hw.input_size, summary[seed].get("threshold"))}
+               if counting else {}),
             "asset_credits": [{"name": n, "author": a, "license": lic, "source": s} for n, a, lic, s in credits],
         }
         report["shipped_test"] = shipped_test(ctx, seed)
@@ -136,6 +145,18 @@ def c_array(blob: bytes, labels: list[str], size: int) -> str:
         f"static const char *const sim2chip_labels[] = {{{names}}};\n"
         f"alignas(16) static const uint8_t sim2chip_model[{len(blob)}] = {{\n  " + ",\n  ".join(rows) + "\n};\n"
     )
+
+
+def box_output(trained: dict) -> dict:
+    """How to read a count detector (detector.py), for the live test and anyone using the model."""
+    from ..detector import MAX_OBJECTS, NMS_IOU
+    th = trained["threshold"]
+    return {"kind": "boxes", "model": trained.get("counter"), "threshold": th, "nms_iou": NMS_IOU,
+            "max_objects": MAX_OBJECTS,
+            "how_to_read": "Two outputs before NMS. Boxes: (1, anchors, 4), x0, y0, x1, y1 in input pixels. Scores: "
+                           "(1, classes, anchors), labels.txt order without the background. Per class, keep the "
+                           f"boxes scoring at least {th}, best first, dropping any that overlaps a kept one by more "
+                           f"than {NMS_IOU} IoU, at most {MAX_OBJECTS}; every kept box is one object at its centre."}
 
 
 def count_output(size: int, threshold: float | None) -> dict:

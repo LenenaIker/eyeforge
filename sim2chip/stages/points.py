@@ -21,7 +21,7 @@ MAX_OCCLUSION = 0.85  # fraction hidden by other things
 
 class Points(Stage):
     name = "points"
-    version = "2"  # v2: box size with every point
+    version = "3"  # v2: box size with every point; v3: frames at the count model's input size (a detector's own)
     runtime = "cpu"
     uses = ("hardware", "classes", "task", "look")
     after = ("render",)
@@ -37,7 +37,7 @@ class Points(Stage):
         out = ctx.job.stage_dir(self.name)
         shutil.rmtree(out, ignore_errors=True)
         (out / "images").mkdir(parents=True)
-        size = ctx.hardware.input_size
+        size = ctx.hardware.count_input()
         classes = {c.id for c in ctx.spec.classes}
         points: dict[str, list] = {}
         labels = json.loads((src / "labels.json").read_text())

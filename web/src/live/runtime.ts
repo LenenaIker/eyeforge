@@ -8,7 +8,9 @@ import { CACHE } from "./saved";
 let runtime: Promise<unknown> | null = null;
 
 export type LiveModel = {
-  report: Report & { output?: { threshold: number; stride_px: number } };
+  // output: how to read a count model, a grid (stride_px) or a detector's boxes (kind "boxes", see boxes.ts).
+  report: Report & { output?: { threshold: number; stride_px?: number; kind?: "boxes"; nms_iou?: number;
+                                max_objects?: number } };
   size: number;          // input side in pixels (square)
   accelerator: "webgpu" | "wasm";
   run: (rgb: Float32Array) => Promise<Float32Array[]>;  // size x size x 3, RGB 0-255, row-major; every output

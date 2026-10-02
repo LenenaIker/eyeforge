@@ -1,7 +1,7 @@
 """Train the student model on synthetic crops plus the user's real photos, one model per seed.
 
 Model: the hardware profile's backbone (MobileNetV2 for microcontrollers, EfficientNetV2-B0 for phones and PCs;
-counting is always MobileNetV2), pretrained on ImageNet,
+counting is MobileNetV2 or a detector, see below), pretrained on ImageNet,
 quantized to int8: one model with int8 input and output for TFLite Micro, and the same with float32
 input and output for phones and PCs. The recipe follows the data, not the spec: with only real photos and fewer
 than HEAD_ONLY_BELOW per class, the backbone stays frozen and only the last layer learns, scored by cross-
@@ -10,6 +10,9 @@ its threshold also chosen on the real photos); otherwise the whole network is fi
 of the training mix. The real test set is never used here.
 Count task: whole images with their points (synthetic from the points stage, real from ingest), and a model
 that outputs a grid of class probabilities (see counting.py); validation also reports points F1 and count error.
+Profiles with room for it count with PicoDet-S instead (hardware counter, detector.py): fine-tuned on boxes in
+its own Python, from the full size photos, a fifth of the real ones held out to pick the checkpoint and the
+threshold; train/seed_<n>/model.tflite (float16 weights, no int8 model). Without that Python here, the grid head.
 Seeds train at the same time, each in its own process on the same GPU (SIM2CHIP_PARALLEL_SEEDS, default 3):
 one small model leaves most of an L40S idle, and three in a row were a third of a cloud run.
 Output: train/seed_<n>/{model_int8.tflite, model_float_io.tflite, history.json}, train/summary.json
@@ -35,7 +38,7 @@ DATA_FILE = "_train_set.pkl"  # the training arrays, handed to the seed processe
 
 class Train(Stage):
     name = "train"
-    version = "8"  # 3: blur from the hardware profile; 4: turns and tilts, last layer only with few photos; 5: same for count; 6: one steady count threshold; 7: count density output; 8: EfficientNetV2-B0 on generic
+    version = "9"  # 3: blur from the hardware profile; 4: turns and tilts, last layer only with few photos; 5: same for count; 6: one steady count threshold; 7: count density output; 8: EfficientNetV2-B0 on generic; 9: PicoDet-S for count on generic
     runtime = "tf"
     gpu = "any"
     max_hours = 2
@@ -43,11 +46,18 @@ class Train(Stage):
     after = ("crops", "points", "ingest")
 
     def run(self, ctx: Context) -> dict:
+        from .. import detector
+
         count = ctx.spec.task == "count"
-        data, head = self._count_data(ctx) if count else self._class_data(ctx)
         out = ctx.job.stage_dir(self.name)
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
+        if count and ctx.hardware.counter != "grid":
+            if detector.setup():
+                return self._detector(ctx, out)
+            ctx.log(f"WARNING: {ctx.hardware.name} counts with {ctx.hardware.counter}, but there is no PaddlePaddle "
+                    "Python here (SIM2CHIP_PICODET_PYTHON, SIM2CHIP_PADDLEDET): using the grid head instead")
+        data, head = self._count_data(ctx) if count else self._class_data(ctx)
         seeds = ctx.spec.training.seeds
         args = {"count": count, "labels": ctx.spec.labels, "hardware": ctx.spec.hardware,
                 "real_weight": ctx.spec.training.real_weight,
@@ -80,6 +90,62 @@ class Train(Stage):
         summary = dict(zip(seeds, results))
         if all("cv_curve" in r for r in results):
             common_threshold(ctx, summary)
+        (out / "summary.json").write_text(json.dumps(summary, indent=2))
+        return {"seeds": summary}
+
+    @staticmethod
+    def _detector(ctx: Context, out: Path) -> dict:
+        """Count with the profile's detector: one fine-tune per seed, each scored on the held out real photos."""
+        import random
+
+        import tensorflow as tf
+
+        from .. import counting, detector
+
+        # TensorFlow only converts and runs TFLite here, on the CPU: the GPU memory stays for PaddlePaddle.
+        tf.config.set_visible_devices([], "GPU")
+        labels, size = ctx.spec.labels, ctx.hardware.count_input()
+        real, synth = [], []
+        table = ctx.job.stage_dir("ingest") / "train" / "points.json"
+        if table.exists():
+            real = [(ctx.job.root / v["source"], v["points"]) for _, v in sorted(json.loads(table.read_text()).items())]
+        table = ctx.job.stage_dir("points") / "points.json"
+        if table.exists():
+            synth = [(table.parent / "images" / n, p) for n, p in sorted(json.loads(table.read_text()).items())]
+        if not real and not synth:
+            raise ValueError("nothing to train on: no synthetic frames and no marked photos")
+        random.Random(0).shuffle(real)
+        held = max(1, round(len(real) * 0.2)) if len(real) >= 5 else 0
+        val, fit = real[:held], real[held:] + synth
+        if not val:
+            val = (real or synth)[:20]
+            ctx.log(f"only {len(real)} real photos: the threshold is picked on training photos, expect it optimistic")
+        side = detector.box_side([p for _, p in real + synth])
+        items = lambda pairs: [{"path": str(f), "boxes": detector.boxes_of(p, labels, side)} for f, p in pairs]  # noqa: E731
+        ctx.log(f"PicoDet-S at {size} px: {len(real) - held} real and {len(synth)} synthetic images to train, "
+                f"{len(val)} real to validate, {sum(len(p) for _, p in fit)} objects")
+        xv = detector.load([f for f, _ in val], size)
+        truth = [[tuple(q) for q in p] for _, p in val]
+        grid = counting.grid_size(size)
+        summary = {}
+        for seed in ctx.spec.training.seeds:
+            d = out / f"seed_{seed}"
+            work = d / "picodet"
+            onnx_file = detector.train(items(fit), items(val), labels, size, work, ctx.log)
+            blob = detector.to_tflite(onnx_file, size)
+            shutil.rmtree(work)  # checkpoints: about 150 MB a seed
+            (d / "model.tflite").write_bytes(blob)
+            raw = detector.predict(blob, xv)
+            curve = {t: counting.score([detector.decode(o, labels, t) for o in raw], truth, grid)
+                     for t in detector.THRESHOLDS}
+            th = detector.pick_threshold({t: v["f1"] for t, v in curve.items()})
+            hist = {"threshold": th, "val_count": curve[th], "val_curve": {str(t): v for t, v in curve.items()}}
+            (d / "history.json").write_text(json.dumps(hist))
+            summary[seed] = {"val_f1": curve[th]["f1"], "val_count_mae": curve[th]["count_mae"], "threshold": th,
+                             "recipe": "picodet_s", "counter": "picodet_s", "input": size,
+                             "kb": round(len(blob) / 1024, 1)}
+            ctx.log(f"seed {seed}: val F1 {curve[th]['f1']} at threshold {th}, count error "
+                    f"{curve[th]['count_mae']} per image, {summary[seed]['kb']} KB")
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
         return {"seeds": summary}
 

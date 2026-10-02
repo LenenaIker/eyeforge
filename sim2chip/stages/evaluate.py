@@ -17,17 +17,21 @@ from ..workspace import PREVIOUS
 from .base import Context, Stage
 
 
-def previous_model(ctx: Context):
-    """(version, int8 model bytes, its report) of the model this run replaces, or (version, None, why not)."""
+def previous_model(ctx: Context, size: int | None = None):
+    """(version, model bytes, its report) of the model this run replaces, or (version, None, why not). size: the
+    input side of this run's model, when it is not the profile's (a count detector)."""
     d = ctx.job.input / PREVIOUS
-    if not (d / "model_int8.tflite").exists():
+    if not (d / "report.json").exists():
         return None, None, None
     n = json.loads((d / "meta.json").read_text())["n"] if (d / "meta.json").exists() else None
     rep = json.loads((d / "report.json").read_text())
+    model = d / rep.get("model_path", "model_int8.tflite")  # a count detector ships model.tflite only
+    if not model.exists():
+        return None, None, None
     if rep.get("labels") != ctx.spec.labels or rep.get("task") != ctx.spec.task or \
-            (rep.get("input") or [None])[0] != ctx.hardware.input_size:
+            (rep.get("input") or [None])[0] != (size or ctx.hardware.input_size):
         return n, None, "the setup changed (classes, task or input size), the scores do not compare"
-    return n, (d / "model_int8.tflite").read_bytes(), rep
+    return n, model.read_bytes(), rep
 
 
 def score_then(rep: dict) -> dict:
@@ -38,7 +42,7 @@ def score_then(rep: dict) -> dict:
 
 class Evaluate(Stage):
     name = "evaluate"
-    version = "4"  # 3: the previous model's score when it was trained; 4: count from the density output
+    version = "5"  # 3: the previous model's score when it was trained; 4: count from the density output; 5: count detector
     runtime = "tf"
     uses = ("task",)
     after = ("train", "ingest")
@@ -94,24 +98,40 @@ class Evaluate(Stage):
     def _count(self, ctx: Context) -> dict:
         import numpy as np
 
-        from .. import counting
+        from .. import counting, detector
         from .. import student as tu
 
-        labels, size = ctx.spec.labels, ctx.hardware.input_size
+        labels = ctx.spec.labels
         test_dir = ctx.job.stage_dir("ingest") / "test"
-        xt, _, names, truth = tu.load_points(test_dir, labels, size)
-        if not len(xt):
-            raise ValueError("no real test photos")
         info = json.loads((test_dir / "points.json").read_text())
+        names = sorted(info)
+        if not names:
+            raise ValueError("no real test photos")
+        truth = [[tuple(q) for q in info[n]["points"]] for n in names]  # with box sizes: a hit anywhere in the core counts
         out = ctx.out(self.name)
-        grid = counting.grid_size(size)
-        scores = {}
         chosen = json.loads((ctx.job.stage_dir("train") / "summary.json").read_text())
+        boxes = any(r.get("counter", "grid") != "grid" for r in chosen.values())
+        # A detector sees the full size photos at its own size; the grid head the ingest copies at the profile's.
+        size = next(iter(chosen.values())).get("input", ctx.hardware.input_size)
+        grid = counting.grid_size(size)
+        if boxes:
+            xt = detector.load([ctx.job.root / info[n]["source"] for n in names], size)
+        else:
+            xt = tu.load_points(test_dir, labels, size)[0]
+
+        def run(blob: bytes, th: float, as_boxes: bool):
+            """Points and, from a density output, counts of every test photo."""
+            if as_boxes:
+                return [detector.decode(o, labels, th) for o in detector.predict(blob, xt)], None
+            grids, dens = tu.predict_int8_count(blob, xt)
+            return [counting.decode(g, labels, th) for g in grids], \
+                None if dens is None else [counting.density_counts(x, labels) for x in dens]
+
+        scores = {}
         for d in sorted(ctx.job.stage_dir("train").glob("seed_*")):
             th = chosen[d.name.split("_")[1]].get("threshold", counting.THRESHOLD)
-            grids, dens = tu.predict_int8_count((d / "model_int8.tflite").read_bytes(), xt)
-            preds = [counting.decode(g, labels, th) for g in grids]
-            counts = None if dens is None else [counting.density_counts(x, labels) for x in dens]
+            blob = (d / ("model.tflite" if boxes else "model_int8.tflite")).read_bytes()
+            preds, counts = run(blob, th, boxes)
             sc = counting.score(preds, truth, grid, counts)
             seed = int(d.name.split("_")[1])
             scores[seed] = sc
@@ -121,16 +141,15 @@ class Evaluate(Stage):
                            for i, (n, tr, pr) in enumerate(zip(names, truth, preds))]
             (out / f"{d.name}.json").write_text(json.dumps({**sc, "labels": labels, "predictions": predictions},
                                                            indent=1))
-            ctx.log(f"seed {seed}: real int8 {sc}")
-        n, model, rep = previous_model(ctx)
+            ctx.log(f"seed {seed}: real test {sc}")
+        n, model, rep = previous_model(ctx, size)
         if n is not None:
             if model is None:
                 prev = {"version": n, "skipped": rep}
             else:
-                th = (rep.get("output") or {}).get("threshold", counting.THRESHOLD)
-                grids, dens = tu.predict_int8_count(model, xt)
-                sc = counting.score([counting.decode(g, labels, th) for g in grids], truth, grid,
-                                    None if dens is None else [counting.density_counts(x, labels) for x in dens])
+                output = rep.get("output") or {}
+                preds, counts = run(model, output.get("threshold", counting.THRESHOLD), output.get("kind") == "boxes")
+                sc = counting.score(preds, truth, grid, counts)
                 prev = {"version": n, "score": sc["f1"], "count_mae": sc["count_mae"], **score_then(rep)}
             (out / "previous.json").write_text(json.dumps(prev, indent=1))
             ctx.log(f"previous model (v{n}) on the same test photos: {prev}")
@@ -139,8 +158,8 @@ class Evaluate(Stage):
                    "count_mae": round(float(np.mean([s["count_mae"] for s in scores.values()])), 3),
                    "exact": round(float(np.mean([s["exact"] for s in scores.values()])), 4),
                    "seeds": sorted(scores), "per_seed": {str(k): v["f1"] for k, v in scores.items()},
-                   "test_size": int(len(xt)), "objects": sum(len(t) for t in truth)}
+                   "test_size": len(names), "objects": sum(len(t) for t in truth)}
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
-        ctx.log(f"real int8 points F1 {summary['mean']:.3f} +/- {summary['std']:.3f}, "
+        ctx.log(f"real test points F1 {summary['mean']:.3f} +/- {summary['std']:.3f}, "
                 f"count error {summary['count_mae']} per photo")
         return summary

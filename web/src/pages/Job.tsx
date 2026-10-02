@@ -187,7 +187,10 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
   const explain = !real ? "on synthetic validation images (add real photos to score it on real ones)"
     : counting ? `of the objects in your real test photos found in the right place (F1, ${real.test_size ?? "?"} photos)`
     : `of your real test photos recognized correctly (${real.test_size ?? "?"} photos)`;
-  const files = [["model_int8.tflite", "Model (int8)", true], ["model.tflite", "Portable model", !!r.portable_model_path],
+  // A count detector ships one model, model.tflite (float16): it is the model, not a portable copy.
+  const single = r.model_path === "model.tflite";
+  const files = [["model_int8.tflite", "Model (int8)", !single],
+                 ["model.tflite", single ? "Model" : "Portable model", single || !!r.portable_model_path],
                  ["labels.txt", "Labels", !!r.portable_model_path], ["model_data.h", "C array for the chip", r.c_array_path !== null],
                  ["report.json", "Full report", true]] as const;
   return (
@@ -213,7 +216,7 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
           </div>
           <div className="grid grid-cols-2 gap-3 sm:w-72">
             {counting && countMae != null && <Mini label="count error per photo" value={countMae.toFixed(1)} />}
-            <Mini label={`int8, ${r.input[0]}x${r.input[1]} input`} value={`${r.model_kb} KB`} />
+            <Mini label={`${r.quantization ?? "int8"}, ${r.input[0]}x${r.input[1]} input`} value={`${r.model_kb} KB`} />
             <Mini label="device profile" value={r.hardware} />
             {usd > 0 && <Mini label="cloud GPU cost" value={`$${usd.toFixed(2)}`} />}
           </div>
@@ -235,7 +238,7 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
         <Card className="bg-gradient-to-br from-ember-50 to-white p-5">
           <p className="flex items-center gap-2 font-semibold"><Cpu className="h-4 w-4 text-ember-700" /> Next: put it on your device</p>
           <p className="mt-2 text-sm text-muted">
-            The int8 model runs without a network. On a microcontroller, the C array goes into the firmware; on a
+            The model runs without a network. On a microcontroller, the C array goes into the firmware; on a
             phone, Raspberry Pi or Jetson, the .tflite file loads with TensorFlow Lite.
           </p>
           <p className="mt-3 flex items-center gap-1 text-sm font-medium text-ember-700"><Zap className="h-4 w-4" /> Flashing from the browser is coming <ChevronRight className="h-4 w-4" /></p>
@@ -364,7 +367,7 @@ function Versions({ job, versions }: { job: string; versions: Version[] }) {
               <span><span className="font-medium">v{v.n}</span> <span className="text-muted">· {v.reason}</span>
                 {(v.shipped ?? v.headline) != null && <span className="text-muted"> · {pct((v.shipped ?? v.headline)!)}{v.test_size ? ` on ${v.test_size} photos` : ""}</span>}
               </span>
-              <a href={API.versionFileUrl(job, v.n, "model_int8.tflite")}
+              <a href={API.versionFileUrl(job, v.n, v.model ?? "model_int8.tflite")}
                  className="flex items-center gap-1 text-brand-600 hover:underline"><Download className="h-3.5 w-3.5" /> model</a>
             </li>
           ))}

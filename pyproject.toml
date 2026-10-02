@@ -14,7 +14,10 @@ dependencies = []
 [project.optional-dependencies]
 # The core (spec, pipeline, backends) is stdlib only so it also runs inside Isaac Sim's Python.
 # Stage dependencies live in the runtime that executes them.
-train = ["tensorflow>=2.18,<2.19", "numpy", "pillow"]
+# The count detector's ONNX becomes a TFLite with onnx2tf (detector.py); its pieces are pinned to a set that
+# works with TensorFlow 2.18 (install with --no-deps if pip resolves newer onnx or protobuf).
+train = ["tensorflow>=2.18,<2.19", "numpy", "pillow", "onnx==1.17.0", "onnx2tf==1.29.24", "onnx_graphsurgeon==0.6.1",
+         "sng4onnx==2.0.1", "tf_keras==2.18.0", "onnxruntime==1.20.1", "ai_edge_litert==2.2.0", "psutil"]
 assets = ["objaverse", "numpy"]
 cloud = ["boto3"]
 web = ["fastapi", "uvicorn", "python-multipart"]

@@ -226,7 +226,7 @@ class Label(Stage):
         learned = {**chosen, "model": teacher.MODEL, "phrases": phrases, "note": teacher.explain(chosen)}
         boxes = [[o["box"][2] - o["box"][0], o["box"][3] - o["box"][1]] for v in verdicts.values()
                  for o in v["objects"] or [] if o.get("box")]
-        small = counting.small_objects(boxes, ctx.hardware.input_size)
+        small = counting.small_objects(boxes, ctx.hardware.count_input())
         if small:
             ctx.log("WARNING: " + small["note"])
             learned["small_objects"] = small

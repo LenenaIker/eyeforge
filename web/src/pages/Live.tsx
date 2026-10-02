@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { Spinner, cx } from "../components/ui";
 import { addCapture, listCaptures } from "../live/captures";
+import { anchors, decodeBoxes } from "../live/boxes";
 import { decode, type LivePoint } from "../live/decode";
 import { isHandheld } from "../live/device";
 import { fit, toFrame, turnFromGravity, uprightRgb, uprightTransform, type Turn } from "../live/orient";
@@ -16,7 +17,8 @@ import { loadModel, type LiveModel } from "../live/runtime";
 // Pillow's filter to the model's square input, as ingest did with the photos it was trained and scored on.
 // "This one is wrong" saves the frame (upright, full size) for the job page's "Make it better", offline too.
 
-// count: from the density output, steadier than the number of points in crowds (models before it: the points).
+// count: a detector's kept boxes, or a grid model's density output (steadier than its points in crowds; models
+// before it: the points).
 type Seen = { points: LivePoint[]; count: number; top: { label: string; p: number } | null; ms: number };
 const SMOOTH = 5;  // frames in the median count shown, so the number does not flicker
 const SAVE_SIDE = 1600;  // long side of a saved frame, as images.ts shrinks uploads
@@ -316,8 +318,18 @@ async function infer(model: LiveModel, src: HTMLVideoElement | HTMLImageElement,
   const outs = await model.run(Float32Array.from(small));
   const ms = performance.now() - t0;
   const labels = model.report.labels;
+  const output = model.report.output;
+  if (model.report.task === "count" && output?.kind === "boxes") {
+    // A detector: boxes and scores, told apart by size (their order when they are the same size, 4 classes).
+    const nb = anchors(s) * 4;
+    const boxes = outs.find((o) => o.length === nb) ?? outs[0];
+    const scores = outs.find((o) => o !== boxes) ?? outs[1];
+    const points = decodeBoxes(boxes, scores, s, labels, threshold, output.nms_iou ?? 0.6, output.max_objects ?? 1000)
+      .map(([u, v, c]): LivePoint => [...toFrame(u, v, turn), c]);
+    return { points, count: points.length, top: null, ms };
+  }
   if (model.report.task === "count") {
-    const g = s / (model.report.output?.stride_px ?? 8);
+    const g = s / (output?.stride_px ?? 8);
     // Told apart by size: the points grid has one channel per label, the density one less (no background).
     const grid = outs.find((o) => o.length === g * g * labels.length) ?? outs[0];
     const density = outs.find((o) => o.length === g * g * (labels.length - 1));

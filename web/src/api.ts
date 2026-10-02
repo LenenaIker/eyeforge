@@ -40,6 +40,8 @@ export type Report = {
   job: string; hardware: string; labels: string[]; background?: string | null; input: number[]; model_kb: number; task: string;
   val_score?: number; val_accuracy?: number; real_test?: RealTest; real_accuracy?: RealTest;
   c_array_path: string | null; portable_model_path?: string;
+  quantization?: string;  // int8, or float16 for a count detector
+  model_path?: string;  // the device model: model_int8.tflite, or model.tflite for a count detector
   // The shipped model's own score on the real test photos (the headline); real_test is the mean of the seeds.
   shipped_test?: { score: number; count_mae?: number } | null;
   advice?: string[];  // what most likely held the score back, in plain words
@@ -50,7 +52,8 @@ export type Report = {
 };
 
 export type Version = { n: number; reason: string; created?: number; started?: number; metric?: string;
-                        headline?: number | null; shipped?: number | null; test_size?: number | null };
+                        headline?: number | null; shipped?: number | null; test_size?: number | null;
+                        model?: string };  // its device model file (older versions: model_int8.tflite)
 
 // What a job used of Nebius and NVIDIA (sim2chip/usage.py): model calls and GPU time, in dollars when known.
 export type ModelUsage = { model: string; name: string; steps: string[]; calls: number; input_tokens: number;

@@ -157,7 +157,8 @@ def snapshot(job: Job, reason: str) -> dict | None:
                 "metric": rep.get("metric"),
                 "headline": shipped if shipped is not None else real.get("mean", rep.get("val_score")),
                 "shipped": shipped, "seeds_mean": real.get("mean"),
-                "test_size": real.get("test_size"), "report_key": content_key(report)}
+                "test_size": real.get("test_size"), "report_key": content_key(report),
+                "model": rep.get("model_path", "model_int8.tflite")}
         d = job.root / "versions" / f"v{cur['n']}"
         d.mkdir(parents=True, exist_ok=True)
         for f in VERSION_FILES:
@@ -169,7 +170,7 @@ def snapshot(job: Job, reason: str) -> dict | None:
     prev = job.input / PREVIOUS
     shutil.rmtree(prev, ignore_errors=True)
     prev.mkdir(parents=True)
-    for f in ("model_int8.tflite", "report.json"):
+    for f in (rep.get("model_path", "model_int8.tflite"), "report.json"):
         shutil.copy2(export / f, prev / f)
     (prev / "meta.json").write_text(json.dumps({"n": kept["n"]}))
     (job.input / CURRENT_VERSION).write_text(json.dumps({"n": kept["n"] + 1, "reason": reason,
