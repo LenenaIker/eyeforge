@@ -189,7 +189,8 @@ class ListingStore(FakeStore):
         return {k: len(v) for (b, k), v in self.objects.items() if b == bucket and k.startswith(prefix)}
 
 
-def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
+@pytest.mark.parametrize("task", ["roi_classification", "count"])
+def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch, task):
     from sim2chip.pipeline import Pipeline
     from sim2chip.spec import from_dict
 
@@ -197,7 +198,8 @@ def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
     monkeypatch.setenv("SIM2CHIP_HF_SECRET", "hf-key")
     monkeypatch.setenv("SIM2CHIP_LABEL_SAMPLE", "6")
     spec = from_dict({"name": "j", "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
-                                                "assets": {"categories": ["cow"]}}], "user_data": {"raw": "photos"}})
+                                                "assets": {"categories": ["cow"]}}], "user_data": {"raw": "photos"},
+                      "task": task})
     job = Job(tmp_path / "jobs" / "j")
     (job.input / "photos").mkdir(parents=True)
     (job.input / "photos" / "a.jpg").write_bytes(b"jpg")
@@ -226,9 +228,11 @@ def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
     assert len(be.cli.jobs) == 1 and be.cli.jobs[0]["image"].startswith("nvcr.io/nvidia/isaac-sim")
     script = be.cli.jobs[0]["script"]
     assert "sim2chip.cloud_worker" in script and "tensorflow[and-cuda]" in script and "SIM2CHIP_ISAAC_PYTHON" in script
-    # label runs SAM 3: its own Python in the job, the gated weights' token, and the calibration sample
+    # label runs the teacher in its own Python, with the calibration sample; only SAM 3 (count) needs the
+    # token of its gated weights, SigLIP 2 (classify) downloads without one
     assert "SIM2CHIP_SAM3_PYTHON" in script and "transformers==" in script
-    assert "HF_TOKEN=hf-key" in be.cli.jobs[0]["secrets"] and be.cli.jobs[0]["env"]["SIM2CHIP_LABEL_SAMPLE"] == "6"
+    assert ("HF_TOKEN=hf-key" in be.cli.jobs[0]["secrets"]) == (task == "count")
+    assert be.cli.jobs[0]["env"]["SIM2CHIP_LABEL_SAMPLE"] == "6"
     assert "> label (x)" in lines and "noise" not in lines
     assert all(job.done(st) for st in fps) and (job.root / "export" / "model.tflite").exists()
     assert (job.root / "render" / "rgb_0001.png").exists()

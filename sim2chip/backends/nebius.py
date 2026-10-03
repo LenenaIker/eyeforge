@@ -18,7 +18,7 @@ Configuration (environment or the repo's .env):
     SIM2CHIP_BUCKET_PREFIX     bucket name prefix (default sim2chip)
     SIM2CHIP_S3_SECRET         MysteryBox secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for the jobs
     SIM2CHIP_NEBIUS_SECRET     MysteryBox secret holding NEBIUS_API_KEY, for stages that call Token Factory
-    SIM2CHIP_HF_SECRET         MysteryBox secret holding HF_TOKEN, for the teacher's gated weights (SAM 3)
+    SIM2CHIP_HF_SECRET         MysteryBox secret holding HF_TOKEN, for SAM 3's gated weights (count runs)
     SIM2CHIP_MAX_USD           spend cap for one run, estimated from GPU time (default 5)
     AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY   Object Storage key, to upload input and fetch results
 """
@@ -398,7 +398,8 @@ class NebiusBackend:
         script.parent.mkdir(parents=True, exist_ok=True)
         teacher = any(st.name == "label" for st in todo)
         script.write_text(worker_script(job.name, plan_args, teacher))
-        secrets = self._secrets(any(st.calls_llm(pipe.spec) for st in todo), teacher)
+        # Only SAM 3 (count) is gated on Hugging Face; SigLIP 2 (classify) downloads without a token.
+        secrets = self._secrets(any(st.calls_llm(pipe.spec) for st in todo), teacher and pipe.spec.task == "count")
         env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url,
                "SIM2CHIP_REGION": REGION}
         if os.environ.get("SIM2CHIP_LABEL_SAMPLE"):  # calibration: the teacher marks only a few photos
