@@ -23,9 +23,10 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from . import config, review, usage
+from .accounts import INTERVIEW_COST, RUN_COST
 from . import spec as spec_mod
 from .pipeline import Pipeline
 from .workspace import IMAGE_EXT, Cache, Job, current_version, open_job, snapshot, versions
@@ -36,7 +37,11 @@ DIST = WEB / "dist"
 OWNER = "owner"  # file in a public server's job folder: the visitor who started it
 NO_BUILD = ("<p>EyeForge: the web app is not built. Run <code>cd web && npm install && npm run build</code> in the "
             "repository, then reload. The API under /api works without it.</p>")
-OPEN_API = {"/api/config", "/api/key"}  # the API calls a visitor without the access key may make
+OPEN_API = {"/api/config", "/api/key", "/api/me"}  # API calls open to a visitor without the key or a login
+SESSION = "eyeforge_session"  # cookie: the signed account id (login mode)
+STATE = "eyeforge_oauth"      # cookie: the signed nonce and return page of a login in progress
+SESSION_DAYS = 30
+ACCOUNTS_DB = "accounts.db"  # in the server's home
 VISITOR = "eyeforge_visitor"  # cookie: one per browser, so visitors of a public server only see their own jobs
 
 
@@ -78,12 +83,15 @@ PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets"}  # an int
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,
                launcher=None, public: bool = False, key: str | None = None, max_runs: int = 2,
-               daily_usd: float | None = None):
+               daily_usd: float | None = None, auth=None, accounts=None, contact: str | None = None):
     """public: a server others can reach. Specs may only use photos uploaded through it (no server paths),
     at most `max_runs` runs at a time, and, with `key`, the API needs it (a link with ?key=... or POST /api/key
     sets a cookie); the pages and the app's files stay open, so anyone sees the landing and the app asks for the
-    key (user, 2026-10-03). Each browser gets a visitor cookie and only sees the jobs it started. daily_usd: no new run when
-    the cloud GPU spent in the last 24 h plus one more run could pass it."""
+    key (user, 2026-10-03). Each browser gets a visitor cookie and only sees the jobs it started.
+    daily_usd: no new run when the cloud GPU spent in the last 24 h plus one more run could pass it.
+    auth (auth.Auth) and accounts (accounts.Accounts): login with Google or GitHub instead of the key; jobs
+    belong to the account (so they follow it to the phone), and interviews and runs are paid with credits,
+    free for judges (docs/plan_login.md). contact: the address judges write to for free access."""
     import hmac
 
     from fastapi.responses import JSONResponse
@@ -106,7 +114,25 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def key_cookie(response) -> None:
         response.set_cookie("eyeforge_key", key, httponly=True, samesite="strict", max_age=14 * 86400)
 
-    if key:
+    if auth is not None:
+        @app.middleware("http")
+        async def require_login(request: Request, call_next):
+            acc_id = auth.unsign(request.cookies.get(SESSION))
+            acc = accounts.get(acc_id) if acc_id else None
+            request.state.account = acc
+            path = request.url.path
+            if path.startswith("/api/") and path not in OPEN_API:
+                if acc is None:
+                    return JSONResponse({"detail": "sign in first"}, status_code=401)
+                if accounts.tier(acc) == "banned":
+                    return JSONResponse({"detail": paused_text()}, status_code=403)
+            return await call_next(request)
+
+    def paused_text() -> str:
+        return ("Your account was paused by an automatic safety check. If this is a mistake, write to "
+                f"{contact or 'us'} and we will sort it out.")
+
+    if key and auth is None:
         @app.middleware("http")
         async def require_key(request: Request, call_next):
             given = request.query_params.get("key") or request.cookies.get("eyeforge_key") or \
@@ -141,7 +167,21 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     launch = launcher or _launch
 
     def visitor(request: Request) -> str | None:
+        if auth is not None:
+            acc = getattr(request.state, "account", None)
+            return acc.id if acc else None
         return getattr(request.state, "visitor", None) if public else None
+
+    def pay(request: Request, cost: float, reason: str, detail: str | None = None):
+        """Charge the signed-in account (free for judges); 402 without enough credits. None without accounts."""
+        if accounts is None:
+            return None
+        acc = request.state.account
+        if not accounts.charge(acc, cost, reason, detail):
+            if accounts.tier(acc) == "banned":
+                raise HTTPException(403, paused_text())
+            raise HTTPException(402, f"not enough credits for this {reason} ({accounts.balance(acc.id):g} left)")
+        return acc
 
     def mine(job: Job, request: Request) -> bool:
         if not public:
@@ -209,9 +249,16 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             f.write(interview_usage(sid).read_text())
         interview_usage(sid).unlink()  # counted once, even if the chat goes on
 
-    def start_run(job: Job, request: Path, start: str | None = None):
-        (job.logs / "launched_at").write_text(f"{time.time():.3f}")
-        runs[job.name] = launch(home, job, request, backend, max_usd, start=start)
+    def start_run(job: Job, request: Path, start: str | None = None, payer: Request | None = None):
+        """payer: the HTTP request of the user who pays this run (accounts mode), refunded if it cannot start."""
+        acc = pay(payer, RUN_COST, "run", job.name) if payer is not None else None
+        try:
+            (job.logs / "launched_at").write_text(f"{time.time():.3f}")
+            runs[job.name] = launch(home, job, request, backend, max_usd, start=start)
+        except Exception:
+            if acc is not None:
+                accounts.refund(acc, RUN_COST, job.name)
+            raise
 
     def busy() -> bool:
         return public and sum(p.poll() is None for p in runs.values()) >= max_runs
@@ -234,7 +281,58 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                       "can_run": spent + WORKER_HOURS * USD_PER_HOUR <= daily_usd}
         return {"backend": backend, "first_question": FIRST_QUESTION, "public": public, "busy": busy(),
                 "max_runs": max_runs if public else None, "budget": budget,
-                "locked": bool(key) and not getattr(request.state, "unlocked", False)}
+                "locked": auth is None and bool(key) and not getattr(request.state, "unlocked", False),
+                "login": auth.providers if auth is not None else None}
+
+    @app.get("/api/me")
+    def me(request: Request):
+        """Who is signed in, their tier and credits; and where judges write for free access."""
+        acc = getattr(request.state, "account", None)
+        judging = accounts is not None and (accounts.judge_until is None or time.time() < accounts.judge_until)
+        out = {"signed_in": acc is not None, "contact": contact, "judging": judging,
+               "costs": {"run": RUN_COST, "interview": INTERVIEW_COST}}
+        if acc is not None:
+            out["account"] = {"email": acc.email, "name": acc.name, "provider": acc.provider,
+                              "tier": accounts.tier(acc), "credits": accounts.balance(acc.id)}
+        return out
+
+    if auth is not None:
+        @app.get("/auth/{provider}/login", include_in_schema=False)
+        def login(provider: str, next: str = "/app"):
+            if provider not in auth.providers:
+                raise HTTPException(404, f"no login with {provider}")
+            nonce = uuid.uuid4().hex
+            back = next if next.startswith("/") and not next.startswith("//") else "/app"
+            response = RedirectResponse(auth.login_url(provider, nonce), 302)
+            response.set_cookie(STATE, auth.sign(json.dumps({"nonce": nonce, "next": back}), 600),
+                                httponly=True, samesite="lax", secure=auth.public_url.startswith("https"),
+                                max_age=600)
+            return response
+
+        @app.get("/auth/{provider}/callback", include_in_schema=False)
+        def login_back(provider: str, request: Request, code: str = "", state: str = ""):
+            from .auth import AuthError
+            saved = auth.unsign(request.cookies.get(STATE))
+            saved = json.loads(saved) if saved else None
+            if provider not in auth.providers or not code or not saved \
+                    or not hmac.compare_digest(state, saved["nonce"]):
+                return RedirectResponse("/app?login=failed", 302)
+            try:
+                who = auth.identity(provider, code)
+            except AuthError:
+                return RedirectResponse("/app?login=failed", 302)
+            acc = accounts.login(who.provider, who.subject, who.email, who.verified, who.name)
+            response = RedirectResponse(saved["next"], 302)
+            response.set_cookie(SESSION, auth.sign(acc.id, SESSION_DAYS * 86400), httponly=True, samesite="lax",
+                                secure=auth.public_url.startswith("https"), max_age=SESSION_DAYS * 86400)
+            response.delete_cookie(STATE)
+            return response
+
+        @app.post("/auth/logout", include_in_schema=False)
+        def logout():
+            response = JSONResponse({"ok": True})
+            response.delete_cookie(SESSION)
+            return response
 
     def check_paths(parsed: spec_mod.Spec, job: Job | None = None) -> None:
         """On a public server, only photos uploaded here (or, revising a job, the job's own folders): a path
@@ -257,6 +355,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         """A new interview, or (job=<name>) one that revises a trained job's spec."""
         nonlocal new_session
         revising = job_of(job, request) if job else None
+        pay(request, INTERVIEW_COST, "interview", revising.name if revising else None)
         if new_session is None:
             new_session = default_interviewer(home, backend, public)
         now = time.time()
@@ -416,9 +515,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         save_photos(job.input / "photos", images)
         credit_interview(job, session)
         if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled:
+            pay(request, RUN_COST, "run", name)  # the teacher's check is the start of the paid run
             calibrate(job)
             return {"job": name, "photos": len(images), "calibrating": True}
-        start_run(job, req)
+        start_run(job, req, payer=request)
         return {"job": name, "photos": len(images)}
 
     @app.get("/api/jobs")
@@ -509,7 +609,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         req = job.root / "request.json"
         if not req.exists():
             req.write_text(job.spec_path.read_text())
-        start_run(job, req, start)
+        start_run(job, req, start, payer=request)
         return {"rerun_from": start}
 
     @app.post("/api/jobs/{name}/revise")
@@ -540,7 +640,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         req = job.root / "request.json"
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": old.name}, indent=2))
         snapshot(job, "changed " + (", ".join(changed) or "the setup"))
-        start_run(job, req)
+        start_run(job, req, payer=request)
         return {"stages": todo, "changed": changed, "rerun_from": todo[0]}
 
     @app.post("/api/jobs/{name}/photos")
@@ -572,7 +672,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         (job.root / "request.json").write_text(json.dumps({**data, "name": data.get("name", job.name)}, indent=2))
         note = " ".join(note.split())[:120]
         snapshot(job, f"added {saved} photos" + (f": {note}" if note else ""))
-        start_run(job, job.root / "request.json", "label")
+        start_run(job, job.root / "request.json", "label", payer=request)
         return {"rerun_from": "label", "photos": saved}
 
     @app.get("/api/jobs/{name}/versions/{n}/files/{file}")
@@ -845,9 +945,14 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
 
 
 def serve(home: Path, backend: str, host: str, port: int, max_usd: float | None, public: bool = False,
-          key: str | None = None, max_runs: int = 2, daily_usd: float | None = None) -> None:
+          key: str | None = None, max_runs: int = 2, daily_usd: float | None = None, auth=None,
+          judge_until: float | None = None, contact: str | None = None) -> None:
+    """auth: login with Google or GitHub (auth.Auth); accounts live in <home>/accounts.db."""
     import uvicorn
+    from .accounts import Accounts
     # Token Factory's prices for the usage panel, in the background: the server starts without waiting.
     threading.Thread(target=usage.refresh_prices, args=(home / "cache",), daemon=True).start()
-    uvicorn.run(create_app(home, backend, max_usd, public=public, key=key, max_runs=max_runs, daily_usd=daily_usd),
-                host=host, port=port)
+    accounts = Accounts(home / ACCOUNTS_DB, judge_until) if auth is not None else None
+    uvicorn.run(create_app(home, backend, max_usd, public=public, key=key, max_runs=max_runs, daily_usd=daily_usd,
+                           auth=auth, accounts=accounts, contact=contact),
+                host=host, port=port, proxy_headers=True)

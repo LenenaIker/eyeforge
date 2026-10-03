@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import sys
 from pathlib import Path
@@ -133,18 +134,60 @@ def cmd_match(args) -> int:
 def cmd_serve(args) -> int:
     from .config import env
     from .server import serve
-    key = env("SIM2CHIP_WEB_KEY") if args.public else None
-    if args.public and not key:
-        raise SystemExit("--public needs an access key: set SIM2CHIP_WEB_KEY (environment or .env)")
+    from .auth import Auth
+    auth = Auth.from_env() if args.public else None
+    key = env("SIM2CHIP_WEB_KEY") if args.public and auth is None else None
+    if args.public and auth is None and not key:
+        raise SystemExit("--public needs a login (SIM2CHIP_PUBLIC_URL, SIM2CHIP_SESSION_SECRET and Google or GitHub "
+                         "OAuth clients, see sim2chip/auth.py) or an access key (SIM2CHIP_WEB_KEY)")
     if not args.public and args.host not in ("127.0.0.1", "localhost"):
         raise SystemExit(f"serving on {args.host} lets others in: add --public (access key, uploads only)")
     url = f"http://{args.host}:{args.port}" + ("/?key=<SIM2CHIP_WEB_KEY>" if key else "")
-    print(f"EyeForge web on {url}  (backend {args.backend}{', public' if args.public else ''})")
+    print(f"EyeForge web on {url}  (backend {args.backend}{', public' if args.public else ''}"
+          + (f", login with {' and '.join(auth.providers)})" if auth else ")"))
     daily = env("SIM2CHIP_DAILY_USD")
     if args.public and not env("SIM2CHIP_HOME"):
         raise SystemExit("--public needs SIM2CHIP_HOME on a disk that survives restarts (jobs, buckets, spend)")
+    until = env("SIM2CHIP_JUDGE_UNTIL")  # end of the judging, ISO date or time (UTC): judges are free until then
+    judge_until = datetime.fromisoformat(until).replace(tzinfo=timezone.utc).timestamp() if until else None
     serve(Path(args.home), args.backend, args.host, args.port, args.max_usd, public=args.public, key=key,
-          max_runs=args.max_runs, daily_usd=float(daily) if daily else (30.0 if args.public else None))
+          max_runs=args.max_runs, daily_usd=float(daily) if daily else (30.0 if args.public else None), auth=auth,
+          judge_until=judge_until, contact=env("SIM2CHIP_CONTACT"))
+    return 0
+
+
+def _accounts(args):
+    from .accounts import Accounts
+    from .server import ACCOUNTS_DB
+    db = Path(args.home) / ACCOUNTS_DB
+    if not db.exists():
+        raise SystemExit(f"no accounts yet in {db}")
+    return Accounts(db)
+
+
+def cmd_accounts(args) -> int:
+    accs = _accounts(args)
+    if args.action == "list":
+        for a in accs.all():
+            flags = " ".join(f for f, on in (("judge:" + str(a.judge), a.judge), ("banned", a.banned)) if on)
+            print(f"{a.email or '-':40} {a.provider:7} {accs.balance(a.id):8g} credits  {flags}")
+        return 0
+    if not args.email:
+        raise SystemExit(f"accounts {args.action} needs an email")
+    value = {"judge": "manual", "unjudge": None, "ban": 1, "unban": 0}[args.action]
+    n = accs.set_flag(args.email, "judge" if "judge" in args.action else "banned", value)
+    print(f"{args.action}: {n} account(s) with {args.email}" + ("" if n else " (it must sign in once first)"))
+    return 0 if n else 1
+
+
+def cmd_credits(args) -> int:
+    accs = _accounts(args)
+    found = accs.by_email(args.email)
+    if not found:
+        raise SystemExit(f"no account with {args.email}: it must sign in once first")
+    for a in found:
+        accs.add(a.id, args.amount, "grant", args.note)
+        print(f"{a.email} ({a.provider}): {accs.balance(a.id):g} credits")
     return 0
 
 
@@ -205,6 +248,18 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--max-runs", type=int, default=2, help="--public: runs at the same time (GPU quota)")
     sv.add_argument("--max-usd", type=float, help="nebius: spend cap per run")
     sv.set_defaults(func=cmd_serve)
+
+    ac = sub.add_parser("accounts", help="public server accounts: list, mark a judge (free use), pause or unpause")
+    ac.add_argument("action", choices=["list", "judge", "unjudge", "ban", "unban"])
+    ac.add_argument("email", nargs="?", help="the account's email (every account with it)")
+    ac.set_defaults(func=cmd_accounts)
+
+    cr = sub.add_parser("credits", help="give credits to an account of the public server")
+    cr.add_argument("action", choices=["grant"])
+    cr.add_argument("email")
+    cr.add_argument("amount", type=float, help="credits (a run costs 1)")
+    cr.add_argument("--note", default=None)
+    cr.set_defaults(func=cmd_credits)
 
     args = p.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)  # progress shows up when piped to tee or a log file
