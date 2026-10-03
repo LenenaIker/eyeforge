@@ -244,3 +244,30 @@ Banco `experiments/interview_bench/`: la Session real contra 10 usuarios simulad
 - En móvil/PC funciona como prueba de concepto: casi nunca gira al lado contrario (4,5%) y acierta el lado de 88% de los giros claros. En ESP32 a 96 px es flojo (15% al lado contrario).
 - Las fotos con bifurcación no puntúan peor que las otras.
 - Límites: fotos a altura de persona (un robot ve el suelo de mucho más cerca), 71 fotos, giro simulado con recortes (sin perspectiva real) y verdad de SAM 3 sin revisar.
+
+## Profesores para seguir caminos: comparativa en datasets públicos (2026-10-03)
+
+Pregunta: qué modelo grande etiqueta mejor "el camino va a la izquierda, recto o a la derecha". Mismas tres clases en los dos datasets; scripts en `experiments/line_follow/` (`trails_*.py`, `drive_*.py`), resultados en `runs/line_follow/trails/` y `runs/line_follow/drive/` (hojas visuales `teachers.jpg`).
+
+- **Carretera, Sully Chen dataset 1** (salpicadero de coche, ángulo de volante, MIT): izquierda bajo -15°, recto entre -3° y 3°, derecha sobre 15° (lo de en medio fuera). 3 muestras disjuntas de 150 fotos (50 por clase), separadas al menos 20 fotogramas. Umbrales de los profesores que dan un punto ajustados en las otras dos muestras.
+- **Senderos de monte, IDSIA Forest Trails** (Giusti et al. 2016, CC BY 4.0): carpetas de test 011 y 012, 600 fotogramas (200 por clase; la 013 son vídeos de dron sin etiquetas). Etiqueta por cámara: la que mira 30° a la izquierda es "derecha", etc. El `info.txt` de esas carpetas dice que el caminante giraba a propósito: etiquetas con ruido. El artículo da 85,2% a su red y 82-86,5% a dos humanos en su test, y 36,5% al método de segmentar y tomar el centroide.
+
+| Profesor | Carretera (media ± sd) | Senderos |
+|---|---|---|
+| Molmo2-8B señalando, centro ajustado (x 0,59) | **0,800 ± 0,029** | |
+| Molmo2-8B señalando, centro 0,5 | 0,656 ± 0,016 | 0,278 (umbral en el test; no señala en 42%) |
+| Qwen3.8-27B (Token Factory) | 0,664 ± 0,027 | **0,543** |
+| MiniCPM-V-4.5 | 0,609 ± 0,021 | 0,487 |
+| MiniMax-M3 | 0,607 ± 0,024 | 0,517 |
+| Kimi-K2.6 | 0,604 ± 0,022 | 0,535 (11% sin respuesta) |
+| GLM-5.3-Flash | 0,593 ± 0,034 | 0,532 |
+| SAM 3 + geometría (mejor regla) | 0,480 ± 0,033 | 0,277 (umbral en el test; no ve sendero en 49%) |
+| gemma-3-27b | 0,382 ± 0,006 | 0,408 |
+| Azar | 0,333 | 0,333 |
+
+- Alumnos con las etiquetas reales de senderos (1.350 fotogramas de las carpetas 005, 008 y 009, int8): móvil/PC 61,7% (última capa) y 60,2% (red entera); ESP32 55,8% y 53,3%. El 85,2% del artículo usaba 17.119 fotogramas de entreno y, probablemente, un test más limpio.
+- SAM 3 + geometría, el profesor actual de `follow.py`, es el peor en los dos: con "road" pinta toda la calzada (los dos carriles y a veces la acera), y en el monte no adivina cuando el sendero no sale en la foto.
+- Molmo2 (Apache 2.0, local, unos 18 GB en bf16, 1,4 s por foto en la 3090) es el mejor en carretera, pero solo con el centro ajustado: el coche va por la derecha y el punto lejano de su carril cae a la derecha del centro. Ese ajuste pide unas pocas fotos etiquetadas del usuario (encaja con la calibración del profesor). En senderos casi no señala.
+- Los VLMs de Token Factory adivinan por el contexto cuando el camino no se ve, por eso ganan en senderos. Qwen3.8-27B es el mejor en los dos; GLM-5.3-Flash da casi lo mismo 12 veces más barato (0,22 $ por 1.000 fotos frente a 2,63).
+- Parte del error es de las etiquetas: el volante dice lo que hizo el conductor (girar en un cruce sin curva visible) y no siempre dónde va la carretera.
+- Descartados: InternVLA-N1 (CC BY-NC-SA, entrenado en interiores simulados, necesita su propio código de navegación).
