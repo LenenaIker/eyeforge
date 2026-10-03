@@ -1,7 +1,7 @@
 """Path following as regression: where does the path ahead go, left or right of where the camera looks?
 
     python experiments/line_follow/follow.py PHOTOS MASKS OUT [--recipes head,finetune] [--only esp32cam:96]
-    python experiments/line_follow/follow.py PHOTOS - OUT --points molmo2.json [--centre 0.5]
+    python experiments/line_follow/follow.py PHOTOS - OUT --points molmo2.json [--centre 0.5] [--gate gate.json]
 
 Labels without a human (the plan in TODO, "SAM 3 + geometry"): the walkable masks of road_grid/sam3_masks.py,
 the main path is the connected part of the mask that covers the most of the bottom middle of the photo, and its
@@ -9,6 +9,8 @@ far point is the mean x of that part in its top rows (where the path disappears)
 relative to the centre of the view, -1 at the left edge, +1 at the right.
 With --points the far point is the teacher's chosen one since 2026-10-03, Molmo2 (trails_point.py --scene walk):
 its x, moved by 0.5 - centre (the calibration: where the far point sits when the path goes straight on).
+Molmo2 points even where there is no path, so --gate drops the photos a VLM answered 0 for (path_gate_vlm.py;
+GLM-5.3-Flash chosen by the user, 2026-10-03).
 
 Turning, without new photos: the photos are mostly taken looking along the path, so the far point sits near the
 middle and "always straight" would score well. Each photo gives several square views at different horizontal
@@ -250,6 +252,8 @@ def main():
     ap.add_argument("--only", default="", help="comma list of profile:size")
     ap.add_argument("--points", type=Path, help="Molmo2 points (trails_point.py output) instead of SAM 3 masks")
     ap.add_argument("--centre", type=float, default=0.5, help="x of the far point when the path goes straight")
+    ap.add_argument("--gate", type=Path, help="path_gate_vlm.py answers: photos answered 0 are left out")
+    ap.add_argument("--gate-model", default="zai-org/GLM-5.3-Flash")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     gpus = tf.config.list_physical_devices("GPU")
@@ -263,6 +267,10 @@ def main():
                   for p in sorted(args.photos.glob("*.jpg"))]
     else:
         labels = load_labels(args.photos, args.masks)
+    if args.gate:
+        gate = json.loads(args.gate.read_text())[args.gate_model]
+        labels = [lab if gate.get(lab["photo"]) != 0 else {"photo": lab["photo"], "ok": False, "gate": 0}
+                  for lab in labels]
     (args.out / "labels.json").write_text(json.dumps(labels, indent=1))
     label_sheet(args.photos, labels, args.out / "labels.jpg")
     good = [lab for lab in labels if lab["ok"]]
