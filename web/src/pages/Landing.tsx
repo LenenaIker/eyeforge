@@ -176,12 +176,16 @@ function Why() {
   );
 }
 
-// Measured on the first full run on Nebius (maceta_counter_6, 2026-09-27). Keep these real.
+// Measured on Nebius with the account the web uses (2026-10-03/04): photos_timing (69 lawn photos, no
+// synthetic data, 7.4 min, $0.19) and sa-check (smoke_farm_animals for the ESP32-CAM, 1,500 renders, 16 min,
+// $0.41). Keep these real: measure again when the images or the pipeline change.
 function Proof() {
-  const stats = [["22 min", "photos to model, all in Nebius AI Cloud"], ["$0.56", "of cloud GPU for the whole run"],
-                 ["133 KB", "int8 model, runs without a network"], ["2,000", "synthetic images made for the job"]];
+  const stats = [["~8 min", "photos to model, with your photos only"],
+                 ["~16 min", "adding 1,500 synthetic images from Isaac Sim"],
+                 ["from $0.19", "of cloud GPU per run on Nebius AI Cloud"],
+                 ["612 KB", "int8 model for a $10 ESP32-CAM, no network"]];
   return (
-    <Section eyebrow="Measured, not promised" title="One run, start to finish">
+    <Section eyebrow="Measured, not promised" title="Two runs, start to finish">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {stats.map(([v, l]) => (
           <Card key={l} className="p-5">
