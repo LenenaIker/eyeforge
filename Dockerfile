@@ -2,7 +2,8 @@
 # AI Cloud (--backend nebius), so this image needs no GPU, Isaac Sim or TensorFlow.
 #   docker build -t eyeforge .
 #   docker run -p 8000:8000 --env-file .env -v eyeforge-data:/data -v ~/.nebius:/root/.nebius eyeforge
-# The nebius CLI inside uses the mounted ~/.nebius profile (a service account on a server).
+# The nebius CLI inside uses the mounted ~/.nebius profile (a service account on a server). The CLI itself
+# lives in /usr/local/bin, so that mount does not hide it. The demo server's setup is in deploy/.
 
 # The web app (web/, React): built here, served by the Python server from sim2chip/web/dist.
 FROM node:22-slim AS web
@@ -16,8 +17,8 @@ FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -sSL https://storage.eu-north1.nebius.cloud/cli/install.sh | bash
-ENV PATH=/root/.nebius/bin:$PATH
+    && curl -sSL https://storage.eu-north1.nebius.cloud/cli/install.sh | bash \
+    && mv /root/.nebius/bin/nebius /usr/local/bin/nebius && rm -rf /root/.nebius
 
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
