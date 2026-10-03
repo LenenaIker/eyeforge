@@ -198,9 +198,12 @@ class Client:
 
     def chat(self, messages: list[dict], model: str, purpose: str, temperature: float = 0.2,
              max_tokens: int = 2048, json_mode: bool = False, timeout: float | None = None,
-             retries: int | None = None) -> str:
-        """timeout and retries: tighter than the client's for calls a user waits on (see PHOTO_CALL)."""
+             retries: int | None = None, thinking: bool | None = None) -> str:
+        """timeout and retries: tighter than the client's for calls a user waits on (see PHOTO_CALL).
+        thinking=False turns reasoning off (Nemotron's chat template); None keeps the model's default."""
         body = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        if thinking is not None:
+            body["chat_template_kwargs"] = {"enable_thinking": thinking}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         t0 = time.time()

@@ -249,6 +249,9 @@ Answer only with JSON: {{"shows": true|false, "whole": true|false, "big": true|f
 true|false, "score": <0 to 1, how good for a 3D model>, "reason": "<short>"}}"""
 PICK_MIN_SCORE = 0.6
 MAX_INVALID_SPECS = 4  # rejected proposals in a row before the model must ask the user instead
+# Answers that are not one JSON object, in a row, before the interview gives up. Seen 2026-10-03 (bench, reasoning
+# off): the same malformed JSON 59 times, 60 turns and 1.4 M tokens.
+MAX_BAD_FORMAT = 3
 PICK_MAX = 8
 
 
@@ -700,24 +703,36 @@ class Session:
         from .llm import parse_json
 
         invalid = 0  # spec proposals rejected in a row
+        bad_format = 0  # answers in a row that were not one JSON object
         for i in range(self.max_turns):
             step = self._step("Thinking" if i == 0 else "Thinking about what it found")
             try:
+                # Full reasoning, T 0.3: in experiments/interview_bench (2026-10-03, 20 interviews each) low
+                # effort, no reasoning and T 1.0 all gave more rejected specs or wrong fields. No answer
+                # reached 4096 tokens; 8192 is headroom, as reasoning counts inside max_tokens.
                 text = self.client.chat(self.messages, self.model, purpose="interview", temperature=0.3,
-                                        max_tokens=4096)
+                                        max_tokens=8192)
             except Exception as e:
                 self._end(step, "failed", str(e))
                 raise
             self.messages.append({"role": "assistant", "content": text})
             self._save()
             try:
-                action = parse_json(text)
-            except ValueError:
-                action = None
+                action, problem = parse_json(text), "it is not a JSON object"
+            except ValueError as e:
+                action, problem = None, str(e)
             if not isinstance(action, dict):
+                bad_format += 1
+                if bad_format >= MAX_BAD_FORMAT:
+                    self._end(step, "failed", "the answer was not in the expected format again")
+                    self.finished = True
+                    return Turn("failed", "The interview could not go on: the model kept answering in a broken "
+                                          "format. Please start again.")
                 self._end(step, "failed", "the answer was not in the expected format, asking again")
-                self._note("Reply with exactly one JSON object as instructed.")
+                self._note(f"Your answer is not valid JSON ({problem}). Reply with exactly one JSON object as "
+                           "instructed.")
                 continue
+            bad_format = 0
             self._end(step)
             # A spec wins over text sent with it: seen 2026-09-27, {"say": "check it", "spec": {...}} was shown as
             # plain text, so the user never got the spec to confirm and the model kept saying it was ready.
@@ -815,7 +830,7 @@ class Session:
         step = self._step("Putting the search words in English")
         try:
             names = parse_json(self.client.chat(msg, self.model, purpose="english_queries", temperature=0.0,
-                                                max_tokens=1024))
+                                                max_tokens=1024, thinking=False))
         except Exception as e:  # a failed translation must not stop the interview: keep the queries as they are
             self.translation_error = f"{type(e).__name__}: {e}"  # kept in the transcript
             self._end(step, "failed", "kept the words as they are")

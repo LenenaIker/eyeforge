@@ -210,3 +210,21 @@ Script del usuario con usd-core + trimesh, solo CPU y en varios procesos. Materi
 ## Tras la auditoría de código (2026-09-27)
 
 Mismo spec (`macetas_places`), mismo test de 18 fotos, 3 semillas, en la 3090, tras sacar los valores de carretera del código (pintura por clase, distancia y apuntado de cámara según el objeto, nitidez por hardware): F1 de puntos int8 0.354 ± 0.013 (antes 0.348 ± 0.020), error de conteo 3.1 por foto (antes 4.6). El F1 queda igual dentro del ruido y el conteo mejora; probablemente porque la cámara ya no apunta por encima de las macetas y los fotogramas vacíos se hacen a la distancia de una maceta.
+
+## Entrevista: ajustes de llamada de Nemotron 3 Super (2026-10-03)
+
+Banco `experiments/interview_bench/`: la Session real contra 10 usuarios simulados (Qwen3-235B, en español, inglés, francés y alemán; ESP32-CAM, ESP32-S3, Jetson, PC), con el análisis de fotos simulado con respuestas fijas para que solo cambie Nemotron. Un juez (Qwen3-235B) marca cada pregunta como permitida, prohibida o repetida, y el spec final se compara con lo que dijo el usuario (tarea, hardware, fotos, orientación, `names`, `errors`, fondo). 20 entrevistas por variante (10 usuarios x 2), resultados en `runs/interview_bench/`.
+
+| Variante | rechazados | formato | fallos spec | prohibidas | razonamiento/llamada | s | $ |
+|---|---|---|---|---|---|---|---|
+| A: razonamiento completo, T 0.3, máx. 4096 (antes) | 0.90 | 0 | 0.20 | 0.10 | 648 | 22.5 | 0.0082 |
+| A8: A con máx. 8192 y llamadas cortas sin razonar | 0.40 | 0 | 0.15 | 0 | 621 | 17.9 | 0.0066 |
+| B: `low_effort` | 1.05 | 0 | 0.45 | 0.25 | 98 | 12.7 | 0.0066 |
+| C: sin razonamiento | 1.90 | 3.05 | 0.70 | 0.50 | 0 | 21.7 | 0.0305 |
+| A8T: A8 con T 1.0, top_p 0.95 | 0.80 | 0.15 | 0.15 | 0.05 | 703 | 24.1 | 0.0085 |
+
+- En Token Factory funcionan `chat_template_kwargs: {"enable_thinking": false}` y `{"low_effort": true}`; `reasoning_budget` se ignora (582 tokens de razonamiento con un límite de 256).
+- Ninguna respuesta llegó a 4096 tokens: la diferencia A/A8 puede ser ruido.
+- Adoptado A8: razonamiento completo y T 0.3 en la entrevista, `max_tokens` 8192 de margen, `english_queries` sin razonamiento. `low_effort` es casi el doble de rápido pero falla más en lo que decide solo (orientación, fondo, `errors`); T 1.0 rechaza el doble de specs.
+- Sin razonamiento, una entrevista devolvió 59 veces el mismo JSON roto (60 turnos, 1.4 M tokens). Ahora la entrevista se corta tras 3 respuestas seguidas que no son JSON y le dice al modelo el error.
+- Errores comunes a todas las variantes, para el prompt: falta `names` al contar (abejas, gallinas), `background_class` no es null en el césped, orientación "upright" con cámara cenital (galletas) y `errors` de la gatera.

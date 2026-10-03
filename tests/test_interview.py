@@ -164,6 +164,22 @@ def test_endless_rejections_end_the_interview():
     assert t.kind == "failed" and "unicorn" in t.text
 
 
+def test_broken_answers_end_the_interview():
+    # Seen 2026-10-03: the same malformed JSON 59 times in a row. The model is told why, then the interview stops.
+    client = Scripted(["not json", "still not", "again", {"say": "never asked"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}))
+    t = s.reply("cows")
+    assert t.kind == "failed" and s.finished
+    assert "not valid JSON" in client.seen[1]
+    assert len(client.actions) == 1
+
+
+def test_a_good_answer_resets_the_broken_count():
+    client = Scripted(["oops", "oops", {"say": "What should it count?"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}))
+    assert s.reply("cows").kind == "say"
+
+
 def test_no_photo_models_on_a_server_without_them():
     photos = {**GOOD, "classes": [{**GOOD["classes"][0], "assets": {"source": "photos", "photos": "user_data",
                                                                      "queries": ["cow"]}}], "user_data": {"raw": "x"}}
