@@ -228,3 +228,19 @@ Banco `experiments/interview_bench/`: la Session real contra 10 usuarios simulad
 - Adoptado A8: razonamiento completo y T 0.3 en la entrevista, `max_tokens` 8192 de margen, `english_queries` sin razonamiento. `low_effort` es casi el doble de rápido pero falla más en lo que decide solo (orientación, fondo, `errors`); T 1.0 rechaza el doble de specs.
 - Sin razonamiento, una entrevista devolvió 59 veces el mismo JSON roto (60 turnos, 1.4 M tokens). Ahora la entrevista se corta tras 3 respuestas seguidas que no son JSON y le dice al modelo el error.
 - Errores comunes a todas las variantes, para el prompt: falta `names` al contar (abejas, gallinas), `background_class` no es null en el césped, orientación "upright" con cámara cenital (galletas) y `errors` de la gatera.
+
+## Seguir caminos: primera prueba con el dataset de caminos (2026-10-03)
+
+`experiments/line_follow/follow.py`, sobre las 74 fotos de `data/real/roads` y las máscaras de SAM 3 de `road_grid`. Etiqueta sin humano: el camino principal es la parte de la máscara que más cubre el centro de abajo, y su punto lejano es la x media de esa parte en sus filas de arriba. Hay camino delante en 71 fotos, y en 30 de ellas hay bifurcación o hueco en el extremo lejano (etiquetas dudosas, `runs/line_follow/labels.jpg`). Las fotos miran casi siempre a lo largo del camino, así que se simula girar la cámara con 7 vistas cuadradas desplazadas por foto, más su espejo. El objetivo es la x del punto lejano respecto al centro de la vista, de -1 a 1. 5 particiones por foto, int8, contra las etiquetas de SAM 3 sin revisar.
+
+| Perfil | Receta | Error medio | Izquierda/recto/derecha | Lado contrario | Giros claros (abs > 0,5) al lado bueno |
+|---|---|---|---|---|---|
+| Siempre recto | | 0,577 | 16,9% | 0% | |
+| ESP32 96 px | última capa | 0,572 | 51,2% | 15,4% | |
+| ESP32 96 px | red entera | 0,541 | 55,7% | 14,8% | 76% |
+| Móvil/PC 224 px | última capa | 0,435 | 60,5% | 8,7% | |
+| Móvil/PC 224 px | red entera | 0,407 | 60,3% | 4,5% | 88% |
+
+- En móvil/PC funciona como prueba de concepto: casi nunca gira al lado contrario (4,5%) y acierta el lado de 88% de los giros claros. En ESP32 a 96 px es flojo (15% al lado contrario).
+- Las fotos con bifurcación no puntúan peor que las otras.
+- Límites: fotos a altura de persona (un robot ve el suelo de mucho más cerca), 71 fotos, giro simulado con recortes (sin perspectiva real) y verdad de SAM 3 sin revisar.
