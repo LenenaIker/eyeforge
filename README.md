@@ -93,9 +93,9 @@ and no local GPU, the teacher runs in the cloud job.
 
 For the Nebius backend: install the `nebius` CLI and log in (a service account on a server), create an
 object storage key and two MysteryBox secrets (the storage key for the jobs, `SIM2CHIP_S3_SECRET`, and the
-Token Factory key, `SIM2CHIP_NEBIUS_SECRET`), and set `SIM2CHIP_NEBIUS_PROJECT`. For the teacher, a third
-secret with a Hugging Face token, `SIM2CHIP_HF_SECRET`. Nothing else is installed
-in advance: each job starts from NVIDIA's public Isaac Sim image.
+Token Factory key, `SIM2CHIP_NEBIUS_SECRET`), and set `SIM2CHIP_NEBIUS_PROJECT`. Nothing else is installed
+in advance: each job starts from NVIDIA's public Isaac Sim image. Counting with SAM 3 as the teacher
+does not run in the cloud yet (its weights will come in their own image): label those photos locally.
 
 ## Usage
 

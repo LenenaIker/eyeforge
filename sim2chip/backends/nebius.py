@@ -18,7 +18,6 @@ Configuration (environment or the repo's .env):
     SIM2CHIP_BUCKET_PREFIX     bucket name prefix (default sim2chip)
     SIM2CHIP_S3_SECRET         MysteryBox secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for the jobs
     SIM2CHIP_NEBIUS_SECRET     MysteryBox secret holding NEBIUS_API_KEY, for stages that call Token Factory
-    SIM2CHIP_HF_SECRET         MysteryBox secret holding HF_TOKEN, for SAM 3's gated weights (count runs)
     SIM2CHIP_MAX_USD           spend cap for one run, estimated from GPU time (default 5)
     AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY   Object Storage key, to upload input and fetch results
 """
@@ -377,6 +376,12 @@ class NebiusBackend:
         if not todo:
             return
         job, cache = pipe.job, pipe.cache
+        teacher = any(st.name == "label" for st in todo)
+        if teacher and pipe.spec.task == "count" and not self.dry_run:
+            # SAM 3's weights are gated: they will come inside its own Nebius image, with no token (user,
+            # 2026-10-03). Until that image exists, stop here instead of failing after the GPU is paid.
+            raise RuntimeError("counting labels the photos with SAM 3, which has no Nebius image yet: label them "
+                               "on a machine with a GPU (SIM2CHIP_SAM3_PYTHON) or bring labeled photos")
         if self.spent_usd + WORKER_HOURS * USD_PER_HOUR > self.max_usd:
             raise RuntimeError(f"a cloud run can cost up to ${WORKER_HOURS * USD_PER_HOUR:.2f} (timeout "
                                f"{WORKER_HOURS} h): over the cap of ${self.max_usd:.2f} (SIM2CHIP_MAX_USD)")
@@ -396,10 +401,8 @@ class NebiusBackend:
         plan_args += ["--force"] if force else []
         script = job.logs / "worker.nebius.sh"
         script.parent.mkdir(parents=True, exist_ok=True)
-        teacher = any(st.name == "label" for st in todo)
         script.write_text(worker_script(job.name, plan_args, teacher))
-        # Only SAM 3 (count) is gated on Hugging Face; SigLIP 2 (classify) downloads without a token.
-        secrets = self._secrets(any(st.calls_llm(pipe.spec) for st in todo), teacher and pipe.spec.task == "count")
+        secrets = self._secrets(any(st.calls_llm(pipe.spec) for st in todo))
         env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url,
                "SIM2CHIP_REGION": REGION}
         if os.environ.get("SIM2CHIP_LABEL_SAMPLE"):  # calibration: the teacher marks only a few photos
@@ -502,7 +505,7 @@ class NebiusBackend:
         for prefix in ("db", "labels"):  # what the run learned, for later runs here
             self.store.download(cache_bucket, prefix, cache.root / prefix, ("*",), overwrite=False)
 
-    def _secrets(self, llm: bool, teacher: bool = False) -> list[str]:
+    def _secrets(self, llm: bool) -> list[str]:
         s3_secret = _env("SIM2CHIP_S3_SECRET", "sim2chip-s3")
         secrets = [f"AWS_ACCESS_KEY_ID={s3_secret}", f"AWS_SECRET_ACCESS_KEY={s3_secret}"]
         if llm:
@@ -510,11 +513,6 @@ class NebiusBackend:
             if not secret and not self.dry_run:
                 raise RuntimeError("the run calls Token Factory: set SIM2CHIP_NEBIUS_SECRET")
             secrets.append(f"NEBIUS_API_KEY={secret or '<secret>'}")
-        if teacher:
-            secret = _env("SIM2CHIP_HF_SECRET")
-            if not secret and not self.dry_run:
-                raise RuntimeError("the run labels photos with SAM 3 (gated on Hugging Face): set SIM2CHIP_HF_SECRET")
-            secrets.append(f"HF_TOKEN={secret or '<secret>'}")
         return secrets
 
     def run_stage(self, stage: Stage, job: Job, cache: Cache, fp: str) -> None:

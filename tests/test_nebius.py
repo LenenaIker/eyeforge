@@ -189,17 +189,14 @@ class ListingStore(FakeStore):
         return {k: len(v) for (b, k), v in self.objects.items() if b == bucket and k.startswith(prefix)}
 
 
-@pytest.mark.parametrize("task", ["roi_classification", "count"])
-def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch, task):
+def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
     from sim2chip.pipeline import Pipeline
     from sim2chip.spec import from_dict
 
     monkeypatch.setenv("SIM2CHIP_NEBIUS_SECRET", "tf-key")
-    monkeypatch.setenv("SIM2CHIP_HF_SECRET", "hf-key")
     monkeypatch.setenv("SIM2CHIP_LABEL_SAMPLE", "6")
     spec = from_dict({"name": "j", "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
-                                                "assets": {"categories": ["cow"]}}], "user_data": {"raw": "photos"},
-                      "task": task})
+                                                "assets": {"categories": ["cow"]}}], "user_data": {"raw": "photos"}})
     job = Job(tmp_path / "jobs" / "j")
     (job.input / "photos").mkdir(parents=True)
     (job.input / "photos" / "a.jpg").write_bytes(b"jpg")
@@ -228,10 +225,9 @@ def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch, task):
     assert len(be.cli.jobs) == 1 and be.cli.jobs[0]["image"].startswith("nvcr.io/nvidia/isaac-sim")
     script = be.cli.jobs[0]["script"]
     assert "sim2chip.cloud_worker" in script and "tensorflow[and-cuda]" in script and "SIM2CHIP_ISAAC_PYTHON" in script
-    # label runs the teacher in its own Python, with the calibration sample; only SAM 3 (count) needs the
-    # token of its gated weights, SigLIP 2 (classify) downloads without one
+    # label runs the teacher (SigLIP 2 to classify) in its own Python, with the calibration sample, no token
     assert "SIM2CHIP_SAM3_PYTHON" in script and "transformers==" in script
-    assert ("HF_TOKEN=hf-key" in be.cli.jobs[0]["secrets"]) == (task == "count")
+    assert not any(s.startswith("HF_TOKEN") for s in be.cli.jobs[0]["secrets"])
     assert be.cli.jobs[0]["env"]["SIM2CHIP_LABEL_SAMPLE"] == "6"
     assert "> label (x)" in lines and "noise" not in lines
     assert all(job.done(st) for st in fps) and (job.root / "export" / "model.tflite").exists()
@@ -340,3 +336,21 @@ def test_follow_brings_done_markers_back_while_the_job_runs(tmp_path):
     be = backend(store)
     assert be._follow("aijob-1", job, "b", lambda line: None, ["label", "ingest"]) == "COMPLETED"
     assert (job.root / "label" / DONE).exists() and not (job.root / "ingest" / DONE).exists()
+
+
+def test_counting_with_sam3_stops_before_the_cloud(tmp_path):
+    """SAM 3 has no Nebius image yet: a count run that labels photos fails before any upload or GPU."""
+    from sim2chip.pipeline import Pipeline
+    from sim2chip.spec import from_dict
+
+    spec = from_dict({"name": "j", "task": "count", "user_data": {"raw": "photos"},
+                      "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
+                                   "assets": {"categories": ["cow"]}}]})
+    job = Job(tmp_path / "jobs" / "j")
+    (job.input / "photos").mkdir(parents=True)
+    (job.input / "photos" / "a.jpg").write_bytes(b"jpg")
+    store = ListingStore()
+    be = NebiusBackend(dry_run=False, max_usd=10.0, cli=FakeCLI(store), store=store, poll_s=0)
+    with pytest.raises(RuntimeError, match="SAM 3"):
+        be.run_pipeline(Pipeline(spec, job, Cache(tmp_path / "cache")), log=lambda _: None)
+    assert not be.cli.jobs and not store.objects
