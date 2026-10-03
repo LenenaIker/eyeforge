@@ -193,7 +193,13 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False) ->
     with TensorFlow next to Isaac's own (uv, a couple of minutes), then the whole pipeline. teacher: also a
     Python for SAM 3, when the run labels the user's photos."""
     isaac = RUNTIMES["isaac"].python
-    fetch = f"{isaac} -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])'"
+    # A download can meet a passing 503 (2026-10-03, after the GPU was paid): retry before giving up.
+    fetch = (f"{isaac} -c 'import sys, time, urllib.request\n"
+             "for i in range(5):\n"
+             "    try: urllib.request.urlretrieve(sys.argv[1], sys.argv[2]); break\n"
+             "    except Exception as e:\n"
+             "        if i == 4: raise\n"
+             "        print(\"download failed, retrying:\", e, flush=True); time.sleep(5 * 2 ** i)'")
     py = "/tmp/s2c/py/bin/python"
     lines = [
         "#!/bin/bash",
