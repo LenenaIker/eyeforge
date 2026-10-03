@@ -28,7 +28,7 @@ def img(path, color=(120, 120, 120)):
 def fake_sam3(monkeypatch, answer):
     asked = []
 
-    def detect(items, phrases, log=print):
+    def detect(items, phrases, log=print, timeline=None):
         assert phrases == {"cow": ["cow"], "dog": ["dog", "puppy"]}
         for path, out in items:
             asked.append(path.name)
@@ -45,7 +45,7 @@ def fake_siglip(monkeypatch, vector):
     """SigLIP 2 without a GPU: each photo's embedding from its name, each label's description along one axis."""
     asked = []
 
-    def embed(items, texts, text_out, log=print):
+    def embed(items, texts, text_out, log=print, timeline=None):
         for path, out in items:
             asked.append(path.name)
             out.parent.mkdir(parents=True, exist_ok=True)

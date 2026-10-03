@@ -105,7 +105,7 @@ def fake_sam3(monkeypatch, answer):
     """SAM 3 without a GPU: answer(photo path) gives its detections; returns the photos it was asked about."""
     asked = []
 
-    def detect(items, phrases, log=print):
+    def detect(items, phrases, log=print, timeline=None):
         assert phrases["pot"] == ["flower pot"] and phrases["cat"] == ["cat"]  # queries, else categories
         for path, out in items:
             asked.append(path)

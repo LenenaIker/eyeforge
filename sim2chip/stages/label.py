@@ -47,6 +47,11 @@ class Label(Stage):
         where = f"Nebius AI Cloud, {gpu_name()}" if backend == "nebius" else "local GPU"
         return f"Meta {teacher.NAME} | {where}" if spec.task == "count" else f"Google {teacher.SIGLIP_NAME} | {where}"
 
+    @staticmethod
+    def _timeline(ctx: Context):
+        """Where the teacher's own waits go (its weights pulled in a cloud job), next to the stages."""
+        return lambda step, seconds: ctx.job.timeline(step, seconds, os.environ.get("SIM2CHIP_RUNS_ON", "local"))
+
     def run(self, ctx: Context) -> dict:
         ud, spec = ctx.spec.user_data, ctx.spec
         src = ctx.job.resolve_input(ud.raw)
@@ -130,7 +135,8 @@ class Label(Stage):
         ctx.log(f"embedding {len(todo)} photos with {teacher.SIGLIP_NAME} ({len(files) - len(todo)} already done); "
                 + "; ".join(f"{k}: {v}" for k, v in prompts.items()))
         if todo or not text_file.exists():
-            teacher.embed([(f, answer_file[f]) for f in todo], list(prompts.values()), text_file, log=ctx.log)
+            teacher.embed([(f, answer_file[f]) for f in todo], list(prompts.values()), text_file, log=ctx.log,
+                          timeline=self._timeline(ctx))
         emb = {}
         for f in files:
             a = json.loads(answer_file[f].read_text()) if answer_file[f].exists() else {"error": "no answer"}
@@ -188,7 +194,7 @@ class Label(Stage):
         ctx.log(f"labeling {len(todo)} photos with {teacher.NAME} ({len(files) - len(todo)} already labeled), "
                 "looking for " + "; ".join(f"{k}: {', '.join(v)}" for k, v in phrases.items()))
         if todo:
-            teacher.detect([(f, answer_file[f]) for f in todo], phrases, log=ctx.log)
+            teacher.detect([(f, answer_file[f]) for f in todo], phrases, log=ctx.log, timeline=self._timeline(ctx))
         dets = {}
         for f in files:
             a = json.loads(answer_file[f].read_text()) if answer_file[f].exists() else {"error": "no answer"}

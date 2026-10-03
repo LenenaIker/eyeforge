@@ -338,19 +338,37 @@ def test_follow_brings_done_markers_back_while_the_job_runs(tmp_path):
     assert (job.root / "label" / DONE).exists() and not (job.root / "ingest" / DONE).exists()
 
 
-def test_counting_with_sam3_stops_before_the_cloud(tmp_path):
-    """SAM 3 has no Nebius image yet: a count run that labels photos fails before any upload or GPU."""
-    from sim2chip.pipeline import Pipeline
-    from sim2chip.spec import from_dict
 
-    spec = from_dict({"name": "j", "task": "count", "user_data": {"raw": "photos"},
-                      "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
-                                   "assets": {"categories": ["cow"]}}]})
-    job = Job(tmp_path / "jobs" / "j")
-    (job.input / "photos").mkdir(parents=True)
-    (job.input / "photos" / "a.jpg").write_bytes(b"jpg")
+def test_the_run_picks_the_light_image_unless_it_renders(monkeypatch):
+    monkeypatch.setattr(nebius, "REGISTRY", "cr.example/reg")
+    monkeypatch.setattr(nebius, "IMAGE_TAG", "abc")
+    light, isaac = nebius.worker_runtime(False), nebius.worker_runtime(True)
+    assert light.image == "cr.example/reg/eyeforge-light:abc" and isaac.image == "cr.example/reg/eyeforge-isaac:abc"
+    assert isaac.env["ACCEPT_EULA"] == "Y" and not light.env
+    script = nebius.worker_script("j", [], teacher=True, runtime=light)
+    # our images carry the Pythons: the script uses them, and installs only in the stock image
+    assert f"if [ -x {nebius.BAKED_PY} ]" in script and "SIM2CHIP_WEIGHTS_DIR=/tmp/s2c/weights" in script
+    assert "SIM2CHIP_ISAAC_PYTHON" not in script and script.count(nebius.BAKED_PY) >= 2
+    assert "SIM2CHIP_ISAAC_PYTHON=/isaac-sim/python.sh" in nebius.worker_script("j", [], runtime=isaac)
+    monkeypatch.setattr(nebius, "IMAGE_TAG", None)  # no images of our own: the stock one for every run
+    assert nebius.worker_runtime(False) == nebius.RUNTIMES["isaac"]
+
+
+def test_teacher_weights_come_from_the_cache_bucket_once(tmp_path, monkeypatch):
+    from sim2chip import cloud_sync, teacher
+
     store = ListingStore()
-    be = NebiusBackend(dry_run=False, max_usd=10.0, cli=FakeCLI(store), store=store, poll_s=0)
-    with pytest.raises(RuntimeError, match="SAM 3"):
-        be.run_pipeline(Pipeline(spec, job, Cache(tmp_path / "cache")), log=lambda _: None)
-    assert not be.cli.jobs and not store.objects
+    store.pull = cloud_sync.S3Store.pull.__get__(store)
+    for name in ("config.json", "model.safetensors"):
+        store.objects[("sim2chip-cache", f"weights/{teacher.SIGLIP_MODEL}/{name}")] = name.encode()
+    monkeypatch.setattr(cloud_sync, "S3Store", lambda: store)
+    assert teacher.weights(teacher.SIGLIP_MODEL) == teacher.SIGLIP_MODEL  # not in a cloud job: Hugging Face
+    monkeypatch.setenv("SIM2CHIP_WEIGHTS_DIR", str(tmp_path / "w"))
+    monkeypatch.setenv("S2C_CACHE_BUCKET", "sim2chip-cache")
+    steps = []
+    path = teacher.weights(teacher.SIGLIP_MODEL, log=lambda _: None, timeline=lambda s, t: steps.append(s))
+    assert (Path(path) / "model.safetensors").read_bytes() == b"model.safetensors" and len(steps) == 1
+    teacher.weights(teacher.SIGLIP_MODEL, log=lambda _: None, timeline=lambda s, t: steps.append(s))
+    assert len(steps) == 1  # already there: no second pull
+    with pytest.raises(teacher.TeacherError, match="upload_weights"):
+        teacher.weights("nobody/nothing", log=lambda _: None)

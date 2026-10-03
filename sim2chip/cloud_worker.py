@@ -85,9 +85,11 @@ def main() -> int:
     todo = [pl.stage for pl in pipe.plan(args.start, args.only, args.force) if pl.action == "run"]
     n = store.pull(job_bucket, [k for k in listing if wanted(k, todo)], job.root)
     m = store.pull(cache_bucket, [k for k in store.listing(cache_bucket) if k.startswith(SHARED)], cache.root)
-    listing = store.listing(cache_bucket, "gpu/")
-    g = sum(store.pull(cache_bucket, [k for k in listing if k.startswith(prefix + "/")], gpu_cache(local),
-                       strip=prefix) for prefix, local in GPU_CACHES.items())
+    g = 0
+    if os.environ.get("SIM2CHIP_ISAAC_PYTHON"):  # Isaac's caches, only in its image (a run that renders)
+        listing = store.listing(cache_bucket, "gpu/")
+        g = sum(store.pull(cache_bucket, [k for k in listing if k.startswith(prefix + "/")], gpu_cache(local),
+                           strip=prefix) for prefix, local in GPU_CACHES.items())
     say(f"worker: pulled {n} job files, {m} shared cache files and {g} GPU cache files, {len(todo)} stages to run")
     setup = os.environ.get("S2C_SETUP_S")
     if setup:  # code download and Python environment, measured by the job script
@@ -129,7 +131,8 @@ def main() -> int:
     probe_caches()
     t0 = time.time()
     m = store.upload_dir(cache_bucket, cache.root, "")
-    m += sum(store.upload_dir(cache_bucket, gpu_cache(local), prefix) for prefix, local in GPU_CACHES.items())
+    if os.environ.get("SIM2CHIP_ISAAC_PYTHON"):
+        m += sum(store.upload_dir(cache_bucket, gpu_cache(local), prefix) for prefix, local in GPU_CACHES.items())
     job.timeline("cloud: push cache", time.time() - t0, "nebius", files=m)
     n = store.upload_dir(job_bucket, job.root, "")
     sync_progress(store, job_bucket, job.root)

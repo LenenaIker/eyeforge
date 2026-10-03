@@ -19,6 +19,8 @@ Configuration (environment or the repo's .env):
     SIM2CHIP_S3_SECRET         MysteryBox secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for the jobs
     SIM2CHIP_NEBIUS_SECRET     MysteryBox secret holding NEBIUS_API_KEY, for stages that call Token Factory
     SIM2CHIP_MAX_USD           spend cap for one run, estimated from GPU time (default 5)
+    SIM2CHIP_NEBIUS_REGISTRY   registry of the worker's own images (cr.<region>.nebius.cloud/<id>), and
+    SIM2CHIP_IMAGE_TAG         their tag (images/build.sh); without them every run installs at start
     AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY   Object Storage key, to upload input and fetch results
 """
 from __future__ import annotations
@@ -76,6 +78,11 @@ RUNTIMES = {
     "cpu": Runtime("tensorflow/tensorflow:2.18.0-gpu", "python3",
                    "pip install -q objaverse pillow numpy usd-core==26.8 trimesh==5.1.0"),
 }
+# The worker's own images (images/Dockerfile, pushed by images/build.sh): the Pythons are inside, so a run
+# installs nothing; without them every run uses NVIDIA's public Isaac Sim image and installs at start.
+REGISTRY = config.env("SIM2CHIP_NEBIUS_REGISTRY")  # cr.<region>.nebius.cloud/<registry id>
+IMAGE_TAG = config.env("SIM2CHIP_IMAGE_TAG")
+BAKED_PY, BAKED_TEACHER = "/opt/s2c/py/bin/python", "/opt/s2c/teacher/bin/python"
 TERMINAL = {"COMPLETED", "SUCCEEDED", "FAILED", "ERROR", "CANCELLED", "CANCELED", "STOPPED", "DELETED"}
 
 
@@ -188,19 +195,43 @@ def portable_spec(spec, job: Job):
     return spec_mod.from_dict(data)
 
 
-def worker_script(job_name: str, plan_args: list[str], teacher: bool = False) -> str:
-    """Shell script for the worker job, in the stock Isaac Sim image: the code from a presigned URL, a Python
-    with TensorFlow next to Isaac's own (uv, a couple of minutes), then the whole pipeline. teacher: also a
-    Python for SAM 3, when the run labels the user's photos."""
-    isaac = RUNTIMES["isaac"].python
+def worker_runtime(isaac: bool) -> Runtime:
+    """The image of a whole-run job: Isaac Sim's only when a stage renders (it is the big one), else the light
+    one (user's choice, 2026-10-04: one job per run, the image picked by what the run uses)."""
+    if not (REGISTRY and IMAGE_TAG):
+        return RUNTIMES["isaac"]
+    if isaac:
+        return Runtime(f"{REGISTRY}/eyeforge-isaac:{IMAGE_TAG}", RUNTIMES["isaac"].python, env=RUNTIMES["isaac"].env)
+    return Runtime(f"{REGISTRY}/eyeforge-light:{IMAGE_TAG}", BAKED_PY)
+
+
+def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
+                  runtime: Runtime = RUNTIMES["isaac"]) -> str:
+    """Shell script for the worker job: the code from a presigned URL, then the whole pipeline. In our own
+    images the Pythons are already there (TensorFlow, and torch for the teachers); in the stock Isaac Sim image
+    it makes them first with uv (a couple of minutes), the teachers' only when the run labels photos."""
+    isaac = runtime.python == RUNTIMES["isaac"].python
     # A download can meet a passing 503 (2026-10-03, after the GPU was paid): retry before giving up.
-    fetch = (f"{isaac} -c 'import sys, time, urllib.request\n"
+    fetch = (f"{runtime.python} -c 'import sys, time, urllib.request\n"
              "for i in range(5):\n"
              "    try: urllib.request.urlretrieve(sys.argv[1], sys.argv[2]); break\n"
              "    except Exception as e:\n"
              "        if i == 4: raise\n"
              "        print(\"download failed, retrying:\", e, flush=True); time.sleep(5 * 2 ** i)'")
     py = "/tmp/s2c/py/bin/python"
+    install = [
+        f"{fetch} {UV_URL} /tmp/s2c/uv.tgz",
+        "tar xzf /tmp/s2c/uv.tgz -C /tmp/s2c/bin --strip-components 1",
+        "export UV_CACHE_DIR=/tmp/s2c/uv-cache UV_PYTHON_INSTALL_DIR=/tmp/s2c/pythons",
+        "/tmp/s2c/bin/uv venv -q --python 3.11 /tmp/s2c/py",
+        f"/tmp/s2c/bin/uv pip install -q --python {py} " + " ".join(shlex.quote(d) for d in WORKER_DEPS),
+        f"PY={py} TEACHER_PY=",
+    ]
+    if teacher:
+        install += ["/tmp/s2c/bin/uv venv -q --python 3.11 /tmp/s2c/sam3",
+                    "/tmp/s2c/bin/uv pip install -q --python /tmp/s2c/sam3/bin/python "
+                    + " ".join(shlex.quote(d) for d in TEACHER_DEPS),
+                    "TEACHER_PY=/tmp/s2c/sam3/bin/python"]
     lines = [
         "#!/bin/bash",
         "set -eo pipefail",
@@ -208,21 +239,16 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False) ->
         "mkdir -p /tmp/s2c/code /tmp/s2c/bin /tmp/s2c/home",
         f'{fetch} "$S2C_CODE_URL" /tmp/s2c/code.tgz',
         "tar xzf /tmp/s2c/code.tgz -C /tmp/s2c/code",
-        f"{fetch} {UV_URL} /tmp/s2c/uv.tgz",
-        "tar xzf /tmp/s2c/uv.tgz -C /tmp/s2c/bin --strip-components 1",
-        "export UV_CACHE_DIR=/tmp/s2c/uv-cache UV_PYTHON_INSTALL_DIR=/tmp/s2c/pythons",
-        "/tmp/s2c/bin/uv venv -q --python 3.11 /tmp/s2c/py",
-        f"/tmp/s2c/bin/uv pip install -q --python {py} " + " ".join(shlex.quote(d) for d in WORKER_DEPS),
-    ]
-    if teacher:
-        lines += ["/tmp/s2c/bin/uv venv -q --python 3.11 /tmp/s2c/sam3",
-                  "/tmp/s2c/bin/uv pip install -q --python /tmp/s2c/sam3/bin/python "
-                  + " ".join(shlex.quote(d) for d in TEACHER_DEPS),
-                  "export SIM2CHIP_SAM3_PYTHON=/tmp/s2c/sam3/bin/python HF_HUB_CACHE=/tmp/s2c/hf"]
-    lines += [
-        f"export PYTHONUNBUFFERED=1 SIM2CHIP_ISAAC_PYTHON={isaac} SIM2CHIP_PYTHON={py} PYTHONPATH=/tmp/s2c/code "
-        "SIM2CHIP_RUNS_ON=nebius S2C_SETUP_S=$(( $(date +%s) - S2C_T0 ))",
-        f"{py} -m sim2chip.cloud_worker --home /tmp/s2c/home --job {shlex.quote(job_name)} "
+        f"if [ -x {BAKED_PY} ]; then  # our own image: nothing to install",
+        f"  PY={BAKED_PY} TEACHER_PY={BAKED_TEACHER}",
+        "else",
+        *("  " + line for line in install),
+        "fi",
+        # The teachers' weights come from the cache bucket (teacher.weights), with no Hugging Face token.
+        "export SIM2CHIP_SAM3_PYTHON=$TEACHER_PY HF_HUB_CACHE=/tmp/s2c/hf SIM2CHIP_WEIGHTS_DIR=/tmp/s2c/weights",
+        "export PYTHONUNBUFFERED=1 SIM2CHIP_PYTHON=$PY PYTHONPATH=/tmp/s2c/code SIM2CHIP_RUNS_ON=nebius "
+        "S2C_SETUP_S=$(( $(date +%s) - S2C_T0 ))" + (f" SIM2CHIP_ISAAC_PYTHON={runtime.python}" if isaac else ""),
+        f"$PY -m sim2chip.cloud_worker --home /tmp/s2c/home --job {shlex.quote(job_name)} "
         + " ".join(shlex.quote(a) for a in plan_args),
     ]
     return "\n".join(lines) + "\n"
@@ -383,11 +409,7 @@ class NebiusBackend:
             return
         job, cache = pipe.job, pipe.cache
         teacher = any(st.name == "label" for st in todo)
-        if teacher and pipe.spec.task == "count" and not self.dry_run:
-            # SAM 3's weights are gated: they will come inside its own Nebius image, with no token (user,
-            # 2026-10-03). Until that image exists, stop here instead of failing after the GPU is paid.
-            raise RuntimeError("counting labels the photos with SAM 3, which has no Nebius image yet: label them "
-                               "on a machine with a GPU (SIM2CHIP_SAM3_PYTHON) or bring labeled photos")
+        runtime = worker_runtime(any(st.runtime == "isaac" for st in todo))
         if self.spent_usd + WORKER_HOURS * USD_PER_HOUR > self.max_usd:
             raise RuntimeError(f"a cloud run can cost up to ${WORKER_HOURS * USD_PER_HOUR:.2f} (timeout "
                                f"{WORKER_HOURS} h): over the cap of ${self.max_usd:.2f} (SIM2CHIP_MAX_USD)")
@@ -407,7 +429,7 @@ class NebiusBackend:
         plan_args += ["--force"] if force else []
         script = job.logs / "worker.nebius.sh"
         script.parent.mkdir(parents=True, exist_ok=True)
-        script.write_text(worker_script(job.name, plan_args, teacher))
+        script.write_text(worker_script(job.name, plan_args, teacher, runtime))
         secrets = self._secrets(any(st.calls_llm(pipe.spec) for st in todo))
         env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url,
                "SIM2CHIP_REGION": REGION}
@@ -416,10 +438,10 @@ class NebiusBackend:
         name = f"s2c-{job.name}-run".lower().replace("_", "-")[:63]
         job.timeline("upload job", time.time() - t_up, "local")
         t0 = time.time()
-        job_id = self.cli.create_job(name, RUNTIMES["isaac"], env, script, WORKER_HOURS, secrets)
+        job_id = self.cli.create_job(name, runtime, env, script, WORKER_HOURS, secrets)
         if self.dry_run:
             return
-        log(f"  nebius job {job_id} ({PLATFORM}, {PRESET}), whole pipeline in one job")
+        log(f"  nebius job {job_id} ({PLATFORM}, {PRESET}, {runtime.image.rsplit('/', 1)[-1]}), whole pipeline in one job")
         # While this file exists a cloud job may be running and billing: the web reads it (and can cancel the
         # job) even when the process that launched it is gone.
         marker = job.logs / CLOUD_JOB

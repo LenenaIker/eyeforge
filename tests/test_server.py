@@ -412,7 +412,7 @@ def test_calibrate_the_teacher_before_the_first_run(app, tmp_path, monkeypatch):
 
     asked = []
 
-    def embed(items, texts, text_out, log=print):  # SigLIP 2 without a GPU: every photo along its own axis
+    def embed(items, texts, text_out, log=print, timeline=None):  # SigLIP 2 without a GPU: every photo along its own axis
         for path, out in items:
             asked.append(path)
             i = int(path.stem[1:])

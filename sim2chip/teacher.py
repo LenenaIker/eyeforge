@@ -10,7 +10,8 @@
 
 Both need a GPU and their own Python (torch, transformers >= 5): SIM2CHIP_SAM3_PYTHON (environment or .env),
 or this Python when it has it. SAM 3's weights are gated on Hugging Face: accept the license there and give
-HF_TOKEN (or log in with `hf auth login`); HF_HUB_CACHE says where they go. This module is stdlib only.
+HF_TOKEN (or log in with `hf auth login`); HF_HUB_CACHE says where they go. In a Nebius job there is no token:
+the weights come from the cache bucket (weights()). This module is stdlib only (boto3 only for that download).
 """
 from __future__ import annotations
 
@@ -123,16 +124,46 @@ def _worker(module: str, name: str, req: dict, log=print) -> None:
         raise TeacherError(f"{name} failed (exit {proc.returncode}):\n" + "\n".join(tail[-10:]))
 
 
-def detect(items: list[tuple[Path, Path]], phrase_map: dict[str, list[str]], log=print) -> None:
+WEIGHTS_PREFIX = "weights"  # in the cache bucket: weights/<repo id>/<file>, uploaded by scripts/upload_weights.py
+
+
+def weights(repo: str, log=print, timeline=None) -> str:
+    """What the worker loads for a Hugging Face model: the repo id (Hugging Face and its cache), or, in a cloud
+    job (SIM2CHIP_WEIGHTS_DIR and S2C_CACHE_BUCKET set), a local folder pulled from the cache bucket the first
+    time: no token for gated weights, and the bucket is in the job's region (user's choice, 2026-10-04)."""
+    root = os.environ.get("SIM2CHIP_WEIGHTS_DIR")
+    bucket = os.environ.get("S2C_CACHE_BUCKET")
+    if not (root and bucket):
+        return repo
+    dst = Path(root) / repo
+    if not (dst / "config.json").exists():
+        import time
+        from .cloud_sync import S3Store
+        t0 = time.time()
+        store = S3Store()
+        keys = list(store.listing(bucket, f"{WEIGHTS_PREFIX}/{repo}/"))
+        if not keys:
+            raise TeacherError(f"no weights for {repo} in s3://{bucket}/{WEIGHTS_PREFIX}/: run "
+                               "scripts/upload_weights.py")
+        store.pull(bucket, keys, dst, strip=f"{WEIGHTS_PREFIX}/{repo}")
+        seconds = time.time() - t0
+        log(f"  {repo}: weights from the cache bucket in {seconds:.0f} s")
+        if timeline:
+            timeline(f"cloud: pull {repo.split('/')[-1]} weights", seconds)
+    return str(dst)
+
+
+def detect(items: list[tuple[Path, Path]], phrase_map: dict[str, list[str]], log=print, timeline=None) -> None:
     """Runs SAM 3 on (photo, answer file) pairs; each answer file gets the photo's detections."""
-    _worker("sim2chip.sam3_worker", NAME, {"model": MODEL, "side": SIDE, "floor": FLOOR, "phrases": phrase_map,
+    _worker("sim2chip.sam3_worker", NAME, {"model": weights(MODEL, log, timeline), "side": SIDE, "floor": FLOOR,
+                                           "phrases": phrase_map,
                                            "items": [{"path": str(p), "out": str(o)} for p, o in items]}, log)
 
 
-def embed(items: list[tuple[Path, Path]], texts: list[str], text_out: Path, log=print) -> None:
+def embed(items: list[tuple[Path, Path]], texts: list[str], text_out: Path, log=print, timeline=None) -> None:
     """Runs SigLIP 2 on (photo, answer file) pairs and on the sentences (their embeddings to text_out)."""
     _worker("sim2chip.siglip_worker", SIGLIP_NAME,
-            {"model": SIGLIP_MODEL, "texts": texts, "text_out": str(text_out),
+            {"model": weights(SIGLIP_MODEL, log, timeline), "texts": texts, "text_out": str(text_out),
              "items": [{"path": str(p), "out": str(o)} for p, o in items]}, log)
 
 
