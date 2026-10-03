@@ -21,7 +21,10 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 PROMPTS = {"trail": ("This photo comes from a camera worn by a hiker. Point to the farthest visible point of the "
                      "trail ahead, where the hiker should walk to keep following the trail."),
            "road": ("This photo comes from a car's dashboard camera. Point to the farthest visible point of the "
-                    "car's road ahead, where the car should drive to keep following its road.")}
+                    "car's road ahead, where the car should drive to keep following its road."),
+           "walk": ("This photo comes from a camera carried along a path, street, sidewalk or bike lane. Point to "
+                    "the farthest visible point of the path the camera is on, where it should go to keep "
+                    "following that path.")}
 # Molmo2 answers <points coords="1 1 552 473">: image index, then point id, x and y scaled by 1000 (its README's
 # regex: the coordinates have 3 or 4 digits); older Molmo answers <point x="62.5" y="41.0"> in %.
 COORDS = re.compile(r'coords="([0-9\t:;, .]+)"')
