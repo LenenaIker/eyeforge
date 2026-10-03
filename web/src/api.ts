@@ -118,7 +118,8 @@ export async function api<T = any>(path: string, opts: RequestInit = {}): Promis
   const body = await r.json().catch(() => ({}));
   if (!r.ok) {
     if (r.status === 401 || r.status === 402 || r.status === 403) accountListeners.forEach((f) => f());
-    throw new ApiError(body.detail || r.statusText, r.status);
+    // Over HTTP/2 statusText is empty: an error without a detail (a server crash) still says something.
+    throw new ApiError(body.detail || r.statusText || `the server failed (HTTP ${r.status}); please try again`, r.status);
   }
   return body as T;
 }
