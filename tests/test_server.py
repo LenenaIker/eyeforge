@@ -257,10 +257,17 @@ def test_public_server_needs_the_key_and_uploaded_photos_only(tmp_path):
 
     app = create_app(tmp_path, backend="nebius", launcher=launcher, public=True, key="s3cret", max_runs=1)
     client = TestClient(app)
-    assert client.get("/").status_code == 401
+    assert client.get("/").status_code in (200, 503)  # the landing is open (503: no web build in tests)
+    assert client.get("/api/config").json()["locked"] is True
     assert client.get("/api/jobs").status_code == 401
-    assert client.get("/?key=s3cret").status_code == 200  # sets the cookie for the next requests
+    assert client.post("/api/key", json={"key": "wrong"}).status_code == 401
+    assert client.get("/api/jobs").status_code == 401
+    assert client.post("/api/key", json={"key": "s3cret"}).status_code == 200  # sets the cookie
     assert client.get("/api/jobs").status_code == 200
+    assert client.get("/api/config").json()["locked"] is False
+    other = TestClient(app)
+    assert other.get("/?key=s3cret").status_code in (200, 503)  # an access link sets the cookie too
+    assert other.get("/api/jobs").status_code == 200
     # A server path in the spec is refused: it would be read and uploaded to the job bucket.
     spec = {**GOOD, "user_data": {"raw": str(Path.home())}}
     r = client.post("/api/jobs", data={"spec": json.dumps(spec)})

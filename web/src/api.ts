@@ -29,6 +29,7 @@ export type Config = {
   busy: boolean;
   max_runs: number | null;
   budget: { daily_usd: number; spent_usd: number; can_run: boolean } | null;
+  locked: boolean;  // a public server whose API needs the access key, not given yet in this browser
 };
 
 export type StageState = "done" | "running" | "pending" | "failed";
@@ -105,6 +106,8 @@ const json = (body: unknown): RequestInit => ({
 });
 
 export const getConfig = () => api<Config>("/api/config");
+// The access key of a public server: right, the server sets a cookie and the API opens for this browser.
+export const unlock = (key: string) => api<{ ok: boolean }>("/api/key", json({ key }));
 // With a job: an interview that starts from that job's spec, to change something and retrain it.
 export const startInterview = (job?: string | null) =>
   api<{ session: string; text: string; job?: string }>(`/api/interview${job ? `?job=${encodeURIComponent(job)}` : ""}`, { method: "POST" });

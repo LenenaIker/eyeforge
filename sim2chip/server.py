@@ -11,6 +11,7 @@ from the job folder (done markers, the pipeline log and the cloud usage log).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -35,6 +36,7 @@ DIST = WEB / "dist"
 OWNER = "owner"  # file in a public server's job folder: the visitor who started it
 NO_BUILD = ("<p>EyeForge: the web app is not built. Run <code>cd web && npm install && npm run build</code> in the "
             "repository, then reload. The API under /api works without it.</p>")
+OPEN_API = {"/api/config", "/api/key"}  # the API calls a visitor without the access key may make
 VISITOR = "eyeforge_visitor"  # cookie: one per browser, so visitors of a public server only see their own jobs
 
 
@@ -78,8 +80,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                launcher=None, public: bool = False, key: str | None = None, max_runs: int = 2,
                daily_usd: float | None = None):
     """public: a server others can reach. Specs may only use photos uploaded through it (no server paths),
-    at most `max_runs` runs at a time, and, with `key`, every request needs it (a link with ?key=... sets a
-    cookie). Each browser gets a visitor cookie and only sees the jobs it started. daily_usd: no new run when
+    at most `max_runs` runs at a time, and, with `key`, the API needs it (a link with ?key=... or POST /api/key
+    sets a cookie); the pages and the app's files stay open, so anyone sees the landing and the app asks for the
+    key (user, 2026-10-03). Each browser gets a visitor cookie and only sees the jobs it started. daily_usd: no new run when
     the cloud GPU spent in the last 24 h plus one more run could pass it."""
     import hmac
 
@@ -100,19 +103,35 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                                     max_age=30 * 86400)
             return response
 
+    def key_cookie(response) -> None:
+        response.set_cookie("eyeforge_key", key, httponly=True, samesite="strict", max_age=14 * 86400)
+
     if key:
         @app.middleware("http")
         async def require_key(request: Request, call_next):
             given = request.query_params.get("key") or request.cookies.get("eyeforge_key") or \
                 request.headers.get("x-eyeforge-key") or ""
-            if not hmac.compare_digest(given, key):
-                if request.url.path.startswith("/api/"):
-                    return JSONResponse({"detail": "this server needs the access link"}, status_code=401)
-                return HTMLResponse("<p>EyeForge: open the link with the access key you were given.</p>", 401)
+            request.state.unlocked = hmac.compare_digest(given, key)
+            path = request.url.path
+            if not request.state.unlocked and path.startswith("/api/") and path not in OPEN_API:
+                return JSONResponse({"detail": "this server needs the access key"}, status_code=401)
             response = await call_next(request)
-            if request.query_params.get("key"):
-                response.set_cookie("eyeforge_key", key, httponly=True, samesite="strict", max_age=14 * 86400)
+            if request.state.unlocked and request.query_params.get("key"):
+                key_cookie(response)
             return response
+
+    @app.post("/api/key")
+    async def unlock(request: Request):
+        """The access key typed in the app: right, a cookie for the next requests; wrong, 401 after a pause
+        that makes guessing slow."""
+        given = str((await request.json()).get("key", "")) if key else ""
+        if key and not hmac.compare_digest(given, key):
+            await asyncio.sleep(1.0)
+            raise HTTPException(401, "wrong access key")
+        response = JSONResponse({"ok": True})
+        if key:
+            key_cookie(response)
+        return response
 
     sessions: dict[str, object] = {}
     runs: dict[str, subprocess.Popen] = {}
@@ -205,7 +224,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return HTMLResponse(page.read_text())
 
     @app.get("/api/config")
-    def config():
+    def config(request: Request):
         """What the app shows before a run: can this server start one now, and what is left of today's budget."""
         budget = None
         if daily_usd is not None and backend == "nebius":
@@ -214,7 +233,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             budget = {"daily_usd": daily_usd, "spent_usd": round(spent, 2),
                       "can_run": spent + WORKER_HOURS * USD_PER_HOUR <= daily_usd}
         return {"backend": backend, "first_question": FIRST_QUESTION, "public": public, "busy": busy(),
-                "max_runs": max_runs if public else None, "budget": budget}
+                "max_runs": max_runs if public else None, "budget": budget,
+                "locked": bool(key) and not getattr(request.state, "unlocked", False)}
 
     def check_paths(parsed: spec_mod.Spec, job: Job | None = None) -> None:
         """On a public server, only photos uploaded here (or, revising a job, the job's own folders): a path
