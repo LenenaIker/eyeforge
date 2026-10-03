@@ -37,7 +37,7 @@ export default defineConfig({
         // kept for offline use; it is not part of the app's first download.
         runtimeCaching: [{ urlPattern: /\/litert\//, handler: "CacheFirst", options: { cacheName: "litert-runtime" } }],
         navigateFallback: "/index.html",
-        navigateFallbackDenylist: [/^\/api\//],
+        navigateFallbackDenylist: [/^\/api\//, /^\/auth\//],  // the login redirects must reach the server
       },
     }),
   ],

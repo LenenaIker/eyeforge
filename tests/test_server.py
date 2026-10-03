@@ -226,6 +226,25 @@ def test_chat_photos_travel_with_the_job(app, tmp_path):
     assert app.get(f"/api/interview/{sid}/thumb", params={"file": str(upload / "a.jpg")}).status_code == 404
 
 
+def test_photos_in_batches_make_one_turn_and_one_rerun(app, tmp_path):
+    """A proxy caps the request size: the app sends big uploads in batches and only the last one acts."""
+    sid = app.post("/api/interview").json()["session"]
+    batch = lambda *names: [("photos", (n, n.encode(), "image/jpeg")) for n in names]  # noqa: E731
+    r = app.post(f"/api/interview/{sid}/photos", data={"more": "true"}, files=batch("a.jpg", "b.jpg"))
+    assert r.json() == {"stored": 2}
+    r = app.post(f"/api/interview/{sid}/photos", data={"total": "3"}, files=batch("c.jpg"))
+    assert r.json()["photos"] == 3 and r.json()["kind"] == "say"
+    assert len(list((tmp_path / "uploads" / sid / "training").iterdir())) == 3
+
+    job = tmp_path / "jobs" / "barn_cam"
+    (job / "logs").mkdir(parents=True)
+    (job / "spec.json").write_text(json.dumps({**GOOD, "user_data": {"raw": "photos"}}))
+    r = app.post("/api/jobs/barn_cam/photos", data={"more": "true"}, files=batch("a.jpg", "b.jpg"))
+    assert r.json() == {"stored": 2} and not app.launched
+    r = app.post("/api/jobs/barn_cam/photos", data={"total": "3", "note": "dusk"}, files=batch("c.jpg"))
+    assert r.json() == {"rerun_from": "label", "photos": 3} and len(app.launched) == 1
+
+
 def test_count_review_points_and_big_thumbnail(app, tmp_path):
     from PIL import Image
     spec = {**GOOD, "task": "count", "user_data": {"raw": "photos"}}

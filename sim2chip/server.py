@@ -427,10 +427,13 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
 
     @app.post("/api/interview/{sid}/photos")
     def interview_photos(sid: str, purpose: str = Form("training"), cls: str = Form(""),
-                               photos: list[UploadFile] = File(...), act: str | None = None):
+                               photos: list[UploadFile] = File(...), act: str | None = None,
+                               more: bool = Form(False), total: int = Form(0)):
         """Photos uploaded in the chat, asked for by the interview or not. They wait in uploads/<session>
         until a job adopts them. Sync on purpose: the model calls after the upload block, and FastAPI runs
-        sync handlers in a thread pool instead of the event loop (async stalled every other request)."""
+        sync handlers in a thread pool instead of the event loop (async stalled every other request).
+        A big upload comes in batches (a proxy caps the request size): more=true only stores the batch, and
+        the last one, with the total of all batches, makes the interview's turn."""
         session = sessions.get(sid)
         if session is None:
             raise HTTPException(404, "unknown interview session")
@@ -442,8 +445,11 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             if Path(p.filename or "").suffix.lower() in IMAGE_EXT:
                 (folder / Path(p.filename).name).write_bytes(p.file.read())
                 n += 1
-        if not n:
+        if not n and not total:
             raise HTTPException(400, "no images among the files")
+        if more:
+            return {"stored": n}
+        n = max(n, total)
         return {**turn_out(sid, guarded(sid, session.add_photos, str(folder), n, purpose, cls or None,
                                          act=act)), "photos": n}
 
@@ -644,9 +650,11 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return {"stages": todo, "changed": changed, "rerun_from": todo[0]}
 
     @app.post("/api/jobs/{name}/photos")
-    def add_photos(name: str, request: Request, photos: list[UploadFile] = File(...), note: str = Form("")):
+    def add_photos(name: str, request: Request, photos: list[UploadFile] = File(...), note: str = Form(""),
+                   more: bool = Form(False), total: int = Form(0)):
         """More photos for a trained job, usually of what the model gets wrong. The teacher marks them, half
-        go to test (the rest to training), and only the real-photo branch reruns: the synthetic data stays."""
+        go to test (the rest to training), and only the real-photo branch reruns: the synthetic data stays.
+        In batches like the interview's photos: more=true stores, the last batch (total: all of them) reruns."""
         job = job_of(name, request)
         if running(job):
             raise HTTPException(409, f"job {job.name} is running")
@@ -669,6 +677,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             raise HTTPException(413, f"at most {MAX_PHOTOS} photos per model ({have} already)")
         ud["raw"] = raw
         saved = save_photos(folder / "added", images)
+        if more:
+            return {"stored": saved}
+        saved = max(saved, total)
         (job.root / "request.json").write_text(json.dumps({**data, "name": data.get("name", job.name)}, indent=2))
         note = " ".join(note.split())[:120]
         snapshot(job, f"added {saved} photos" + (f": {note}" if note else ""))

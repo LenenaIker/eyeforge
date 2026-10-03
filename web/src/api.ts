@@ -30,6 +30,16 @@ export type Config = {
   max_runs: number | null;
   budget: { daily_usd: number; spent_usd: number; can_run: boolean } | null;
   locked: boolean;  // a public server whose API needs the access key, not given yet in this browser
+  login: string[] | null;  // a public server with accounts: the providers to sign in with (google, github)
+};
+
+export type Me = {
+  signed_in: boolean;
+  contact: string | null;  // where judges write for free access, and banned accounts for help
+  judging: boolean;        // the hackathon's judging is still on: judges use the app for free
+  costs: { run: number; interview: number };
+  account?: { email: string | null; name: string | null; provider: string;
+              tier: "judge" | "normal" | "banned"; credits: number };
 };
 
 export type StageState = "done" | "running" | "pending" | "failed";
@@ -94,10 +104,22 @@ export type Review = {
 };
 export type Fixes = { labels: Record<string, string>; assets: Record<string, string>; points: Record<string, Point[]> };
 
+// status: the HTTP code, so the app can tell "sign in" (401) and "no credits" (402) from other errors.
+export class ApiError extends Error {
+  constructor(message: string, public status: number) { super(message); }
+}
+
+// Listeners of account changes (a 401 or 402 anywhere): the shell reloads who is signed in and their credits.
+const accountListeners = new Set<() => void>();
+export const onAccountChange = (f: () => void) => { accountListeners.add(f); return () => { accountListeners.delete(f); }; };
+
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const r = await fetch(path, opts);
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.detail || r.statusText);
+  if (!r.ok) {
+    if (r.status === 401 || r.status === 402 || r.status === 403) accountListeners.forEach((f) => f());
+    throw new ApiError(body.detail || r.statusText, r.status);
+  }
   return body as T;
 }
 
@@ -108,6 +130,10 @@ const json = (body: unknown): RequestInit => ({
 export const getConfig = () => api<Config>("/api/config");
 // The access key of a public server: right, the server sets a cookie and the API opens for this browser.
 export const unlock = (key: string) => api<{ ok: boolean }>("/api/key", json({ key }));
+export const getMe = () => api<Me>("/api/me");
+export const loginUrl = (provider: string, next: string) =>
+  `/auth/${provider}/login?next=${encodeURIComponent(next)}`;
+export const logout = () => api<{ ok: boolean }>("/auth/logout", { method: "POST" });
 // With a job: an interview that starts from that job's spec, to change something and retrain it.
 export const startInterview = (job?: string | null) =>
   api<{ session: string; text: string; job?: string }>(`/api/interview${job ? `?job=${encodeURIComponent(job)}` : ""}`, { method: "POST" });
@@ -121,12 +147,38 @@ export const activity = (sid: string, act: string) =>
 const actQuery = (act?: string) => (act ? `?act=${encodeURIComponent(act)}` : "");
 export const thumbUrl = (sid: string, file: string) => `/api/interview/${sid}/thumb?file=${encodeURIComponent(file)}`;
 
+// The public server sits behind a proxy that refuses requests over 100 MB: photos go in batches under BATCH_BYTES.
+// Every batch but the last only stores its photos (more=true); the last one carries the total and does the work.
+const BATCH_BYTES = 40_000_000;
+
+function batches(files: File[]): File[][] {
+  const out: File[][] = [[]];
+  let size = 0;
+  for (const f of files) {
+    if (size + f.size > BATCH_BYTES && out[out.length - 1].length) { out.push([]); size = 0; }
+    out[out.length - 1].push(f);
+    size += f.size;
+  }
+  return out;
+}
+
+async function sendInBatches<T>(url: string, files: File[], fields: Record<string, string>): Promise<T> {
+  const parts = batches(files);
+  let last: T | undefined;
+  for (const [i, part] of parts.entries()) {
+    const form = new FormData();
+    Object.entries(fields).forEach(([k, v]) => form.append(k, v));
+    const final = i === parts.length - 1;
+    form.append("more", String(!final));
+    if (final) form.append("total", String(files.length));
+    part.forEach((f) => form.append("photos", f, f.name));
+    last = await api<T>(url, { method: "POST", body: form });
+  }
+  return last as T;
+}
+
 export function uploadPhotos(sid: string, files: File[], purpose: string, cls: string | null, act?: string) {
-  const form = new FormData();
-  form.append("purpose", purpose);
-  form.append("cls", cls || "");
-  files.forEach((f) => form.append("photos", f, f.name));
-  return api<Turn>(`/api/interview/${sid}/photos${actQuery(act)}`, { method: "POST", body: form });
+  return sendInBatches<Turn>(`/api/interview/${sid}/photos${actQuery(act)}`, files, { purpose, cls: cls || "" });
 }
 
 // session: the interview that wrote the spec, so the job shows what it used.
@@ -148,10 +200,7 @@ export function reviseJob(job: string, spec: Spec, dry = false, session?: string
 }
 
 export function addPhotos(job: string, files: File[], note: string) {
-  const form = new FormData();
-  form.append("note", note);
-  files.forEach((f) => form.append("photos", f, f.name));
-  return api<{ rerun_from: string; photos: number }>(`/api/jobs/${job}/photos`, { method: "POST", body: form });
+  return sendInBatches<{ rerun_from: string; photos: number }>(`/api/jobs/${job}/photos`, files, { note });
 }
 
 export const listJobs = () => api<{ jobs: string[] }>("/api/jobs");
