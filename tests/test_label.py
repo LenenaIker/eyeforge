@@ -116,3 +116,36 @@ def test_calibration_asks_about_different_photos():
     emb = {"a": same, "a2": teacher._unit([0.99, 0.14]), "a3": teacher._unit([0.98, 0.2]), "b": other}
     assert teacher.spread(emb, [], 2) == ["a3", "b"]  # the most typical photo, then the most different one
     assert teacher.spread(emb, ["b"], 1) == ["a"]
+
+
+def test_count_calibration_prefetch_and_rounds_without_a_gpu(tmp_path, monkeypatch):
+    """Count calibration shows varied photos (SigLIP 2), the prefetch answers the rest with the next rounds' photos
+    first, and a round after it needs no GPU: the corrections only move the threshold."""
+    raw = tmp_path / "raw"
+    for i in range(12):
+        img(raw / f"p{i:02d}.jpg")
+    # Photos 0-5 are near copies of one view, 6-11 each a view of their own.
+    vec = lambda name: [1.0, 0.01 * int(name[1:3])] + [0.0] * 12 if int(name[1:3]) < 6 else \
+        [0.0] * 2 + [1.0 if j == int(name[1:3]) else 0.0 for j in range(12)]  # noqa: E731
+    embedded = fake_siglip(monkeypatch, vec)
+    asked = fake_sam3(monkeypatch, lambda name: [{"class": "cow", "box": [0.1, 0.1, 0.3, 0.3], "score": 0.9}])
+    spec = from_dict({**SPEC, "task": "count", "user_data": {"raw": "raw"}})
+    ctx = Context(spec, open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
+    link_input(ctx.job, "raw", raw)
+    stage = Label()
+    stage.sample = 3
+    assert stage.gpu_needed(ctx)
+    stage.run(ctx)
+    first = set(json.loads((ctx.job.stage_dir("label") / "verdicts.json").read_text()))
+    assert len(embedded) == 12 and len(asked) == 3 and len(first) == 3
+    assert sum(int(k[1:3]) < 6 for k in first) <= 1  # not three of the near copies
+    asked.clear()
+    assert stage.prefetch(ctx) == 9 and len(asked) == 9
+    # The prefetch went through the next rounds' photos first: they are the ones the next round shows.
+    stage.run(ctx)
+    second = set(json.loads((ctx.job.stage_dir("label") / "verdicts.json").read_text())) - first
+    assert set(asked[:3]) == second
+    asked.clear()
+    assert not stage.gpu_needed(ctx) and not Label().gpu_needed(ctx)
+    Label().run(ctx)  # the whole folder, every answer cached
+    assert not asked

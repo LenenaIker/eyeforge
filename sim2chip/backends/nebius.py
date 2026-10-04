@@ -260,6 +260,54 @@ def trains_picodet(spec, todo) -> bool:
         hardware.get(spec.hardware).counter == "picodet_s"
 
 
+# Streams one kit from its presigned URL to stdout (into zstd and tar) and writes how many bytes came.
+KIT_STREAM = ("import sys, urllib.request\n"
+              "n = 0\n"
+              "with urllib.request.urlopen(sys.argv[1], timeout=60) as r:\n"
+              "    while b := r.read(1 << 20):\n"
+              "        sys.stdout.buffer.write(b); n += len(b)\n"
+              "open(sys.argv[2], \"w\").write(str(n))")
+
+
+def kit_lines(var: str = "S2C_ENVS", late_marker: str | None = None) -> list[str]:
+    """Shell lines that unpack the kits whose presigned URLs are in $var. The first kit is the bare Python (31 MB),
+    fetched first since it streams the others. Those stream from the bucket straight into zstd and tar, all at
+    once: download and unpack overlap (on the node each takes about as long as the other, 2026-10-04).
+    late_marker: the kits in $var come after start-up, in the background (the bare Python is already there), and
+    this file is written when they are unpacked."""
+    head = [] if late_marker else [
+        f"mkdir -p {ENVS}",
+        f'read -ra urls <<< "${var}"',
+        "aria2c -q --max-tries 5 --retry-wait 5 -d /tmp/s2c -o kit0.tar.zst \"${urls[0]}\"",
+        f"zstd -dcq /tmp/s2c/kit0.tar.zst | tar xf - -C {ENVS}",
+        f"KIT_PYTHON=$(ls -d {ENVS}/pythons/cpython-3.11*/bin/python3 | head -1)",
+    ]
+    first = -1 if late_marker else 0
+    tag = "late" if late_marker else "kit"
+    loop = [
+        "pids=()",
+        'for i in "${!urls[@]}"; do',
+        f'  [ "$i" = {first} ] && continue',
+        "  ( start=$(date +%s.%N)",
+        "    for try in 1 2 3; do  # a broken stream starts over: tar overwrites what it had unpacked",
+        f'      "$KIT_PYTHON" -c {shlex.quote(KIT_STREAM)} "${{urls[$i]}}" /tmp/s2c/{tag}$i.bytes'
+        f" | zstd -T0 -dcq | tar xf - -C {ENVS} && break",
+        '      [ "$try" = 3 ] && exit 1',
+        f'      echo "{tag} $i: download failed, retrying"; sleep 5',
+        "    done",
+        (f'    echo "$i $start $(date +%s.%N) $(cat /tmp/s2c/kit$i.bytes)" >> {KIT_TIMES} ) &' if not late_marker
+         else "  ) &"),
+        "  pids+=($!)",
+        "done",
+        'for p in "${pids[@]}"; do wait $p; done',
+    ]
+    if not late_marker:
+        return head + loop
+    # Written even if a kit failed: a run waiting for it then goes on without it (PicoDet falls back to the grid).
+    body = "\n".join(["set +e", f'read -ra urls <<< "${var}"', *loop, f"touch {late_marker}"])
+    return [f"( {body}\n) > /tmp/s2c/late_kits.log 2>&1 &"]
+
+
 def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
                   runtime: Runtime = RUNTIMES["isaac"]) -> str:
     """Shell script for the worker job: the Pythons (TensorFlow, and torch for the teachers only when the run
@@ -289,34 +337,7 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
                     "/tmp/s2c/bin/uv pip install -q --python /tmp/s2c/sam3/bin/python "
                     + " ".join(shlex.quote(d) for d in TEACHER_DEPS),
                     "TEACHER_PY=/tmp/s2c/sam3/bin/python"]
-    # The first kit is the bare Python (31 MB). The others stream from the bucket straight into zstd and tar, all
-    # at once: download and unpack overlap (on the node each takes about as long as the other, 2026-10-04).
-    stream = ("import sys, urllib.request\n"
-              "n = 0\n"
-              "with urllib.request.urlopen(sys.argv[1], timeout=60) as r:\n"
-              "    while b := r.read(1 << 20):\n"
-              "        sys.stdout.buffer.write(b); n += len(b)\n"
-              "open(sys.argv[2], \"w\").write(str(n))")
-    unpack = [
-        f"mkdir -p {ENVS}",
-        'read -ra urls <<< "$S2C_ENVS"',
-        "aria2c -q --max-tries 5 --retry-wait 5 -d /tmp/s2c -o kit0.tar.zst \"${urls[0]}\"",
-        f"zstd -dcq /tmp/s2c/kit0.tar.zst | tar xf - -C {ENVS}",
-        f"KIT_PYTHON=$(ls -d {ENVS}/pythons/cpython-3.11*/bin/python3 | head -1)",
-        "pids=()",
-        'for i in "${!urls[@]}"; do',
-        '  [ "$i" = 0 ] && continue',
-        "  ( start=$(date +%s.%N)",
-        "    for try in 1 2 3; do  # a broken stream starts over: tar overwrites what it had unpacked",
-        f'      "$KIT_PYTHON" -c {shlex.quote(stream)} "${{urls[$i]}}" /tmp/s2c/kit$i.bytes'
-        f" | zstd -T0 -dcq | tar xf - -C {ENVS} && break",
-        '      [ "$try" = 3 ] && exit 1',
-        "      echo \"kit $i: download failed, retrying\"; sleep 5",
-        "    done",
-        f'    echo "$i $start $(date +%s.%N) $(cat /tmp/s2c/kit$i.bytes)" >> {KIT_TIMES} ) &',
-        "  pids+=($!)",
-        "done",
-        'for p in "${pids[@]}"; do wait $p; done',
+    unpack = kit_lines() + [
         f"PY={KIT_PY} TEACHER_PY={KIT_TEACHER}",
         # Without the picodet kit these paths do not exist and the train stage counts with the grid head.
         f"export SIM2CHIP_PICODET_PYTHON={KIT_PICODET} SIM2CHIP_PADDLEDET={KIT_PADDLEDET}",
@@ -335,6 +356,35 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
         "S2C_SETUP_S=$(( $(date +%s) - S2C_T0 ))" + (f" SIM2CHIP_ISAAC_PYTHON={runtime.python}" if isaac else ""),
         f"$PY -m sim2chip.cloud_worker --home /tmp/s2c/home --job {shlex.quote(job_name)} "
         + " ".join(shlex.quote(a) for a in plan_args),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def warm_script() -> str:
+    """Shell script of the warm GPU (warm.py): the light image's kits (the worker's Python and the teachers'), the
+    PicoDet kit in the background, its own code, then its loop. Tasks bring their run's code."""
+    fetch = (f"{KIT_PY} -c 'import sys, time, urllib.request\n"
+             "for i in range(5):\n"
+             "    try: urllib.request.urlretrieve(sys.argv[1], sys.argv[2]); break\n"
+             "    except Exception as e:\n"
+             "        if i == 4: raise\n"
+             "        print(\"download failed, retrying:\", e, flush=True); time.sleep(5 * 2 ** i)'")
+    from ..warm import LATE_READY
+    lines = [
+        "#!/bin/bash",
+        "set -eo pipefail",
+        "S2C_T0=$(date +%s)",
+        "mkdir -p /tmp/s2c/code /tmp/s2c/bin /tmp/s2c/home",
+        *kit_lines(),
+        *kit_lines("S2C_ENVS_LATE", LATE_READY),
+        f'{fetch} "$S2C_CODE_URL" /tmp/s2c/code.tgz',
+        "tar xzf /tmp/s2c/code.tgz -C /tmp/s2c/code",
+        f"export SIM2CHIP_PICODET_PYTHON={KIT_PICODET} SIM2CHIP_PADDLEDET={KIT_PADDLEDET}",
+        f"export SIM2CHIP_SAM3_PYTHON={KIT_TEACHER} HF_HUB_CACHE=/tmp/s2c/hf SIM2CHIP_WEIGHTS_DIR=/tmp/s2c/weights",
+        # Tasks run side by side: TensorFlow must not take the whole GPU at its first use.
+        "export TF_FORCE_GPU_ALLOW_GROWTH=true",
+        f"export PYTHONUNBUFFERED=1 SIM2CHIP_PYTHON={KIT_PY} PYTHONPATH=/tmp/s2c/code SIM2CHIP_RUNS_ON=nebius",
+        f'{KIT_PY} -m sim2chip.warm_worker --id "$S2C_WARM_ID"',
     ]
     return "\n".join(lines) + "\n"
 
@@ -443,8 +493,9 @@ class NebiusBackend:
             raise RuntimeError(f"kits missing in s3://{cache_bucket}: {missing}; run images/build.sh kits")
         return " ".join(self.store.url(cache_bucket, k) for k in keys)
 
-    def _upload_job(self, job: Job, cache: Cache, bucket: str, cache_bucket: str) -> str:
-        """Buckets, code, spec and input (once per run). Returns the code's presigned URL."""
+    def _upload_job(self, job: Job, cache: Cache, bucket: str, cache_bucket: str, spec_json: str | None = None) -> str:
+        """Buckets, code, spec and input (once per run). Returns the code's presigned URL. spec_json: the spec to
+        send when the job has no spec.json of its own yet (a prefetch during calibration)."""
         if self.dry_run:
             print(f"  upload code, spec.json and input/ to s3://{bucket}", flush=True)
             return "<presigned url>"
@@ -465,7 +516,7 @@ class NebiusBackend:
                     self.store.delete(bucket, key)
             self.store.upload_dir(cache_bucket, cache.db, "db")  # share what this machine learned about assets
             self._ready.add(bucket)
-        self.store.put(bucket, "spec.json", job.spec_path.read_bytes())
+        self.store.put(bucket, "spec.json", spec_json.encode() if spec_json is not None else job.spec_path.read_bytes())
         return self.store.url(bucket, "_code/sim2chip.tar.gz")
 
     def prepare(self, pipe):
@@ -536,6 +587,15 @@ class NebiusBackend:
             env["SIM2CHIP_LABEL_SAMPLE"] = os.environ["SIM2CHIP_LABEL_SAMPLE"]
         name = f"s2c-{job.name}-run".lower().replace("_", "-")[:63]
         job.timeline("upload job", time.time() - t_up, "local")
+        picodet = trains_picodet(pipe.spec, todo)
+        if not self.dry_run:
+            w = self.warm_for(cache, runtime)
+            if w is not None:
+                extra = {k: env[k] for k in ("SIM2CHIP_LABEL_SAMPLE",) if k in env}
+                state, hours = self._run_warm(w, job, job_bucket, cache_bucket, code_url, plan_args, extra, picodet,
+                                              [st.name for st in todo], log)
+                if state is not None:
+                    return self._finish(job, cache, job_bucket, cache_bucket, state, hours, todo, log, t_up)
         t0 = time.time()
         job_id = self.cli.create_job(name, runtime, env, script, WORKER_HOURS, secrets)
         if self.dry_run:
@@ -551,6 +611,12 @@ class NebiusBackend:
         self.spent_usd += hours * USD_PER_HOUR
         self._record(job, "run", job_id, state, hours)
         (job.logs / "worker.job.log").write_text(self.cli.job_logs(job_id))
+        self._finish(job, cache, job_bucket, cache_bucket, state, hours, todo, log, t_up)
+
+    def _finish(self, job: Job, cache: Cache, job_bucket: str, cache_bucket: str, state: str, hours: float,
+                todo: list, log, t_up: float) -> None:
+        """After the run's job or warm task: results back, where the time went, and stages that did not finish."""
+        from ..pipeline import StageFailed
         t1 = time.time()
         self._fetch_results(job, cache, job_bucket, cache_bucket)
         job.timeline("download results", time.time() - t1, "local")
@@ -561,16 +627,136 @@ class NebiusBackend:
             raise StageFailed(f"cloud run {state}: stages not done {missing}, see {job.logs / 'worker.job.log'} "
                               f"and {job.logs / 'cloud_pipeline.log'}")
 
-    def _follow(self, job_id: str, job: Job, bucket: str, log, stages: list[str] | None = None) -> str:
+    # Warm GPU (warm.py): one job kept up between runs; a run goes to it as a task when it is up.
+
+    def start_warm(self, home: Path) -> dict:
+        """Asks Nebius for the warm GPU and notes it in home/warm/worker.json. Its kits are checked first."""
+        from .. import warm
+        cache_bucket = f"{self.prefix}-cache"
+        self.cli.ensure_bucket(cache_bucket)
+        kits = self._kit_urls(cache_bucket, teacher=True, picodet=True).split()  # pythons, py, teacher, picodet
+        wid = token_hex(6)
+        self.store.put(cache_bucket, warm.key(wid, "code.tgz"), code_archive())
+        script = home / "warm" / "warm.nebius.sh"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(warm_script())
+        env = {"S2C_CACHE_BUCKET": cache_bucket, "SIM2CHIP_REGION": REGION, "S2C_WARM_ID": wid,
+               "S2C_CODE_URL": self.store.url(cache_bucket, warm.key(wid, "code.tgz"), hours=warm.HOURS + 1),
+               "S2C_ENVS": " ".join(kits[:3]), "S2C_ENVS_LATE": kits[3]}
+        secrets = self._secrets(bool(_env("SIM2CHIP_NEBIUS_SECRET")))  # rounds may put phrases in English
+        job_id = self.cli.create_job(f"s2c-warm-{wid}", worker_runtime(False), env, script, warm.HOURS, secrets)
+        w = {"wid": wid, "job_id": job_id, "started": time.time()}
+        warm.worker_file(home).write_text(json.dumps(w))
+        return w
+
+    def warm_for(self, cache: Cache, runtime: Runtime) -> dict | None:
+        """The warm GPU of the server whose home holds this cache, when it can take this run: its image (not
+        Isaac Sim's), its job not ended, not stopping."""
+        from .. import warm
+        if not runtime.kits or runtime.image != worker_runtime(False).image:
+            return None
+        w = warm.current(cache.root.parent)
+        if w is None:
+            return None
+        try:
+            if self.cli.job_state(w["job_id"]) in TERMINAL:
+                return None
+            return w if warm.usable(self.store, f"{self.prefix}-cache", w["wid"]) else None
+        except Exception:
+            return None
+
+    def _warm_task(self, w: dict, job: Job, task: dict, follow) -> tuple[str, float | None]:
+        """Sends a task to the warm GPU and waits for it with `follow(state_of)`. Returns its final state and when
+        it started (None: the GPU never took it, and it was withdrawn)."""
+        from .. import warm
+        cache_bucket = f"{self.prefix}-cache"
+        submitted, started, checked = time.time(), [None], [0.0, False]
+
+        def state_of() -> str:
+            if time.time() - checked[0] > 30:  # the job's own state, now and then: a CLI call takes a second
+                checked[0] = time.time()
+                try:
+                    checked[1] = self.cli.job_state(w["job_id"]) in TERMINAL
+                except RuntimeError:
+                    pass
+            st = warm.task_state(self.store, cache_bucket, w["wid"], task["id"], checked[1], submitted)
+            if st != "QUEUED" and started[0] is None and st != "LOST":
+                started[0] = time.time()
+            return st
+        warm.submit(self.store, cache_bucket, w["wid"], task)
+        state = follow(state_of)
+        if state == "LOST" and started[0] is None:
+            warm.withdraw(self.store, cache_bucket, w["wid"], task["id"])
+        return state, started[0]
+
+    def _run_warm(self, w: dict, job: Job, job_bucket: str, cache_bucket: str, code_url: str, plan_args: list[str],
+                  env: dict, picodet: bool, stages: list[str], log) -> tuple[str | None, float]:
+        """The run as a task of the warm GPU. (None, 0) when the GPU did not take it: the run starts its own job."""
+        from .. import warm
+        tid = token_hex(6)
+        task = {"id": tid, "kind": "run", "job": job.name, "bucket": job_bucket, "code_url": code_url,
+                "args": plan_args, "env": env, "picodet": picodet, "log": "worker.job.log"}
+        log(f"  warm GPU {w['job_id']} ({PLATFORM}, {PRESET}): no start-up, task {tid}")
+        marker = job.logs / CLOUD_JOB
+        marker.write_text(json.dumps({"id": w["job_id"], "warm": w["wid"], "task": tid, "started": time.time(),
+                                      "hours": WORKER_HOURS + 1}))
+        state, started = self._warm_task(w, job, task, lambda state_of: self._follow(
+            w["job_id"], job, job_bucket, log, stages, state_of=state_of, poll_s=min(self.poll_s, warm.POLL_S),
+            label="warm GPU"))
+        marker.unlink(missing_ok=True)
+        if started is None:
+            log("  the warm GPU did not take the run: it gets a GPU of its own")
+            return None, 0.0
+        hours = (time.time() - started) / 3600
+        self.spent_usd += hours * USD_PER_HOUR
+        self._record(job, "run", w["job_id"], state, hours, warm=True)
+        return state, hours
+
+    def prefetch_warm(self, job: Job, cache: Cache, spec, sample: int, log=print) -> bool:
+        """Count calibration: the warm GPU fills the teacher's answers for every photo of the job (Label.prefetch)
+        and they come back to this machine's cache, so the next rounds need no GPU. False without a warm GPU or
+        if it failed."""
+        from .. import warm
+        w = self.warm_for(cache, worker_runtime(False))
+        if w is None:
+            return False
+        cloud = portable_spec(cloud_spec(spec), job)
+        job_bucket, cache_bucket = self.buckets(job)
+        code_url = self._upload_job(job, cache, job_bucket, cache_bucket, spec_json=cloud.to_json())
+        verdicts = job.stage_dir("label") / "verdicts.json"
+        if verdicts.exists():  # which photos the user saw: the prefetch starts with the next rounds' ones
+            self.store.put(job_bucket, "label/verdicts.json", verdicts.read_bytes())
+        task = {"id": token_hex(6), "kind": "prefetch", "job": job.name, "bucket": job_bucket, "code_url": code_url,
+                "args": ["--prefetch"], "env": {"SIM2CHIP_LABEL_SAMPLE": str(sample)}, "picodet": False,
+                "log": "prefetch.log"}
+
+        def follow(state_of) -> str:
+            deadline = time.time() + 3600
+            while time.time() < deadline:
+                st = state_of()
+                if st in ("COMPLETED", "FAILED", "LOST"):
+                    return st
+                time.sleep(warm.POLL_S if self.poll_s else 0)
+            return "LOST"
+        state, _ = self._warm_task(w, job, task, follow)
+        log(f"prefetch {job.name}: {state}")
+        if state != "COMPLETED":
+            return False
+        self._fetch_labels(job, cache, cache_bucket)
+        return True
+
+    def _follow(self, job_id: str, job: Job, bucket: str, log, stages: list[str] | None = None,
+                state_of=None, poll_s: float | None = None, label: str = "nebius job") -> str:
         """Waits for the job, echoing new lines of the cloud pipeline log (the web reads them from the local
-        log) and bringing done markers back as stages finish."""
+        log) and bringing done markers back as stages finish. state_of: the state of what runs (a warm GPU's
+        task) instead of the job's; it may also end LOST."""
         seen, last, since = 0, None, time.time()
         # The job times out after WORKER_HOURS of running; the extra hour covers the queue and the image pull.
         deadline = since + (WORKER_HOURS + 1) * 3600
         misses, store_error = 0, None
         while True:
             try:
-                state = self.cli.job_state(job_id)
+                state = state_of() if state_of else self.cli.job_state(job_id)
             except RuntimeError as e:  # a transient CLI failure must not orphan a job that is still billing
                 log(f"  could not read the job state: {e}")
                 state = "UNKNOWN"
@@ -581,7 +767,7 @@ class NebiusBackend:
             if state != last and state != "UNKNOWN":
                 now = time.time()
                 if last is not None:  # how long the job stayed in each state: queue, image pull, run
-                    job.timeline(f"nebius job: {last.lower()}", now - since, "nebius")
+                    job.timeline(f"{label}: {last.lower()}", now - since, "nebius")
                 log(f"  state {state}")
                 last, since = state, now
             try:
@@ -608,9 +794,9 @@ class NebiusBackend:
                 if line.startswith(("> ", "= ", "  ", "FAILED", "model:", "real test")):
                     log(line)
             seen = max(seen, len(lines))
-            if state in TERMINAL:
+            if state in TERMINAL or state == "LOST":
                 return state
-            time.sleep(self.poll_s)
+            time.sleep(self.poll_s if poll_s is None else poll_s)
 
     def _fetch_results(self, job: Job, cache: Cache, bucket: str, cache_bucket: str) -> None:
         import fnmatch
@@ -629,8 +815,18 @@ class NebiusBackend:
             cloud = self.store.s3.get_object(Bucket=bucket, Key="logs/timeline.jsonl")["Body"].read().decode()
             with open(job.logs / "timeline.jsonl", "a") as f:
                 f.write(cloud)
-        for prefix in ("db", "labels"):  # what the run learned, for later runs here
-            self.store.download(cache_bucket, prefix, cache.root / prefix, ("*",), overwrite=False)
+        self.store.download(cache_bucket, "db", cache.root / "db", ("*",), overwrite=False)  # for later runs here
+        self._fetch_labels(job, cache, cache_bucket)
+
+    def _fetch_labels(self, job: Job, cache: Cache, cache_bucket: str) -> int:
+        """The teacher's answers for this job's photos (and its cached phrases and prompts), for later rounds and
+        runs here. Not the whole shared folder: every job's answers, thousands of files, took minutes (2026-10-04)."""
+        from ..workspace import IMAGE_EXT, content_key
+        photos = {content_key(Path(d) / n) for d, _, names in os.walk(job.input, followlinks=True) for n in names
+                  if Path(n).suffix.lower() in IMAGE_EXT}
+        keys = [k for k in self.store.listing(cache_bucket, "labels/")
+                if Path(k).stem in photos or k.split("/")[1] in ("phrases", "prompts", "siglip_text")]
+        return self.store.pull(cache_bucket, keys, cache.root)
 
     def _secrets(self, llm: bool) -> list[str]:
         s3_secret = _env("SIM2CHIP_S3_SECRET", "sim2chip-s3")
@@ -701,8 +897,12 @@ class NebiusBackend:
             time.sleep(self.poll_s)
 
     @staticmethod
-    def _record(job: Job, stage: str, job_id: str, state: str, hours: float) -> None:
+    def _record(job: Job, stage: str, job_id: str, state: str, hours: float, warm: bool = False) -> None:
+        """warm: a task of the warm GPU, whose whole life the server notes apart (warm.py): the daily budget skips
+        these records, the usage panel shows them."""
         rec = {"t": round(time.time()), "stage": stage, "job_id": job_id, "state": state, "platform": PLATFORM,
                "preset": PRESET, "hours": round(hours, 4), "usd_estimate": round(hours * USD_PER_HOUR, 4)}
+        if warm:
+            rec["warm"] = True
         with open(job.logs / "cloud_usage.jsonl", "a") as f:
             f.write(json.dumps(rec) + "\n")

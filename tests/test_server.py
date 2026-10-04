@@ -486,3 +486,61 @@ def test_the_interview_is_credited_to_the_job_it_creates(tmp_path):
     other = app.post("/api/jobs", data={"spec": json.dumps({**GOOD, "background_class": "nothing"}), "session": sid}).json()["job"]
     assert app.get(f"/api/jobs/{other}").json()["usage"]["models"] == []  # counted once
     assert app.post("/api/jobs", data={"spec": json.dumps(GOOD), "session": "../../x"}).status_code == 200
+
+
+def test_photos_in_the_interview_warm_up_a_gpu_and_rounds_with_answers_skip_it(tmp_path, monkeypatch):
+    """The warm GPU is asked for at the first photo upload, kept while the user checks the teacher, and a round
+    whose answers are all cached here runs without any GPU (no cloud job, no teacher)."""
+    import io
+    import time
+
+    from PIL import Image
+
+    from sim2chip import teacher
+    from sim2chip.stages.label import Label
+
+    class Warm:
+        def __init__(self):
+            self.calls = []
+
+        def start(self, reason=""):
+            self.calls.append(("start", reason))
+
+        def touch(self, seconds=0):
+            self.calls.append(("touch",))
+
+    gpu = Warm()
+
+    def interviewer():
+        return interview.Session(Scripted([{"say": "Where is the camera?"}]), "m",
+                                 interview.CategoryIndex(counts={"cow": 62}))
+    client = TestClient(create_app(tmp_path, backend="nebius", interviewer=interviewer, warm=gpu,
+                                   launcher=lambda *a, **k: FakeProc()))
+    sid = client.post("/api/interview").json()["session"]
+    client.post(f"/api/interview/{sid}/photos", data={"purpose": "training"},
+                files=[("photos", ("a.jpg", b"jpg", "image/jpeg"))])
+    assert gpu.calls == [("start", "photos uploaded")]
+
+    monkeypatch.setattr(teacher, "available", lambda: False)  # this server has no GPU
+    monkeypatch.setattr(Label, "gpu_needed", lambda self, ctx: False)  # but every answer is cached
+
+    def embed(items, texts, text_out, log=print, timeline=None):
+        for path, out in items:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps({"embedding": [1.0, 0.0, 0.0]}))
+        text_out.parent.mkdir(parents=True, exist_ok=True)
+        text_out.write_text(json.dumps({"embeddings": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]][:len(texts)]}))
+    monkeypatch.setattr(teacher, "embed", embed)
+    monkeypatch.setattr(teacher, "prompts", lambda spec, client=None: {k: k for k in spec.labels})
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64)).save(buf, "JPEG")
+    r = client.post("/api/jobs", data={"spec": json.dumps(GOOD), "calibrate": "true"},
+                    files=[("photos", ("p.jpg", buf.getvalue(), "image/jpeg"))]).json()
+    for _ in range(200):
+        st = client.get(f"/api/jobs/{r['job']}").json()
+        if not st["running"]:
+            break
+        time.sleep(0.02)
+    assert st["calibration"] == {"state": "ready"}
+    assert ("start", "calibration") in gpu.calls and ("touch",) in gpu.calls
+    assert not (tmp_path / "jobs" / r["job"] / "logs" / "pipeline.log").exists()  # no cloud run was launched

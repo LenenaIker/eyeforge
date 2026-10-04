@@ -7,9 +7,11 @@ photos as different from each other as possible, so a few corrections cover the 
 Count (SAM 3): SAM 3 finds every object of each class (one short noun phrase per class) and scores it; every
 object above the threshold is marked and its box centre becomes the object's point. Photos with no objects are
 kept (they teach what "none" looks like). The threshold follows the user's error preference (spec.errors) and
-their corrected photos, which also win over the teacher.
+their corrected photos, which also win over the teacher. Its calibration rounds also show photos as different as
+possible (SigLIP 2 embeddings, picked by name when they cannot be had).
 Answers are cached by photo content and model (and phrases for SAM 3): the same photo gets the same answer in
-every job, and new corrections need no GPU. Photos with no answer (the teacher failed) are left out, in
+every job, and new corrections need no GPU. prefetch() fills SAM 3's answers for the whole folder while the user
+corrects the first photos, and gpu_needed() tells when a round can run without a GPU. Photos with no answer (the teacher failed) are left out, in
 label/no_answer/ (label/unsure/ for count), and asked again on the next run.
 Output: label/<class>/<photo> (copies) or, for count, label/images/<photo>; label/verdicts.json,
 label/teacher.json (what the teacher used and a line for review)
@@ -60,7 +62,7 @@ class Label(Stage):
             raise FileNotFoundError(f"user_data.raw: no photos in {src}")
         out = ctx.job.stage_dir(self.name)
         previous = json.loads((out / "verdicts.json").read_text()) if (out / "verdicts.json").exists() else {}
-        sample = self.sample or int(os.environ.get("SIM2CHIP_LABEL_SAMPLE", "0")) or None
+        sample = self._sample()
         keys = {f: str(f.relative_to(src)) for f in files}
         corrections = review.load_corrections(ctx.job)
         if spec.task == "count":
@@ -177,18 +179,116 @@ class Label(Stage):
                    "note": teacher.explain_examples(n, used)}
         return verdicts, learned, {"examples": n}
 
+    def _files(self, ctx):
+        """The user's raw photos and their keys (path in the raw folder)."""
+        src = ctx.job.resolve_input(ctx.spec.user_data.raw)
+        files = sorted(f for f in src.rglob("*") if f.suffix.lower() in IMAGE_EXT)
+        return files, {f: str(f.relative_to(src)) for f in files}
+
+    def _sample(self) -> int | None:
+        return self.sample or int(os.environ.get("SIM2CHIP_LABEL_SAMPLE", "0")) or None
+
+    @staticmethod
+    def _previous(ctx) -> dict:
+        f = ctx.job.stage_dir("label") / "verdicts.json"
+        return json.loads(f.read_text()) if f.exists() else {}
+
+    def answers_dir(self, ctx):
+        """Where SAM 3's answers for this spec's phrases live, shared by every job: photo content x model x phrases."""
+        answers_id = hashlib.sha256(json.dumps([teacher.MODEL, teacher.SIDE, teacher.FLOOR, self._phrases(ctx)],
+                                               sort_keys=True).encode()).hexdigest()[:12]
+        return ctx.cache.root / "labels" / answers_id / "sam3"
+
+    @staticmethod
+    def _embedding_file(ctx, f):
+        return ctx.cache.root / "labels" / "siglip" / teacher.SIGLIP_MODEL.split("/")[-1] / f"{content_key(f)}.json"
+
+    def _embeddings(self, ctx, files, keys, compute: bool = True) -> dict[str, list[float]]:
+        """SigLIP 2 embeddings of the photos (the same files classification uses), computed for those missing when
+        `compute`. Count uses them only to pick varied photos for calibration: a teacher error here is logged and
+        the photos are picked by name instead."""
+        out = {f: self._embedding_file(ctx, f) for f in files}
+        todo = [f for f in files if not out[f].exists()]
+        if todo and compute:
+            try:
+                teacher.embed([(f, out[f]) for f in todo], [], ctx.cache.root / "labels" / "siglip_text" / "_none.json",
+                              log=ctx.log, timeline=self._timeline(ctx))
+            except teacher.TeacherError as e:
+                ctx.log(f"WARNING: could not compare the photos with {teacher.SIGLIP_NAME}, picking them by name: {e}")
+        emb = {}
+        for f in files:
+            a = json.loads(out[f].read_text()) if out[f].exists() else {}
+            if "embedding" in a:
+                emb[keys[f]] = a["embedding"]
+            else:
+                out[f].unlink(missing_ok=True)
+        return emb
+
+    def _pick(self, ctx, files, keys, previous, sample, compute: bool = True) -> list:
+        """A count calibration round: the photos already shown and `sample` new ones, as different from each other
+        and from those as possible (SigLIP 2), or spread over the folder by name when the photos could not be
+        compared (names often follow places or days)."""
+        rest = [f for f in files if keys[f] not in previous]
+        emb = self._embeddings(ctx, files, keys, compute)
+        new = set(teacher.spread(emb, [k for k in previous if k in emb], sample)) if emb else set()
+        picked = [f for f in rest if keys[f] in new]
+        if len(picked) < sample:  # photos SigLIP 2 could not read (or none compared): by name
+            left = [f for f in rest if keys[f] not in emb]
+            picked += left[::max(1, len(left) // sample)][:sample - len(picked)]
+        return [f for f in files if keys[f] in previous] + picked
+
+    def gpu_needed(self, ctx) -> bool:
+        """Would running this stage now (with its calibration sample) need the teacher's GPU? False when every
+        answer it needs is already cached here: a calibration round then runs in seconds on a machine without a
+        GPU, the threshold or the centres being all that the user's corrections change."""
+        files, keys = self._files(ctx)
+        if not files:
+            return True
+        sample = self._sample()
+        if ctx.spec.task == "count":
+            if sample:
+                if any(not self._embedding_file(ctx, f).exists() for f in files):
+                    return True
+                files = self._pick(ctx, files, keys, self._previous(ctx), sample, compute=False)
+            shared = self.answers_dir(ctx)
+            return any(not (shared / f"{content_key(f)}.json").exists() for f in files)
+        prompts = self._prompts(ctx)
+        model = teacher.SIGLIP_MODEL.split("/")[-1]
+        text_id = hashlib.sha256(json.dumps(prompts, sort_keys=True).encode()).hexdigest()[:12]
+        if not (ctx.cache.root / "labels" / "siglip_text" / model / f"{text_id}.json").exists():
+            return True
+        return any(not self._embedding_file(ctx, f).exists() for f in files)
+
+    def prefetch(self, ctx, rounds: int = 3) -> int:
+        """Count: SAM 3's answers for every photo of the job, without labeling it. The next calibration rounds and
+        the first run then find them cached: the answers do not depend on the user's corrections (they keep every
+        score down to FLOOR; corrections move only the threshold). The photos the next `rounds` calibration rounds
+        will show go first, so a quick user rarely waits. Returns how many photos SAM 3 looked at."""
+        files, keys = self._files(ctx)
+        shared = self.answers_dir(ctx)
+        shown = dict.fromkeys(self._previous(ctx))
+        order, sample = [], self._sample() or 6
+        self._embeddings(ctx, files, keys)
+        for _ in range(rounds):
+            new = [f for f in self._pick(ctx, files, keys, shown, sample, compute=False) if keys[f] not in shown]
+            order += new
+            shown.update(dict.fromkeys(keys[f] for f in new))
+        order += [f for f in files if f not in order]
+        todo = [f for f in order if not (shared / f"{content_key(f)}.json").exists()]
+        ctx.log(f"prefetch: {len(todo)} of {len(files)} photos for {teacher.NAME}")
+        if todo:
+            teacher.detect([(f, shared / f"{content_key(f)}.json") for f in todo], self._phrases(ctx), log=ctx.log,
+                           timeline=self._timeline(ctx))
+        return len(todo)
+
     def _count(self, ctx, files, keys, previous, sample, corrections):
         spec = ctx.spec
         ids = [c.id for c in spec.classes]
         phrases = self._phrases(ctx)
-        if sample:  # new photos spread over the folder (names often follow places or days)
-            rest = [f for f in files if keys[f] not in previous]
-            files = [f for f in files if keys[f] in previous] + rest[::max(1, len(rest) // sample)][:sample]
+        if sample:  # new photos, as different as possible
+            files = self._pick(ctx, files, keys, previous, sample)
 
-        # SAM 3's answers, shared by every job: photo content x model x phrases.
-        answers_id = hashlib.sha256(json.dumps([teacher.MODEL, teacher.SIDE, teacher.FLOOR, phrases],
-                                               sort_keys=True).encode()).hexdigest()[:12]
-        shared = ctx.cache.root / "labels" / answers_id / "sam3"
+        shared = self.answers_dir(ctx)
         answer_file = {f: shared / f"{content_key(f)}.json" for f in files}
         todo = [f for f in files if not answer_file[f].exists()]
         ctx.log(f"labeling {len(todo)} photos with {teacher.NAME} ({len(files) - len(todo)} already labeled), "

@@ -4,6 +4,7 @@ Getting an L40S in eu-north1 can take many minutes, or fail, so a run asks for o
 stage on it with the local backend, instead of one job per stage. Inside the container:
 
     python -m sim2chip.cloud_worker --home /tmp/s2c/home --job <name> [--from STAGE] [--only STAGE] [--force]
+    python -m sim2chip.cloud_worker --home ... --job <name> --prefetch    (the teacher's answers only, warm GPU)
 
 It plans the run first and pulls only what the stages about to run read: the input, their upstream
 outputs and what a stage reads back from its own last run (label's verdicts with the user's corrections),
@@ -75,10 +76,13 @@ def main() -> int:
     p.add_argument("--from", dest="start")
     p.add_argument("--only")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--prefetch", action="store_true", help="only the teacher's answers for every photo (warm GPU)")
     args = p.parse_args()
     job_bucket, cache_bucket = os.environ["S2C_JOB_BUCKET"], os.environ["S2C_CACHE_BUCKET"]
     store = S3Store()
     job, cache = Job(args.home / "jobs" / args.job), Cache(args.home / "cache")
+    if args.prefetch:
+        return prefetch(store, job_bucket, cache_bucket, job, cache)
     t0 = time.time()
     listing = store.listing(job_bucket)
     store.pull(job_bucket, [k for k in listing if k == "spec.json" or k.endswith("/" + DONE)], job.root)
@@ -96,7 +100,8 @@ def main() -> int:
     if setup:  # code download and Python environment, measured by the job script
         job.timeline("cloud: set up environment", float(setup), "nebius")
     kits = Path(KIT_TIMES)
-    for line in kits.read_text().splitlines() if kits.exists() else []:  # the Python kits, all at once
+    warm = bool(os.environ.get("S2C_WARM"))  # on the warm GPU the kits were unpacked once, for an earlier run
+    for line in kits.read_text().splitlines() if kits.exists() and not warm else []:  # the Python kits, all at once
         i, start, end, size = line.split()
         seconds, mb = float(end) - float(start), int(size) / 1e6
         job.timeline(f"cloud: kit {i} download and unpack", seconds, "nebius", mb=round(mb),
@@ -144,6 +149,28 @@ def main() -> int:
     n = store.upload_dir(job_bucket, job.root, "")
     sync_progress(store, job_bucket, job.root)
     say(f"worker: pushed {n} job files and {m} cache files, exit {code}")
+    return code
+
+
+def prefetch(store: S3Store, job_bucket: str, cache_bucket: str, job: Job, cache: Cache) -> int:
+    """The teacher's answers for every photo of a job being calibrated (stages.label.Label.prefetch), pushed to
+    the cache bucket for the next rounds and the first run. The job's own folders are not touched."""
+    from .stages import Context
+    from .stages.label import Label
+
+    listing = store.listing(job_bucket)
+    store.pull(job_bucket, [k for k in listing if k == "spec.json" or k.startswith("input/")
+                            or k == "label/verdicts.json"], job.root)
+    store.pull(cache_bucket, [k for k in store.listing(cache_bucket) if k.startswith(SHARED)], cache.root)
+    code = 1
+    try:
+        n = Label().prefetch(Context(spec_mod.load(job.spec_path), job, cache))
+        say(f"prefetch: {n} photos answered")
+        code = 0
+    except Exception:
+        traceback.print_exc()
+    m = sum(store.upload_dir(cache_bucket, cache.root / p.rstrip("/"), p.rstrip("/")) for p in SHARED)
+    say(f"prefetch: pushed {m} cache files, exit {code}")
     return code
 
 

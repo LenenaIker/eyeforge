@@ -161,7 +161,8 @@ def detect(items: list[tuple[Path, Path]], phrase_map: dict[str, list[str]], log
 
 
 def embed(items: list[tuple[Path, Path]], texts: list[str], text_out: Path, log=print, timeline=None) -> None:
-    """Runs SigLIP 2 on (photo, answer file) pairs and on the sentences (their embeddings to text_out)."""
+    """Runs SigLIP 2 on (photo, answer file) pairs and on the sentences (their embeddings to text_out; with no
+    sentences nothing is written there)."""
     _worker("sim2chip.siglip_worker", SIGLIP_NAME,
             {"model": weights(SIGLIP_MODEL, log, timeline), "texts": texts, "text_out": str(text_out),
              "items": [{"path": str(p), "out": str(o)} for p, o in items]}, log)
@@ -231,17 +232,22 @@ def nearest(embedding: list[float], centre: dict[str, list[float]]) -> tuple[str
 def spread(embeddings: dict[str, list[float]], keep: list[str], n: int) -> list[str]:
     """n more keys as different as possible from each other and from `keep` (farthest point first): photos to
     ask the user about that cover the folder, instead of five of the same corner."""
-    chosen, rest = list(keep), [k for k in sorted(embeddings) if k not in keep]
+    rest = [k for k in sorted(embeddings) if k not in keep]
+    # Each photo's highest similarity to the chosen ones, kept up to date as photos are chosen: ordering a few
+    # hundred photos for the next calibration rounds stays a matter of seconds.
+    near = {r: max((_dot(embeddings[r], embeddings[c]) for c in keep), default=None) for r in rest}
     picked = []
     while rest and len(picked) < n:
-        if chosen:
-            k = min(rest, key=lambda r: max(_dot(embeddings[r], embeddings[c]) for c in chosen))
+        if near[rest[0]] is not None:
+            k = min(rest, key=lambda r: near[r])
         else:  # the most typical photo first
             mean = [sum(col) for col in zip(*embeddings.values())]
             k = max(rest, key=lambda r: _dot(embeddings[r], mean))
         picked.append(k)
-        chosen.append(k)
         rest.remove(k)
+        for r in rest:
+            s = _dot(embeddings[r], embeddings[k])
+            near[r] = s if near[r] is None else max(near[r], s)
     return picked
 
 

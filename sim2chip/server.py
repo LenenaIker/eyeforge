@@ -83,7 +83,7 @@ PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets"}  # an int
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,
                launcher=None, public: bool = False, key: str | None = None, max_runs: int = 2,
-               daily_usd: float | None = None, auth=None, accounts=None, contact: str | None = None):
+               daily_usd: float | None = None, auth=None, accounts=None, contact: str | None = None, warm=None):
     """public: a server others can reach. Specs may only use photos uploaded through it (no server paths),
     at most `max_runs` runs at a time, and, with `key`, the API needs it (a link with ?key=... or POST /api/key
     sets a cookie); the pages and the app's files stay open, so anyone sees the landing and the app asks for the
@@ -91,7 +91,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     daily_usd: no new run when the cloud GPU spent in the last 24 h plus one more run could pass it.
     auth (auth.Auth) and accounts (accounts.Accounts): login with Google or GitHub instead of the key; jobs
     belong to the account (so they follow it to the phone), and interviews and runs are paid with credits,
-    free for judges (docs/plan_login.md). contact: the address judges write to for free access."""
+    free for judges (docs/plan_login.md). contact: the address judges write to for free access.
+    warm (warm.WarmGPU): a cloud GPU asked for when a user uploads photos and kept while they check the teacher,
+    so their runs skip the start-up (Nebius only)."""
     import hmac
 
     from fastapi.responses import JSONResponse
@@ -226,16 +228,67 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                                             f"the teacher's cloud job failed (exit {proc.returncode})"))
             job.clear_done("label")  # a sample, not the whole folder: the first run labels every photo
 
+        def answers_here() -> bool:
+            """Every answer the round needs is cached on this machine (the warm GPU's prefetch brought them): only
+            the threshold or the centres change with the corrections, which takes seconds without a GPU."""
+            try:
+                stage = Label()
+                stage.sample = CALIBRATION_PHOTOS
+                return not stage.gpu_needed(Context(spec_mod.load(job.root / "request.json"), job,
+                                                    Cache(home / "cache")))
+            except Exception:
+                return False
+
         def work():
             try:
-                here() if teacher.available() or backend != "nebius" else cloud()
+                here() if teacher.available() or backend != "nebius" or answers_here() else cloud()
                 state.write_text(json.dumps({"state": "ready"}))
+                if warm is not None:
+                    warm.touch()  # the user checks the photos now: keep the GPU for the next round or the run
+                    prefetch(job)
             except Exception as e:  # shown on the job page, with the option to train anyway
                 state.write_text(json.dumps({"state": "failed", "error": str(e)[:300]}))
 
         state.write_text(json.dumps({"state": "labeling"}))
         calibrations[job.name] = threading.Thread(target=work, daemon=True)
         calibrations[job.name].start()
+
+    prefetching: set[str] = set()
+
+    def prefetch(job: Job) -> None:
+        """Count calibration: while the user checks the first photos, the warm GPU answers for the rest, so the
+        next rounds and the first run need no GPU work for the teacher (warm.py, Label.prefetch)."""
+        from .stages import Context
+        from .stages.label import Label
+        spec = spec_mod.load(job.root / "request.json")
+        if spec.task != "count" or job.name in prefetching:
+            return
+        try:
+            if not Label().gpu_needed(Context(spec, job, Cache(home / "cache"))):
+                return  # every photo answered already
+        except Exception:
+            pass
+        prefetching.add(job.name)
+
+        def go():
+            try:
+                from .backends.nebius import NebiusBackend
+                NebiusBackend(max_usd=max_usd).prefetch_warm(job, Cache(home / "cache"), spec, CALIBRATION_PHOTOS)
+            except Exception as e:  # the rounds and the run then ask the teacher themselves
+                print(f"prefetch {job.name} failed: {e}", flush=True)
+            finally:
+                prefetching.discard(job.name)
+        threading.Thread(target=go, daemon=True).start()
+
+    def warm_up(reason: str) -> None:
+        """Ask for the warm GPU, unless today's budget could not pay for it."""
+        if warm is None:
+            return
+        try:
+            budget_left()
+        except HTTPException:
+            return
+        warm.start(reason)
 
     def interview_usage(sid: str) -> Path:
         return home / "logs" / "interviews" / f"{sid}.usage.jsonl"
@@ -447,6 +500,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 n += 1
         if not n and not total:
             raise HTTPException(400, "no images among the files")
+        if purpose == "training":  # the GPU starts while the interview goes on
+            warm_up("photos uploaded")
         if more:
             return {"stored": n}
         n = max(n, total)
@@ -522,6 +577,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         credit_interview(job, session)
         if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled:
             pay(request, RUN_COST, "run", name)  # the teacher's check is the start of the paid run
+            warm_up("calibration")
             calibrate(job)
             return {"job": name, "photos": len(images), "calibrating": True}
         start_run(job, req, payer=request)
@@ -570,7 +626,13 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if proc is not None and proc.poll() is None:
             proc.terminate()
         cj = cloud_job(job)
-        if cj:
+        if cj and cj.get("warm"):  # a task of the shared warm GPU: stop the task, not the GPU
+            from . import warm as warm_mod
+            from .backends.nebius import NebiusBackend
+            be = NebiusBackend()
+            warm_mod.cancel(be.store, f"{be.prefix}-cache", cj["warm"], cj["task"])
+            (job.logs / "cloud_job.json").unlink(missing_ok=True)
+        elif cj:
             from .backends.nebius import NebiusCLI
             NebiusCLI().cancel(cj["id"])
             (job.logs / "cloud_job.json").unlink(missing_ok=True)
@@ -735,19 +797,22 @@ def _launch(home: Path, job: Job, request: Path, backend: str, max_usd: float | 
 
 def cloud_spent(home: Path, hours: float = 24) -> float:
     """Cloud GPU dollars of every job's runs that ended in the last `hours`, plus the runs still going
-    (counted at their worst case, the whole timeout)."""
+    (counted at their worst case, the whole timeout). The warm GPU counts once, for its whole life (warm.py):
+    its tasks' records in the jobs are left out."""
+    from . import warm
     from .backends.nebius import USD_PER_HOUR
-    since, total = time.time() - hours * 3600, 0.0
+    since = time.time() - hours * 3600
+    total = warm.spent(home, since)
     for logs in (home / "jobs").glob("*/logs"):
         try:
             for line in (logs / "cloud_usage.jsonl").read_text().splitlines():
                 rec = json.loads(line)
-                if rec.get("t", 0) >= since:
+                if rec.get("t", 0) >= since and not rec.get("warm"):
                     total += rec.get("usd_estimate", 0.0)
         except (OSError, ValueError):
             pass
         cj = cloud_job(Job(logs.parent))
-        if cj:
+        if cj and not cj.get("warm"):
             total += cj["hours"] * USD_PER_HOUR
     return total
 
@@ -964,6 +1029,10 @@ def serve(home: Path, backend: str, host: str, port: int, max_usd: float | None,
     # Token Factory's prices for the usage panel, in the background: the server starts without waiting.
     threading.Thread(target=usage.refresh_prices, args=(home / "cache",), daemon=True).start()
     accounts = Accounts(home / ACCOUNTS_DB, judge_until) if auth is not None else None
+    from . import warm as warm_mod
+    gpu = warm_mod.WarmGPU(home) if backend == "nebius" and warm_mod.enabled() else None
+    if gpu is not None and warm_mod.current(home):  # one left by the previous server process: note its end
+        gpu.watch()
     uvicorn.run(create_app(home, backend, max_usd, public=public, key=key, max_runs=max_runs, daily_usd=daily_usd,
-                           auth=auth, accounts=accounts, contact=contact),
+                           auth=auth, accounts=accounts, contact=contact, warm=gpu),
                 host=host, port=port, proxy_headers=True)

@@ -188,6 +188,16 @@ class ListingStore(FakeStore):
     def listing(self, bucket, prefix=""):
         return {k: len(v) for (b, k), v in self.objects.items() if b == bucket and k.startswith(prefix)}
 
+    def pull(self, bucket, keys, root, strip=""):
+        n = 0
+        for key in keys:
+            dst = root / key[len(strip):].lstrip("/")
+            if not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                self.s3.download_file(bucket, key, str(dst))
+                n += 1
+        return n
+
 
 def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
     from sim2chip.pipeline import Pipeline
