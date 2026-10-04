@@ -169,6 +169,20 @@ def cloud_spec(spec, log=print):
     return spec_mod.from_dict(data)
 
 
+def check_photos(spec, job: Job) -> None:
+    """The user's photo folders must hold photos here, before a GPU is paid for to find out they don't
+    (a spec that names a folder no --input brought in)."""
+    from ..workspace import IMAGE_EXT
+
+    for k in ("raw", "labeled", "test"):
+        rel = getattr(spec.user_data, k)
+        if not rel:
+            continue
+        src = job.resolve_input(rel)
+        if not (src.is_dir() and any(f.suffix.lower() in IMAGE_EXT for f in src.rglob("*"))):
+            raise FileNotFoundError(f"user_data.{k}: no photos in {src} (bring them in with --input {rel}=PATH)")
+
+
 def portable_spec(spec, job: Job):
     """The spec with every local file or folder it names (user photos, QA lists) linked into the job's input/
     and named relative to it: input/ is uploaded, and absolute paths of this machine mean nothing on Nebius.
@@ -461,6 +475,8 @@ class NebiusBackend:
         if self.spent_usd + WORKER_HOURS * USD_PER_HOUR > self.max_usd:
             raise RuntimeError(f"a cloud run can cost up to ${WORKER_HOURS * USD_PER_HOUR:.2f} (timeout "
                                f"{WORKER_HOURS} h): over the cap of ${self.max_usd:.2f} (SIM2CHIP_MAX_USD)")
+        if any(st.name in ("label", "ingest") for st in todo):
+            check_photos(pipe.spec, job)
         job.spec_path.write_text(pipe.spec.to_json())
         job_bucket, cache_bucket = self.buckets(job)
         t_up = time.time()

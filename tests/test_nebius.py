@@ -291,6 +291,22 @@ def test_local_folders_in_the_spec_travel_as_input(tmp_path):
     assert portable_spec(out, job).user_data.raw == out.user_data.raw  # already portable: unchanged
 
 
+def test_missing_photos_stop_the_run_before_the_gpu(tmp_path):
+    from sim2chip import spec as spec_mod
+    from sim2chip.backends.nebius import check_photos
+    from sim2chip.workspace import open_job
+
+    s = spec_mod.from_dict({"name": "p", "task": "count", "classes": [{"id": "pot", "description": "pots",
+                            "size_m": {"measure": "length", "range": [0.1, 0.4]}}],
+                            "user_data": {"raw": "count"}})
+    job = open_job(tmp_path / "home", "p")
+    with pytest.raises(FileNotFoundError, match="--input count=PATH"):
+        check_photos(s, job)
+    (job.input / "count").mkdir(parents=True)
+    (job.input / "count" / "a.jpg").write_bytes(b"jpg")
+    check_photos(s, job)
+
+
 def test_photo_made_models_fall_back_to_search_before_the_gpu():
     from sim2chip import spec as spec_mod
     from sim2chip.backends.nebius import cloud_spec
