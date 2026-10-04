@@ -57,14 +57,18 @@ def pick_textures(assets: dict[str, dict], tags: list[str], n: int, seed: int) -
     return ids[:n]
 
 
-def download(asset_id: str, kind: str, dest: Path, fetch: Callable[[str], dict] = get_json) -> Path:
-    """Downloads one sky (.hdr) or ground texture (diffuse .jpg) into dest/, once."""
+def download(asset_id: str, kind: str, dest: Path, fetch: Callable[[str], dict] = get_json,
+             cached: Callable[[Path], object] | None = None) -> Path:
+    """Downloads one sky (.hdr) or ground texture (diffuse .jpg) into dest/, once. `cached` gets the file first,
+    to bring it from a closer copy if there is one."""
     files = fetch(f"{API}/files/{asset_id}")
     if kind == "hdris":
         url = files["hdri"][SKY_RES]["hdr"]["url"]
     else:
         url = files["Diffuse"][GROUND_RES]["jpg"]["url"]
     out = dest / url.rsplit("/", 1)[1]
+    if cached and not out.exists():
+        cached(out)
     if not out.exists():
         dest.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(out.suffix + ".part")

@@ -8,6 +8,7 @@ Output: fetch_assets/manifest.json  [{uid, class, category, name, license, autho
 """
 from __future__ import annotations
 
+import gzip
 import json
 import random
 import urllib.request
@@ -21,6 +22,11 @@ OK_LICENSES = {"by", "by-sa", "cc0"}
 # Live search results are noisy (skulls, toys, fragments): fetch this many candidates per wanted model and
 # let asset QA keep the best `count`.
 SEARCH_OVERSAMPLE = 2
+# Name, license, author and page of every Objaverse-LVIS model, in hf-objaverse-v1/ of the cache. Objaverse
+# keeps them in 160 metadata files of 3.5 MB; reading licenses for three classes took 110 of them and 130 s
+# of each cloud run (2026-10-04). This file is built once from those and then travels through the cache bucket.
+LVIS_META = "lvis-meta.json.gz"
+OBJAVERSE_INDEXES = ("object-paths.json.gz", "lvis-annotations.json.gz", LVIS_META)
 
 
 class FetchAssets(Stage):
@@ -67,7 +73,9 @@ class FetchAssets(Stage):
     @staticmethod
     def _objaverse(ctx: Context):
         from ..workspace import objaverse_at
-        return objaverse_at(ctx.cache.objaverse)
+        objaverse = objaverse_at(ctx.cache.objaverse)
+        _from_bucket(ctx, [Path(objaverse._VERSIONED_PATH) / f for f in OBJAVERSE_INDEXES])
+        return objaverse
 
     def objaverse_lvis(self, ctx: Context) -> list[dict]:
         wanted = [c for c in ctx.spec.classes if c.assets and c.assets.source == "objaverse_lvis"]
@@ -78,7 +86,7 @@ class FetchAssets(Stage):
         unknown = [cat for c in wanted for cat in c.assets.categories if cat not in lvis]
         if unknown:
             raise ValueError(f"categories not in Objaverse-LVIS: {unknown}")
-        anns = objaverse.load_annotations([u for c in wanted for cat in c.assets.categories for u in lvis[cat]])
+        anns = lvis_meta(objaverse, lvis)
 
         # Same selection rule as the spike: one shuffle per category with a seeded global generator,
         # so the same spec picks the same models.
@@ -131,6 +139,8 @@ class FetchAssets(Stage):
 
     def download(self, ctx: Context, manifest: list[dict]) -> list[dict]:
         objaverse = self._objaverse(ctx)
+        where = objaverse._load_object_paths()
+        _from_bucket(ctx, [Path(objaverse._VERSIONED_PATH) / where[m["uid"]] for m in manifest if m["uid"] in where])
         paths = objaverse.load_objects(uids=[m["uid"] for m in manifest], download_processes=8)
         for m in manifest:
             # Relative to the cache root, where convert_assets resolves it.
@@ -147,12 +157,13 @@ class FetchAssets(Stage):
 
         sc, seed = ctx.spec.scene, ctx.spec.generation.seed
         rel = lambda p: str(p.resolve().relative_to(ctx.cache.root.resolve()))  # noqa: E731
+        cached = lambda p: _from_bucket(ctx, [p])  # noqa: E731
         if sc.sky_tags or sc.template != "road":
             ids = polyhaven.pick_skies(polyhaven.catalog("hdris"), sc.sky_tags, sc.weather, 12, seed)
             if not ids:
                 raise ValueError(f"no Poly Haven sky matches tags {sc.sky_tags} and weather {sc.weather}")
             ctx.log(f"skies for {sc.sky_tags or 'any place'} + {sc.weather}: {', '.join(ids)}")
-            skies = [rel(polyhaven.download(i, "hdris", ctx.cache.hdri / "polyhaven")) for i in ids]
+            skies = [rel(polyhaven.download(i, "hdris", ctx.cache.hdri / "polyhaven", cached=cached)) for i in ids]
         else:
             skies = [rel(ctx.cache.hdri / s.file) for s in self._road_skies(ctx)]
         ground, extra = [], {}
@@ -161,7 +172,7 @@ class FetchAssets(Stage):
             if not ids:
                 raise ValueError(f"no Poly Haven texture matches ground_tags {sc.ground_tags}")
             ctx.log(f"ground textures for {sc.ground_tags}: {', '.join(ids)}")
-            ground = [rel(polyhaven.download(i, "textures", ctx.cache.root / "textures")) for i in ids]
+            ground = [rel(polyhaven.download(i, "textures", ctx.cache.root / "textures", cached=cached)) for i in ids]
             if sc.ground_patches or sc.edge_tags:
                 ground, extra = self.mixed_ground(ctx, ids), {"ground_tile_m": _ground_mix_size()}
         out = {"skies": skies, "ground": ground, **extra}
@@ -170,7 +181,7 @@ class FetchAssets(Stage):
             for w in sc.wall_tags:
                 ids += polyhaven.pick_textures(cat, [w, "wall"], 4, seed)
             ctx.log(f"wall textures for {sc.wall_tags}: {', '.join(ids)}")
-            out["walls"] = [rel(polyhaven.download(i, "textures", ctx.cache.root / "textures")) for i in ids]
+            out["walls"] = [rel(polyhaven.download(i, "textures", ctx.cache.root / "textures", cached=cached)) for i in ids]
         return out
 
     def mixed_ground(self, ctx: Context, base_ids: list[str]) -> list[str]:
@@ -181,7 +192,7 @@ class FetchAssets(Stage):
         cat, dest = polyhaven.catalog("textures"), ctx.cache.root / "textures"
 
         def get(ids):  # (file, side in meters); Poly Haven gives the real size in millimeters
-            return [(polyhaven.download(i, "textures", dest), (cat[i].get("dimensions") or [2000])[0] / 1000)
+            return [(polyhaven.download(i, "textures", dest, cached=lambda p: _from_bucket(ctx, [p])), (cat[i].get("dimensions") or [2000])[0] / 1000)
                     for i in ids]
 
         patches, edges = [], []
@@ -203,6 +214,7 @@ class FetchAssets(Stage):
         wanted = [s for s in SKIES if s.weather in ctx.spec.scene.weather]
         if not wanted:
             raise ValueError(f"scene.weather {ctx.spec.scene.weather} matches no sky")
+        _from_bucket(ctx, [d / s.file for s in wanted])
         for s in wanted:
             f = d / s.file
             if not f.exists():
@@ -219,3 +231,26 @@ class FetchAssets(Stage):
 def _ground_mix_size() -> float:
     from ..ground_mix import SIZE_M
     return SIZE_M
+
+
+def _from_bucket(ctx: Context, files: list[Path]) -> None:
+    from ..cloud_sync import from_cache_bucket
+    if n := from_cache_bucket(ctx.cache.root, files):
+        ctx.log(f"{n} files from the cache bucket")
+
+
+def lvis_meta(objaverse, lvis: dict[str, list[str]]) -> dict[str, dict]:
+    """Objaverse annotations of every LVIS model, only the fields the manifest keeps (see LVIS_META)."""
+    path = Path(objaverse._VERSIONED_PATH) / LVIS_META
+    if path.exists():
+        with gzip.open(path, "rt") as f:
+            return json.load(f)
+    anns = objaverse.load_annotations(sorted({u for uids in lvis.values() for u in uids}))
+    meta = {u: {"name": a.get("name"), "license": a.get("license"),
+                "user": {"username": a.get("user", {}).get("username")}, "viewerUrl": a.get("viewerUrl")}
+            for u, a in anns.items()}
+    tmp = path.with_suffix(".part")
+    with gzip.open(tmp, "wt") as f:
+        json.dump(meta, f, separators=(",", ":"))
+    tmp.rename(path)
+    return meta

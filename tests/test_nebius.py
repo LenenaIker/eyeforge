@@ -195,6 +195,7 @@ def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
 
     monkeypatch.setenv("SIM2CHIP_NEBIUS_SECRET", "tf-key")
     monkeypatch.setenv("SIM2CHIP_LABEL_SAMPLE", "6")
+    monkeypatch.setattr(nebius, "IMAGE_TAG", None)  # the stock image, whatever the local .env says
     spec = from_dict({"name": "j", "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
                                                 "assets": {"categories": ["cow"]}}], "user_data": {"raw": "photos"}})
     job = Job(tmp_path / "jobs" / "j")
@@ -372,3 +373,19 @@ def test_teacher_weights_come_from_the_cache_bucket_once(tmp_path, monkeypatch):
     assert len(steps) == 1  # already there: no second pull
     with pytest.raises(teacher.TeacherError, match="upload_weights"):
         teacher.weights("nobody/nothing", log=lambda _: None)
+
+
+def test_stage_takes_cache_files_from_the_bucket_before_their_source(tmp_path, monkeypatch):
+    from sim2chip import cloud_sync
+
+    store = ListingStore()
+    store.pull = cloud_sync.S3Store.pull.__get__(store)
+    store.objects[("sim2chip-cache", "hdri/polyhaven/sky_2k.hdr")] = b"sky"
+    monkeypatch.setattr(cloud_sync, "S3Store", lambda: store)
+    cache = tmp_path / "cache"
+    files = [cache / "hdri/polyhaven/sky_2k.hdr", cache / "hdri/polyhaven/new_2k.hdr"]
+    assert cloud_sync.from_cache_bucket(cache, files) == 0  # not in a cloud job
+    monkeypatch.setenv("S2C_CACHE_BUCKET", "sim2chip-cache")
+    assert cloud_sync.from_cache_bucket(cache, files) == 1  # the new sky is not there: its source downloads it
+    assert files[0].read_bytes() == b"sky" and not files[1].exists()
+    assert cloud_sync.from_cache_bucket(cache, files[:1]) == 0

@@ -102,6 +102,21 @@ class S3Store:
         return len(todo)
 
 
+def from_cache_bucket(cache: Path, files: list[Path]) -> int:
+    """In a cloud job (S2C_CACHE_BUCKET set): copies these cache files from the cache bucket, when it has them,
+    before the stage downloads them from their source. The bucket is in the job's region and much faster than
+    Hugging Face or Poly Haven, and the worker pushes every new cache file to it at the end of a run. Before the
+    stage runs the worker cannot know which files it will pick, so the stage asks. Elsewhere it does nothing."""
+    bucket = os.environ.get("S2C_CACHE_BUCKET")
+    root = cache.resolve()
+    keys = {f.resolve().relative_to(root).as_posix() for f in files if not f.exists()}
+    if not (bucket and keys):
+        return 0
+    prefix = os.path.commonpath(sorted(keys)) if len(keys) > 1 else next(iter(keys))
+    store = S3Store()
+    return store.pull(bucket, sorted(keys & set(store.listing(bucket, prefix))), root)
+
+
 def asset_uids(job: Path) -> set[str]:
     manifest = job / "fetch_assets" / "manifest.json"
     return {m["uid"] for m in json.loads(manifest.read_text())} if manifest.exists() else set()
