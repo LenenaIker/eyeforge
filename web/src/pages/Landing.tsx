@@ -176,13 +176,13 @@ function Why() {
   );
 }
 
-// Measured on Nebius with the account the web uses (2026-10-03/04): photos_timing (69 lawn photos, no
-// synthetic data, 7.4 min, $0.19) and sa-check (smoke_farm_animals for the ESP32-CAM, 1,500 renders, 16 min,
-// $0.41). Keep these real: measure again when the images or the pipeline change.
+// Measured on Nebius with the account the web uses (2026-10-04, worker kits): kits_photos_4 (69 lawn photos,
+// no synthetic data, 5.0 min, $0.13) and kits_synth (smoke_farm_animals for the ESP32-CAM, 1,500 renders,
+// 11.0 min, $0.28). Keep these real: measure again when the images or the pipeline change.
 function Proof() {
-  const stats = [["~8 min", "photos to model, with your photos only"],
-                 ["~16 min", "adding 1,500 synthetic images from Isaac Sim"],
-                 ["from $0.19", "of cloud GPU per run on Nebius AI Cloud"],
+  const stats = [["~5 min", "photos to model, with your photos only"],
+                 ["~11 min", "adding 1,500 synthetic images from Isaac Sim"],
+                 ["from $0.13", "of cloud GPU per run on Nebius AI Cloud"],
                  ["612 KB", "int8 model for a $10 ESP32-CAM, no network"]];
   return (
     <Section eyebrow="Measured, not promised" title="Two runs, start to finish">
