@@ -25,6 +25,7 @@ from pathlib import Path
 
 from . import spec as spec_mod
 from .backends.local import LocalBackend
+from .backends.nebius import KIT_TIMES
 from .cloud_sync import SHARED, S3Store, asset_cache_keys, wanted
 from .pipeline import Pipeline, StageFailed
 from .workspace import DONE, Cache, Job
@@ -94,6 +95,12 @@ def main() -> int:
     setup = os.environ.get("S2C_SETUP_S")
     if setup:  # code download and Python environment, measured by the job script
         job.timeline("cloud: set up environment", float(setup), "nebius")
+    kits = Path(KIT_TIMES)
+    for line in kits.read_text().splitlines() if kits.exists() else []:  # the Python kits, all at once
+        i, start, end, size = line.split()
+        seconds, mb = float(end) - float(start), int(size) / 1e6
+        job.timeline(f"cloud: kit {i} download and unpack", seconds, "nebius", mb=round(mb),
+                     mb_s=round(mb / max(seconds, 0.01)))
     job.timeline("cloud: pull job data", time.time() - t0, "nebius", files=n + m + g)
 
     def pull_asset_cache(stage, job: Job, cache: Cache) -> None:

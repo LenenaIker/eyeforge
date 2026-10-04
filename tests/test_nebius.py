@@ -347,10 +347,20 @@ def test_the_run_picks_the_light_image_unless_it_renders(monkeypatch):
     assert light.image == "cr.example/reg/eyeforge-light:abc" and isaac.image == "cr.example/reg/eyeforge-isaac:abc"
     assert isaac.env["ACCEPT_EULA"] == "Y" and not light.env
     script = nebius.worker_script("j", [], teacher=True, runtime=light)
-    # our images carry the Pythons: the script uses them, and installs only in the stock image
-    assert f"if [ -x {nebius.BAKED_PY} ]" in script and "SIM2CHIP_WEIGHTS_DIR=/tmp/s2c/weights" in script
-    assert "SIM2CHIP_ISAAC_PYTHON" not in script and script.count(nebius.BAKED_PY) >= 2
+    # with our images the Pythons are kits from the bucket: unpacked, nothing installed
+    assert "aria2c" in script and "uv pip install" not in script and "SIM2CHIP_WEIGHTS_DIR=/tmp/s2c/weights" in script
+    assert "SIM2CHIP_ISAAC_PYTHON" not in script and f"PY={nebius.KIT_PY}" in script
+    assert script.index("$S2C_ENVS") < script.index("$S2C_CODE_URL")  # the code is fetched with the kit's Python
     assert "SIM2CHIP_ISAAC_PYTHON=/isaac-sim/python.sh" in nebius.worker_script("j", [], runtime=isaac)
+    assert nebius.kit_keys(False) == ["envs/abc/pythons.tar.zst", "envs/abc/py.tar.zst"]
+    assert nebius.kit_keys(True)[-1] == "envs/abc/teacher.tar.zst"
+    store = ListingStore()
+    be = backend(store)
+    with pytest.raises(RuntimeError, match="images/build.sh kits"):
+        be._kit_urls("c", teacher=False)
+    for k in nebius.kit_keys(True):
+        store.objects[("c", k)] = b"kit"
+    assert len(be._kit_urls("c", teacher=False).split()) == 2
     monkeypatch.setattr(nebius, "IMAGE_TAG", None)  # no images of our own: the stock one for every run
     assert nebius.worker_runtime(False) == nebius.RUNTIMES["isaac"]
 

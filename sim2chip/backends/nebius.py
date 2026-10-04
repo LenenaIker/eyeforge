@@ -68,6 +68,7 @@ class Runtime:
     python: str
     setup: str = ""
     env: dict = field(default_factory=dict)
+    kits: bool = False  # the Pythons come as kits from the cache bucket (our own images)
 
 
 # One L40S preset for every stage: the eu-north1 quota has no CPU-only instances, and Isaac needs RT cores.
@@ -78,11 +79,15 @@ RUNTIMES = {
     "cpu": Runtime("tensorflow/tensorflow:2.18.0-gpu", "python3",
                    "pip install -q objaverse pillow numpy usd-core==26.8 trimesh==5.1.0"),
 }
-# The worker's own images (images/Dockerfile, pushed by images/build.sh): the Pythons are inside, so a run
-# installs nothing; without them every run uses NVIDIA's public Isaac Sim image and installs at start.
+# The worker's own images and Python kits (images/Dockerfile, published by images/build.sh): a run installs
+# nothing, it unpacks the kits from the cache bucket (envs/<tag>/), the teachers' only when it labels photos.
+# Without them every run uses NVIDIA's public Isaac Sim image and installs at start.
 REGISTRY = config.env("SIM2CHIP_NEBIUS_REGISTRY")  # cr.<region>.nebius.cloud/<registry id>
 IMAGE_TAG = config.env("SIM2CHIP_IMAGE_TAG")
-BAKED_PY, BAKED_TEACHER = "/opt/s2c/py/bin/python", "/opt/s2c/teacher/bin/python"
+ENVS_PREFIX, KITS = "envs", ("pythons", "py", "teacher")
+ENVS = "/tmp/s2c/envs"
+KIT_PY, KIT_TEACHER = f"{ENVS}/py/bin/python", f"{ENVS}/teacher/bin/python"
+KIT_TIMES = "/tmp/s2c/kit_times.txt"  # per streamed kit: index, start and end (epoch s), bytes
 TERMINAL = {"COMPLETED", "SUCCEEDED", "FAILED", "ERROR", "CANCELLED", "CANCELED", "STOPPED", "DELETED"}
 
 
@@ -201,18 +206,25 @@ def worker_runtime(isaac: bool) -> Runtime:
     if not (REGISTRY and IMAGE_TAG):
         return RUNTIMES["isaac"]
     if isaac:
-        return Runtime(f"{REGISTRY}/eyeforge-isaac:{IMAGE_TAG}", RUNTIMES["isaac"].python, env=RUNTIMES["isaac"].env)
-    return Runtime(f"{REGISTRY}/eyeforge-light:{IMAGE_TAG}", BAKED_PY)
+        return Runtime(f"{REGISTRY}/eyeforge-isaac:{IMAGE_TAG}", RUNTIMES["isaac"].python, env=RUNTIMES["isaac"].env,
+                       kits=True)
+    return Runtime(f"{REGISTRY}/eyeforge-light:{IMAGE_TAG}", KIT_PY, kits=True)
+
+
+def kit_keys(teacher: bool) -> list[str]:
+    """Cache bucket keys of the kits a run unpacks: the Python itself, the worker's, the teachers' if it labels."""
+    return [f"{ENVS_PREFIX}/{IMAGE_TAG}/{k}.tar.zst" for k in KITS if teacher or k != "teacher"]
 
 
 def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
                   runtime: Runtime = RUNTIMES["isaac"]) -> str:
-    """Shell script for the worker job: the code from a presigned URL, then the whole pipeline. In our own
-    images the Pythons are already there (TensorFlow, and torch for the teachers); in the stock Isaac Sim image
-    it makes them first with uv (a couple of minutes), the teachers' only when the run labels photos."""
+    """Shell script for the worker job: the Pythons (TensorFlow, and torch for the teachers only when the run
+    labels photos), the code from a presigned URL, then the whole pipeline. With our own images the Pythons are
+    kits unpacked from the presigned URLs in S2C_ENVS, all at once; in the stock Isaac Sim image it makes them
+    with uv (a couple of minutes)."""
     isaac = runtime.python == RUNTIMES["isaac"].python
     # A download can meet a passing 503 (2026-10-03, after the GPU was paid): retry before giving up.
-    fetch = (f"{runtime.python} -c 'import sys, time, urllib.request\n"
+    fetch = (f"{KIT_PY if runtime.kits else runtime.python} -c 'import sys, time, urllib.request\n"
              "for i in range(5):\n"
              "    try: urllib.request.urlretrieve(sys.argv[1], sys.argv[2]); break\n"
              "    except Exception as e:\n"
@@ -232,18 +244,44 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
                     "/tmp/s2c/bin/uv pip install -q --python /tmp/s2c/sam3/bin/python "
                     + " ".join(shlex.quote(d) for d in TEACHER_DEPS),
                     "TEACHER_PY=/tmp/s2c/sam3/bin/python"]
+    # The first kit is the bare Python (31 MB). The others stream from the bucket straight into zstd and tar, all
+    # at once: download and unpack overlap (on the node each takes about as long as the other, 2026-10-04).
+    stream = ("import sys, urllib.request\n"
+              "n = 0\n"
+              "with urllib.request.urlopen(sys.argv[1], timeout=60) as r:\n"
+              "    while b := r.read(1 << 20):\n"
+              "        sys.stdout.buffer.write(b); n += len(b)\n"
+              "open(sys.argv[2], \"w\").write(str(n))")
+    unpack = [
+        f"mkdir -p {ENVS}",
+        'read -ra urls <<< "$S2C_ENVS"',
+        "aria2c -q --max-tries 5 --retry-wait 5 -d /tmp/s2c -o kit0.tar.zst \"${urls[0]}\"",
+        f"zstd -dcq /tmp/s2c/kit0.tar.zst | tar xf - -C {ENVS}",
+        f"KIT_PYTHON=$(ls -d {ENVS}/pythons/cpython-3.11*/bin/python3 | head -1)",
+        "pids=()",
+        'for i in "${!urls[@]}"; do',
+        '  [ "$i" = 0 ] && continue',
+        "  ( start=$(date +%s.%N)",
+        "    for try in 1 2 3; do  # a broken stream starts over: tar overwrites what it had unpacked",
+        f'      "$KIT_PYTHON" -c {shlex.quote(stream)} "${{urls[$i]}}" /tmp/s2c/kit$i.bytes'
+        f" | zstd -T0 -dcq | tar xf - -C {ENVS} && break",
+        '      [ "$try" = 3 ] && exit 1',
+        "      echo \"kit $i: download failed, retrying\"; sleep 5",
+        "    done",
+        f'    echo "$i $start $(date +%s.%N) $(cat /tmp/s2c/kit$i.bytes)" >> {KIT_TIMES} ) &',
+        "  pids+=($!)",
+        "done",
+        'for p in "${pids[@]}"; do wait $p; done',
+        f"PY={KIT_PY} TEACHER_PY={KIT_TEACHER}",
+    ]
     lines = [
         "#!/bin/bash",
         "set -eo pipefail",
         "S2C_T0=$(date +%s)",
         "mkdir -p /tmp/s2c/code /tmp/s2c/bin /tmp/s2c/home",
+        *(unpack if runtime.kits else install),
         f'{fetch} "$S2C_CODE_URL" /tmp/s2c/code.tgz',
         "tar xzf /tmp/s2c/code.tgz -C /tmp/s2c/code",
-        f"if [ -x {BAKED_PY} ]; then  # our own image: nothing to install",
-        f"  PY={BAKED_PY} TEACHER_PY={BAKED_TEACHER}",
-        "else",
-        *("  " + line for line in install),
-        "fi",
         # The teachers' weights come from the cache bucket (teacher.weights), with no Hugging Face token.
         "export SIM2CHIP_SAM3_PYTHON=$TEACHER_PY HF_HUB_CACHE=/tmp/s2c/hf SIM2CHIP_WEIGHTS_DIR=/tmp/s2c/weights",
         "export PYTHONUNBUFFERED=1 SIM2CHIP_PYTHON=$PY PYTHONPATH=/tmp/s2c/code SIM2CHIP_RUNS_ON=nebius "
@@ -348,6 +386,16 @@ class NebiusBackend:
         base = f"{self.prefix}-{job.name}".lower().replace("_", "-")[:63 - len(suffix)]
         return base + suffix, f"{self.prefix}-cache"
 
+    def _kit_urls(self, cache_bucket: str, teacher: bool) -> str:
+        """Presigned URLs of the run's kits, checked before a GPU is paid for."""
+        keys = kit_keys(teacher)
+        if self.dry_run:
+            return " ".join(f"<presigned {k}>" for k in keys)
+        have = self.store.listing(cache_bucket, f"{ENVS_PREFIX}/{IMAGE_TAG}/")
+        if missing := [k for k in keys if k not in have]:
+            raise RuntimeError(f"kits missing in s3://{cache_bucket}: {missing}; run images/build.sh kits")
+        return " ".join(self.store.url(cache_bucket, k) for k in keys)
+
     def _upload_job(self, job: Job, cache: Cache, bucket: str, cache_bucket: str) -> str:
         """Buckets, code, spec and input (once per run). Returns the code's presigned URL."""
         if self.dry_run:
@@ -433,6 +481,8 @@ class NebiusBackend:
         secrets = self._secrets(any(st.calls_llm(pipe.spec) for st in todo))
         env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url,
                "SIM2CHIP_REGION": REGION}
+        if runtime.kits:
+            env["S2C_ENVS"] = self._kit_urls(cache_bucket, teacher)
         if os.environ.get("SIM2CHIP_LABEL_SAMPLE"):  # calibration: the teacher marks only a few photos
             env["SIM2CHIP_LABEL_SAMPLE"] = os.environ["SIM2CHIP_LABEL_SAMPLE"]
         name = f"s2c-{job.name}-run".lower().replace("_", "-")[:63]
