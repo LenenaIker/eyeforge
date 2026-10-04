@@ -370,13 +370,22 @@ def test_the_run_picks_the_light_image_unless_it_renders(monkeypatch):
     assert "SIM2CHIP_ISAAC_PYTHON=/isaac-sim/python.sh" in nebius.worker_script("j", [], runtime=isaac)
     assert nebius.kit_keys(False) == ["envs/abc/pythons.tar.zst", "envs/abc/py.tar.zst"]
     assert nebius.kit_keys(True)[-1] == "envs/abc/teacher.tar.zst"
+    assert nebius.kit_keys(False, picodet=True)[-1] == "envs/abc/picodet.tar.zst"
+    assert f"SIM2CHIP_PICODET_PYTHON={nebius.KIT_PICODET}" in script
     store = ListingStore()
     be = backend(store)
     with pytest.raises(RuntimeError, match="images/build.sh kits"):
         be._kit_urls("c", teacher=False)
-    for k in nebius.kit_keys(True):
+    for k in nebius.kit_keys(True, picodet=True):
         store.objects[("c", k)] = b"kit"
     assert len(be._kit_urls("c", teacher=False).split()) == 2
+    from sim2chip import spec as spec_mod
+    count = spec_mod.from_dict({"name": "p", "task": "count", "hardware": "generic", "classes": [
+        {"id": "pot", "description": "pots", "size_m": {"measure": "length", "range": [0.1, 0.4]}}]})
+    train, label = BY_NAME["train"], BY_NAME["label"]
+    assert nebius.trains_picodet(count, [label, train]) and not nebius.trains_picodet(count, [label])
+    count.hardware = "esp32cam"  # microcontrollers keep the grid head
+    assert not nebius.trains_picodet(count, [train])
     monkeypatch.setattr(nebius, "IMAGE_TAG", None)  # no images of our own: the stock one for every run
     assert nebius.worker_runtime(False) == nebius.RUNTIMES["isaac"]
 

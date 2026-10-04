@@ -50,10 +50,30 @@ USD_PER_HOUR = float(config.env("SIM2CHIP_USD_PER_HOUR", "1.55"))  # on-demand L
 WORKER_HOURS = int(config.env("SIM2CHIP_WORKER_HOURS", "3"))  # timeout of a whole run in one job
 UV_URL = "https://github.com/astral-sh/uv/releases/download/0.8.22/uv-x86_64-unknown-linux-gnu.tar.gz"
 WORKER_DEPS = ["tensorflow[and-cuda]==2.18.1", "numpy<2.1", "pillow", "objaverse", "boto3", "usd-core==26.8",
-               "trimesh==5.1.0"]  # the last two convert models (glb2usd)
+               "trimesh==5.1.0",  # these two convert models (glb2usd)
+               # PicoDet's ONNX to TFLite (detector.to_tflite): onnx2tf and what it imports
+               "onnx==1.17.0", "onnx_graphsurgeon==0.6.1", "sng4onnx==2.0.1", "tf_keras==2.18.0",
+               "onnxruntime==1.20.1", "ai-edge-litert==2.2.0", "psutil"]
+# Installed without their dependencies: onnx2tf pins its own (TensorFlow 2.19 among them), and works with ours.
+WORKER_NODEPS = ["onnx2tf==1.29.24"]
 # The teacher (SAM 3, label stage) gets its own environment: torch in the same one as TensorFlow, each with its
 # own CUDA libraries, is not worth the risk. Only installed when the run labels photos.
 TEACHER_DEPS = ["torch==2.11.0", "torchvision==0.26.0", "transformers==5.17.0", "accelerate", "pillow"]
+# PicoDet-S training (detector_worker.py, counting on profiles with room for a detector): PaddlePaddle, its own
+# CUDA libraries again, and what PaddleDetection 2.8.1 imports to train and export. Only fetched when the run
+# trains such a counter. paddlepaddle-gpu is not on PyPI: the wheel comes from Paddle's server, the rest from PyPI
+# (Paddle's index mirrors it too slowly from Europe, 2026-10-04).
+PICODET_DEPS = ["paddlepaddle-gpu @ https://paddle-whl.cdn.bcebos.com/stable/cu126/paddlepaddle-gpu/"
+                "paddlepaddle_gpu-3.0.0-cp311-cp311-linux_x86_64.whl", "paddle2onnx==2.1.0", "numpy==1.26.4",
+                "opencv-python-headless==4.5.5.64", "pycocotools", "scipy", "shapely", "terminaltables", "typeguard",
+                "Cython", "PyYAML", "tqdm", "lapx", "Pillow", "packaging", "setuptools<70", "requests", "pandas",
+                "scikit-learn", "scikit-image", "imageio", "matplotlib", "six",
+                # paddle2onnx folds constants with these; without them onnx2tf cannot convert its ONNX
+                "onnx==1.17.0", "polygraphy==0.53.6", "onnx_graphsurgeon==0.6.1", "onnxruntime==1.20.1",
+                "onnxoptimizer==0.3.13"]
+# imgaug wants opencv-python, which needs X libraries the images lack: the headless one above does instead.
+PICODET_NODEPS = ["imgaug==0.4.0"]
+PADDLEDET_REF = "release/2.8.1"
 # Brought back for the web (status, report, review) after a worker run; the rest stays in the bucket.
 WORKER_RESULTS = ("*.json", "export/*", "label/*", "ingest/test/*", "qa_assets/sheets/*", "preview_assets/*_0.png",
                   "generate_assets/*", "logs/*")
@@ -84,9 +104,10 @@ RUNTIMES = {
 # Without them every run uses NVIDIA's public Isaac Sim image and installs at start.
 REGISTRY = config.env("SIM2CHIP_NEBIUS_REGISTRY")  # cr.<region>.nebius.cloud/<registry id>
 IMAGE_TAG = config.env("SIM2CHIP_IMAGE_TAG")
-ENVS_PREFIX, KITS = "envs", ("pythons", "py", "teacher")
+ENVS_PREFIX, KITS = "envs", ("pythons", "py", "teacher", "picodet")
 ENVS = "/tmp/s2c/envs"
 KIT_PY, KIT_TEACHER = f"{ENVS}/py/bin/python", f"{ENVS}/teacher/bin/python"
+KIT_PICODET, KIT_PADDLEDET = f"{ENVS}/picodet/bin/python", f"{ENVS}/paddledet"  # the picodet kit holds both
 KIT_TIMES = "/tmp/s2c/kit_times.txt"  # per streamed kit: index, start and end (epoch s), bytes
 TERMINAL = {"COMPLETED", "SUCCEEDED", "FAILED", "ERROR", "CANCELLED", "CANCELED", "STOPPED", "DELETED"}
 
@@ -225,9 +246,18 @@ def worker_runtime(isaac: bool) -> Runtime:
     return Runtime(f"{REGISTRY}/eyeforge-light:{IMAGE_TAG}", KIT_PY, kits=True)
 
 
-def kit_keys(teacher: bool) -> list[str]:
-    """Cache bucket keys of the kits a run unpacks: the Python itself, the worker's, the teachers' if it labels."""
-    return [f"{ENVS_PREFIX}/{IMAGE_TAG}/{k}.tar.zst" for k in KITS if teacher or k != "teacher"]
+def kit_keys(teacher: bool, picodet: bool = False) -> list[str]:
+    """Cache bucket keys of the kits a run unpacks: the Python itself, the worker's, the teachers' if it labels,
+    PaddlePaddle's if it trains a PicoDet counter."""
+    used = {"pythons", "py"} | ({"teacher"} if teacher else set()) | ({"picodet"} if picodet else set())
+    return [f"{ENVS_PREFIX}/{IMAGE_TAG}/{k}.tar.zst" for k in KITS if k in used]
+
+
+def trains_picodet(spec, todo) -> bool:
+    """The run trains a counter with PicoDet (hardware profile counter), not the grid head."""
+    from .. import hardware
+    return spec.task == "count" and any(st.name == "train" for st in todo) and \
+        hardware.get(spec.hardware).counter == "picodet_s"
 
 
 def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
@@ -251,6 +281,7 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
         "export UV_CACHE_DIR=/tmp/s2c/uv-cache UV_PYTHON_INSTALL_DIR=/tmp/s2c/pythons",
         "/tmp/s2c/bin/uv venv -q --python 3.11 /tmp/s2c/py",
         f"/tmp/s2c/bin/uv pip install -q --python {py} " + " ".join(shlex.quote(d) for d in WORKER_DEPS),
+        f"/tmp/s2c/bin/uv pip install -q --no-deps --python {py} " + " ".join(shlex.quote(d) for d in WORKER_NODEPS),
         f"PY={py} TEACHER_PY=",
     ]
     if teacher:
@@ -287,6 +318,8 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
         "done",
         'for p in "${pids[@]}"; do wait $p; done',
         f"PY={KIT_PY} TEACHER_PY={KIT_TEACHER}",
+        # Without the picodet kit these paths do not exist and the train stage counts with the grid head.
+        f"export SIM2CHIP_PICODET_PYTHON={KIT_PICODET} SIM2CHIP_PADDLEDET={KIT_PADDLEDET}",
     ]
     lines = [
         "#!/bin/bash",
@@ -400,9 +433,9 @@ class NebiusBackend:
         base = f"{self.prefix}-{job.name}".lower().replace("_", "-")[:63 - len(suffix)]
         return base + suffix, f"{self.prefix}-cache"
 
-    def _kit_urls(self, cache_bucket: str, teacher: bool) -> str:
+    def _kit_urls(self, cache_bucket: str, teacher: bool, picodet: bool = False) -> str:
         """Presigned URLs of the run's kits, checked before a GPU is paid for."""
-        keys = kit_keys(teacher)
+        keys = kit_keys(teacher, picodet)
         if self.dry_run:
             return " ".join(f"<presigned {k}>" for k in keys)
         have = self.store.listing(cache_bucket, f"{ENVS_PREFIX}/{IMAGE_TAG}/")
@@ -498,7 +531,7 @@ class NebiusBackend:
         env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url,
                "SIM2CHIP_REGION": REGION}
         if runtime.kits:
-            env["S2C_ENVS"] = self._kit_urls(cache_bucket, teacher)
+            env["S2C_ENVS"] = self._kit_urls(cache_bucket, teacher, trains_picodet(pipe.spec, todo))
         if os.environ.get("SIM2CHIP_LABEL_SAMPLE"):  # calibration: the teacher marks only a few photos
             env["SIM2CHIP_LABEL_SAMPLE"] = os.environ["SIM2CHIP_LABEL_SAMPLE"]
         name = f"s2c-{job.name}-run".lower().replace("_", "-")[:63]
