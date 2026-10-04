@@ -20,8 +20,35 @@ from pathlib import Path
 # COCO-trained PicoDet-S 320 (PaddleDetection model zoo): the starting point, whatever the input size.
 BASE = "configs/picodet/picodet_s_320_coco_lcnet.yml"
 WEIGHTS = "https://paddledet.bj.bcebos.com/models/picodet_s_320_coco_lcnet.pdparams"
+# A copy inside the checkout, when there is one (the cloud kit brings it: the model zoo's server is slow from
+# Europe), named without the extension as PaddleDetection wants local weights.
+LOCAL_WEIGHTS = "weights/picodet_s_320_coco_lcnet"
 BATCH = 16
+# Steps per epoch at least this many, as on FSC-147 geese (109 photos, where it was measured): with 10 photos an
+# epoch was one step, 900 of them, and PaddleDetection starts its data loader workers anew every epoch (about
+# 1.6 s against milliseconds for the step): 25 min per seed with the GPU idle (2026-10-04). Small sets are listed
+# several times per epoch instead, each copy augmented on its own; the number of steps stays the same.
+MIN_STEPS_PER_EPOCH = 7
 MEAN, STD = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+# Photos are handed over at most this many times the input size on their long side. Phone photos are 12 MP: the
+# data loader decoded 16 of them per step to crop them to about 320 px, and the GPU waited (8 min per seed on 10
+# photos, 2026-10-04). Twice the input keeps the detail RandomCrop and the larger multi-scale sizes need.
+MAX_SIDE_X = 2
+
+
+def shrink(items: list[dict], size: int, folder: Path) -> list[dict]:
+    """Upright (EXIF applied, as the teacher saw them), downscaled copies of the photos, same boxes (0..1)."""
+    from PIL import Image, ImageOps
+    folder.mkdir(parents=True, exist_ok=True)
+    out = []
+    for i, it in enumerate(items):
+        dst = folder / f"{i:05d}.jpg"
+        with Image.open(it["path"]) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((MAX_SIDE_X * size, MAX_SIDE_X * size), Image.BILINEAR)
+            im.save(dst, quality=95)
+        out.append({**it, "path": str(dst)})
+    return out
 
 
 def coco(items: list[dict], classes: list[str], path: Path) -> None:
@@ -42,6 +69,8 @@ def config(req: dict, out: Path, epochs: int, batch: int) -> Path:
     """The model zoo config with this job's data, classes, size and schedule. The learning rate follows the
     batch (the zoo's 0.32 is for 4 GPUs of 64), and the NMS keeps up to 1000 objects (crowds)."""
     size, base = req["size"], str(Path(req["paddledet"]) / BASE)
+    local = Path(req["paddledet"]) / LOCAL_WEIGHTS
+    weights = local if local.with_suffix(".pdparams").exists() else WEIGHTS
     sizes = [s for s in range(size - 64, size + 65, 32) if s >= 96]
     norm = "{is_scale: true, mean: %s, std: %s}" % (MEAN, STD)
     data = lambda part: f"""  name: COCODataSet
@@ -50,7 +79,7 @@ def config(req: dict, out: Path, epochs: int, batch: int) -> Path:
   dataset_dir: /
 """  # noqa: E731
     text = f"""_BASE_: ['{base}']
-pretrain_weights: {WEIGHTS}
+pretrain_weights: {weights}
 num_classes: {len(req['classes'])}
 eval_height: {size}
 eval_width: {size}
@@ -124,19 +153,27 @@ def main():
     req = json.loads(sys.stdin.read())
     out, det, py = Path(req["out"]), req["paddledet"], sys.executable
     out.mkdir(parents=True, exist_ok=True)
-    coco(req["train"], req["classes"], out / "train.json")
+    req["train"] = shrink(req["train"], req["size"], out / "images" / "train")
+    req["val"] = shrink(req["val"], req["size"], out / "images" / "val")
+    n = len(req["train"])
+    repeat = 1 if math.ceil(n / BATCH) >= MIN_STEPS_PER_EPOCH else math.ceil(MIN_STEPS_PER_EPOCH * BATCH / n)
+    coco(req["train"] * repeat, req["classes"], out / "train.json")
     coco(req["val"], req["classes"], out / "val.json")
-    batch = max(1, min(BATCH, len(req["train"])))
-    epochs = max(10, math.ceil(req["steps"] / math.ceil(len(req["train"]) / batch)))
+    batch = max(1, min(BATCH, n * repeat))
+    epochs = max(10, math.ceil(req["steps"] / math.ceil(n * repeat / batch)))
     cfg = config(req, out, epochs, batch)
-    print(f"picodet on {len(req['train'])} train and {len(req['val'])} val photos, {epochs} epochs", flush=True)
-    run([py, "tools/train.py", "-c", str(cfg), "--eval", "-o", f"save_dir={out / 'run'}"], det, "train")
-    run([py, "tools/export_model.py", "-c", str(cfg), "--output_dir", str(out / "infer"), "-o",
-         f"weights={out / 'run' / 'best_model'}", "export.post_process=True", "export.nms=False"], det, "export")
+    print(f"picodet on {n} train" + (f" (each {repeat} times per epoch)" if repeat > 1 else "")
+          + f" and {len(req['val'])} val photos, {epochs} epochs", flush=True)
+    # Run from the job's folder: PaddleDetection writes files (bbox.json) where it runs, and the checkout may be
+    # read-only.
+    tools = Path(det) / "tools"
+    run([py, str(tools / "train.py"), "-c", str(cfg), "--eval", "-o", f"save_dir={out / 'run'}"], str(out), "train")
+    run([py, str(tools / "export_model.py"), "-c", str(cfg), "--output_dir", str(out / "infer"), "-o",
+         f"weights={out / 'run' / 'best_model'}", "export.post_process=True", "export.nms=False"], str(out), "export")
     infer = out / "infer" / cfg.stem
     paddle2onnx = Path(py).parent / "paddle2onnx"
     run([str(paddle2onnx), "--model_dir", str(infer), "--model_filename", "model.pdmodel", "--params_filename",
-         "model.pdiparams", "--opset_version", "13", "--save_file", str(out / "model.onnx")], det, "onnx")
+         "model.pdiparams", "--opset_version", "13", "--save_file", str(out / "model.onnx")], str(out), "onnx")
     print(f"picodet exported to {out / 'model.onnx'}", flush=True)
 
 

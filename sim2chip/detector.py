@@ -25,7 +25,8 @@ NMS_IOU = 0.6        # PicoDet's own: a box overlapping a better one of its clas
 MAX_OBJECTS = 1000   # per photo (FSC-147 crowds go to several hundred)
 THRESHOLDS = (0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.7)  # candidates; validation picks one
 PREFERRED = 0.4      # among thresholds that score the same, the closest to this (the best on FSC-147)
-STEPS = 900          # about how many training steps, whatever the number of photos (6 per epoch on 109 photos)
+STEPS = 900          # about how many training steps, whatever the number of photos (6 per epoch on 109 photos);
+                     # SIM2CHIP_PICODET_STEPS overrides it (to compare budgets on a dataset)
 DEFAULT_BOX = 0.1    # side of a point's box in 0..1 when no marked object in the job has a size
 MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 
@@ -74,7 +75,8 @@ def train(train_items: list[dict], val_items: list[dict], labels: list[str], siz
         raise DetectorError("counting with PicoDet needs SIM2CHIP_PICODET_PYTHON (PaddlePaddle) and "
                             "SIM2CHIP_PADDLEDET (a PaddleDetection checkout)")
     py, det = found
-    req = {"paddledet": det, "out": str(out), "size": size, "classes": labels[1:], "steps": STEPS,
+    req = {"paddledet": det, "out": str(out), "size": size, "classes": labels[1:],
+           "steps": int(os.environ.get("SIM2CHIP_PICODET_STEPS") or STEPS),
            "train": train_items, "val": val_items}
     repo = str(Path(__file__).resolve().parents[1])
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": repo}
