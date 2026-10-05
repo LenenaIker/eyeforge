@@ -16,6 +16,9 @@ The server and the GPU talk through the cache bucket, under warm/<id>/ (the job'
     done/<id>.json    GPU   {"code", "started", "ended"}
     cancel/<id>       server stop that task
 
+What users do with it, to tune KEEP_S and IDLE_S from data: logs/warm_events.jsonl in the server's home, "keep"
+when a user renews the keep-alive (photos uploaded, a calibration round) and "task" when a run sends it work,
+each with who (an interview session or a job; "job" links the two); gaps() reads it.
 Its cost is the job's whole life, idle time included: logs/warm_usage.jsonl in the server's home (record_end).
 A task's own records in its job's cloud_usage.jsonl say "warm": the usage panel shows them, the daily budget
 counts the GPU once.
@@ -30,8 +33,10 @@ from pathlib import Path
 from . import config
 
 PREFIX = "warm"
-IDLE_S = float(config.env("SIM2CHIP_WARM_IDLE_S", "300"))   # without tasks, past the keep-alive: stop
-KEEP_S = float(config.env("SIM2CHIP_WARM_KEEP_S", "600"))   # what an upload or a calibration round buys
+# Shorter than the start-up (about 4.4 min) on purpose, the user's call (2026-10-05): a user back within a few
+# minutes pays a visible start-up. docs/politica_gpu.md; logs/warm_events.jsonl measures how often (gaps()).
+IDLE_S = float(config.env("SIM2CHIP_WARM_IDLE_S", "120"))   # without tasks, past the keep-alive: stop
+KEEP_S = float(config.env("SIM2CHIP_WARM_KEEP_S", "300"))   # what an upload or a calibration round buys
 HOURS = int(config.env("SIM2CHIP_WARM_HOURS", "2"))         # the job's timeout, a cap on any forgotten GPU
 PARALLEL = 2      # tasks at once (two users); more queue
 POLL_S = 3        # how often the GPU and a waiting run look at the bucket
@@ -121,6 +126,40 @@ def task_state(store, bucket: str, wid: str, tid: str, worker_ended: bool, submi
     return "RUNNING" if started else "QUEUED"
 
 
+def events_file(home: Path) -> Path:
+    return home / "logs" / "warm_events.jsonl"
+
+
+def note(home: Path, event: str, who: str | None = None, **fields) -> None:
+    """One line of logs/warm_events.jsonl; never raises (telemetry)."""
+    try:
+        events_file(home).parent.mkdir(parents=True, exist_ok=True)
+        with open(events_file(home), "a") as f:
+            f.write(json.dumps({"t": round(time.time(), 1), "event": event, "who": who, **fields}) + "\n")
+    except OSError:
+        pass
+
+
+def gaps(home: Path) -> dict:
+    """From logs/warm_events.jsonl: per user (a session and the job it became count as one), the seconds from each
+    keep-alive renewal to their next task ("gaps"; the keep-alive should cover most of them), and the renewals no
+    task followed ("abandoned": each cost the GPU a keep-alive for nothing)."""
+    try:
+        lines = events_file(home).read_text().splitlines()
+    except OSError:
+        return {"gaps": [], "abandoned": 0}
+    events = [json.loads(x) for x in lines if x.strip()]
+    owner = {e["session"]: e["who"] for e in events if e["event"] == "job" and e.get("session")}
+    pending, out = {}, []
+    for e in events:
+        who = owner.get(e.get("who"), e.get("who"))
+        if e["event"] == "keep":
+            pending[who] = e["t"]  # the keep-alive counts from the latest renewal
+        elif e["event"] == "task" and who in pending:
+            out.append(round(e["t"] - pending.pop(who), 1))
+    return {"gaps": out, "abandoned": len(pending)}
+
+
 def usage_file(home: Path) -> Path:
     return home / "logs" / "warm_usage.jsonl"
 
@@ -176,8 +215,9 @@ class WarmGPU:
             return None
         return w
 
-    def start(self, reason: str = "") -> None:
+    def start(self, reason: str = "", who: str | None = None) -> None:
         """Ask for the GPU unless one is up (in the background: the caller never waits for Nebius)."""
+        note(self.home, "keep", who, why=reason)
         threading.Thread(target=self._start, args=(reason,), daemon=True).start()
 
     def _start(self, reason: str) -> None:
@@ -196,8 +236,9 @@ class WarmGPU:
                 self.log(f"warm GPU: could not start it: {e}")
         self.watch()
 
-    def touch(self, seconds: float = KEEP_S) -> None:
+    def touch(self, seconds: float = KEEP_S, who: str | None = None) -> None:
         """The user is still around (a calibration round to check): keep the GPU that long."""
+        note(self.home, "keep", who, why="touch")
         def go():
             try:
                 w = current(self.home)

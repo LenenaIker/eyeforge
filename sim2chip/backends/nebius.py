@@ -683,6 +683,7 @@ class NebiusBackend:
             if st != "QUEUED" and started[0] is None and st != "LOST":
                 started[0] = time.time()
             return st
+        warm.note(job.root.parents[1], "task", job.name, kind=task.get("kind"))
         warm.submit(self.store, cache_bucket, w["wid"], task)
         state = follow(state_of)
         if state == "LOST" and started[0] is None:

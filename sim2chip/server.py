@@ -25,7 +25,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
-from . import config, review, usage
+from . import config, review, usage, warm as warm_mod
 from .accounts import INTERVIEW_COST, RUN_COST
 from . import spec as spec_mod
 from .pipeline import Pipeline
@@ -244,7 +244,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 here() if teacher.available() or backend != "nebius" or answers_here() else cloud()
                 state.write_text(json.dumps({"state": "ready"}))
                 if warm is not None:
-                    warm.touch()  # the user checks the photos now: keep the GPU for the next round or the run
+                    warm.touch(who=job.name)  # the user checks the photos now: keep the GPU for the next round or the run
                     prefetch(job)
             except Exception as e:  # shown on the job page, with the option to train anyway
                 state.write_text(json.dumps({"state": "failed", "error": str(e)[:300]}))
@@ -280,7 +280,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 prefetching.discard(job.name)
         threading.Thread(target=go, daemon=True).start()
 
-    def warm_up(reason: str) -> None:
+    def warm_up(reason: str, who: str | None = None) -> None:
         """Ask for the warm GPU, unless today's budget could not pay for it."""
         if warm is None:
             return
@@ -288,7 +288,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             budget_left()
         except HTTPException:
             return
-        warm.start(reason)
+        warm.start(reason, who)
 
     def interview_usage(sid: str) -> Path:
         return home / "logs" / "interviews" / f"{sid}.usage.jsonl"
@@ -501,7 +501,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if not n and not total:
             raise HTTPException(400, "no images among the files")
         if purpose == "training":  # the GPU starts while the interview goes on
-            warm_up("photos uploaded")
+            warm_up("photos uploaded", f"session:{sid}")
         if more:
             return {"stored": n}
         n = max(n, total)
@@ -575,9 +575,11 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         save_photos(job.input / "photos", images)
         credit_interview(job, session)
+        if session:
+            warm_mod.note(home, "job", name, session=f"session:{session}")
         if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled:
             pay(request, RUN_COST, "run", name)  # the teacher's check is the start of the paid run
-            warm_up("calibration")
+            warm_up("calibration", name)
             calibrate(job)
             return {"job": name, "photos": len(images), "calibrating": True}
         start_run(job, req, payer=request)
@@ -627,7 +629,6 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             proc.terminate()
         cj = cloud_job(job)
         if cj and cj.get("warm"):  # a task of the shared warm GPU: stop the task, not the GPU
-            from . import warm as warm_mod
             from .backends.nebius import NebiusBackend
             be = NebiusBackend()
             warm_mod.cancel(be.store, f"{be.prefix}-cache", cj["warm"], cj["task"])
@@ -1029,7 +1030,6 @@ def serve(home: Path, backend: str, host: str, port: int, max_usd: float | None,
     # Token Factory's prices for the usage panel, in the background: the server starts without waiting.
     threading.Thread(target=usage.refresh_prices, args=(home / "cache",), daemon=True).start()
     accounts = Accounts(home / ACCOUNTS_DB, judge_until) if auth is not None else None
-    from . import warm as warm_mod
     gpu = warm_mod.WarmGPU(home) if backend == "nebius" and warm_mod.enabled() else None
     if gpu is not None and warm_mod.current(home):  # one left by the previous server process: note its end
         gpu.watch()

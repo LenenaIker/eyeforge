@@ -503,10 +503,10 @@ def test_photos_in_the_interview_warm_up_a_gpu_and_rounds_with_answers_skip_it(t
         def __init__(self):
             self.calls = []
 
-        def start(self, reason=""):
+        def start(self, reason="", who=None):
             self.calls.append(("start", reason))
 
-        def touch(self, seconds=0):
+        def touch(self, seconds=0, who=None):
             self.calls.append(("touch",))
 
     gpu = Warm()

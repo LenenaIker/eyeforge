@@ -269,3 +269,15 @@ def test_the_daily_budget_counts_the_warm_gpu_once(tmp_path):
     warm.usage_file(tmp_path).parent.mkdir(parents=True, exist_ok=True)
     warm.usage_file(tmp_path).write_text(json.dumps({"t": now, "usd_estimate": 1.0}) + "\n")
     assert cloud_spent(tmp_path) == pytest.approx(1.5)
+
+
+def test_gaps_follow_a_user_from_session_to_job(tmp_path, monkeypatch):
+    clock = iter([100.0, 160.0, 170.0, 400.0, 500.0, 900.0])
+    monkeypatch.setattr(warm.time, "time", lambda: next(clock))
+    warm.note(tmp_path, "keep", "session:a", why="photos uploaded")
+    warm.note(tmp_path, "keep", "session:a", why="photos uploaded")  # a second batch: counts from here
+    warm.note(tmp_path, "job", "table", session="session:a")
+    warm.note(tmp_path, "task", "table", kind="label")
+    warm.note(tmp_path, "keep", "session:b", why="photos uploaded")  # never trains
+    warm.note(tmp_path, "keep", "table", why="touch")
+    assert warm.gaps(tmp_path) == {"gaps": [240.0], "abandoned": 2}
