@@ -98,7 +98,7 @@ function Esp32Cam() {
        className="group relative whitespace-nowrap underline decoration-dotted underline-offset-2 hover:text-ink">
       ESP32-CAM
       <span className="pointer-events-none absolute top-full left-1/2 z-10 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-ink px-2 py-1 text-xs text-white opacity-0 shadow transition-opacity group-hover:opacity-100">
-        About $10, camera included
+        About $6
       </span>
     </a>
   );
