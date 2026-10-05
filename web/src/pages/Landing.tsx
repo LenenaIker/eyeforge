@@ -69,23 +69,38 @@ function Hero() {
 // no synthetic data, 5.0 min, $0.13) and kits_synth (smoke_farm_animals for the ESP32-CAM, 1,500 renders,
 // 11.0 min, $0.28). Keep these real: measure again when the images or the pipeline change.
 function Proof() {
-  const stats = [["~5 min", "photos to model, with your photos only"],
+  const stats: [string, ReactNode][] = [["~5 min", "photos to model, with your photos only"],
                  ["~11 min", "adding 1,500 synthetic images from Isaac Sim"],
                  ["from $0.13", "of cloud GPU per run on Nebius AI Cloud"],
-                 ["612 KB", "int8 model for a $10 ESP32-CAM, no network"]];
+                 ["612 KB", <>int8 model for an <Esp32Cam />, no network</>]];
   return (
     <div className="relative mx-auto w-full max-w-md">
       <div className="absolute -inset-6 -z-10 rounded-[32px] bg-gradient-to-br from-brand-100 via-white to-ember-100 blur-2xl" />
       <p className="mb-3 text-sm font-semibold text-brand-600">Measured, not promised: two runs, start to finish</p>
       <div className="grid grid-cols-2 gap-3">
         {stats.map(([v, l]) => (
-          <Card key={l} className="p-5 shadow-lg">
+          <Card key={v} className="p-5 shadow-lg">
             <p className="text-2xl font-bold tracking-tight sm:text-3xl">{v}</p>
             <p className="mt-1 text-sm text-muted">{l}</p>
           </Card>
         ))}
       </div>
     </div>
+  );
+}
+
+// The board's name: its price on hover (stated here, not in the text, where a price reads like a promise), and
+// a click opens a shop that sells it.
+const ESP32_CAM_SHOP = "https://www.aliexpress.com/w/wholesale-esp32-cam.html";
+function Esp32Cam() {
+  return (
+    <a href={ESP32_CAM_SHOP} target="_blank" rel="noopener noreferrer"
+       className="group relative whitespace-nowrap underline decoration-dotted underline-offset-2 hover:text-ink">
+      ESP32-CAM
+      <span className="pointer-events-none absolute top-full left-1/2 z-10 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-ink px-2 py-1 text-xs text-white opacity-0 shadow transition-opacity group-hover:opacity-100">
+        About $10, camera included
+      </span>
+    </a>
   );
 }
 
