@@ -42,7 +42,7 @@ export default function Landing() {
 
 function Hero() {
   return (
-    <section className="mx-auto grid max-w-6xl items-center gap-12 px-4 pt-6 pb-20 sm:px-6 lg:grid-cols-2 lg:pt-8">
+    <section className="mx-auto grid max-w-6xl items-start gap-12 px-4 pt-6 pb-20 sm:px-6 lg:grid-cols-2 lg:pt-8">
       <div>
         <Badge tone="brand" className="mb-5"><Sparkles className="h-3.5 w-3.5" /> On-device vision, no cloud needed</Badge>
         <h1 className="text-4xl font-bold tracking-tight text-balance sm:text-5xl lg:text-6xl">
