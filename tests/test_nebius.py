@@ -274,6 +274,39 @@ def test_upload_follows_symlinked_input_folders(tmp_path):
     assert s.upload_dir("b", tmp_path / "input", "input") == 1 and s.keys == ["input/maceta/a.jpg"]
 
 
+
+def test_upload_dir_sends_files_rewritten_at_the_same_size(tmp_path):
+    """A stage that rewrites a file at the size the bucket has (labels with a mark moved) still sends it."""
+    import time
+
+    from sim2chip.cloud_sync import S3Store
+
+    class Store(S3Store):
+        def __init__(self):
+            self.keys = []
+            outer = self
+
+            class S3:
+                def upload_file(self, f, bucket, key):
+                    outer.keys.append(key)
+            self.s3 = S3()
+
+        def listing(self, bucket, prefix=""):
+            return {"label/verdicts.json": 4, "ingest/old.json": 4}
+
+    (tmp_path / "label").mkdir()
+    (tmp_path / "ingest").mkdir()
+    import os
+    (tmp_path / "ingest" / "old.json").write_text("same")
+    (tmp_path / "label" / "verdicts.json").write_text("new!")
+    since = time.time()
+    os.utime(tmp_path / "ingest" / "old.json", (since - 60, since - 60))  # pulled before the run
+    os.utime(tmp_path / "label" / "verdicts.json", (since + 1, since + 1))  # written by a stage
+    s = Store()
+    assert s.upload_dir("b", tmp_path, "") == 0
+    assert s.upload_dir("b", tmp_path, "", written_since=since) == 1 and s.keys == ["label/verdicts.json"]
+
+
 def test_timeline_breakdown(tmp_path):
     j = Job(tmp_path / "j")
     j.timeline("render", 300, "nebius")
@@ -353,6 +386,13 @@ def test_new_jobs_get_their_own_bucket_and_stale_input_is_removed(tmp_path):
     assert ("sim2chip-j", "input/photos/someone_else.jpg") not in store.objects
     assert ("sim2chip-j", "input/photos/a.jpg") in store.objects
     assert ("sim2chip-j", "input/linked/b.jpg") in store.objects  # a linked folder is not pruned
+    # A later run of the same job (same server process): the corrections go again, even at the same size.
+    (j.input / "corrections.json").write_text('{"points": {"a.jpg": [[0.1, 0.2, "x"]]}}')
+    backend_ = backend(store)
+    backend_._upload_job(j, Cache(tmp_path / "cache"), "sim2chip-j", "sim2chip-cache")
+    (j.input / "corrections.json").write_text('{"points": {"a.jpg": [[0.3, 0.4, "x"]]}}')
+    backend_._upload_job(j, Cache(tmp_path / "cache"), "sim2chip-j", "sim2chip-cache")
+    assert b"0.3" in store.objects[("sim2chip-j", "input/corrections.json")]
 
 
 def test_follow_brings_done_markers_back_while_the_job_runs(tmp_path):

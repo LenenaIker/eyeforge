@@ -84,8 +84,10 @@ class S3Store:
             self.s3.download_file(bucket, key, str(out))
         return len(keys)
 
-    def upload_dir(self, bucket: str, src: Path, prefix: str, changed_only: bool = True) -> int:
-        """Uploads files (symlinks followed); with changed_only, only those missing or of another size."""
+    def upload_dir(self, bucket: str, src: Path, prefix: str, changed_only: bool = True,
+                   written_since: float | None = None) -> int:
+        """Uploads files (symlinks followed); with changed_only, only those missing or of another size, or
+        written since `written_since` (a stage may rewrite a file at the same size: labels with a mark moved)."""
         if not src.exists():
             return 0
         have = self.listing(bucket, prefix + "/" if prefix else "") if changed_only else {}
@@ -95,7 +97,8 @@ class S3Store:
         for f in files:
             if f.is_file():
                 key = f"{prefix}/{f.relative_to(src).as_posix()}" if prefix else f.relative_to(src).as_posix()
-                if have.get(key) != f.stat().st_size:
+                st = f.stat()
+                if have.get(key) != st.st_size or (written_since is not None and st.st_mtime >= written_since):
                     todo.append((f, key))
         with ThreadPoolExecutor(16) as pool:
             list(pool.map(lambda fk: self.s3.upload_file(str(fk[0]), bucket, fk[1]), todo))

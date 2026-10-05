@@ -516,6 +516,10 @@ class NebiusBackend:
                     self.store.delete(bucket, key)
             self.store.upload_dir(cache_bucket, cache.db, "db")  # share what this machine learned about assets
             self._ready.add(bucket)
+        # The user's corrections change between runs of one job (calibration rounds, fixes after training),
+        # often at the same size (a mark moved): sent every run, or the worker labels with old ones.
+        for f in sorted(job.input.glob("*.json")) if job.input.exists() else []:
+            self.store.put(bucket, f"input/{f.name}", f.read_bytes())
         self.store.put(bucket, "spec.json", spec_json.encode() if spec_json is not None else job.spec_path.read_bytes())
         return self.store.url(bucket, "_code/sim2chip.tar.gz")
 

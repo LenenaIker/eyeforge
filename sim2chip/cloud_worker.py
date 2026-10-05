@@ -107,6 +107,7 @@ def main() -> int:
         job.timeline(f"cloud: kit {i} download and unpack", seconds, "nebius", mb=round(mb),
                      mb_s=round(mb / max(seconds, 0.01)))
     job.timeline("cloud: pull job data", time.time() - t0, "nebius", files=n + m + g)
+    pulled = time.time()  # what the stages write from here on goes back, even at the size it had
 
     def pull_asset_cache(stage, job: Job, cache: Cache) -> None:
         if not stage.uses_cache:
@@ -146,7 +147,7 @@ def main() -> int:
     if os.environ.get("SIM2CHIP_ISAAC_PYTHON"):
         m += sum(store.upload_dir(cache_bucket, gpu_cache(local), prefix) for prefix, local in GPU_CACHES.items())
     job.timeline("cloud: push cache", time.time() - t0, "nebius", files=m)
-    n = store.upload_dir(job_bucket, job.root, "")
+    n = store.upload_dir(job_bucket, job.root, "", written_since=pulled)
     sync_progress(store, job_bucket, job.root)
     say(f"worker: pushed {n} job files and {m} cache files, exit {code}")
     return code
