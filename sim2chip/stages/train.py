@@ -38,7 +38,7 @@ DATA_FILE = "_train_set.pkl"  # the training arrays, handed to the seed processe
 
 class Train(Stage):
     name = "train"
-    version = "9"  # 3: blur from the hardware profile; 4: turns and tilts, last layer only with few photos; 5: same for count; 6: one steady count threshold; 7: count density output; 8: EfficientNetV2-B0 on generic; 9: PicoDet-S for count on generic
+    version = "10"  # 3: blur from the hardware profile; 4: turns and tilts, last layer only with few photos; 5: same for count; 6: one steady count threshold; 7: count density output; 8: EfficientNetV2-B0 on generic; 9: PicoDet-S for count on generic; 10: PicoDet 600 steps in long epochs, seeds in parallel
     runtime = "tf"
     gpu = "any"
     max_hours = 2
@@ -98,12 +98,8 @@ class Train(Stage):
         """Count with the profile's detector: one fine-tune per seed, each scored on the held out real photos."""
         import random
 
-        import tensorflow as tf
+        from .. import detector
 
-        from .. import counting, detector
-
-        # TensorFlow only converts and runs TFLite here, on the CPU: the GPU memory stays for PaddlePaddle.
-        tf.config.set_visible_devices([], "GPU")
         labels, size = ctx.spec.labels, ctx.hardware.count_input()
         real, synth = [], []
         table = ctx.job.stage_dir("ingest") / "train" / "points.json"
@@ -124,28 +120,19 @@ class Train(Stage):
         items = lambda pairs: [{"path": str(f), "boxes": detector.boxes_of(p, labels, side)} for f, p in pairs]  # noqa: E731
         ctx.log(f"PicoDet-S at {size} px: {len(real) - held} real and {len(synth)} synthetic images to train, "
                 f"{len(val)} real to validate, {sum(len(p) for _, p in fit)} objects")
-        xv = detector.load([f for f, _ in val], size)
-        truth = [[tuple(q) for q in p] for _, p in val]
-        grid = counting.grid_size(size)
-        summary = {}
-        for seed in ctx.spec.training.seeds:
-            d = out / f"seed_{seed}"
-            work = d / "picodet"
-            onnx_file = detector.train(items(fit), items(val), labels, size, work, ctx.log)
-            blob = detector.to_tflite(onnx_file, size)
-            shutil.rmtree(work)  # checkpoints: about 150 MB a seed
-            (d / "model.tflite").write_bytes(blob)
-            raw = detector.predict(blob, xv)
-            curve = {t: counting.score([detector.decode(o, labels, t) for o in raw], truth, grid)
-                     for t in detector.THRESHOLDS}
-            th = detector.pick_threshold({t: v["f1"] for t, v in curve.items()})
-            hist = {"threshold": th, "val_count": curve[th], "val_curve": {str(t): v for t, v in curve.items()}}
-            (d / "history.json").write_text(json.dumps(hist))
-            summary[seed] = {"val_f1": curve[th]["f1"], "val_count_mae": curve[th]["count_mae"], "threshold": th,
-                             "recipe": "picodet_s", "counter": "picodet_s", "input": size,
-                             "kb": round(len(blob) / 1024, 1)}
-            ctx.log(f"seed {seed}: val F1 {curve[th]['f1']} at threshold {th}, count error "
-                    f"{curve[th]['count_mae']} per image, {summary[seed]['kb']} KB")
+        args = {"fit": items(fit), "val": items(val), "val_photos": [str(f) for f, _ in val],
+                "truth": [[tuple(q) for q in p] for _, p in val], "labels": labels, "size": size, "out": str(out)}
+        seeds = ctx.spec.training.seeds
+        workers = min(len(seeds), PARALLEL_SEEDS)
+        if workers <= 1:
+            results = [_detector_seed(args, seed) for seed in seeds]
+        else:
+            ctx.log(f"training {len(seeds)} seeds, {workers} at a time on the same GPU")
+            # Each seed in its own process, its TFLite conversion too: three onnx2tf in threads of one process
+            # took as long as three in a row (2026-10-05). spawn, not fork: TensorFlow may be imported here.
+            with ProcessPoolExecutor(workers, mp_context=get_context("spawn")) as pool:
+                results = list(pool.map(_detector_seed, [args] * len(seeds), seeds))
+        summary = dict(zip(seeds, results))
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
         return {"seeds": summary}
 
@@ -221,6 +208,35 @@ def common_threshold(ctx: Context, summary: dict) -> None:
     ctx.log(f"threshold {th} for every seed (cross-validated F1 by threshold, mean of the seeds: "
             + ", ".join(f"{t} {v:.2f}" for t, v in mean.items()) + ")")
 
+
+def _detector_seed(args: dict, seed: int) -> dict:
+    """One PicoDet fine-tune (in its own Python), its TFLite and its threshold on the held out photos."""
+    import tensorflow as tf
+
+    from .. import counting, detector
+
+    # TensorFlow only converts and runs TFLite here, on the CPU: the GPU memory stays for PaddlePaddle.
+    tf.config.set_visible_devices([], "GPU")
+    labels, size = args["labels"], args["size"]
+    d = Path(args["out"]) / f"seed_{seed}"
+    work = d / "picodet"
+    log = lambda msg: Context.log(f"seed {seed}: {msg.strip()}")  # noqa: E731
+    onnx_file = detector.train(args["fit"], args["val"], labels, size, work, log)
+    blob = detector.to_tflite(onnx_file, size)
+    shutil.rmtree(work)  # checkpoints: about 150 MB a seed
+    (d / "model.tflite").write_bytes(blob)
+    raw = detector.predict(blob, detector.load([Path(p) for p in args["val_photos"]], size))
+    grid = counting.grid_size(size)
+    curve = {t: counting.score([detector.decode(o, labels, t) for o in raw], args["truth"], grid)
+             for t in detector.THRESHOLDS}
+    th = detector.pick_threshold({t: v["f1"] for t, v in curve.items()})
+    hist = {"threshold": th, "val_count": curve[th], "val_curve": {str(t): v for t, v in curve.items()}}
+    (d / "history.json").write_text(json.dumps(hist))
+    info = {"val_f1": curve[th]["f1"], "val_count_mae": curve[th]["count_mae"], "threshold": th,
+            "recipe": "picodet_s", "counter": "picodet_s", "input": size, "kb": round(len(blob) / 1024, 1)}
+    Context.log(f"seed {seed}: val F1 {curve[th]['f1']} at threshold {th}, count error "
+                f"{curve[th]['count_mae']} per image, {info['kb']} KB")
+    return info
 
 def _share_gpu() -> None:
     """Start of every seed process: take GPU memory as needed, else the first process takes all of it."""

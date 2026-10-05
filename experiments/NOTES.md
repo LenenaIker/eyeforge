@@ -271,3 +271,14 @@ Pregunta: qué modelo grande etiqueta mejor "el camino va a la izquierda, recto 
 - Los VLMs de Token Factory adivinan por el contexto cuando el camino no se ve, por eso ganan en senderos. Qwen3.8-27B es el mejor en los dos; GLM-5.3-Flash da casi lo mismo 12 veces más barato (0,22 $ por 1.000 fotos frente a 2,63).
 - Parte del error es de las etiquetas: el volante dice lo que hizo el conductor (girar en un cruce sin curva visible) y no siempre dónde va la carretera.
 - Descartados: InternVLA-N1 (CC BY-NC-SA, entrenado en interiores simulados, necesita su propio código de navegación).
+
+## Velocidad de entrenamiento de PicoDet-S (2026-10-05)
+
+`experiments/picodet_speed.py` (resultados en `runs/bench/picodet_speed.jsonl`), RTX 3090. Casos: gansos `geese_C` (109 train, 27 val, 80 test con verdad FSC-147) y la mesa `table_count_s300` (10 train, 3 val, 12 test: ruidoso, F1 se mueve 5 puntos entre ejecuciones iguales).
+
+- Desglose de una semilla (900 pasos, épocas de 7 pasos, mesa): entrenar 116 s, export Paddle + ONNX 5 s, TFLite 19 s. Con épocas de al menos 50 pasos entrenar baja a 58 s con los mismos pasos: PaddleDetection reinicia los procesos del cargador en cada época y con épocas de 7 pasos la mitad del tiempo era eso.
+- 3 semillas, épocas de 50: en serie 256 s, en paralelo 157 s. Con `taskset` a 8 núcleos (como la L40S de Nebius) 162 s: en local la CPU ya no limita. Convertir a TFLite en hilos de un mismo proceso no gana nada (58 s cada una a la vez, igual que en serie): va en procesos aparte.
+- Pasos en gansos (3 semillas, F1 test): 900 0.713, 600 0.714, 300 0.696, 200 0.686. Elegido 600.
+- Resultado en el pipeline (`table_count_fast`, `--from train`): etapa train 92 s para 3 semillas, antes unos 430 s. F1 test de la mesa 0.551 +/- 0.017, dentro del ruido de sus 12 fotos (900 pasos: 0.575-0.638); la precisión es baja en todas las variantes (0.38-0.50), no es cosa del cambio.
+- Pasos por época (600 pasos, gansos, 3 semillas, F1 test medio): 50 (11 épocas) 0.714, 100 (6) 0.719, 200 (3) 0.705; entrenar 80 / 74 / 69 s en paralelo. Diferencias del tamaño de la dispersión entre semillas. Elegido 100 con un mínimo de 3 épocas (el mínimo de 10 inflaba los pasos con épocas largas).
+- Pendiente: medirlo en la GPU caliente de Nebius (antes 675 s).

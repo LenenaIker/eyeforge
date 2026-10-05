@@ -25,8 +25,9 @@ NMS_IOU = 0.6        # PicoDet's own: a box overlapping a better one of its clas
 MAX_OBJECTS = 1000   # per photo (FSC-147 crowds go to several hundred)
 THRESHOLDS = (0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.7)  # candidates; validation picks one
 PREFERRED = 0.4      # among thresholds that score the same, the closest to this (the best on FSC-147)
-STEPS = 900          # about how many training steps, whatever the number of photos (6 per epoch on 109 photos);
-                     # SIM2CHIP_PICODET_STEPS overrides it (to compare budgets on a dataset)
+STEPS = 600          # about how many training steps, whatever the number of photos. On FSC-147 geese (2026-10-05,
+                     # 3 seeds, test F1): 900 0.713, 600 0.714, 300 0.696, 200 0.686. SIM2CHIP_PICODET_STEPS
+                     # overrides it (to compare budgets on a dataset)
 DEFAULT_BOX = 0.1    # side of a point's box in 0..1 when no marked object in the job has a size
 MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 

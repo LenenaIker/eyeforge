@@ -24,11 +24,14 @@ WEIGHTS = "https://paddledet.bj.bcebos.com/models/picodet_s_320_coco_lcnet.pdpar
 # Europe), named without the extension as PaddleDetection wants local weights.
 LOCAL_WEIGHTS = "weights/picodet_s_320_coco_lcnet"
 BATCH = 16
-# Steps per epoch at least this many, as on FSC-147 geese (109 photos, where it was measured): with 10 photos an
-# epoch was one step, 900 of them, and PaddleDetection starts its data loader workers anew every epoch (about
-# 1.6 s against milliseconds for the step): 25 min per seed with the GPU idle (2026-10-04). Small sets are listed
-# several times per epoch instead, each copy augmented on its own; the number of steps stays the same.
-MIN_STEPS_PER_EPOCH = 7
+# Steps per epoch at least this many: PaddleDetection starts its data loader workers anew every epoch (about
+# 1.6 s against milliseconds for the step). With 10 photos an epoch was one step, 900 of them: 25 min per seed with
+# the GPU idle (2026-10-04). Small sets are listed several times per epoch instead, each copy augmented on its own;
+# the number of steps stays the same. 7 still spent half the training restarting workers. On FSC-147 geese, 600
+# steps, 3 seeds (2026-10-05): 50 per epoch F1 0.714, 100 0.719, 200 0.705 (3 checkpoints only), each a few
+# seconds faster than the one before.
+MIN_STEPS_PER_EPOCH = 100
+MIN_EPOCHS = 3  # at least this many epochs (and as many checkpoints to pick the best from), whatever the steps
 MEAN, STD = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
 # Photos are handed over at most this many times the input size on their long side. Phone photos are 12 MP: the
 # data loader decoded 16 of them per step to crop them to about 320 px, and the GPU waited (8 min per seed on 10
@@ -160,7 +163,7 @@ def main():
     coco(req["train"] * repeat, req["classes"], out / "train.json")
     coco(req["val"], req["classes"], out / "val.json")
     batch = max(1, min(BATCH, n * repeat))
-    epochs = max(10, math.ceil(req["steps"] / math.ceil(n * repeat / batch)))
+    epochs = max(MIN_EPOCHS, math.ceil(req["steps"] / math.ceil(n * repeat / batch)))
     cfg = config(req, out, epochs, batch)
     print(f"picodet on {n} train" + (f" (each {repeat} times per epoch)" if repeat > 1 else "")
           + f" and {len(req['val'])} val photos, {epochs} epochs", flush=True)
