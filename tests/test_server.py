@@ -459,6 +459,10 @@ def test_calibrate_the_teacher_before_the_first_run(app, tmp_path, monkeypatch):
     assert app.launched and app.launched[-1][3] is None
     assert app.get(f"/api/jobs/{r['job']}").json()["calibration"] is None
     assert app.post(f"/api/jobs/{r['job']}/train", json={}).status_code == 409
+    # The check still open on another device: its fixes start nothing once training started.
+    app.launched.clear()
+    stale = app.post(f"/api/jobs/{r['job']}/corrections", json={"labels": fixes, "calibrating": True})
+    assert stale.status_code == 409 and "another device" in stale.json()["detail"] and not app.launched
 
 
 def test_the_interview_is_credited_to_the_job_it_creates(tmp_path):

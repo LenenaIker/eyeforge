@@ -16,6 +16,7 @@ const FRIENDLY: Record<string, string> = {
   crops: "Preparing training data", train: "Training", evaluate: "Testing on your real photos", export: "Packing the model",
 };
 const POLL_MS = 5000;
+const IDLE_POLL_MS = 15000;
 
 export default function JobPage() {
   const { name = "" } = useParams();
@@ -23,6 +24,7 @@ export default function JobPage() {
   const [error, setError] = useState<string | null>(null);
   const [reviewKey, setReviewKey] = useState(0);  // bumps when a run ends, to reload the review
   const [nonce, setNonce] = useState(0);  // bumps when a rerun starts, to poll again
+  const [news, setNews] = useState<string | null>(null);  // the job moved on from another device
   const wasRunning = useRef(false);
 
   useEffect(() => {
@@ -35,17 +37,21 @@ export default function JobPage() {
         setError(null);
         if (wasRunning.current && !st.running) setReviewKey((k) => k + 1);
         wasRunning.current = st.running;
-        if (st.running) timer = window.setTimeout(poll, POLL_MS);
+        // Idle, still slowly: the same job may be open on another device, which can start a run.
+        timer = window.setTimeout(poll, st.running ? POLL_MS : IDLE_POLL_MS);
       } catch (e) {
         if (!stop) { setError((e as Error).message); timer = window.setTimeout(poll, POLL_MS * 2); }
       }
     };
+    // Back to this tab or app (after using the phone, say): look now instead of waiting for the timer.
+    const seen = () => { if (document.visibilityState === "visible") { clearTimeout(timer); poll(); } };
     setS(null);
     poll();
-    return () => { stop = true; clearTimeout(timer); };
+    document.addEventListener("visibilitychange", seen);
+    return () => { stop = true; clearTimeout(timer); document.removeEventListener("visibilitychange", seen); };
   }, [name, nonce]);
 
-  const restart = () => { wasRunning.current = true; setNonce((n) => n + 1); };
+  const restart = (msg?: string) => { setNews(msg ?? null); wasRunning.current = true; setNonce((n) => n + 1); };
 
   if (!s) {
     return <div className="py-10">{error ? <Notice tone="bad">{error}</Notice> : <Skeleton />}</div>;
@@ -58,6 +64,7 @@ export default function JobPage() {
         <h1 className="text-2xl font-bold tracking-tight">{(s.spec?.name ?? s.job).replace(/_/g, " ")}</h1>
       </div>
       {error && <Notice tone="bad">Lost contact with the server, retrying: {error}</Notice>}
+      {news && <Notice>{news}</Notice>}
       {s.calibration ? <Calibration s={s} reviewKey={reviewKey} onRerun={restart} /> :
         (s.running || !s.report) && <Progress s={s} failed={failed} />}
       {s.report && <Result job={s.job} r={s.report} usd={s.cloud_usd} version={s.version} />}
@@ -70,9 +77,10 @@ export default function JobPage() {
 }
 
 // Before the first run: the teacher marks a few photos and the user checks it understood what to look for.
-function Calibration({ s, reviewKey, onRerun }: { s: Status; reviewKey: number; onRerun: () => void }) {
+function Calibration({ s, reviewKey, onRerun }: { s: Status; reviewKey: number; onRerun: (news?: string) => void }) {
   const [error, setError] = useState<string | null>(null);
-  const train = () => API.trainCalibrated(s.job, { labels: {}, assets: {}, points: {} }).then(onRerun, (e) => setError((e as Error).message));
+  const train = () => API.trainCalibrated(s.job, { labels: {}, assets: {}, points: {} }).then(() => onRerun(), (e) =>
+    e instanceof API.ApiError && e.status === 409 ? onRerun(e.message) : setError((e as Error).message));
   if (s.running) {
     return (
       <Card className="flex items-center gap-3 p-4 text-sm">

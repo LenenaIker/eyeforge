@@ -43,6 +43,9 @@ STATE = "eyeforge_oauth"      # cookie: the signed nonce and return page of a lo
 SESSION_DAYS = 30
 ACCOUNTS_DB = "accounts.db"  # in the server's home
 VISITOR = "eyeforge_visitor"  # cookie: one per browser, so visitors of a public server only see their own jobs
+# 409 answers when the same job is open twice (phone and computer): the web shows them as news, not errors.
+ALREADY_RUNNING = "This model is already being worked on, maybe from another device."
+CHECK_OVER = "Training already started, maybe from another device."
 
 
 def slug(name: str) -> str:
@@ -647,9 +650,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         learns from all the fixes and marks every photo."""
         job = job_of(name, request)
         if running(job):
-            raise HTTPException(409, f"job {job.name} is running")
+            raise HTTPException(409, ALREADY_RUNNING)
         if not (job.root / CALIBRATION).exists():
-            raise HTTPException(409, f"job {job.name} is not waiting for the teacher's check")
+            raise HTTPException(409, CHECK_OVER)
         budget_left()
         if public and busy():
             raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
@@ -663,7 +666,11 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def corrections(name: str, body: dict, request: Request):
         job = job_of(name, request)
         if running(job):
-            raise HTTPException(409, f"job {job.name} is running")
+            raise HTTPException(409, ALREADY_RUNNING)
+        # Fixes made on the teacher's check, sent after training started (from another device, or an old tab):
+        # as fixes of a trained model they would start a run nobody asked for.
+        if body.get("calibrating") and not (job.root / CALIBRATION).exists():
+            raise HTTPException(409, CHECK_OVER)
         if (job.root / CALIBRATION).exists():  # still calibrating the teacher: another round, no training
             review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
                          share=not public)

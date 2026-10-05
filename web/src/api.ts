@@ -208,8 +208,9 @@ export const listJobs = () => api<{ jobs: string[] }>("/api/jobs");
 export const jobStatus = (job: string) => api<Status>(`/api/jobs/${job}`);
 export const getReview = (job: string) => api<Review>(`/api/jobs/${job}/review`);
 export const cancelJob = (job: string) => api(`/api/jobs/${job}/cancel`, { method: "POST" });
-export const applyFixes = (job: string, fixes: Fixes) =>
-  api<{ rerun_from: string | null }>(`/api/jobs/${job}/corrections`, json(fixes));
+// calibrating: fixes of the teacher's check; the server refuses them once training started (another device).
+export const applyFixes = (job: string, fixes: Fixes, calibrating = false) =>
+  api<{ rerun_from: string | null }>(`/api/jobs/${job}/corrections`, json({ ...fixes, calibrating }));
 export const trainCalibrated = (job: string, fixes: Fixes) =>
   api<{ rerun_from: null }>(`/api/jobs/${job}/train`, json(fixes));
 export const mediaUrl = (job: string, path: string, big = false) =>

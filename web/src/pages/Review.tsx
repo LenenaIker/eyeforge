@@ -11,7 +11,7 @@ type Tab = "photos" | "assets" | "renders" | "test";
 type Editing = { key: string; image: string; title: string; points: Point[] };
 
 // calibrating: before the first run, only the teacher's marks on a few photos; fixes teach it, then train.
-export default function ReviewPanel({ job, onRerun, calibrating = false }: { job: string; onRerun: () => void; calibrating?: boolean }) {
+export default function ReviewPanel({ job, onRerun, calibrating = false }: { job: string; onRerun: (news?: string) => void; calibrating?: boolean }) {
   const [review, setReview] = useState<Review | null>(null);
   const [tab, setTab] = useState<Tab>("test");
   const [fixes, setFixes] = useState<Fixes>({ labels: {}, assets: {}, points: {} });
@@ -37,11 +37,15 @@ export default function ReviewPanel({ job, onRerun, calibrating = false }: { job
   const apply = async (train = false) => {
     setApplying(true);
     try {
-      const r = train ? await API.trainCalibrated(job, fixes) : await API.applyFixes(job, fixes);
+      const r = train ? await API.trainCalibrated(job, fixes) : await API.applyFixes(job, fixes, calibrating);
       if (train) { onRerun(); return; }
       setFixes({ labels: {}, assets: {}, points: {} });
       if (r.rerun_from) onRerun();
-    } catch (e) { alert((e as Error).message); }
+    } catch (e) {
+      // 409: the job moved on elsewhere (the same job open on another device). Show where it is now.
+      if (e instanceof API.ApiError && e.status === 409) { onRerun(e.message); return; }
+      alert((e as Error).message);
+    }
     setApplying(false);
   };
 
