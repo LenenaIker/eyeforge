@@ -1,4 +1,4 @@
-import { ArrowRight, Box, Camera, Check, Code, Cpu, MessageSquare, Sparkles } from "lucide-react";
+import { ArrowRight, Box, Camera, Code, Cpu, MessageSquare, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge, ButtonLink, Card, Logo } from "../components/ui";
 
@@ -27,7 +27,6 @@ export default function Landing() {
         <Hero />
         <How />
         <Why />
-        <Proof />
         <BuiltWith />
       </main>
 
@@ -43,7 +42,7 @@ export default function Landing() {
 
 function Hero() {
   return (
-    <section className="mx-auto grid max-w-6xl items-center gap-12 px-4 pt-12 pb-20 sm:px-6 lg:grid-cols-2 lg:pt-20">
+    <section className="mx-auto grid max-w-6xl items-center gap-12 px-4 pt-6 pb-20 sm:px-6 lg:grid-cols-2 lg:pt-8">
       <div>
         <Badge tone="brand" className="mb-5"><Sparkles className="h-3.5 w-3.5" /> On-device vision, no cloud needed</Badge>
         <h1 className="text-4xl font-bold tracking-tight text-balance sm:text-5xl lg:text-6xl">
@@ -61,51 +60,31 @@ function Hero() {
           </a>
         </div>
       </div>
-      <HeroVisual />
+      <Proof />
     </section>
   );
 }
 
-// Three cards that tell the story at a glance: what you ask, what the cloud does, what the chip answers.
-function HeroVisual() {
+// Measured on Nebius with the account the web uses (2026-10-04, worker kits): kits_photos_4 (69 lawn photos,
+// no synthetic data, 5.0 min, $0.13) and kits_synth (smoke_farm_animals for the ESP32-CAM, 1,500 renders,
+// 11.0 min, $0.28). Keep these real: measure again when the images or the pipeline change.
+function Proof() {
+  const stats = [["~5 min", "photos to model, with your photos only"],
+                 ["~11 min", "adding 1,500 synthetic images from Isaac Sim"],
+                 ["from $0.13", "of cloud GPU per run on Nebius AI Cloud"],
+                 ["612 KB", "int8 model for a $10 ESP32-CAM, no network"]];
   return (
     <div className="relative mx-auto w-full max-w-md">
       <div className="absolute -inset-6 -z-10 rounded-[32px] bg-gradient-to-br from-brand-100 via-white to-ember-100 blur-2xl" />
-      <Card className="p-4 shadow-lg">
-        <div className="flex items-start gap-3">
-          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-50 text-brand-600">
-            <MessageSquare className="h-4 w-4" />
-          </div>
-          <p className="rounded-2xl rounded-tl-sm bg-stone-100 px-3 py-2 text-sm">
-            Count the flower pots on the balconies of my street.
-          </p>
-        </div>
-      </Card>
-      <Card className="mt-4 ml-8 p-4 shadow-lg">
-        <p className="mb-3 text-xs font-medium text-muted">Training on Nebius AI Cloud</p>
-        {[["Finding 3D models", "done"], ["Generating synthetic images", "done"], ["Training", "run"]].map(([n, s]) => (
-          <div key={n} className="flex items-center gap-2 py-1 text-sm">
-            <span className={s === "done" ? "grid h-4 w-4 place-items-center rounded-full bg-green-500 text-white"
-                                          : "h-4 w-4 rounded-full bg-ember-500 animate-beat"}>
-              {s === "done" && <Check className="h-3 w-3" strokeWidth={3} />}
-            </span>
-            {n}
-          </div>
+      <p className="mb-3 text-sm font-semibold text-brand-600">Measured, not promised: two runs, start to finish</p>
+      <div className="grid grid-cols-2 gap-3">
+        {stats.map(([v, l]) => (
+          <Card key={l} className="p-5 shadow-lg">
+            <p className="text-2xl font-bold tracking-tight sm:text-3xl">{v}</p>
+            <p className="mt-1 text-sm text-muted">{l}</p>
+          </Card>
         ))}
-        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-stone-100">
-          <div className="h-full w-3/4 rounded-full bg-gradient-to-r from-brand-500 to-ember-500" />
-        </div>
-      </Card>
-      <Card className="mt-4 flex items-center gap-4 p-4 shadow-lg">
-        <div className="grid h-12 w-12 place-items-center rounded-xl bg-ember-50 text-ember-700">
-          <Cpu className="h-6 w-6" strokeWidth={1.75} />
-        </div>
-        <div className="flex-1">
-          <p className="text-xs text-muted">ESP32-CAM, on the balcony</p>
-          <p className="text-2xl font-semibold tracking-tight">3 pots</p>
-        </div>
-        <Badge tone="good">133 KB model</Badge>
-      </Card>
+      </div>
     </div>
   );
 }
@@ -171,28 +150,6 @@ function Why() {
             </Card>
           ))}
         </div>
-      </div>
-    </Section>
-  );
-}
-
-// Measured on Nebius with the account the web uses (2026-10-04, worker kits): kits_photos_4 (69 lawn photos,
-// no synthetic data, 5.0 min, $0.13) and kits_synth (smoke_farm_animals for the ESP32-CAM, 1,500 renders,
-// 11.0 min, $0.28). Keep these real: measure again when the images or the pipeline change.
-function Proof() {
-  const stats = [["~5 min", "photos to model, with your photos only"],
-                 ["~11 min", "adding 1,500 synthetic images from Isaac Sim"],
-                 ["from $0.13", "of cloud GPU per run on Nebius AI Cloud"],
-                 ["612 KB", "int8 model for a $10 ESP32-CAM, no network"]];
-  return (
-    <Section eyebrow="Measured, not promised" title="Two runs, start to finish">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {stats.map(([v, l]) => (
-          <Card key={l} className="p-5">
-            <p className="text-3xl font-bold tracking-tight">{v}</p>
-            <p className="mt-1 text-sm text-muted">{l}</p>
-          </Card>
-        ))}
       </div>
     </Section>
   );
