@@ -1,0 +1,40 @@
+{
+  "street": {
+    "image": "data/real/maceta/PXL_20260926_141232228.jpg",
+    "floor": "road",
+    "objects": [
+      {"phrase": "motorcycle", "on": "floor"},
+      {"phrase": "car", "on": "floor"},
+      {"phrase": "traffic sign", "on": "floor"},
+      {"phrase": "flower pot", "on": "wall"}
+    ]
+  },
+  "facade": {
+    "image": "data/real/maceta/PXL_20260926_135455090.jpg",
+    "floor": "balcony floor",
+    "objects": [
+      {"phrase": "flower pot", "on": "wall"},
+      {"phrase": "potted plant", "on": "wall"},
+      {"phrase": "awning", "on": "wall"}
+    ]
+  },
+  "bottles": {
+    "image": "data/real/count/PXL_20261003_112212458.jpg",
+    "floor": "table",
+    "objects": [
+      {"phrase": "bottle", "on": "floor"},
+      {"phrase": "bottle cap", "on": "floor"},
+      {"phrase": "moka pot", "on": "floor"}
+    ]
+  },
+  "desk": {
+    "image": "data/real/count/PXL_20261003_111557960.jpg",
+    "floor": "table",
+    "objects": [
+      {"phrase": "tube", "on": "floor"},
+      {"phrase": "box", "on": "floor"},
+      {"phrase": "phone charger", "on": "floor"},
+      {"phrase": "dental floss", "on": "floor"}
+    ]
+  }
+}

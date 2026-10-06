@@ -282,3 +282,151 @@ Pregunta: qué modelo grande etiqueta mejor "el camino va a la izquierda, recto 
 - Resultado en el pipeline (`table_count_fast`, `--from train`): etapa train 92 s para 3 semillas, antes unos 430 s. F1 test de la mesa 0.551 +/- 0.017, dentro del ruido de sus 12 fotos (900 pasos: 0.575-0.638); la precisión es baja en todas las variantes (0.38-0.50), no es cosa del cambio.
 - Pasos por época (600 pasos, gansos, 3 semillas, F1 test medio): 50 (11 épocas) 0.714, 100 (6) 0.719, 200 (3) 0.705; entrenar 80 / 74 / 69 s en paralelo. Diferencias del tamaño de la dispersión entre semillas. Elegido 100 con un mínimo de 3 épocas (el mínimo de 10 inflaba los pasos con épocas largas).
 - Pendiente: medirlo en la GPU caliente de Nebius (antes 675 s).
+
+## Imagen a 3D: SAM 3 + TRELLIS v1, TRELLIS.2 y SAM 3D Objects (2026-10-05)
+
+Mismas 10 fotos de Wikimedia que la prueba de TRELLIS v1. Ahora el recorte lo hace SAM 3 por texto (`experiments/img2mesh/sam3_masks.py`, 0,5 s por foto, entorno `teacher-sam3`) y sustituye a OWLv2 + BiRefNet. Scripts: `run_trellis.py --cutout sam3`, `run_trellis2.py` y `run_sam3d.py`. Hojas lado a lado en `data/img2mesh_test/compare_{bee,cam,wrench}.jpg`.
+
+Válidos a ojo, de 10:
+- TRELLIS v1 con OWLv2 + BiRefNet: unos 6. Falla la abeja 1 (láminas), la abeja 2 (deforme) y la cámara 3 (tumbada sobre una lámina); la cámara 1 trae basura flotante.
+- SAM 3 + TRELLIS v1: unos 8. Arregla la abeja 2, la cámara 3 (ya no tumbada), la basura de la cámara 1 y el tubo de la cámara 4. Siguen mal la abeja 1 y el soporte de la cámara 2. Mismo coste: 7 s + 9 s, 9,7 GB.
+- SAM 3 + TRELLIS.2-4B (1024_cascade): unos 5. Peor que v1 en estas fotos: abeja 3 en trozos, cámara 2 como un bulto, cámara 3 como una cúpula hueca, llave 3 doblada. Tarda 16-88 s por objeto. Ojo: corre con transformers 5 y un parche nuestro para las capas de DINOv3 (`model.model.layer`), que podría influir. RMBG-2.0 (CC BY-NC) se sustituye por un stub, porque nuestros recortes ya traen alfa.
+- SAM 3 + SAM 3D Objects: 10. Es la única que saca la abeja 1 y la cámara 2 bien, con alas, patas y soporte. Los colores salen más apagados (colores por vértice). Tarda 10,5-17,5 s y llega a 17-18 GB de pico en la 3090: el requisito de "32 GB" del README no se cumple en inferencia. Además da la pose del objeto respecto a la cámara (rotación, traslación y escala).
+
+Licencias, leídas en el código:
+- TRELLIS v1: MIT, pero `to_glb` usa nvdiffrast y mip-splatting, ambos no comerciales.
+- TRELLIS.2: MIT. Necesita DINOv3 (DINOv3 License: comercial, con "Built with DINOv3" visible y sin uso militar). `o_voxel.postprocess.to_glb` usa nvdiffrast (no comercial).
+- SAM 3D Objects: SAM License (comercial; sin uso militar ni ingeniería inversa; hay que incluir la licencia si se redistribuye). Pesos restringidos en Hugging Face. El notebook de Meta fuerza pytorch3d (BSD), pero solo para muestrear la textura: el horneado (modos fast y opt) y el relleno de agujeros siguen pasando por `utils3d.torch.RastContext`, es decir, nvdiffrast. El render de gaussianas usa por defecto el de Inria (no comercial); gsplat (Apache) funciona con `backend='gsplat'`. Ruta limpia hoy: malla con colores por vértice, sin post-proceso. Sale pesada: 70k-700k caras y 1-13 MB.
+
+Instalación: `tools/install_sam3d.sh` en el SSD Crucial, entorno `/media/lenena-iker/Crucial/envs/eyeforge-sam3d`. El índice `pypi.ngc.nvidia.com` de su setup ya no resuelve: quitarlo de `PIP_EXTRA_INDEX_URL`. `notebook/inference.py` exige `CONDA_PREFIX`.
+
+Sin SAM 3 (máscara de la foto entera, `run_sam3d.py --full-mask`, hojas `compare_mask_*.jpg`): 2 de 10. Reconstruye lo que domina la foto, no el objeto: la flor en vez de la abeja, el seto, la pared o el edificio en vez de la cámara, y la llave con la mesa debajo. SAM 3 hace falta: es el que dice qué objeto reconstruir.
+
+Exportación limpia hecha: `experiments/img2mesh/bake_vertex_colors.py`, solo CPU. Simplifica a 20k caras con pyvista, desenvuelve las UV con xatlas, rasteriza las UV con PIL y colorea cada texel con sus 4 vértices densos más cercanos (KD-tree). Pasa de 1-13 MB a 1-1,4 MB y tarda 2-5 s por modelo; con `closest_point` de trimesh tardaba unos 20 s, sin diferencia a ojo. Los 10 pasan por `glb2usd` sin errores y en Isaac (`isaac_views.py`) se ven bien: textura, escala y eje vertical correctos, y colores más vivos que en pyrender. El objeto sale en la orientación de la foto (la cámara de techo, colgando). Total por objeto: unos 13-22 s (generación más horneado), frente a 17 s de TRELLIS v1.
+
+Pendiente para usarlo en el pipeline: runtime `sam3d` en la etapa `generate_assets` (SAM 3 primero, por texto), su imagen para Nebius y probar fotos del usuario y fotos con varios objetos.
+
+## Escena desde una foto: Mira-Scene (2026-10-05)
+
+Búsqueda previa de modelos que reconstruyen un entorno desde una foto: HY-World 2.0 (Tencent) prohíbe su uso en la UE; Lyra 2.0 (NVIDIA) y SHARP (Apple) tienen pesos no comerciales; SceneGen lleva VGGT-1B (no comercial); PixARMesh es CC-BY-SA y solo interiores. Queda Mira-Scene (VAST, septiembre de 2026, código y pesos MIT): SAM 3 + VLM (lista de objetos y apoyos) + MoGe-2 + CCM propio + SAM 3D por objeto + plano de suelo + colocación con gravedad + panorama de entorno.
+
+Prueba en la 3090 con 4 ejemplos suyos y 4 fotos nuestras (calle, fachada, botellas, escritorio). La lista de objetos de nuestras fotos la escribí a mano (`experiments/scene3d/cases.json`, en lugar del VLM) y SAM 3 hace las máscaras (`mira_prepare.py`). Sin panorama ni relleno del suelo (piden su API de pago). Hojas con la foto y vistas nuevas (`render_scenes.py`) en `data/scene3d_test/sheets/`.
+
+- Objetos pequeños y medianos: muy bien (sillas, mesa, bici, botellas, tapones), apoyados en el suelo y aguantan girar la cámara 90°.
+- Edificios y fondos: no salen. La calle queda en moto, coche y señales sobre un suelo de 20 m; sin suelo visible (fachada) no monta la escena. En el escritorio se pierden los tubos.
+- El suelo lleva manchas donde estaban los objetos (el relleno es la API de pago).
+- Coste: profundidad 7 s en total, CCM 1,7 min por escena, SAM 3D 3 s por objeto (solo la etapa 2, porque el CCM da los vóxeles), escena 4 s.
+- Instalación: Crucial `tools/Mira-Scene`, `tools/MoGe`, entornos `tools/envs/mira-{geometry,ccm}` (conda-forge les puso PyTorch sin CUDA o se atascó resolviendo: PyTorch cu121 por pip a mano), mallas con nuestro entorno `eyeforge-sam3d` y un parche en `3_inference_mesh.py` para colores por vértice sin nvdiffrast.
+
+Decisión (usuario, 2026-10-05): primero construir nuestra versión para el fondo (composición sobre la foto real con profundidad, o planos con la textura de la foto). Si sale muy bien, se usa siempre la nuestra; si sale mal, Mira-Scene solo cuando haya suelo visible y objetos grandes, y si no, nada.
+
+### Nuestra versión del fondo, primera prueba (bottles, 2026-10-05)
+
+Scripts en `experiments/scene3d/`: `bg_prepare.py` (SAM 3 + LaMa borra los objetos), `bg_depth.py` (MoGe-2), `bg_build.py` (plano de la mesa, medidas, malla del fondo, réplica de comprobación y vistas nuevas). Resultados en `data/scene3d_test/ours/bottles/` (`sheet.jpg`, `report.json`, `scene.glb`).
+
+- Geometría relativa buena: las mallas de SAM 3D recolocadas donde estaban los objetos coinciden con la foto (IoU de silueta 0,76-0,90, error mediano de profundidad 0,4-3 %). La mesa sale plana a ±2 mm.
+- Las mallas de SAM 3D salen demasiado anchas (ancho/alto 0,52-0,64 contra 0,31-0,45 reales): se escalan con el ancho medido en la foto.
+- Escala absoluta: con la cinta del usuario (botellas sin tapa 21,5, 22 y 15,5 cm), MoGe-2 da 24,7, 24,2 y 18,7 cm (de +10 a +21 %). Mira-Scene daba 15,9, 17,1 y 16,1 (de -26 a +4 %). Un factor único (0,908, cámara a 0,555 m en vez de 0,611) deja 22,4, 22,0 y 17,0. Ese factor está ajustado con las propias medidas, así que en producción hace falta un dato conocido (altura de la cámara o tamaño de un objeto, de la entrevista): opción `--camera-height`.
+- El FOV del EXIF (45,9°) frente al de MoGe (47,0°) cambia poco.
+- Una sola foto solo cubre su encuadre: la cámara puede girar unos ±20° y acercarse, no alejarse. Las vistas con más de un 8 % sin fondo se descartan.
+- Pendiente: luz y sombras de los objetos (Isaac Sim) y objetos tumbados.
+- Isaac Sim (`bg_isaac.py`): el fondo es la malla con la foto borrada como textura; cada vista se renderiza con objetos (A) y sin ellos (B). El fondo final es la foto vista desde esa cámara por A/B (las sombras de los objetos caen sobre la foto real) y los objetos toman A con la ganancia que lleva B a la foto. El color de la mesa sale igual que en la foto (106 contra 105 de media). Los colores de vértice de glTF son sRGB y `displayColor` es lineal: sin convertirlos, los objetos salen lavados.
+- Defectos que quedan, de las mallas y no del montaje: SAM 3D cierra la boca de la botella negra grande y deja la blanca beis y sin brillo.
+- Color (consulta del usuario: el plástico blanco y las líneas blancas salen oscuros). Brillo mediano de la botella blanca: foto 162, colores de SAM 3D sin luz 137, Isaac 80. Oscurecen las dos etapas: SAM 3D un 15-40 % y, sobre todo, la luz de Isaac (sol casi vertical; los laterales reciben la mitad que la mesa). Arreglo automático sobre la réplica (vista 0):
+  - Luz: búsqueda en rejilla (25 combinaciones de altura, azimut y fuerza del sol) que compara las sombras reales (foto / fondo borrado, en la mesa) con las de Isaac (A/B). Puntuar por el sombreado de los objetos no sirvió: los logos mal alineados lo dominan y eligió un sol duro.
+  - Color: una ganancia de brillo por objeto, 3 iteraciones. Por canal teñía de azul con el balance de blancos de la foto.
+  - Resultado: luz suave desde la izquierda; botella blanca 0,40 en la foto contra 0,32 en la réplica (lineal), antes 0,13. El albedo topa en 1, así que el resto pediría más exposición.
+- Tonemapper (pregunta del usuario): con la luz fija, cambiar el operador de RTX (`/rtx/post/tonemap/op`, por defecto 6 = ACES) a 1 (lineal) da números idénticos y ningún píxel quemado, así que no era la causa. La causa era el sol: solo con cielo, la botella blanca da 0,404 contra 0,397 en la foto; con el sol elegido antes, 0,317. La búsqueda de luz ahora puntúa las sombras más el brillo que no se alcanza tras ajustar el color, y elige cielo más un sol débil y bajo desde detrás de la cámara (blanca 0,383 contra 0,397). La pasada completa tarda 98 s (37 luces y 7 vistas).
+
+### Generalización: ejemplo de Mira 005_cafe_patio (2026-10-05)
+
+Misma cadena, sin ajustes a mano salvo las frases de SAM 3 (`bistro chair, cafe table, patio umbrella, umbrella base, bicycle`, soporte `sidewalk`). Resultados en `data/scene3d_test/ours/005_cafe_patio/`.
+
+- Lo que generaliza: borrado y fondo, profundidad, réplica (objetos en su sitio y a escala plausible: sillas 0,93-0,99 m, mesa 0,81 m, cámara a 1,41 m; MoGe parece pasarse de nuevo un ~8-10 %) y color de los objetos en Isaac (mimbre, sombrilla beis).
+- Arreglos que hicieron falta, ya generales:
+  - Orientación por objeto (giro, ancho y desplazamiento) ajustada a la silueta, porque sillas y bicis no son simétricas. En botellas sube la IoU de 0,76-0,89 a 0,89-0,90.
+  - Cámaras movidas girando alrededor del centro de los objetos y con límite en metros (`--max-move`, 0,4 m). El eje óptico casi horizontal cortaba el suelo a 22 m.
+  - Plano lejano de 50 m a 2 km: la calle llega a 170 m y el recorte salía como un abanico de colores. El cielo sin profundidad pasa a ser un telón lejano.
+  - `--shadows` en bg_prepare: SAM 3 'shadow', solo las sombras conectadas a los objetos, se borran con ellos. Si no, quedan sombras sin dueño en el fondo.
+- Lo que NO generaliza todavía: la luz con sol duro. La búsqueda elige sol desde detrás de la cámara cuando en la foto viene de delante (contraluz). Causa: la sombra "real" (foto / fondo borrado) no es fiable aquí. La zona borrada es grande y LaMa la rellena más oscura que la foto (126 contra 139 dentro de la máscara de sombra), así que la referencia no contiene las sombras. Comparar por bloques no lo arregla. Mapas en `shadow_maps.jpg` (foto, real, sintética con sol delante, sintética con sol detrás).
+- Propuesta: dirección del sol por geometría de las sombras (base del objeto → punta de su sombra en el plano da el azimut, y longitud / altura la elevación), con las máscaras de sombra por objeto que ya tenemos. Más barato y más robusto que la búsqueda.
+- Sol por geometría de las sombras (implementado, `estimate_sun` en bg_build y su uso en bg_isaac):
+  - Cada píxel de sombra va al objeto más cercano y se proyecta al plano. Base → punta da el azimut, altura / longitud la elevación, y se toma la mediana entre objetos.
+  - La fuerza del sol se elige para que la sombra sintética oscurezca el suelo como la real. La real se mide en la foto (sombra / suelo iluminado alrededor), sin LaMa. La sintética, relativa a un render sin sol, para no contar el cielo que tapa la sombrilla.
+  - Café: sol de frente y algo a la izquierda, elevación ~34° (6 objetos); oscuridad real 0,70, sintética 0,68 con fuerza 0,35.
+  - Sin sombras detectadas (botellas) se usa la búsqueda de antes (blanca 0,385 contra 0,39).
+  - El color se ajusta ahora solo en los píxeles donde cada objeto queda delante en la réplica. Antes una silla mal encajada recibía el color de otro objeto.
+  - Queda: mesa y sombrilla siguen más claras que en la foto (0,70 contra 0,51) porque saturan a 255. Las sombras sintéticas salen más suaves que las reales.
+
+### HOPE para medir si nuestra versión ayuda al alumno (2026-10-06)
+
+- Descargado en `data/hope/` (861 MB): val y test reales de RealSense y los 28 modelos 3D exactos. Sin `train_pbr` (100 GB), que sería otro brazo (BlenderProc con los modelos exactos).
+- Licencia CC BY-NC-SA 4.0: solo para pruebas internas, como MIO-TCD.
+- 50 escenas, 10 entornos de 5 escenas consecutivas, ~5 fotos por escena con distinta luz o vista, entre 11 y 26 objetos por foto (mediana 18). El test no trae poses, pero sí `mask_visib` por instancia (coinciden con los totales de `test_targets_bop19`), así que hay cajas sin clase para todas.
+- Separación en `data/hope/split.json`: por entorno, la primera escena a train (50 fotos) y las otras 4 a test (188).
+- Tarea: contar o detectar "producto" sin clase.
+- Riesgo: mucho desorden (cajas, bolsas, montones), más difícil que bottles para SAM 3D y para colocar objetos sobre el plano.
+
+Primera escena por el pipeline (test/000021, mesa con mantel, 2026-10-06; `data/scene3d_test/ours/hope021/`):
+- SAM 3 con "can, box, bottle, carton" encuentra 17 objetos, los mismos que la verdad. Mallas SAM 3D para 15. Unos 10 min por escena (CCM 4,6 min, SAM 3D 2,5, Isaac 2,6).
+- Escala: la profundidad de la RealSense entre la de MoGe da una mediana de 0,92. MoGe se pasa un 8 % (en bottles, un 10 %): parece un sesgo estable, corregible con un factor fijo.
+- Color y luz en Isaac bien: brillo por objeto igual que la foto y nada quemado.
+- Falla con el desorden. Los objetos apilados se apoyan en la mesa y el montón se esparce en las vistas nuevas. Las cajas tapadas salen como cáscaras abiertas, porque SAM 3D solo ve una parte. Réplica con IoU entre 0,38 y 0,83 (bottles: 0,76 a 0,90).
+
+Apilados y mallas incompletas (2026-10-06):
+- `bg_build.py` detecta el objeto que descansa sobre otro. Columna a columna, mira justo debajo del borde inferior de la máscara: si hay otro objeto que no está claramente delante, se apoya en él y la base sube a la altura de sus puntos más bajos. En hope021 lo detecta en una caja, cuya réplica pasa de IoU 0,38 a 0,64.
+- `--stack`: probabilidad de poner un objeto encima de otro en las composiciones nuevas, solo sobre objetos con tapa plana (`flat_top`: una lata tumbada no vale, una caja sí).
+- Solo se recolocan los objetos con buena réplica (`--min-iou 0.5`) y visibles en la foto (`--min-visible`). Con 0,6 entran 11 de 15; con 0,7, solo 6.
+- Las latas tumbadas siguen saliendo abiertas por los extremos. Causa probable: con Mira solo corremos la etapa 2 de SAM 3D sobre los vóxeles del CCM, que solo ven la parte visible. Lo siguiente es probar SAM 3D completo, etapas 1 y 2 (`experiments/img2mesh/run_sam3d.py`), que inventa la parte oculta.
+- El fondo borrado por LaMa deja manchas grises donde estaba el montón, visibles en las vistas nuevas.
+
+Cierres, fondo y sol (2026-10-06, hope021, bottles y café):
+- Las mallas abiertas se cierran con tapas sacadas de la envolvente convexa (`close_shell`): solo se añaden las caras de la envolvente lejos de la malla, con el color del vértice más cercano. Sin aviso solo se tapa si el objeto es casi convexo (cubre ≥ 40 % de la envolvente y las tapas ≤ 35 %), lo que deja intactos sillas, bici, mesa y escritorio. Una lata vista a medias no supera esa prueba (se parece a un escritorio), así que `--solid "can,box,..."` marca las frases de objetos cerrados. En el producto lo diría el VLM.
+- SAM 3D completo (etapas 1 y 2) cierra bien las cajas, pero convierte las latas en tazas con asa. Descartado por ahora.
+- Visibilidad para recolocar: ahora es la parte de la silueta de la réplica no tapada por otros objetos (antes era el IoU con la propia máscara, que castigaba sillas y bicis). `--min-iou` baja a 0,15, porque los objetos finos encajan entre 0,2 y 0,5 aunque estén bien. Café: 5 de 7 objetos; HOPE: 10 de 15; bottles: 6 de 6.
+- Fondo: las manchas grises eran sombras de contacto del montón. Con `--grow 0.03` (ahora por defecto) y `--shadows` desaparecen; LaMa a menor resolución no ayudaba.
+- Grietas negras en la mesa: los píxeles borrados que la máscara de la mesa deja abiertos al exterior no se pegaban al plano. Ahora se pegan si están dentro del contorno convexo del soporte, y el borde recto de la mesa de bottles sigue bien.
+- Sol desde sombras solo si las direcciones coinciden (acuerdo ≥ 0,85): café 0,96 (sol), HOPE 0,71 (sombras de contacto en interior, que antes daban un sol falso con un 4 % de píxeles quemados).
+- Hojas en `data/scene3d_test/ours/{hope021,bottles,005_cafe_patio}/sheet_isaac.jpg`.
+
+### HOPE: el alumno con nuestras escenas (2026-10-06)
+
+Las 10 escenas de train por el pipeline (`experiments/scene3d/run_hope_train.sh`, ~12 min cada una, 20 vistas por escena; hope021 de antes con 6). Soportes escritos a mano por escena; objetos `can,box,bottle,carton` con `--solid` y `--stack 0.2`. Cajas de las vistas con `view_labels.py` (mapa de instancias con pyrender; se quitan los restos sueltos de malla, que estiraban cajas). SAM 3D se quedó sin memoria en un objeto de test/000036: `bg_build` ahora salta mallas que faltan y el driver usa `expandable_segments`.
+
+Revisión a ojo (hojas con foto, vistas y cajas):
+- Buenas: val/000006, test/000006, test/000031. Regulares: val/000001 (sofá: objetos flotando delante del respaldo), test/000016 (cartones enormes en vistas cercanas), test/000036 (alféizar).
+- Malas: test/000001 (objetos en bolsas sobre el suelo; réplica mal y sobreexpuesta), test/000011 (caja de cartón abierta tomada como producto), test/000026 (dos baldas: mallas estiradas).
+
+Alumno PicoDet-S 320 del producto (`hope_student.py`), 3 ejecuciones por brazo, test 188 fotos reales, umbral elegido en val:
+
+| Brazo | Imágenes train | F1 | Error de cuenta |
+|---|---|---|---|
+| A: solo reales (40) | 40 | 0,819 | 2,97 |
+| Q: reales + sintético revisado (7 escenas) | 173 | **0,830** | **2,55** |
+| C: reales + todo el sintético | 235 | 0,814 | 3,54 |
+| DQ: solo sintético revisado | 106 | 0,761 | 3,45 |
+| D: solo sintético, todo | 156 | 0,744 | 5,84 |
+
+- Con revisión, el pipeline ayuda (+1,1 puntos de F1 y -14 % de error de cuenta); sin ella, empeora. Las escenas malas restan más de lo que suman las buenas: el control de calidad es parte necesaria del pipeline.
+- Solo sintético, desde 7 fotos sin etiquetar, llega a 0,76 contra 0,82 con 40 fotos etiquetadas a mano.
+- Diferencias pequeñas con 3 ejecuciones (desviación ~0,006): A contra Q es indicativo, no concluyente. El brazo B (sintético actual con HDRI y Objaverse) sigue pendiente.
+
+### VLMs de Token Factory como coordinadores (2026-10-06)
+
+Papel (usuario): no sustituyen a MoGe; ayudan a fijar la escala y hacen lo que Claude hacía a mano (frases, soporte, `--solid`, decidir si la escena encaja, revisar lo generado). Kimi-K3, GLM-5.3-Flash, DeepSeek-V4.1-Flash y Qwen3.8-27B (Cosmos3 y qwen3-vl-32b no están en nuestro catálogo). Coste total de céntimos.
+
+`experiments/vlm_bench/vlm_scene.py` (bottles, café, hope021, hope val1; foto limpia + foto con objetos numerados):
+- Frases para SAM 3: en HOPE empatan todos (17/17 en hope021). En el café Kimi-K3 da justo las 5 frases a mano (IoU 0,98); los demás añaden jardineras, carteles, persona o coche. En bottles Qwen saca los 8 objetos; Kimi y DeepSeek pierden la cafetera (0,81). Soporte bien salvo GLM en el sofá ("armchair seat", SAM 3 no encuentra nada).
+- Tamaños: en las botellas reales, escala de +2 % (GLM) a +21 % (Qwen); todos dan 20-24 cm a la botella corta de 15,5. HOPE son juguetes (latas de 7 cm, cajas de 16,5): todos se pasan 1,2-1,4x, también Claude. Sirven como comprobación gruesa de escala (detectar un 2x), no como corrección fina.
+- Respuestas cortadas con 8k tokens (Qwen en bucle, GLM incompleto): con 16k bien.
+
+`experiments/vlm_bench/vlm_qc.py` (las 9 escenas de arriba, verdad = revisión a ojo):
+- Antes de generar, solo con la foto, "¿cabe todo en un único soporte plano?": los cuatro aciertan 9/9 (sofá, bolsas, caja de cartón y dos baldas detectados). Este filtro previo funciona ya.
+- Revisión de las hojas generadas: los cuatro detectan las 3 malas (Kimi 2/3) pero son mucho más severos que la revisión a ojo y llaman "mala" a casi todo (escenas aprovechables aceptadas: GLM 3/6, Kimi y DeepSeek 1/6, Qwen 0/6). Los defectos que citan son reales (caja de zumo rota en test/000031, objetos sin sombra de contacto). Como juez binario descartaría casi todo; hace falta otra forma de preguntar (puntuación o comparación entre escenas) o medir con el alumno qué severidad conviene.
+
+### El VLM coordina: plan previo y revisión con nota (2026-10-06)
+
+- `experiments/scene3d/bg_plan.py` (paso 0, Kimi-K3 por defecto, `SIM2CHIP_PLAN_MODEL`): una llamada con la foto da soporte plano único sí/no, frase del soporte, frases de objetos y lista `--solid`. Con la llamada combinada sigue 9/9 en HOPE, y bottles y café pasan. Pegas: en el café añade "car" (el coche aparcado se borraría) y pierde la base de la sombrilla; en test/000006 añade "paper sheet". El driver (`PLAN=1 run_hope_train.sh`) salta las escenas sin soporte único (test/000026: "split across two separate shelf boards") y genera las demás con el plan: val/000006 sale con 21 objetos, igual que con las frases a mano.
+- Revisión con nota de 0 a 10 (`vlm_qc.py rate`), avisando de que el aspecto sintético es normal y solo cuenta lo que enseña mal al detector. AUC (escenas aprovechables por encima de las malas): Qwen3.8-27B 1,00 (malas 1-2, aprovechables 3-4), GLM-5.3-Flash 0,83, Kimi-K3 0,78. DeepSeek-V4.1-Flash gasta los 16k tokens pensando y no responde.
+- `experiments/scene3d/bg_review.py` (último paso, Qwen3.8-27B, `SIM2CHIP_REVIEW_MODEL`, umbral 3): hoja con la foto y 5 vistas con cajas, `review.json` con nota y `keep`. Rechaza justo las 3 escenas malas de la revisión a ojo, así que el brazo R de `hope_student.py` (reales + escenas que el VLM acepta) tiene las mismas 133 imágenes que Q: F1 0,830 sin revisión humana.
+- Margen estrecho: tres escenas aceptadas sacan justo 3 (hope021, val/000001 y val/000006 planificada), y las notas cambian un punto al cambiar las vistas de la hoja. Con 9 escenas el umbral es frágil; hace falta más escenas para fijarlo.
