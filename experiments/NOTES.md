@@ -453,3 +453,84 @@ Spec `specs/benchmarks/hope_count.json`, escrita como la saldría de la entrevis
 - Causa probable: PicoDet entrena 600 pasos fijos (`sim2chip/detector.py`), así que con 2000 sintéticas las fotos reales se ven 12 veces menos. `training.real_weight` ya repite las reales en la ruta de la cabeza de conteo, pero no en la del detector. Aplicándolo (BW) se recupera el nivel de solo reales (0,818) y baja el error de conteo (2,65), pero no llega a lo que dan 133 sintéticas.
 - Mezclar las dos fuentes no suma (BSQ 0,822): otra vez, más sintético con las mismas 40 reales.
 - Propuesta para el producto, pendiente de confirmar en otro dataset de conteo antes de tocarlo: en el detector, limitar el sintético a unas 3 veces las reales, o al menos aplicar `real_weight`.
+
+### Cuánto sintético por foto real: literatura y decisión (2026-10-06)
+
+- El óptimo depende de la tarea y del detector. Lo publicado va de 0,5 a 4 sintéticas por real: 8:2 en Kim et al. y 1:0,5 en un estudio de conducción rural ([2607.27058](https://arxiv.org/pdf/2607.27058)). Con detectores clásicos de 2014 llegaba a 15-20:1 ([1411.7911](https://arxiv.org/pdf/1411.7911)).
+- Varios estudios ven que con demasiado sintético las reales quedan ahogadas y el rendimiento baja ([2211.16066](https://arxiv.org/pdf/2211.16066)). En otro, pasar del 25-50 % de sintético empeora en todos los pipelines ([2412.01477](https://arxiv.org/pdf/2412.01477)).
+- Preentrenar con sintético y afinar con reales suele ir mejor que mezclar ([1907.07061](https://arxiv.org/pdf/1907.07061)).
+- En la detección de palés ([2510.12208](https://arxiv.org/html/2510.12208v1)), el sintético muy parecido al real mejora dentro del dominio pero empeora fuera de él, y el aleatorio hace lo contrario. Encaja con la idea del usuario de variar los fondos.
+- Decisión del usuario: no limitar. La web colorea las opciones de imágenes sintéticas (verde hasta 4 por foto real, amarillo hasta 10, rojo por encima, solo en conteo con fotos) y el usuario decide (`web/src/pages/Interview.tsx`).
+
+### Escenas desde una foto: muebles grandes y lo que copiamos de Mira (2026-10-06)
+
+Comparación con Mira-Scene en bottles, café y la oficina (`003_home_office`), hojas en `data/scene3d_test/compare/`. En bottles y café gana lo nuestro: Mira deja agujeros grises y fondo negro porque no ejecutamos sus etapas 4 y 6, que piden la API de imagen de Tripo. En la oficina ganaba Mira con claridad.
+
+Cómo construye Mira la escena (`infer_scripts/5_construct_scene.py`):
+- Objeto a objeto: el CCM da, por píxel, el punto de la malla canónica que se ve. Un ajuste RANSAC de similitud contra la profundidad saca giro, escala y posición, aunque el mueble esté cortado o tapado. Después un grafo de apoyos del VLM asienta cada objeto sobre su padre, sin física.
+- No guarda la foto como fondo. El suelo es un plano con textura (recortada de la foto o generada), y el resto es un panorama 360 generado por GPT Image a partir de la foto sin objetos ni suelo.
+
+Por qué fallaba lo nuestro en la oficina (medido):
+- Al borrar con LaMa un escritorio o una estantería enteros queda una mancha gris. MoGe la ve como una pared a ~1 m, con los muebles a 2,5-4,5 m, y el fondo los tapaba. La réplica bajaba a 0-0,15 de coincidencia de silueta y se descartaban, aunque el ajuste solo daba 0,52-0,75.
+- MoGe sobre la foto con huecos grandes deforma la habitación entera: paredes con más de un 5 % de error frente a la foto.
+- El ajuste por silueta no distingue delante de detrás: la estantería salía de espaldas, como un panel liso.
+
+Cambios en `bg_build.py`:
+- El fondo usa la profundidad de la foto donde no se ha borrado nada.
+- Los huecos fuera del soporte toman la profundidad de la pared que los rodea, con un relleno armónico (`smooth_fill`; `cv2.inpaint` en coma flotante mete ruido que rompe la malla). Dentro de la máscara de cada objeto se empujan detrás de su malla, con una rampa suave en el margen.
+- `--fixed`: los muebles (los marca el VLM en `bg_plan.py`, campo `fixed`) se quedan en su sitio en todas las vistas y tapan su propio hueco. Los demás objetos se mueven alrededor.
+- Orientación desde el CCM de Mira (`bg_ccm_pose.py`, reutiliza su solver de la etapa 5): el ajuste por silueta solo busca a ±30° de ella.
+- `--layout photo`: los objetos se quedan donde están en la foto y solo se mueve la cámara (copiar la escena en vez de generar variedad). En `run_photo.sh` con `LAYOUT=photo`.
+
+Resultado en la oficina: coincidencia de 0,63 en el escritorio, 0,50-0,73 en las estanterías y 0,63 en la silla. La estantería sale de frente con sus libros, sin mancha delante, y 20 vistas aceptadas con la silla y la lámpara movidas. Quedan defectos de las mallas de SAM 3D (escritorio como bloque, panel lateral en la estantería) y algo de mancha en el suelo donde estaba el escritorio. En bottles y café no cambia nada: el error de fondo frente a la foto baja a cero. El plan del VLM con el campo `fixed` acepta ya la oficina (escritorio, estantería y armario fijos) y en café, bottles y HOPE da lo mismo que antes.
+
+Escena por piezas (idea del usuario, 2026-10-06). La foto ya no se usa como fondo: suelo, soporte y paredes son planos en Isaac ajustados a la profundidad de la foto original, y cada uno lleva un material recortado de la foto.
+- `piece_surfaces.py`: SAM 3 recorta "wall" y "floor".
+- `piece_build.py`:
+  - Ajusta los planos: el soporte por RANSAC; las paredes verticales por RANSAC en coordenadas del suelo; el suelo, paralelo al soporte si está debajo.
+  - Rectifica cada superficie como vista de frente y recorta el mayor rectángulo limpio. Lo hace repetible fundiendo los bordes (en espejo dibujaba rombos con los tablones).
+  - Cierra la habitación con las paredes que no se ven y un techo. Con `--indoor`, también sin paredes visibles.
+  - Coloca los objetos según la foto (`photo_replica`, orientación del CCM) y genera cámaras libres alrededor.
+- `piece_isaac.py`: render 100 % sintético. Interior con panel de techo y lámpara; exterior con HDRI y sol. Exposición automática en los dos sentidos. Etiquetas con `view_labels.py`.
+- Los muebles fijos ya no se tapan con el casco convexo: la estantería abierta salía con triángulos.
+
+Revisión del VLM (Qwen, 0-10, se descarta por debajo de 3):
+
+| Escena | Fondo de la foto | Por piezas |
+|---|---|---|
+| Oficina | 1 (2 con los parches de huecos) | 3 |
+| Botellas | 2 | 5 |
+
+- Quedan defectos de las mallas de SAM 3D: escritorio cortado por el borde de la foto, que sale como un bloque estrecho, y brazos de lámpara estirados.
+- El recorte del tablero de las botellas es pequeño y lleva un degradado de luz que se nota al repetirlo.
+- El café queda fuera de las pruebas: la foto es generada y de mala calidad (usuario). La de la oficina es un ejemplo de Mira y probablemente también es generada; falta una foto real de una habitación.
+
+Street corner frente a Mira (2026-10-06), `data/scene3d_test/compare/006_street_corner.jpg`. Es la misma foto vista desde su cámara y girada ±20° y ±40° alrededor de los objetos: `piece_build.py --orbit` para lo nuestro y `mira_views.py` para su `scene_with_floor.glb`.
+- Modo exterior nuevo (`--outdoor`): cada fachada es una pared del tamaño que muestra la foto, sin cerrar habitación, con HDRI de cielo. La tolerancia del RANSAC de paredes pasa a ser relativa a la distancia: con 3 cm fijos no aceptaba fachadas a 7-10 m.
+- Mismos 5 objetos y la misma disposición en los dos. Mira pone un suelo con textura generada que no se parece a la acera y deja todo lo demás en negro (no ejecutamos su etapa de entorno). Lo nuestro tiene fachadas de ladrillo y muro bajo con el material de la foto, y una acera gris plana.
+- Fallos nuestros:
+  - Las fachadas salen lisas, porque el recorte limpio quita las ventanas.
+  - Los HDRI disponibles son de campo y no pegan con una calle.
+  - No hay calzada ni bordillo.
+  - Con algún sol el suelo sale quemado.
+
+### Entorno con SAM 3D (street_corner, 2026-10-06)
+
+`env_add.py`: casa, seto y muro como "objetos" de un caso de Mira (`mira_prepare.py` con frases "house", "hedge", "low brick wall"; etapas 1-5, la 4 solo geométrica), y sus mallas se añaden fijas a nuestra escena por piezas en lugar de las fachadas planas (`--drop-walls`). Escala de la profundidad de Mira a la nuestra: 1.004. Hoja: `data/scene3d_test/compare/006_street_corner_env.jpg` (Mira, nuestro con planos, nuestro con SAM 3D) y mallas sueltas en `ours/street_env/env_meshes.jpg`.
+
+- Las casas salen muy bien: la principal es un bloque con ventanas en las dos caras, la del fondo con tejado y chimenea, la blanca con su anexo. Coste: unos 2 min de CCM y SAM 3D por instancia en la 3090 (a 80 C).
+- Seto principal y arbusto suelto, aceptables (bloque verde con relieve). El muro bajo, una losa correcta.
+- Fallan instancias pequeñas o mezcladas: un "hedge" que SAM 3 juntó con la casa de detrás (sale medio casa, medio seto) y un pilar de 1 m.
+- Lo que más estropea ahora es el fondo: HDRI de roca o desierto donde no hay casa, y la acera sin calzada ni bordillo.
+- HDRI "infierno": era `white_cliff_top`/roca de `data/hdri` (todos de campo), y además tumbado 90°: `piece_isaac.py` alineaba el polo de la cúpula con su +Y, pero en RTX es +Z. Corregido; 7 HDRI urbanos diurnos de Poly Haven (CC0, 2k) en `data/hdri/urban` (`--hdri-dir`).
+- `env_add.py --max-faces 20000` (open3d, decimación cuádrica con colores): `meshes.npz` del entorno de 42 MB a ~1 MB; la escena entera 19 MB, casi todo los 5 objetos sin simplificar. El seto se ve algo facetado a 20k.
+- Vistas "apagadas" (0, 2, 3): no era el sol (ningún mesh del entorno lo tapa, comprobado con rayos) sino la exposición. `expose()` llevaba cada vista a mediana 0.42: con sol de frente todo queda iluminado por igual, nada en sombra compensa y la imagen entera baja a gris; con sol de lado (1, 4) la mitad en sombra deja lo iluminado muy claro. Ahora expone por las luces altas (p97 a 0.92) con la mediana entre 0.32 y 0.58: las cinco vistas igual de vivas. Queda el suelo casi blanco al sol (albedo gris 0.52 de la acera). Sin probar aún en oficina y botellas.
+
+### De una esquina a un cruce (`crossroad.py`, 2026-10-06)
+
+La esquina como bloque en una cuadrícula: ejes desde la normal de la fachada, esquina en el bordillo (percentil 1 de la acera en esos ejes, sobre la profundidad de la foto). Copias giradas 90/180/270 grados alrededor del centro del cruce (giro, no espejo: textos y bicis no se invierten), ladrillo distinto por copia (tono, saturación y brillo de los vértices naranja-rojo; ventanas, tejados y plantas igual), calzada de asfalto 12 cm por debajo de las aceras con caras de bordillo. Entorno lejano asentado en la acera (la casa blanca flotaba 4 m). Cámaras en calzada o junto al bordillo, a más de 7 m de cualquier superficie, apuntando a una esquina ±35 grados, 1.3-4 m de alto. Hoja: `ours/street_cross/sheet_isaac.jpg`.
+
+- Se ve como un cruce real en la mayoría de vistas; el giro de 90 grados no se nota a pie de calle.
+- Pendiente: las casas de SAM 3D están huecas por arriba (solo se ve desde la vista cenital); los mismos 5 objetos en cada esquina (barajar por esquina); 72 MB por copiar las mallas 4 veces (instanciar el bloque y simplificar los objetos lo bajaría a pocos MB).
+- Peso: `--no-objects` (solo el lugar; los objetos los pondrá Replicator) y entorno lejano (> 25 m de la esquina) como cajas con una foto de 24 px por cara (render ortográfico sin luz de la malla) o fuera del todo (`--far-mode drop`, queda el HDRI). De 72 MB a 3.6 MB de mallas + 164 KB de texturas. Desde la calle las cajas pasan por casas lejanas, algo pálidas.
+- Qué es automático aquí: SAM 3, MoGe, CCM, SAM 3D, colocación, materiales rectificados, bordillo, copias, ladrillos, cámaras, exposición. A mano: las frases del entorno, `--outdoor`, el grupo de HDRI urbano, `--drop 10,12` y elegir el cruce. Kimi y Qwen no han intervenido en street_corner (no hay plan.json).

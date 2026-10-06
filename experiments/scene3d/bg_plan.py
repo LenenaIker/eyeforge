@@ -1,11 +1,12 @@
 """Step 0 of our scene from one photo: a Token Factory VLM plans it, as Claude did by hand until 2026-10-06. It says
 whether one flat support holds the movable objects (bags, open boxes, cushions or two levels break our one-plane
 scene: on HOPE, scenes like that hurt the student more than the good ones helped), and gives the support phrase,
-the object phrases for SAM 3 and which of them are closed, roughly convex solids (bg_build --solid). Any env:
+the object phrases for SAM 3, which of them are closed, roughly convex solids (bg_build --solid) and which are
+furniture that stays in place (bg_build --fixed). Any env:
 
     python experiments/scene3d/bg_plan.py --image data/hope/val/000006/rgb/000000.png --out <dir> [--model ...]
 
-Writes <dir>/plan.json: {"one_flat_support", "support", "objects": [phrase, ...], "solid": [phrase, ...], "reason",
+Writes <dir>/plan.json: {"one_flat_support", "support", "objects": [phrase, ...], "solid": [...], "fixed": [...], "reason",
 "model"}. Exit code 3 when the scene does not fit (the driver skips it), 1 when the model gave no usable plan.
 Model: --model, else SIM2CHIP_PLAN_MODEL, else Kimi-K3 (fastest and best phrases in experiments/vlm_bench).
 """
@@ -32,10 +33,14 @@ in an open box, on soft or uneven cushions, or on two different levels such as t
   "objects": ["<short generic noun phrase for one kind of movable object, as the segmenter expects>", ...],
   "solid": ["<the phrases from objects that are closed, roughly convex solids like cans, boxes, bottles; not \
 chairs, bikes, mugs or open containers>", ...],
+  "fixed": ["<the phrases from objects that are large furniture or fixtures standing where they belong, like a \
+desk, bookshelf, wardrobe or counter: they stay in place while the others are moved>", ...],
   "reason": "<one sentence>"
 }
 "objects" covers every movable object kind in the photo, one generic phrase per kind (e.g. "can", not a brand); \
-nothing that is part of the place (walls, furniture the objects rest on, the support itself)."""
+nothing that is part of the place (walls, furniture the objects rest on, the support itself). Furniture \
+standing on the floor counts as objects on the floor support when the photo is about the furniture (a room) \
+rather than about small things on it."""
 
 
 def valid(v):
@@ -66,8 +71,9 @@ def main():
         sys.exit(1)
     objects = list(dict.fromkeys(p.strip().lower() for p in plan['objects']))
     solid = [p for p in (s.strip().lower() for s in plan.get('solid') or [] if isinstance(s, str)) if p in objects]
+    fixed = [p for p in (s.strip().lower() for s in plan.get('fixed') or [] if isinstance(s, str)) if p in objects]
     out = {'one_flat_support': plan['one_flat_support'], 'support': plan['support'].strip().lower(),
-           'objects': objects, 'solid': solid, 'reason': str(plan.get('reason', '')), 'model': args.model}
+           'objects': objects, 'solid': solid, 'fixed': fixed, 'reason': str(plan.get('reason', '')), 'model': args.model}
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, 'plan.json'), 'w') as f:
         json.dump(out, f, indent=1)

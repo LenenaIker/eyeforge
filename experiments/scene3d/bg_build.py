@@ -8,6 +8,8 @@ real ones stood, and renders new compositions from moved cameras. Run in the `tr
 --camera-height (metres) rescales everything to a known camera height; MoGe alone was ~10% too large.
 --meshes is a Mira-Scene case whose mesh/sam3d/NNN.glb match its input/mask_NNN.png (matched to our instances by
 mask IoU); --fov-x (degrees, horizontal) overrides MoGe's field of view, e.g. from EXIF.
+--layout photo keeps every object where the photo has it and only moves the camera (a copy of the scene, not
+training variety).
 World frame = the photo's OpenCV camera (+X right, +Y down, +Z forward, metres).
 Writes sheet.jpg, report.json and scene.glb (background + replica) into --dir.
 """
@@ -75,6 +77,25 @@ def grid_mesh(points, colors, valid, step=2, max_jump=0.04):
     return m
 
 
+def smooth_fill(z, known, iters=300):
+    """Fills z where not known with a smooth surface through its border (cv2.inpaint on float maps is noisy and
+    tears the mesh): averages over coarser grids for a first guess, then relaxes towards the harmonic fill."""
+    out, levels = z.copy(), []
+    cz, cw = z * known, known.astype(np.float32)
+    while min(cz.shape) > 8:
+        levels.append((cz, cw))
+        cz = cv2.resize(cz, (cz.shape[1] // 2, cz.shape[0] // 2), interpolation=cv2.INTER_AREA)
+        cw = cv2.resize(cw, (cw.shape[1] // 2, cw.shape[0] // 2), interpolation=cv2.INTER_AREA)
+    guess = np.where(cw > 0, cz / np.maximum(cw, 1e-9), float(z[known].mean()))
+    for lz, lw in reversed(levels):
+        up = cv2.resize(guess, (lz.shape[1], lz.shape[0]), interpolation=cv2.INTER_LINEAR)
+        guess = np.where(lw > 0.99, lz / np.maximum(lw, 1e-9), up)
+    out = np.where(known, z, guess).astype(np.float32)
+    for _ in range(iters):
+        out = np.where(known, z, cv2.blur(out, (3, 3)))
+    return out
+
+
 def rotation_to(a, b):
     """Smallest rotation taking unit vector a to unit vector b."""
     v, c = np.cross(a, b), float(a @ b)
@@ -107,10 +128,12 @@ def close_shell(m, solid=False, near=0.02, min_cover=0.4, max_lids=0.35):
     return trimesh.util.concatenate([m, lids]), cover
 
 
-def load_object(path, solid=False):
-    """SAM 3D mesh (y up), base centred at the origin, height 1 (scaled later), open shells capped."""
+def load_object(path, solid=False, cap=True):
+    """SAM 3D mesh (y up), base centred at the origin, height 1 (scaled later), open shells capped (not with
+    cap=False: a bookshelf's open front took diagonal hull faces as a lid)."""
     m = trimesh.load(path, force='mesh')
-    m, _ = close_shell(m, solid)
+    if cap:
+        m, _ = close_shell(m, solid)
     lo, hi = m.bounds
     m.apply_translation([-(lo[0] + hi[0]) / 2, -lo[1], -(lo[2] + hi[2]) / 2])
     m.apply_scale(1 / (hi[1] - lo[1]))
@@ -128,9 +151,24 @@ def place(mesh, base, n, height, width, yaw):
     return t
 
 
-def fit_pose(obj, mask, others, mi, n, intr, scale=2):
+def ccm_yaw(rot, n, min_up=0.9):
+    """The yaw of place() closest to a mesh rotation from Mira's CCM fit (bg_ccm_pose.py), or None when that fit
+    tilts the mesh's up axis away from the plane normal (a failed fit)."""
+    y, x = np.array([0, 1.0, 0]), np.array([1.0, 0, 0])
+    rot = np.asarray(rot)
+    if rot @ y @ n < min_up:
+        return None
+    base = rotation_to(y, n)
+    v = rot @ x
+    u0 = base @ x
+    u90 = base @ trimesh.transformations.rotation_matrix(math.pi / 2, y)[:3, :3] @ x
+    return math.atan2(v @ u90, v @ u0)
+
+
+def fit_pose(obj, mask, others, mi, n, intr, scale=2, yaw0=None):
     """Yaw, width and a small shift of the base that make the mesh's silhouette from the photo camera match the
-    object's mask best (IoU, ignoring pixels covered by other objects). Coarse to fine, at 1/scale resolution."""
+    object's mask best (IoU, ignoring pixels covered by other objects). Coarse to fine, at 1/scale resolution.
+    With yaw0 (from the CCM fit) the yaw stays within 30 degrees of it: a silhouette cannot tell front from back."""
     w, h, fx, fy, cx, cy = intr
     r = pyrender.OffscreenRenderer(w // scale, h // scale)
     cam = pyrender.IntrinsicsCamera(fx / scale, fy / scale, cx / scale, cy / scale, znear=0.02, zfar=100)
@@ -152,8 +190,10 @@ def fit_pose(obj, mask, others, mi, n, intr, scale=2):
     side /= np.linalg.norm(side)
     away = np.cross(side, n)
     away *= np.sign(away @ mi['base'])
-    best = (iou(mi['base'], mi['width_m'], 0.0), mi['base'], mi['width_m'], 0.0)
-    for yaw in np.radians(np.arange(0, 360, 30)):
+    start = 0.0 if yaw0 is None else yaw0
+    best = (iou(mi['base'], mi['width_m'], start), mi['base'], mi['width_m'], start)
+    yaws = np.radians(np.arange(0, 360, 30)) if yaw0 is None else yaw0 + np.radians(np.arange(-30, 31, 10))
+    for yaw in yaws:
         for k in (0.7, 1.0, 1.4):
             v = iou(mi['base'], mi['width_m'] * k, yaw)
             if v > best[0]:
@@ -298,6 +338,65 @@ def measure(points, hgt, n, phrase, base, on):
             'distance_m': round(float(np.linalg.norm(base)), 3), 'on': on}
 
 
+def photo_replica(masks, phrases, P, vp, depth_p, n, dd, intr, meshes, solid, ccm_path, fixed=()):
+    """Every instance measured on the photo's own depth (P, metres, OpenCV camera frame) and its SAM 3D mesh posed
+    where the real object stands. Returns the measures (one dict per instance) and the replica: (instance, mesh,
+    4x4 pose) for the instances with a mesh. Fixed furniture is not capped (open fronts by design)."""
+    # Every instance: height above the plane and a first base centre (refined later by fit_pose): the centroid of
+    # the points touching the plane (legs, wheels), or the top points dropped onto it when none are visible.
+    meas = []
+    w, h, fx, fy, cx, cy = intr
+    owner = np.full((h, w), -1)
+    for j, m in enumerate(masks):
+        owner[m & (owner < 0)] = j
+    for j, (m, phrase) in enumerate(zip(masks, phrases)):
+        sel = m & vp
+        hgt = P[sel] @ n + dd
+        on = resting_on(j, m, owner, depth_p)
+        if on is not None:
+            # Stacked: the base is the object's lowest visible points, at their height above the plane, and the
+            # height counts from there (not from the table, which would stretch it over the object below).
+            lift = float(np.percentile(hgt, 3))
+            low = P[sel][hgt < lift + 0.1 * (np.percentile(hgt, 98) - lift)]
+            c = low.mean(0)
+            base = c - (c @ n + dd - lift) * n
+            meas.append(measure(P[sel], hgt - lift, n, phrase, base, on))
+            continue
+        low = P[sel][hgt < 0.1 * np.percentile(hgt, 98)]
+        c = low.mean(0) if len(low) >= 50 else P[sel][hgt >= np.percentile(hgt, 90)].mean(0)
+        base = c - (c @ n + dd) * n
+        meas.append(measure(P[sel], hgt, n, phrase, base, None))
+
+    # Mira meshes matched to our instances by IoU on Mira's 518 centre crop.
+    crop = json.load(open(os.path.join(meshes, 'input', 'preprocessing.json')))['crop_xywh']
+    sx = w / json.load(open(os.path.join(meshes, 'input', 'preprocessing.json')))['original_size'][0]
+    l, tp, side = [round(v * sx) for v in (crop[0], crop[1], crop[2])]
+    ccm = json.load(open(ccm_path)) if os.path.exists(ccm_path) else {}
+    replica = []
+    for j, mi in enumerate(meas):
+        crop_mask = np.asarray(Image.fromarray(masks[j][tp:tp + side, l:l + side].astype(np.uint8) * 255).resize((518, 518))) > 127
+        best, best_iou = None, 0.1
+        for f in sorted(os.listdir(os.path.join(meshes, 'input'))):
+            if f.startswith('mask_'):
+                mm = np.asarray(Image.open(os.path.join(meshes, 'input', f))) > 0
+                iou = (mm & crop_mask).sum() / max((mm | crop_mask).sum(), 1)
+                if iou > best_iou:
+                    best, best_iou = f[5:8], iou
+        if best and not os.path.exists(os.path.join(meshes, 'mesh', 'sam3d', f'{best}.glb')):
+            best = None  # SAM 3D failed on it (e.g. out of memory): the object stays out of the replica
+        mi['mesh'] = best
+        if best:
+            obj = load_object(os.path.join(meshes, 'mesh', 'sam3d', f'{best}.glb'), mi['phrase'] in solid,
+                              cap=mi['phrase'] not in fixed)
+            others = np.any([masks[k] for k in range(len(masks)) if k != j], axis=0) if len(masks) > 1 else None
+            yaw0 = ccm_yaw(ccm[best], n) if best in ccm else None
+            fitted = fit_pose(obj, masks[j], others, mi, n, (w, h, fx, fy, cx, cy), yaw0=yaw0)
+            fitted['ccm_yaw'] = None if yaw0 is None else round(math.degrees(yaw0), 1)
+            mi.update(fitted)
+            replica.append((j, obj, place(obj, mi['base'], n, mi['height_m'], mi['width_m'], mi['yaw'])))
+    return meas, replica
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir', required=True)
@@ -319,12 +418,21 @@ def main():
                     help='visible share of an object needed to shuffle it (hidden parts come out open)')
     ap.add_argument('--solid', default='', help='comma-separated phrases of closed, roughly convex objects '
                     '(cans, boxes): their open meshes are capped with the convex hull')
+    ap.add_argument('--ccm-pose', default=None, help="each mesh's orientation from Mira's CCM (bg_ccm_pose.py); "
+                    'default <meshes>/ccm_pose.json when it exists')
+    ap.add_argument('--fixed', default='', help='comma-separated phrases of objects that stay where the photo has '
+                    'them in every view (furniture, fixtures): they cover their own erased hole, which LaMa cannot '
+                    'fill well when it is large; the others are shuffled around them')
+    ap.add_argument('--layout', choices=['shuffle', 'photo'], default='shuffle',
+                    help='shuffle: new views move the objects around the support (training data); photo: every '
+                         'view keeps them where the photo has them, only the camera moves (a copy of the scene)')
     ap.add_argument('--max-empty', type=float, default=0.08,
                     help='largest unrendered fraction of a new view (filled by inpainting)')
     args = ap.parse_args()
     d = args.dir
     rng = np.random.default_rng(args.seed)
     solid = {p.strip() for p in args.solid.split(',') if p.strip()}
+    fixed = {p.strip() for p in args.fixed.split(',') if p.strip()}
 
     photo = np.asarray(Image.open(os.path.join(d, 'photo.png')).convert('RGB'))
     background = np.asarray(Image.open(os.path.join(d, 'background.png')).convert('RGB'))
@@ -354,9 +462,13 @@ def main():
     cam_height = float(dd)
     pitch = math.degrees(math.asin(abs(n[2])))  # camera axis vs plane: 90 = looking straight down
     # Background depth to the photo's scale (median over untouched pixels), then the support snapped to the plane.
+    # Untouched pixels keep the photo's own depth: MoGe on a background with large erased holes can bend the whole
+    # room (home office: walls off by more than 5%), and the replica is placed against the photo's depth.
     common = vp & vb & ~erased
     bg_scale = float(np.median(dp['depth'][common] / db['depth'][common]))
     B = B * bg_scale * scale
+    B = np.where((vp & ~erased)[..., None], P, B)
+    vb = vb | vp & ~erased
     rays = points_from_depth(np.ones((h, w)), fx, fy, cx, cy)  # unit-depth ray per pixel (B is inf where MoGe has no depth)
     t = -dd / (rays @ n)
     on_plane = rays * t[..., None]
@@ -372,59 +484,46 @@ def main():
     cv2.fillConvexPoly(hull, cv2.convexHull(cv2.findNonZero(raw)), 1)
     snap |= erased & (hull > 0) & (t > 0)
     B = np.where(snap[..., None], on_plane, B)
+    # Erased pixels off the support (furniture against a wall): MoGe reads LaMa's fill of a large hole as a surface
+    # about a metre away, so the background stood in front of the replica and hid it (home office: desk at 2.5 m,
+    # its hole at 0.8 m). They take the depth of the background around the hole (the wall behind), filled in at 1/4
+    # resolution. Pushing them behind each replica mesh instead left steps at the mask edges that tore the mesh.
+    loose = erased & ~snap
+    fill = None
+    if loose.any():
+        z = np.where(vb & ~loose, B[..., 2], 0).astype(np.float32)
+        q = 4
+        zs = cv2.resize(z, (w // q, h // q), interpolation=cv2.INTER_NEAREST)
+        holes = (zs <= 0) | ~np.isfinite(zs)
+        zs = smooth_fill(np.where(holes, 0, zs).astype(np.float32), ~holes)
+        fill = cv2.resize(zs, (w, h), interpolation=cv2.INTER_LINEAR)
+        vb = vb | loose
     # Sky and anything MoGe leaves without depth: a backdrop at the farthest valid depth, so moved cameras see it
     # instead of a hole.
-    far = np.percentile(B[vb][:, 2], 99)
+    far = np.percentile(B[vb & ~loose][:, 2], 99)
     B = np.where((vb | snap)[..., None], B, rays * far)
+
+    meas, replica = photo_replica(masks, phrases, P, vp, depth_p, n, dd, (w, h, fx, fy, cx, cy), args.meshes, solid,
+                                  args.ccm_pose or os.path.join(args.meshes, 'ccm_pose.json'), fixed)
+
+    if fill is not None:
+        # The fill interpolates the floor below a tall bookshelf too, so it can still stand in front of the replica:
+        # inside each object's mask it goes behind the whole mesh, eased to zero across the erased margin (a step
+        # at the mask edge tore the mesh).
+        push = np.zeros((h, w), np.float32)
+        for j, obj, tf in replica:
+            back = 1.02 * float(trimesh.transform_points(obj.vertices, tf)[:, 2].max())
+            sel = loose & masks[j]
+            push[sel] = np.maximum(push[sel], back - fill[sel])
+        if push.any():
+            core = push > 0
+            known = cv2.resize((core | ~loose).astype(np.uint8), (w // q, h // q), interpolation=cv2.INTER_NEAREST) > 0
+            ps = cv2.resize(push, (w // q, h // q), interpolation=cv2.INTER_NEAREST)
+            eased = cv2.resize(smooth_fill(np.where(known, ps, 0).astype(np.float32), known), (w, h),
+                               interpolation=cv2.INTER_LINEAR)
+            fill = fill + np.where(core, push, np.where(loose, eased, 0))
+        B = np.where(loose[..., None], rays * fill[..., None], B)
     bg_mesh = grid_mesh(B, background, np.ones_like(vb), max_jump=args.max_jump)
-
-    # Every instance: height above the plane and a first base centre (refined later by fit_pose): the centroid of
-    # the points touching the plane (legs, wheels), or the top points dropped onto it when none are visible.
-    meas = []
-    owner = np.full((h, w), -1)
-    for j, m in enumerate(masks):
-        owner[m & (owner < 0)] = j
-    for j, (m, phrase) in enumerate(zip(masks, phrases)):
-        sel = m & vp
-        hgt = P[sel] @ n + dd
-        on = resting_on(j, m, owner, depth_p)
-        if on is not None:
-            # Stacked: the base is the object's lowest visible points, at their height above the plane, and the
-            # height counts from there (not from the table, which would stretch it over the object below).
-            lift = float(np.percentile(hgt, 3))
-            low = P[sel][hgt < lift + 0.1 * (np.percentile(hgt, 98) - lift)]
-            c = low.mean(0)
-            base = c - (c @ n + dd - lift) * n
-            meas.append(measure(P[sel], hgt - lift, n, phrase, base, on))
-            continue
-        low = P[sel][hgt < 0.1 * np.percentile(hgt, 98)]
-        c = low.mean(0) if len(low) >= 50 else P[sel][hgt >= np.percentile(hgt, 90)].mean(0)
-        base = c - (c @ n + dd) * n
-        meas.append(measure(P[sel], hgt, n, phrase, base, None))
-
-    # Mira meshes matched to our instances by IoU on Mira's 518 centre crop.
-    crop = json.load(open(os.path.join(args.meshes, 'input', 'preprocessing.json')))['crop_xywh']
-    sx = w / json.load(open(os.path.join(args.meshes, 'input', 'preprocessing.json')))['original_size'][0]
-    l, tp, side = [round(v * sx) for v in (crop[0], crop[1], crop[2])]
-    replica = []
-    for j, mi in enumerate(meas):
-        crop_mask = np.asarray(Image.fromarray(masks[j][tp:tp + side, l:l + side].astype(np.uint8) * 255).resize((518, 518))) > 127
-        best, best_iou = None, 0.1
-        for f in sorted(os.listdir(os.path.join(args.meshes, 'input'))):
-            if f.startswith('mask_'):
-                mm = np.asarray(Image.open(os.path.join(args.meshes, 'input', f))) > 0
-                iou = (mm & crop_mask).sum() / max((mm | crop_mask).sum(), 1)
-                if iou > best_iou:
-                    best, best_iou = f[5:8], iou
-        if best and not os.path.exists(os.path.join(args.meshes, 'mesh', 'sam3d', f'{best}.glb')):
-            best = None  # SAM 3D failed on it (e.g. out of memory): the object stays out of the replica
-        mi['mesh'] = best
-        if best:
-            obj = load_object(os.path.join(args.meshes, 'mesh', 'sam3d', f'{best}.glb'), mi['phrase'] in solid)
-            others = np.any([masks[k] for k in range(len(masks)) if k != j], axis=0) if len(masks) > 1 else None
-            fitted = fit_pose(obj, masks[j], others, mi, n, (w, h, fx, fy, cx, cy))
-            mi.update(fitted)
-            replica.append((j, obj, place(obj, mi['base'], n, mi['height_m'], mi['width_m'], mi['yaw'])))
 
     shadow_path = os.path.join(d, 'shadows.png')
     sun = None
@@ -452,16 +551,25 @@ def main():
                        'visible': round(visible, 3), 'on': meas[j]['on'],
                        'depth_rel_err': None if rel is None else round(rel, 4)})
 
-    # New compositions: the replica objects shuffled on the free part of the support, cameras moved around.
+    # New compositions: the replica objects shuffled on the free part of the support (--layout photo: left where
+    # they are), cameras moved around.
     # Candidate spots: support pixels away from its border and from the image border.
     free = cv2.erode((support & vb).astype(np.uint8), np.ones((61, 61), np.uint8)) > 0
     free[:h // 10], free[-h // 10:], free[:, :w // 10], free[:, -w // 10:] = False, False, False, False
     ys, xs = np.nonzero(free[::4, ::4])
     cand = on_plane[ys * 4, xs * 4]
     # Only well rebuilt objects are shuffled; the rest stay in the photo-camera replica.
-    lib = [(r, obj, meas[j]['height_m'], meas[j]['width_m']) for r, ((j, obj, _), c) in enumerate(zip(replica, checks))
-           if c['iou'] >= args.min_iou and c['visible'] >= args.min_visible]  # r: index in the replica (Isaac's meshes)
-    print(f'{len(lib)} of {len(replica)} objects shuffled in new views', flush=True)
+    good = [c['iou'] >= args.min_iou and c['visible'] >= args.min_visible for c in checks]
+    lib = [(r, obj, meas[j]['height_m'], meas[j]['width_m']) for r, ((j, obj, _), ok) in enumerate(zip(replica, good))
+           if ok and meas[j]['phrase'] not in fixed]  # r: index in the replica (Isaac's meshes)
+    # Fixed objects keep their photo pose in every view (left out if their replica fit failed: a wrong mesh would
+    # show in every view, and their hole then shows instead).
+    anchored = [(r, obj, tf, meas[j]) for r, ((j, obj, tf), ok) in enumerate(zip(replica, good))
+                if ok and meas[j]['phrase'] in fixed]
+    if fixed:
+        print(f'{len(anchored)} fixed objects kept in place', flush=True)
+    if args.layout == 'shuffle':
+        print(f'{len(lib)} of {len(replica)} objects shuffled in new views', flush=True)
     # For Isaac (bg_isaac.py): view 0 is the replica from the photo camera, then every accepted new view.
     bg_eye, dep_eye, _ = rend.render(eye, bg_mesh, [], n)
     isaac_views = [{'pose': eye.tolist(), 'objects': [[i, tf.tolist()] for i, (_, _, tf) in enumerate(replica)],
@@ -482,7 +590,14 @@ def main():
     while views < args.views and tries < 50 * args.views:
         tries += 1
         placed, objs, ids = [], [], []
-        for i in rng.permutation(len(lib)):
+        if args.layout == 'photo':  # the replica as it is; the loop below then has nothing to place
+            objs, ids = [(obj, tf) for _, obj, tf in replica], list(range(len(replica)))
+        else:  # fixed objects first, so the shuffled ones keep clear of their footprint
+            for r, obj, tf, mi in anchored:
+                placed.append([mi['base'], mi['width_m'], mi['height_m'], False, False])
+                objs.append((obj, tf))
+                ids.append(r)
+        for i in rng.permutation(len(lib)) if args.layout == 'shuffle' else []:
             r, obj, hh, ww = lib[i]
             # Piles: some objects go on top of a placed one at least as wide, which then carries nothing else.
             tops = [q for q in placed if q[3] and q[4] and q[1] >= 0.8 * ww]
