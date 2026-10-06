@@ -430,3 +430,26 @@ Papel (usuario): no sustituyen a MoGe; ayudan a fijar la escala y hacen lo que C
 - Revisión con nota de 0 a 10 (`vlm_qc.py rate`), avisando de que el aspecto sintético es normal y solo cuenta lo que enseña mal al detector. AUC (escenas aprovechables por encima de las malas): Qwen3.8-27B 1,00 (malas 1-2, aprovechables 3-4), GLM-5.3-Flash 0,83, Kimi-K3 0,78. DeepSeek-V4.1-Flash gasta los 16k tokens pensando y no responde.
 - `experiments/scene3d/bg_review.py` (último paso, Qwen3.8-27B, `SIM2CHIP_REVIEW_MODEL`, umbral 3): hoja con la foto y 5 vistas con cajas, `review.json` con nota y `keep`. Rechaza justo las 3 escenas malas de la revisión a ojo, así que el brazo R de `hope_student.py` (reales + escenas que el VLM acepta) tiene las mismas 133 imágenes que Q: F1 0,830 sin revisión humana.
 - Margen estrecho: tres escenas aceptadas sacan justo 3 (hope021, val/000001 y val/000006 planificada), y las notas cambian un punto al cambiar las vistas de la hoja. Con 9 escenas el umbral es frágil; hace falta más escenas para fijarlo.
+
+### HOPE: brazo B, el sintético actual del producto (2026-10-06)
+
+Spec `specs/benchmarks/hope_count.json`, escrita como la saldría de la entrevista: `describe-scene` sobre las 50 fotos de train propone interior, mesa de madera y cámara a 0,5-1 m. Clase "product" con 6 búsquedas (lata, caja de cereales, bote de ketchup, cartón de leche, zumo, pasta). El job `data/jobs/hope_count` corre las fases del producto hasta `points`: 60 modelos de Objaverse, GLM-5.3-Flash deja 30, y 2000 imágenes en 3,5 min, con 3-4 objetos sobre un mueble en una habitación. Mismo alumno y mismo test que los demás brazos (F1 medio de 3 ejecuciones, error de conteo):
+
+| Brazo | Imágenes de entrenamiento | F1 | Error de conteo |
+|---|---|---|---|
+| A, solo reales | 40 | 0,819 | 2,97 |
+| BS40 | 40 + 40 del producto | 0,827 | 2,62 |
+| BS, tantas como Q | 40 + 133 del producto | **0,833** | **2,47** |
+| Q, nuestras escenas revisadas | 40 + 133 nuestras | 0,830 | 2,55 |
+| BSQ | 40 + 133 + 133 | 0,822 | 2,82 |
+| BS300 | 40 + 300 | 0,817 | 2,73 |
+| BS600 | 40 + 600 | 0,809 | 3,07 |
+| B, lo que haría el producto hoy | 40 + 2000 | 0,776 | 3,61 |
+| BW, B con las reales repetidas (real_weight 4) | 40 x 12 + 2000 | 0,818 | 2,65 |
+| BQ | 40 + 2000 + 133 | 0,779 | 3,69 |
+
+- Por imagen, el sintético del producto rinde igual que nuestras escenas desde la foto en HOPE: 0,833 frente a 0,830, dentro del ruido (~0,006). Nuestra ventaja visual no se nota en este alumno ni en este dataset.
+- Lo que manda es la dosis: con 40 reales, entre 40 y 133 sintéticas ayudan, y a partir de ~300 restan. 2000, el valor por defecto, le quitan 4 puntos al alumno.
+- Causa probable: PicoDet entrena 600 pasos fijos (`sim2chip/detector.py`), así que con 2000 sintéticas las fotos reales se ven 12 veces menos. `training.real_weight` ya repite las reales en la ruta de la cabeza de conteo, pero no en la del detector. Aplicándolo (BW) se recupera el nivel de solo reales (0,818) y baja el error de conteo (2,65), pero no llega a lo que dan 133 sintéticas.
+- Mezclar las dos fuentes no suma (BSQ 0,822): otra vez, más sintético con las mismas 40 reales.
+- Propuesta para el producto, pendiente de confirmar en otro dataset de conteo antes de tocarlo: en el detector, limitar el sintético a unas 3 veces las reales, o al menos aplicar `real_weight`.

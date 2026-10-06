@@ -1,0 +1,41 @@
+{
+  "name": "hope_count",
+  "classes": [
+    {
+      "id": "product",
+      "description": "toy grocery products: cans, boxes, bottles and cartons, scattered on a table, a shelf or the floor",
+      "size_m": {"measure": "length", "range": [0.05, 0.2]},
+      "assets": {
+        "source": "search",
+        "categories": [],
+        "queries": ["food can", "cereal box", "ketchup bottle", "milk carton", "juice box", "pasta box"],
+        "count": 30,
+        "photos": null,
+        "generate": null
+      },
+      "names": ["can", "box", "bottle", "carton"]
+    }
+  ],
+  "hardware": "generic",
+  "task": "count",
+  "background_class": "empty",
+  "camera": {
+    "height_m": [0.9, 1.45],
+    "hfov_deg": 60,
+    "resolution": [640, 360],
+    "target_fill": [0.05, 0.3],
+    "distance_m": [0.5, 1.0]
+  },
+  "scene": {
+    "template": "generic",
+    "weather": ["clear"],
+    "distractors": [],
+    "ground_tags": ["wood", "table"],
+    "contexts": [{"kind": "indoor", "share": 1.0, "distance_m": [0.5, 1.0], "supports": ["furniture"]}],
+    "wall_tags": ["plaster"]
+  },
+  "user_data": {"labeled": null, "raw": null, "test": null},
+  "qa": {"mode": "auto", "strategy": "vision"},
+  "generation": {"frames": 2000, "empty_ratio": 0.1, "seed": 0, "max_targets": 20},
+  "training": {"seeds": [0, 1, 2], "epochs": 25, "real_weight": 4}
+}

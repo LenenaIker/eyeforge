@@ -10,7 +10,13 @@ Arms:
     D  our synthetic views only (val: a fixed 20 % of them)
     DQ D with only the reviewed scenes
     R  A + the scenes the VLM review kept (bg_review.py, <scene>/review.json "keep")
-    (B, real + the current Isaac HDRI + Objaverse synthetic, comes later.)
+    B  A + the product's current synthetic: Objaverse models on Poly Haven grounds and skies in Isaac Sim, from
+       specs/benchmarks/hope_count.json (job data/jobs/hope_count, stages up to points)
+    BS B with as many synthetic frames as Q (a fixed random pick), to compare per image; --synth N picks N instead
+    BW B with the real photos repeated to weigh 1/real_weight (4) of the synthetic set, as the count head path of
+       sim2chip/stages/train.py does and the detector path does not (training has a fixed number of steps)
+    BQ A + the B and Q synthetic together
+    BSQ A + the BS and Q synthetic together
 Truth boxes: every instance's mask_visib. The threshold is picked on val, then F1 and count error on test with
 the product's point matching (sim2chip/counting.py). Results in runs/hope_student/<arm>/seed<k>/ and
 runs/hope_student/<arm>.json.
@@ -32,6 +38,7 @@ from sim2chip import counting, detector  # noqa: E402
 HOPE = ROOT / 'data/hope'
 OURS = ROOT / 'data/scene3d_test/ours'
 OUT = ROOT / 'runs/hope_student'
+JOB = ROOT / 'data/jobs/hope_count'
 SIZE = 320
 LABELS = ['background', 'product']
 GRID = counting.grid_size(224)
@@ -77,6 +84,14 @@ def synthetic(skip=()):
     return items
 
 
+def product_synthetic():
+    """The product's synthetic frames (points stage) with their boxes from each point's centre and size."""
+    table = JOB / 'points' / 'points.json'
+    return [{'path': str(table.parent / 'images' / n),
+             'boxes': [[x - w / 2, y - h / 2, x + w / 2, y + h / 2, 0] for x, y, _, w, h in pts]}
+            for n, pts in sorted(json.loads(table.read_text()).items())]
+
+
 def split_val(items, share=0.2):
     idx = set(np.random.default_rng(0).permutation(len(items))[:round(len(items) * share)].tolist())
     return [x for i, x in enumerate(items) if i not in idx], [x for i, x in enumerate(items) if i in idx]
@@ -88,8 +103,9 @@ def points(boxes):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('arm', choices=['A', 'C', 'Q', 'D', 'DQ', 'R'])
+    ap.add_argument('arm', choices=['A', 'B', 'BW', 'BS', 'BQ', 'BSQ', 'C', 'Q', 'D', 'DQ', 'R'])
     ap.add_argument('--seeds', type=int, default=3, help='repeated runs (PaddlePaddle is not seeded)')
+    ap.add_argument('--synth', type=int, help='BS: product synthetic frames to pick (default: as many as Q)')
     args = ap.parse_args()
     split = json.loads((HOPE / 'split.json').read_text())
     truth = hope_boxes()
@@ -113,15 +129,29 @@ def main():
                       if not (p.parent.parent / 'review.json').exists()}
         print('VLM rejected:', sorted(rejected), 'unreviewed (left out):', sorted(unreviewed), flush=True)
         train, val = real_train + synthetic(rejected | unreviewed), real_val
+    elif args.arm == 'B':
+        train, val = real_train + product_synthetic(), real_val
+    elif args.arm == 'BW':
+        synth_b = product_synthetic()
+        train, val = real_train * max(1, len(synth_b) // (len(real_train) * 4)) + synth_b, real_val
+    elif args.arm in ('BS', 'BSQ'):
+        n = args.synth if args.arm == 'BS' and args.synth else len(synthetic(QC_REJECTED))
+        pick = np.random.default_rng(0).permutation(len(product_synthetic()))[:n]
+        train, val = real_train + [product_synthetic()[i] for i in sorted(pick)], real_val
+        if args.arm == 'BSQ':
+            train += synthetic(QC_REJECTED)
+    elif args.arm == 'BQ':
+        train, val = real_train + product_synthetic() + synthetic(QC_REJECTED), real_val
     elif args.arm == 'D':
         train, val = split_val(synth)
     else:
         train, val = split_val(synthetic(QC_REJECTED))
     print(f'arm {args.arm}: {len(train)} train, {len(val)} val, {len(test)} test', flush=True)
 
+    name = f'{args.arm}{args.synth}' if args.arm == 'BS' and args.synth else args.arm
     results = []
     for seed in range(args.seeds):
-        run = OUT / args.arm / f'seed{seed}'
+        run = OUT / name / f'seed{seed}'
         run.mkdir(parents=True, exist_ok=True)
         onnx = run / 'model.onnx'
         if not onnx.exists():
@@ -140,10 +170,10 @@ def main():
         print(json.dumps(res), flush=True)
         (run / 'score.json').write_text(json.dumps(res))
         results.append(res)
-    summary = {'arm': args.arm, 'train': len(train), 'val': len(val), 'seeds': results,
+    summary = {'arm': name, 'train': len(train), 'val': len(val), 'seeds': results,
                'f1_mean': round(float(np.mean([r['f1'] for r in results])), 4),
                'count_mae_mean': round(float(np.mean([r['count_mae'] for r in results])), 3)}
-    (OUT / f'{args.arm}.json').write_text(json.dumps(summary, indent=1))
+    (OUT / f'{name}.json').write_text(json.dumps(summary, indent=1))
     print(json.dumps({k: v for k, v in summary.items() if k != 'seeds'}))
 
 
