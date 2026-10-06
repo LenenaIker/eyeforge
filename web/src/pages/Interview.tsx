@@ -23,6 +23,7 @@ export default function Interview() {
   const [spec, setSpec] = useState<Spec | null>(null);          // the setup to train, with the user's tweaks
   const [proposal, setProposal] = useState<Spec | null>(null);  // as the interview proposed it
   const [photoRequest, setPhotoRequest] = useState<Turn["request"] | null>(null);
+  const [realPhotos, setRealPhotos] = useState(0);  // training photos uploaded in this interview
   const [dragging, setDragging] = useState(false);
   const [trainError, setTrainError] = useState<string | null>(null);
   const session = useRef<string | null>(null);
@@ -111,7 +112,9 @@ export default function Interview() {
                             (req.for === "3d" ? ` of ${req.class || "the object"} for 3D models` : ""), photos: previews });
     await ask("Uploading your photos", async (act) => {
       const files = await prepareImages(raw);
-      return API.uploadPhotos(await ensureSession(), files, req.for ?? "training", req.class ?? null, act);
+      const t = await API.uploadPhotos(await ensureSession(), files, req.for ?? "training", req.class ?? null, act);
+      if ((req.for ?? "training") === "training") setRealPhotos((n) => n + files.length);
+      return t;
     });
   }
 
@@ -161,7 +164,7 @@ export default function Interview() {
                    }}
                    onAddPhotos={() => fileInput.current?.click()}
                    confirm={m.id === lastConfirm && spec ? {
-                     spec, proposal: proposal ?? spec, onEdit: setSpec, blocked, onYes: confirm,
+                     spec, proposal: proposal ?? spec, onEdit: setSpec, blocked, onYes: confirm, realPhotos,
                      plan: revising ? plan : undefined,
                      onChange: () => { textInput.current?.focus(); setText(""); },
                    } : undefined} />
@@ -259,7 +262,7 @@ function WorkedFor({ steps }: { steps: Step[] }) {
 }
 
 type Confirm = { spec: Spec; proposal: Spec; onEdit: (s: Spec) => void; blocked: string | null; onYes: () => void;
-                 onChange: () => void; plan?: RevisePlan | null };
+                 onChange: () => void; plan?: RevisePlan | null; realPhotos: number };
 
 function Message({ m, session, onPick, onAddPhotos, confirm }: {
   m: Msg; session: string | null; onPick: (files: string[], cls: string) => void; onAddPhotos: () => void;
@@ -328,14 +331,14 @@ function PickPhotos({ turn, session, onPick }: { turn: Turn; session: string; on
   );
 }
 
-function ConfirmCard({ spec, proposal, onEdit, blocked, onYes, onChange, plan }: Confirm) {
+function ConfirmCard({ spec, proposal, onEdit, blocked, onYes, onChange, plan, realPhotos }: Confirm) {
   const [sent, setSent] = useState(false);
   const revise = plan !== undefined;
   const nothing = plan && plan.stages.length === 0;
   return (
     <Card className="overflow-hidden">
       <SpecSummary spec={spec} />
-      {!sent && <SpecOptions spec={spec} proposal={proposal} onEdit={onEdit} />}
+      {!sent && <SpecOptions spec={spec} proposal={proposal} onEdit={onEdit} realPhotos={realPhotos} />}
       <div className="space-y-3 border-t border-line bg-stone-50 p-4">
         {blocked && <Notice>{blocked}</Notice>}
         {plan && (nothing ? <Notice>That is the setup your model already has: nothing to retrain.</Notice> : (
@@ -357,11 +360,32 @@ function ConfirmCard({ spec, proposal, onEdit, blocked, onYes, onChange, plan }:
 }
 
 const FRAMES = [500, 1000, 2000, 4000];
+// How many synthetic images per real photo we recommend when counting. The detector trains a fixed number of steps,
+// so many synthetic images drown the few real ones. On HOPE with 40 real photos (experiments/NOTES.md, 2026-10-06):
+// 1-3 per photo F1 0.827-0.833, 7.5 0.817, 15 0.809, 50 0.776 against 0.819 with the photos alone. Published
+// studies put the best mix between 0.5 and 4 per real image, depending on the task. Only a recommendation:
+// the user picks.
+const SYNTH_PER_PHOTO = { good: 4, near: 10 };
+type Advice = "good" | "near" | "far";
+const ADVICE: Record<Advice, { dot: string; text: string }> = {
+  good: { dot: "bg-emerald-500", text: "recommended" },
+  near: { dot: "bg-amber-400", text: "may help less" },
+  far: { dot: "bg-red-500", text: "likely too many for your photos" },
+};
+const niceRound = (n: number) => { const step = n < 200 ? 10 : n < 1000 ? 50 : 100; return Math.max(step, Math.round(n / step) * step); };
+
+function frameAdvice(frames: number, photos: number, task: string | undefined): Advice | null {
+  if (task !== "count" || photos <= 0) return null;  // measured for counting with real photos only
+  const r = frames / photos;
+  return r <= SYNTH_PER_PHOTO.good ? "good" : r <= SYNTH_PER_PHOTO.near ? "near" : "far";
+}
 const MISTAKES: [string, string][] = [["find_more", "Miss fewer objects"], ["balanced", "Balanced"],
                                       ["fewer_false", "Fewer false alarms"]];
 
 // The choices a user may want to make before paying for a run, without going back to the chat.
-function SpecOptions({ spec, proposal, onEdit }: { spec: Spec; proposal: Spec; onEdit: (s: Spec) => void }) {
+function SpecOptions({ spec, proposal, onEdit, realPhotos }: {
+  spec: Spec; proposal: Spec; onEdit: (s: Spec) => void; realPhotos: number;
+}) {
   const synthetic = usesSynthetic(spec);
   const canSynth = usesSynthetic(proposal);  // 3D models to search come from the interview's proposal
   const photos = hasPhotos(spec);
@@ -370,6 +394,11 @@ function SpecOptions({ spec, proposal, onEdit }: { spec: Spec; proposal: Spec; o
         props: proposal.props ?? [] }
     : { ...spec, classes: spec.classes.map((c) => ({ ...c, assets: null })), props: [] });
   const frames = spec.generation?.frames ?? 2000;
+  const advised = frameAdvice(1, realPhotos, spec.task) !== null;
+  const options = [...new Set([...FRAMES, frames,
+                               ...(advised ? [niceRound(realPhotos * 2), niceRound(realPhotos * SYNTH_PER_PHOTO.good)] : [])])]
+    .sort((a, b) => a - b);
+  const current = frameAdvice(frames, realPhotos, spec.task);
   return (
     <div className="space-y-4 border-t border-line p-4 text-sm">
       <Option label="Training data">
@@ -383,14 +412,30 @@ function SpecOptions({ spec, proposal, onEdit }: { spec: Spec; proposal: Spec; o
            "Faster and cheaper: no 3D models and no rendering. It needs photos of every case the camera will see."}
         </p>
         {synthetic && (
-          <label className="mt-2 flex items-center gap-2 text-muted">
-            Synthetic images
-            <select value={frames} onChange={(e) => onEdit({ ...spec, generation: { ...spec.generation, frames: Number(e.target.value) } })}
-                    className="rounded-[var(--radius-control)] border border-line bg-white px-2 py-1 text-ink">
-              {[...new Set([...FRAMES, frames])].sort((a, b) => a - b).map((n) => <option key={n} value={n}>{n.toLocaleString()}</option>)}
-            </select>
-            <span className="text-xs">fewer is cheaper</span>
-          </label>
+          <div className="mt-2">
+            <p className="mb-1.5 text-muted">Synthetic images <span className="text-xs">(fewer is cheaper)</span></p>
+            <div className="flex flex-wrap gap-1.5">
+              {options.map((n) => {
+                const a = frameAdvice(n, realPhotos, spec.task);
+                return (
+                  <button key={n} onClick={() => onEdit({ ...spec, generation: { ...spec.generation, frames: n } })}
+                          disabled={n === frames} title={a ? ADVICE[a].text : undefined}
+                          className={cx("flex items-center gap-1.5 rounded-full px-3 py-1.5 ring-1 transition",
+                                        n === frames ? "bg-brand-600 text-white ring-brand-600" : "bg-white text-ink ring-line hover:ring-brand-500")}>
+                    {a && <span className={cx("h-2 w-2 rounded-full", ADVICE[a].dot)} />}
+                    {n.toLocaleString()}
+                  </button>
+                );
+              })}
+            </div>
+            {current && (
+              <p className="mt-1.5 text-xs text-muted">
+                {frames.toLocaleString()} for your {realPhotos} photos: {ADVICE[current].text}. Green is what we
+                recommend (up to {SYNTH_PER_PHOTO.good} per photo), yellow is close, red is out of proportion; too many
+                synthetic images can drown your real photos. Your call.
+              </p>
+            )}
+          </div>
         )}
       </Option>
       <Option label="Device">
