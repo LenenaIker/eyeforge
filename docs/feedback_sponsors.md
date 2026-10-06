@@ -54,3 +54,4 @@ Criterio: hechos medidos o vistos por nosotros, no opiniones sueltas. Si algo es
 ## Ideas de producto para ellos
 
 - Plantilla oficial de "Isaac Sim en Serverless Jobs" con imagen fina, cachés de shaders en un bucket y entornos como kits: es lo que hemos tenido que montar a mano.
+- **"Sign in with Nebius" para apps de terceros** (2026-10-05). No hay OAuth de Nebius como proveedor de identidad: una app no puede pedir permiso al usuario para gastar de su cuenta, solo pedirle que pegue una API key o la clave de un service account. Propuesta: OAuth con permisos acotados (Token Factory y Serverless Jobs en un proyecto) para que las apps hechas sobre Nebius lleven clientes a Nebius sin manejar sus credenciales.
