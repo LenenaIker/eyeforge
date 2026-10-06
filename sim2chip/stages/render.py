@@ -16,9 +16,39 @@ from ..spec import MEASURES, camera_distance
 from .base import Context, Stage
 
 
+# Auto exposure after the render, as a phone sets it before the shot: dark frames are brightened in linear light
+# until their median reaches EXPOSE_MEDIAN (sRGB 0..1), by at most EXPOSE_MAX_GAIN, never darkened. A frame still
+# mostly black after that (a room corner, a facade against the sun) is left out: it teaches nothing.
+EXPOSE_MEDIAN = 0.42
+EXPOSE_MAX_GAIN = 4.0
+BLACK_LEVEL = 30 / 255   # sRGB value counted as nearly black
+BLACK_SHARE = 0.4        # frames with more of it than this are dropped
+
+
+def expose(path) -> bool:
+    """Brighten a render in place; False when it stays mostly black."""
+    import numpy as np
+    from PIL import Image
+
+    im = Image.open(path)
+    rgb = np.asarray(im.convert("RGB"), dtype=np.float32) / 255
+    lin = rgb ** 2.2
+    median = float(np.median(lin @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)))
+    gain = min(EXPOSE_MAX_GAIN, max(1.0, EXPOSE_MEDIAN ** 2.2 / max(median, 1e-6)))
+    if gain > 1.01:
+        rgb = np.clip(lin * gain, 0, 1) ** (1 / 2.2)
+        out = (rgb * 255 + 0.5).astype(np.uint8)
+        if im.mode == "RGBA":  # keep the writer's alpha
+            out = np.dstack([out, np.asarray(im)[..., 3]])
+        Image.fromarray(out).save(path)
+    luma = rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    return float((luma < BLACK_LEVEL).mean()) <= BLACK_SHARE
+
+
 class Render(Stage):
     name = "render"
-    version = "3"  # v2: paint, empty-frame distance and camera aim from the spec; v3: masonry parapets
+    version = "4"  # v2: paint, empty-frame distance and camera aim from the spec; v3: masonry parapets;
+    # v4: sun behind the camera in most frames, room lamp, auto exposure and nearly black frames dropped
     runtime = "isaac"
     uses_cache = True
     gpu = "rtx"
@@ -166,6 +196,7 @@ class Render(Stage):
                         shown.append(gprim)
                 a = group[0][0] if group else None
                 look_at(cam.GetPrim(), eye, look)
+                scene.aim_sun(eye, look)
                 dist, ch = math.dist(eye, look), eye[2]
             else:
                 if group:
@@ -200,6 +231,7 @@ class Render(Stage):
                 # Aim at the body of the object (a car's doors, a pot's middle), not a fixed height.
                 look_at(cam.GetPrim(), eye, (target[0] + rng.uniform(-j, j), target[1] + rng.uniform(-j, j),
                                              rng.uniform(0.2, 0.8) * aim_h))
+                scene.aim_sun(eye, target)
                 shown += scene.place_distractors(eye)
                 placed, hidden = scatter.place(eye, target, radius, height, rng)
                 shown += placed
@@ -217,6 +249,10 @@ class Render(Stage):
             if f % 200 == 0:
                 ctx.log(f"[{f}/{gen.frames}] {cls}")
         rep.orchestrator.wait_until_complete()
+        kept = [lab for lab in labels if expose(out / f"rgb_{lab['frame']:04d}.png")]
+        if len(kept) < len(labels):
+            ctx.log(f"{len(labels) - len(kept)} nearly black frames left out")
+        labels = kept
         (out / "labels.json").write_text(json.dumps(labels, indent=1))
         counts = {}
         for lab in labels:

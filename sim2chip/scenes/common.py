@@ -1,6 +1,8 @@
 """USD helpers shared by scene templates. Import only inside a running Isaac Sim app."""
 from __future__ import annotations
 
+import math
+
 from pxr import Gf, Sdf, Semantics, UsdGeom, UsdLux, UsdShade
 
 from ..workspace import say
@@ -153,6 +155,7 @@ class OutdoorScene:
     A template adds its ground in build() and its layout in randomize(); the interface render uses is
     build, after_load, randomize(change_sky), place_target(prim, scale) and place_distractors(eye)."""
     SUN_SHARE = 1.0  # frames with a sun besides the sky map's own light
+    BACKLIT_SHARE = 0.25  # frames shot against the sun (aim_sun); the rest have it behind or beside the camera
 
     def __init__(self, stage, props, rng, skies: list[str], distractors: list[str], ground: list[str] = (),
                  ground_tile: float | None = None):
@@ -182,7 +185,19 @@ class OutdoorScene:
             self.dome.CreateTextureFileAttr().Set(rng.choice(self.skies))
         self.dome.CreateIntensityAttr().Set(rng.uniform(400, 1500))
         UsdGeom.Xformable(self.dome).GetOrderedXformOps()[0].Set(rng.uniform(0, 360))
-        sun = rng.uniform(0, 3000) if self.SUN_SHARE >= 1 or rng.random() < self.SUN_SHARE else 0.0
+        sun = rng.uniform(500, 3000) if self.SUN_SHARE >= 1 or rng.random() < self.SUN_SHARE else 0.0
         self.sun.CreateIntensityAttr().Set(sun)
         UsdGeom.Xformable(self.sun).GetOrderedXformOps()[0].Set(
             Gf.Vec3f(rng.uniform(-70, 70), rng.uniform(-70, 70), 0))
+
+    def aim_sun(self, eye, look) -> None:
+        """Turn the sun to the camera once it is placed: behind or beside it in most frames, as people take photos
+        (a random sun left a facade against the light in about half the frames, nearly black), against it in
+        BACKLIT_SHARE of them."""
+        rng = self.rng
+        # A distant light shines along its -Z: tilted by X, then turned by Z, it travels towards
+        # (-sin az, cos az) on the ground, here the way the camera looks.
+        az = math.degrees(math.atan2(-(look[0] - eye[0]), look[1] - eye[1])) + rng.uniform(-60, 60)
+        if rng.random() < self.BACKLIT_SHARE:
+            az += 180
+        UsdGeom.Xformable(self.sun).GetOrderedXformOps()[0].Set(Gf.Vec3f(rng.uniform(25, 70), 0, az))

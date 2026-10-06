@@ -45,6 +45,10 @@ class PlacesScene(GenericScene):
         self.fill = UsdLux.SphereLight.Define(self.stage, "/World/Places/Fill")
         self.fill.CreateRadiusAttr(0.5)
         UsdGeom.Xformable(self.fill).AddTranslateOp()
+        # The room's own lamp under where the ceiling would be: without it the corners stayed nearly black.
+        self.lamp = UsdLux.SphereLight.Define(self.stage, "/World/Places/Lamp")
+        self.lamp.CreateRadiusAttr(0.3)
+        UsdGeom.Xformable(self.lamp).AddTranslateOp()
         self.new_layout()
         self.show(None)
 
@@ -67,6 +71,8 @@ class PlacesScene(GenericScene):
     def show(self, kind: str | None) -> None:
         if kind is None or kind == "ground":
             self.fill.CreateIntensityAttr().Set(0.0)
+        if kind != "indoor":
+            self.lamp.CreateIntensityAttr().Set(0.0)
         for group, on in (("building", kind in ("facade", "balcony")), ("room", kind == "indoor")):
             for mesh, _ in self.parts[group].values():
                 set_visible(mesh.GetPrim(), on)
@@ -90,8 +96,18 @@ class PlacesScene(GenericScene):
                                   c.eye_height)
         eye, look, surfaces = shot
         lit = kind in ("balcony", "indoor") or (kind == "facade" and rng.random() < 0.2)
-        UsdGeom.Xformable(self.fill).GetOrderedXformOps()[0].Set(Gf.Vec3d(eye[0], eye[1], eye[2] + 0.8))
+        # Behind and above the camera, like a lamp at the photographer's back or daylight from the open side.
+        dx, dy = look[0] - eye[0], look[1] - eye[1]
+        n = max((dx * dx + dy * dy) ** 0.5, 1e-6)
+        back = min(0.8, 0.5 * n)
+        UsdGeom.Xformable(self.fill).GetOrderedXformOps()[0].Set(
+            Gf.Vec3d(eye[0] - dx / n * back, eye[1] - dy / n * back, eye[2] + 0.5))
         self.fill.CreateIntensityAttr().Set(rng.uniform(3e3, 2.5e4) if lit else 0.0)
+        if kind == "indoor":
+            (ox, oy), (sx, sy) = pl.ROOM_AT, self.room.size
+            UsdGeom.Xformable(self.lamp).GetOrderedXformOps()[0].Set(
+                Gf.Vec3d(ox + rng.uniform(-0.2, 0.2) * sx, oy + rng.uniform(-0.2, 0.2) * sy, 2.5))
+            self.lamp.CreateIntensityAttr().Set(rng.uniform(1e4, 6e4))
         return pl.place(surfaces, items, rng), eye, look
 
 
