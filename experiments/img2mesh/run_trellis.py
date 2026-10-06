@@ -8,8 +8,11 @@ by its text query and crops it, BiRefNet (MIT) cuts it out, TRELLIS turns it int
 a textured mesh, and we save a light GLB (the size Isaac Sim would use) plus a
 render sheet of that GLB from 4 sides.
 
+With --cutout sam3 the OWLv2 + BiRefNet step is skipped and the SAM 3 cutouts from
+sam3_masks.py (masks/<stem>/rgba.png) are used instead.
+
 Usage:
-    python run_trellis.py --root ~/work/eyeforge/data/img2mesh_test [--only wrench_1,bee_1]
+    python run_trellis.py --root ~/work/eyeforge/data/img2mesh_test [--only wrench_1,bee_1] [--cutout sam3]
 """
 import argparse
 import json
@@ -27,7 +30,7 @@ from PIL import Image, ImageDraw
 from torchvision import transforms
 from transformers import AutoModelForImageSegmentation, Owlv2ForObjectDetection, Owlv2Processor
 
-TRELLIS_DIR = os.environ['SIM2CHIP_TRELLIS_DIR']  # the TRELLIS checkout
+TRELLIS_DIR = os.environ.get('SIM2CHIP_TRELLIS_DIR', '')  # the TRELLIS checkout (only main() needs it)
 
 # Input file prefix -> detector query.
 QUERIES = {
@@ -110,19 +113,21 @@ def main():
     ap.add_argument('--root', required=True)
     ap.add_argument('--only', default=None, help='comma-separated input stems')
     ap.add_argument('--seed', type=int, default=1)
+    ap.add_argument('--cutout', choices=['owl', 'sam3'], default='owl')
     args = ap.parse_args()
 
     root = os.path.expanduser(args.root)
-    out_root = os.path.join(root, 'out_trellis1')
+    out_root = os.path.join(root, 'out_trellis1' if args.cutout == 'owl' else 'out_sam3_trellis1')
     os.makedirs(out_root, exist_ok=True)
 
     sys.path.insert(0, TRELLIS_DIR)
     from trellis.pipelines import TrellisImageTo3DPipeline
     from trellis.utils import postprocessing_utils
 
-    processor = Owlv2Processor.from_pretrained('google/owlv2-base-patch16-ensemble')
-    detector = Owlv2ForObjectDetection.from_pretrained('google/owlv2-base-patch16-ensemble').eval()
-    cutout = Cutout()
+    if args.cutout == 'owl':
+        processor = Owlv2Processor.from_pretrained('google/owlv2-base-patch16-ensemble')
+        detector = Owlv2ForObjectDetection.from_pretrained('google/owlv2-base-patch16-ensemble').eval()
+        cutout = Cutout()
     pipeline = TrellisImageTo3DPipeline.from_pretrained('microsoft/TRELLIS-image-large')
     pipeline.cuda()
 
@@ -136,15 +141,18 @@ def main():
         os.makedirs(out, exist_ok=True)
         image = Image.open(os.path.join(root, 'inputs', stem + '.jpg')).convert('RGB')
 
-        detector.cuda()
-        crop, box, score = detect_and_crop(image, query, processor, detector)
-        detector.cpu()
-        vis = image.copy()
-        if box:
-            ImageDraw.Draw(vis).rectangle(box, outline='red', width=6)
-        vis.save(os.path.join(out, 'detection.jpg'))
-        rgba = cutout(crop)
-        torch.cuda.empty_cache()
+        if args.cutout == 'sam3':
+            rgba, score = Image.open(os.path.join(root, 'masks', stem, 'rgba.png')), 1.0
+        else:
+            detector.cuda()
+            crop, box, score = detect_and_crop(image, query, processor, detector)
+            detector.cpu()
+            vis = image.copy()
+            if box:
+                ImageDraw.Draw(vis).rectangle(box, outline='red', width=6)
+            vis.save(os.path.join(out, 'detection.jpg'))
+            rgba = cutout(crop)
+            torch.cuda.empty_cache()
 
         torch.cuda.reset_peak_memory_stats()
         t0 = time.time()
