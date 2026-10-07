@@ -18,6 +18,7 @@ from isaacsim import SimulationApp
 ap = argparse.ArgumentParser()
 ap.add_argument("--dir", required=True)
 ap.add_argument("--seed", type=int, default=0)
+ap.add_argument("--sweep", action="store_true", help="view 0 under a fixed set of lights, to isaac/sweep/")
 ap.add_argument("--hdri-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../data/hdri"))
 args = ap.parse_args()
 
@@ -31,7 +32,10 @@ from PIL import Image, ImageDraw  # noqa: E402
 from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdShade, Vt  # noqa: E402
 
 CV2GL = np.diag([1.0, -1.0, -1.0, 1.0])
-EXPOSE_TOP, EXPOSE_MEDIAN_RANGE, EXPOSE_MAX_GAIN = 0.92, (0.32, 0.58), 4.0
+EXPOSE_TOP, EXPOSE_MEDIAN_RANGE, EXPOSE_MAX_GAIN = 0.85, (0.28, 0.52), 4.0
+# Colours cut from a photo already hold its daylight; lit again here they came out too pale (user, 2026-10-07,
+# mostly the ground): albedo is the photo colour times these.
+ALBEDO, ALBEDO_GROUND = 0.8, 0.7
 src = os.path.join(args.dir, "isaac")
 scene = json.load(open(os.path.join(src, "scene.json")))
 arr = np.load(os.path.join(src, "meshes.npz"))
@@ -72,6 +76,16 @@ def surface(path, roughness):
 
 
 # Pieces: one quad each, the photo's material (made seamless in piece_build) tiled by its size in metres.
+up0 = np.asarray(scene["up"], float) / np.linalg.norm(scene["up"])
+
+
+def albedo(points):
+    """Ground (a horizontal piece) or the rest."""
+    c = np.asarray(points, float)
+    n = np.cross(c[1] - c[0], c[3] - c[0])
+    return ALBEDO_GROUND if abs(n @ up0) > 0.9 * np.linalg.norm(n) else ALBEDO
+
+
 for i, pc in enumerate(scene["pieces"]):
     m = mesh(f"/World/Pieces/p{i}", pc["points"], [[0, 1, 2], [0, 2, 3]])
     mat, sh = surface(f"/World/Looks/Piece{i}", 0.8)
@@ -87,9 +101,12 @@ for i, pc in enumerate(scene["pieces"]):
         st.CreateIdAttr("UsdPrimvarReader_float2")
         st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
         tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st.ConnectableAPI(), "result")
+        g = np.asarray(pc.get("gain") or [1, 1, 1], float) * albedo(pc["points"])  # flow_photometry.py gains
+        tex.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(*g.tolist(), 1))
         sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(tex.ConnectableAPI(), "rgb")
     else:
-        sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*linear(pc["colour"]).tolist()))
+        sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+            Gf.Vec3f(*(linear(pc["colour"]) * albedo(pc["points"]) * np.asarray(pc.get("gain") or [1, 1, 1])).tolist()))
     UsdShade.MaterialBindingAPI.Apply(m.GetPrim()).Bind(mat)
 
 # Objects: SAM 3D meshes with vertex colours, one prim each, posed and shown per view.
@@ -97,7 +114,7 @@ objs = []
 for i in range(scene["objects"]):
     xf = UsdGeom.Xform.Define(stage, f"/World/Objects/o{i}")
     m = mesh(f"/World/Objects/o{i}/mesh", arr[f"obj{i}_points"], arr[f"obj{i}_faces"])
-    m.CreateDisplayColorPrimvar(UsdGeom.Tokens.vertex).Set(Vt.Vec3fArray.FromNumpy(linear(arr[f"obj{i}_colors"])))
+    m.CreateDisplayColorPrimvar(UsdGeom.Tokens.vertex).Set(Vt.Vec3fArray.FromNumpy(linear(arr[f"obj{i}_colors"]) * ALBEDO))
     mat, sh = surface(f"/World/Looks/Obj{i}", 0.45)
     rd = UsdShade.Shader.Define(stage, f"/World/Looks/Obj{i}/Color")
     rd.CreateIdAttr("UsdPrimvarReader_float3")
@@ -143,12 +160,14 @@ def frame(z):
     return Gf.Matrix4d(rot.T.tolist())
 
 
-def randomize_light():
-    e, a = math.radians(rng.uniform(30, 70)), rng.uniform(0, 2 * math.pi)
+def set_light(e, a, sun_on=True):
+    """Sun at elevation e and azimuth a (radians, a about the scene's up from a fixed side), the dome turned by a.
+    sun_on False: the sky alone (overcast)."""
     side = np.cross(up, [1.0, 0, 0]) if abs(up[0]) < 0.9 else np.cross(up, [0, 0, 1.0])
     side /= np.linalg.norm(side)
     other = np.cross(up, side)
     sun_op.Set(frame(-(math.cos(e) * (math.cos(a) * side + math.sin(a) * other) + math.sin(e) * up)))
+    sun.CreateIntensityAttr().Set(0 if scene["indoor"] or not sun_on else 2500)
     # The dome's latlong pole is its local +Z in RTX (the product renders with a Z-up stage): align it with the
     # scene's up, then turn it about that axis. With +Y the sky lay on its side (street HDRIs, 2026-10-06).
     z = up / np.linalg.norm(up)
@@ -157,6 +176,10 @@ def randomize_light():
     rot = np.eye(4)
     rot[:3, 0], rot[:3, 1], rot[:3, 2] = x, np.cross(z, x), z
     dome_op.Set(Gf.Matrix4d(rot.T.tolist()))
+
+
+def randomize_light():
+    set_light(math.radians(rng.uniform(30, 70)), rng.uniform(0, 2 * math.pi))
 
 
 
@@ -189,7 +212,7 @@ for _ in range(20):
     app.update()
 
 
-def expose(img):
+def expose(img, fixed=None):
     """Auto exposure in linear light, as a camera would: the brightest parts (97th percentile) just below white,
     with the median kept within EXPOSE_MEDIAN_RANGE. Taking every view to one median (sim2chip/stages/render.py)
     turned front-lit street views flat grey, nothing in shadow to balance them, and burnt the sunlit ground of
@@ -200,13 +223,43 @@ def expose(img):
     gain = EXPOSE_TOP ** 2.2 / max(top, 1e-6)
     lo, hi = (m ** 2.2 / max(med, 1e-6) for m in EXPOSE_MEDIAN_RANGE)
     gain = min(EXPOSE_MAX_GAIN, max(1 / EXPOSE_MAX_GAIN, min(hi, max(lo, gain))))
+    # The photometry's exposure ratio (flow_photometry.py, photo over render): an overcast photo's place is
+    # rendered as dim as the photo in every view, not only in the photo's own.
+    gain *= scene.get("exposure_scale", 1.0)
+    if fixed is not None:  # manual exposure: the photometry rounds must not be undone by the auto exposure
+        gain = fixed
+    expose.last = gain
     return (np.clip(lin * gain, 0, 1) ** (1 / 2.2) * 255 + 0.5).astype(np.uint8)
 
 
 photo = np.asarray(Image.open(os.path.join(args.dir, "photo.png")).convert("RGB"))
 tiles = [("photo", photo)]
+if args.sweep:
+    # Step 2.3b of the scene flow: view 0 (the photo's camera) under a fixed set of lights, for flow_light.py to
+    # pick the one whose light falls like the photo's.
+    lights = [(el, az, True) for el in (20, 45, 70) for az in range(0, 360, 45)] + [(60, 0, False)]
+    os.makedirs(os.path.join(src, "sweep"), exist_ok=True)
+    view = scene["views"][0]
+    cam_op.Set(Gf.Matrix4d((np.asarray(view["pose"]) @ CV2GL).T.tolist()))
+    for i, (xf, _) in enumerate(objs):
+        (xf.MakeVisible if i in {j for j, _ in view["objects"]} else xf.MakeInvisible)()
+    for i, t in view["objects"]:
+        objs[i][1].Set(Gf.Matrix4d(np.asarray(t).T.tolist()))
+    for k, (el, az, on) in enumerate(lights):
+        set_light(math.radians(el), math.radians(az), on)
+        rep.orchestrator.step(rt_subframes=16)
+        Image.fromarray(expose(rgb.get_data()[..., :3].astype(np.float32))).save(
+            os.path.join(src, "sweep", f"sweep_{k:02d}.png"))
+    json.dump([{"elevation": el, "azimuth": az, "sun": on} for el, az, on in lights],
+              open(os.path.join(src, "sweep", "lights.json"), "w"))
+    app.close()
+    raise SystemExit(0)
+
 for k, view in enumerate(scene["views"]):
     randomize_light()
+    if k == 0 and scene.get("light"):  # the light flow_light.py matched to the photo
+        L = scene["light"]
+        set_light(math.radians(L["elevation"]), math.radians(L["azimuth"]), L["sun"])
     place_lights(view)
     cam_op.Set(Gf.Matrix4d((np.asarray(view["pose"]) @ CV2GL).T.tolist()))
     shown = {i for i, _ in view["objects"]}
@@ -215,7 +268,9 @@ for k, view in enumerate(scene["views"]):
     for i, t in view["objects"]:
         objs[i][1].Set(Gf.Matrix4d(np.asarray(t).T.tolist()))
     rep.orchestrator.step(rt_subframes=16)
-    out = expose(rgb.get_data()[..., :3].astype(np.float32))
+    out = expose(rgb.get_data()[..., :3].astype(np.float32), scene.get("exposure_0") if k == 0 else None)
+    if k == 0:  # flow_photometry.py fixes it for the next rounds
+        json.dump({"gain": expose.last}, open(os.path.join(src, "exposure_0.json"), "w"))
     Image.fromarray(out).save(os.path.join(src, f"render_{k:02d}.png"))
     tiles.append((f"view {k}", out))
 

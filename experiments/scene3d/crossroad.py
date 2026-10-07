@@ -18,6 +18,7 @@ import colorsys
 import json
 import math
 import os
+import re
 import shutil
 
 import numpy as np
@@ -30,6 +31,7 @@ from scipy.spatial import cKDTree
 BRICKS = [(None, 1.0, 1.0), (0.02, 1.8, 0.75), (0.06, 1.3, 0.55), (None, 0.15, 1.25),
           (0.04, 1.5, 0.9), (0.09, 0.6, 0.8)]
 ASPHALT = [0.24, 0.24, 0.25]
+ROAD_WORDS = ('road', 'street', 'asphalt', 'lane', 'cobble')
 
 
 def rebrick(colours, brick):
@@ -138,6 +140,12 @@ def main():
     # The curb: where the support (the sidewalk) ends, toward the camera (b) and toward the side street (a).
     pts = np.load(os.path.join(args.photo_scene, 'depth_photo.npz'))['points']
     sup = np.asarray(Image.open(os.path.join(args.photo_scene, 'support_raw.png'))) > 0
+    gpath = os.path.join(args.photo_scene, 'ground.npz')
+    if os.path.exists(gpath):  # the flow segments sidewalk and road apart: the curb is where the sidewalk ends
+        g = np.load(gpath)
+        side = [i for i, p in enumerate(g['phrases']) if not any(w in str(p) for w in ROAD_WORDS)]
+        if side and np.any(g['masks'][side], 0).sum() > 2000:
+            sup = np.any(g['masks'][side], 0)
     q = pts[sup]
     q = q[np.isfinite(q).all(1)]
     level = float(np.median(q @ up))
@@ -164,6 +172,8 @@ def main():
         if far and args.far_mode == 'drop':
             continue
         block.append((p, arr[f'obj{i}_faces'], arr[f'obj{i}_colors'], name, far))
+    # Facade planes env_add.py kept where no mesh stands go round with the block.
+    facades = [p for p in scene['pieces'] if re.search(r'tex_wall\d+\.png$', p['texture'] or '')]
     out_arr, objects, boxes = {}, 0, []
     texdir = os.path.join(args.out, 'isaac', 'far')
     os.makedirs(texdir, exist_ok=True)
@@ -172,6 +182,8 @@ def main():
         rot[:3, :3] = np.asarray(_axis_rotation(up, k * math.pi / 2))
         rot[:3, 3] = centre - rot[:3, :3] @ centre
         brick = BRICKS[0] if k == 0 else BRICKS[1 + rng.integers(len(BRICKS) - 1)]
+        for fp in facades:
+            boxes.append({**fp, 'points': (np.asarray(fp['points']) @ rot[:3, :3].T + rot[:3, 3]).tolist()})
         for j, (p, f, c, name, far) in enumerate(block):
             if any(w in name for w in ('house', 'wall')):
                 c = rebrick(c, brick)
@@ -197,6 +209,7 @@ def main():
         side = [c0, c0 + args.reach * ka, c0 + args.reach * (ka + kb), c0 + args.reach * kb]
         uv = [[0, 0], [args.reach / size[0], 0], [args.reach / size[0], args.reach / size[1]], [0, args.reach / size[1]]]
         pieces.append(quad(side, uv, floor['texture'] if floor else None, floor['colour'] if floor else [0.5] * 3))
+        pieces[-1]['gain'] = (floor or {}).get('gain')  # the photometry gain of the photo's ground
         for e in (ka, kb):
             pieces.append(quad([c0, c0 + args.reach * e, c0 + args.reach * e - args.curb * up, c0 - args.curb * up],
                                colour=[0.55, 0.54, 0.52]))
@@ -207,6 +220,10 @@ def main():
     env_pts = np.concatenate([trimesh.sample.sample_surface(trimesh.Trimesh(out_arr[f'obj{i}_points'],
                                                                             out_arr[f'obj{i}_faces'], process=False),
                                                             3000, seed=0)[0] for i in range(objects)])
+    for fp in (p for p in pieces if re.search(r'tex_wall\d+\.png$', p['texture'] or '')):  # facades too
+        c = np.asarray(fp['points'])
+        uv = rng.uniform(0, 1, (300, 2))
+        env_pts = np.concatenate([env_pts, c[0] + uv[:, :1] * (c[1] - c[0]) + uv[:, 1:] * (c[3] - c[0])])
     tree = cKDTree(env_pts)
     while len(views) <= args.views:
         along = rng.uniform(-25, 25)
@@ -234,7 +251,7 @@ def main():
     json.dump(scene, open(os.path.join(args.out, 'isaac', 'scene.json'), 'w'))
     np.savez_compressed(os.path.join(args.out, 'isaac', 'meshes.npz'), **out_arr)
     shutil.copy(os.path.join(args.scene, 'photo.png'), args.out)
-    print(json.dumps({'corner_ab': [round(a0, 2), round(b0, 2)], 'meshes': objects, 'far_boxes': len(boxes) // 5,
+    print(json.dumps({'corner_ab': [round(a0, 2), round(b0, 2)], 'meshes': objects, 'boxes_and_facades': len(boxes),
                       'views': len(views),
                       'pieces': len(pieces)}))
 

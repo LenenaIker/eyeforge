@@ -6,7 +6,7 @@ erased with LaMa (Apache 2.0) so the photo becomes an empty background. Run in t
 
 With --shadows the objects' cast shadows are erased too (sunny scenes).
 Writes photo.png (resized), support.png (support plus erased pixels), support_raw.png (SAM 3 only), objects.png (all object masks), instances.npz (one mask per instance and
-its phrase) and background.png (objects erased).
+its phrase), ground.npz (one mask per support phrase) and background.png (objects erased).
 """
 import argparse
 import json
@@ -64,7 +64,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--image', required=True)
     ap.add_argument('--objects', required=True, help='comma-separated phrases to erase')
-    ap.add_argument("--support", required=True, help="surface the objects rest on (table, floor, road); erased pixels count as support")
+    ap.add_argument("--support", required=True, help="surface the objects rest on (table, floor, road), or several "
+                    "comma-separated (sidewalk,asphalt road: their union); erased pixels count as support")
     ap.add_argument('--out', required=True)
     ap.add_argument('--long-side', type=int, default=1344)
     ap.add_argument('--threshold', type=float, default=0.5)
@@ -88,8 +89,12 @@ def main():
                 masks.append(m)
                 phrases.append(phrase)
     support = np.zeros(photo.size[::-1], bool)
-    for _, m in segment(model, proc, photo, args.support, args.threshold):
-        support |= m
+    ground = {}  # each support phrase's own mask, for templates that tell the sidewalk from the road
+    for phrase in [p.strip() for p in args.support.split(',') if p.strip()]:
+        ground[phrase] = np.zeros_like(support)
+        for _, m in segment(model, proc, photo, phrase, args.threshold):
+            ground[phrase] |= m
+        support |= ground[phrase]
     objects = np.any(masks, axis=0) if masks else np.zeros_like(support)
     grow = max(2, round(args.grow * args.long_side))
     # Cast shadows of the objects: SAM 3 'shadow' regions on the support that connect to an object. Left in the
@@ -109,6 +114,8 @@ def main():
     for name, m in [('support', support | erase), ('support_raw', support), ('objects', objects), ('shadows', shadows), ('erased', erase)]:
         Image.fromarray(m.astype(np.uint8) * 255).save(os.path.join(args.out, f'{name}.png'))
     np.savez_compressed(os.path.join(args.out, 'instances.npz'), masks=np.array(masks), phrases=np.array(phrases))
+    np.savez_compressed(os.path.join(args.out, 'ground.npz'), masks=np.array(list(ground.values())),
+                        phrases=np.array(list(ground)))
     with open(os.path.join(args.out, 'prepare.json'), 'w') as f:
         json.dump({'image': args.image, 'size': photo.size, 'support': args.support,
                    'instances': phrases, 'support_frac': round(float(support.mean()), 3),

@@ -21,6 +21,7 @@ import open3d as o3d
 import pyrender
 import trimesh
 from PIL import Image, ImageDraw
+from scipy.spatial import ConvexHull, cKDTree
 
 GL2CV = np.diag([1.0, -1.0, -1.0, 1.0])
 
@@ -38,7 +39,20 @@ def simplify(m, max_faces):
 
 
 def env_meshes(case, max_faces):
-    """Each surroundings mesh in Mira's OpenGL photo camera frame, with vertex colours, by node name."""
+    """Each surroundings mesh in Mira's OpenGL photo camera frame, with vertex colours, by node name. A flow
+    case's poses refined on our depth (flow_refine.py, scene_refined.glb) take the place of Mira's."""
+    refined = os.path.join(case, 'scene_refined.glb')
+    if os.path.exists(refined):
+        scene = trimesh.load(refined)
+        out = {}
+        for node in scene.graph.nodes_geometry:
+            tf, name = scene.graph[node]
+            m = scene.geometry[name].copy()
+            if m.visual.kind == "texture":
+                m.visual = m.visual.to_color()
+            m.apply_transform(tf)
+            out[node] = simplify(m, max_faces)
+        return out
     opt_path = glob.glob(os.path.join(case, 'scene', '*', '*', 'scene_optimization.json'))[0]
     to_cam = np.asarray(json.load(open(opt_path))['floor_to_camera_transform'])
     scene = trimesh.load(os.path.join(os.path.dirname(opt_path), 'scene_with_floor.glb'))
@@ -53,6 +67,37 @@ def env_meshes(case, max_faces):
         m.apply_transform(to_cam @ tf)
         out[node] = simplify(m, max_faces)
     return out
+
+
+def skirt(pts, faces, cols, up, level, min_gap=0.1):
+    """A floating mesh (its base hidden behind a hedge or a wall in the photo, so SAM 3D left out the lower
+    floors) gets a prism from its lowest band down to the floor: the band's convex outline, the band's colour.
+    Moving it down instead put a house metres off its own photo pixels (basque_street, 2026-10-07)."""
+    h = pts @ up
+    base = float(np.percentile(h, 0.5))
+    gap = base - level
+    if gap < min_gap:
+        return pts, faces, cols
+    band = h <= base + 0.1 * max(float(np.ptp(h)), 0.5)
+    e1 = np.cross(up, [1.0, 0, 0]) if abs(up[0]) < 0.9 else np.cross(up, [0, 0, 1.0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(up, e1)
+    q = np.stack([pts[band] @ e1, pts[band] @ e2], 1)
+    try:
+        hull = q[ConvexHull(q).vertices]
+    except Exception:
+        return pts, faces, cols
+    top = [a * e1 + b * e2 + base * up for a, b in hull]
+    bottom = [a * e1 + b * e2 + level * up for a, b in hull]
+    n0, k = len(pts), len(hull)
+    new = np.array(top + bottom)
+    f = []
+    for j in range(k):
+        a, b = j, (j + 1) % k
+        f += [[n0 + a, n0 + b, n0 + k + b], [n0 + a, n0 + k + b, n0 + k + a]]
+    colour = np.median(cols[band], 0)
+    return (np.concatenate([pts, new]), np.concatenate([faces, np.array(f)]),
+            np.concatenate([cols, np.tile(colour, (2 * k, 1))]))
 
 
 def depth_scale(case, ours, masks):
@@ -94,36 +139,77 @@ def main():
     ap.add_argument('--scene', required=True, help='a piece_build.py scene directory')
     ap.add_argument('--out', required=True)
     ap.add_argument('--drop-walls', action='store_true', help='leave out the facade planes the meshes replace')
+    ap.add_argument('--drop-covered-walls', action='store_true', help='leave out only the facade planes a mesh '
+                    'covers (half their area within 1.5 m of it)')
     ap.add_argument('--max-faces', type=int, default=20000, help='triangles per mesh at most')
+    ap.add_argument('--snap-ground', action='store_true', help='set each mesh on the floor by its lowest points')
+    ap.add_argument('--fill-ground', action='store_true', help='a mesh above the floor gets a skirt down to it '
+                    '(its base was hidden in the photo, so SAM 3D left it out); keeps where the photo put it')
+    ap.add_argument('--keep', default=None, help='comma-separated mask indices of the meshes to add (the ones '
+                    'flow_check_meshes.py passed); default all')
     args = ap.parse_args()
     meshes = env_meshes(args.env, args.max_faces)
     graph = json.load(open(os.path.join(args.env, 'scene_graph.json')))
     names = {n['id']: f"{n['mask_index']:03d} {n['name']}" for n in graph['nodes'] if n['kind'] == 'object'}
     meshes = {next((v for k, v in names.items() if k in node or v[:3] in node), node): m
               for node, m in sorted(meshes.items())}
+    if args.keep is not None:
+        keep = {int(i) for i in args.keep.split(',') if i.strip()}
+        meshes = {k: m for k, m in meshes.items() if k[:3].isdigit() and int(k[:3]) in keep}
     os.makedirs(os.path.join(args.out, 'isaac'), exist_ok=True)
-    turntable(meshes, os.path.join(args.out, 'env_meshes.jpg'))
+    if meshes:
+        turntable(meshes, os.path.join(args.out, 'env_meshes.jpg'))
 
     masks = np.any([np.asarray(Image.open(p)) > 0 for p in glob.glob(os.path.join(args.env, 'input', 'mask_*.png'))], 0)
-    s = depth_scale(args.env, args.scene, masks)
+    # A flow case (flow_mira_case.py) already carries our own depth, padded: same frame and scale.
+    padded = os.path.exists(os.path.join(os.path.dirname(os.path.normpath(args.env)), 'pad.json'))
+    s = 1.0 if padded else depth_scale(args.env, args.scene, masks)
     src = os.path.join(args.scene, 'isaac')
     scene = json.load(open(os.path.join(src, 'scene.json')))
     arr = dict(np.load(os.path.join(src, 'meshes.npz')))
     first = scene['objects']
+    up = np.asarray(scene['up'], float)
+    up /= np.linalg.norm(up)
+    level = float(np.mean(np.asarray(scene['pieces'][0]['points']) @ up))  # piece_build's floor comes first
     for k, (name, m) in enumerate(meshes.items()):
         i = first + k
         pts = trimesh.transform_points(m.vertices, GL2CV) * s
+        cols = m.visual.vertex_colors[:, :3] / 255
+        faces = m.faces
+        if args.snap_ground:  # catalog entry 1: a base hidden in the photo comes out floating or sunk
+            pts = pts + (level - np.percentile(pts @ up, 0.5)) * up
+        elif args.fill_ground:
+            pts, faces, cols = skirt(pts, faces, cols, up, level)
         arr[f'obj{i}_points'] = pts.astype(np.float32)
-        arr[f'obj{i}_faces'] = m.faces.astype(np.int32)
-        arr[f'obj{i}_colors'] = (m.visual.vertex_colors[:, :3] / 255).astype(np.float32)
+        arr[f'obj{i}_faces'] = np.asarray(faces).astype(np.int32)
+        arr[f'obj{i}_colors'] = np.asarray(cols).astype(np.float32)
         for v in scene['views']:
             v['objects'].append([i, np.eye(4).tolist()])
         print(f'{name}: {len(m.faces)} faces, {np.ptp(pts, 0).round(2).tolist()} m, at {pts.mean(0).round(1).tolist()}')
     scene['objects'] = first + len(meshes)
     scene['env'] = [{'index': first + k, 'name': name} for k, name in enumerate(meshes)]
+    walls = tuple(f'tex_wall{j}.png' for j in range(9))
     if args.drop_walls:
-        scene['pieces'] = [p for p in scene['pieces'] if not (p['texture'] or '').endswith(tuple(
-            f'tex_wall{j}.png' for j in range(9)))]
+        scene['pieces'] = [p for p in scene['pieces'] if not (p['texture'] or '').endswith(walls)]
+    elif args.drop_covered_walls and len(meshes):
+        # A facade plane stays as the fallback where no kept mesh stands: SAM 3D fails on facades seen at a
+        # grazing angle along a street (straight_whitewash, 2026-10-07), the photo's plane does not.
+        env_pts = np.concatenate([arr[f'obj{first + k}_points'] for k in range(len(meshes))])
+        tree = cKDTree(env_pts[:: max(1, len(env_pts) // 200000)])
+        kept = []
+        for p in scene['pieces']:
+            if not (p['texture'] or '').endswith(walls):
+                kept.append(p)
+                continue
+            c = np.asarray(p['points'])
+            uv = np.random.default_rng(0).uniform(0, 1, (400, 2))
+            q = c[0] + uv[:, :1] * (c[1] - c[0]) + uv[:, 1:] * (c[3] - c[0])
+            if (tree.query(q)[0] < 1.5).mean() < 0.5:
+                kept.append(p)
+        scene['pieces'] = kept
+    for stale in ('orig_scene.json', 'orig_meshes.npz'):  # flow_photometry.py's originals belong to the old place
+        if os.path.exists(os.path.join(args.out, 'isaac', stale)):
+            os.remove(os.path.join(args.out, 'isaac', stale))
     json.dump(scene, open(os.path.join(args.out, 'isaac', 'scene.json'), 'w'))
     np.savez_compressed(os.path.join(args.out, 'isaac', 'meshes.npz'), **arr)
     shutil.copy(os.path.join(args.scene, 'photo.png'), args.out)

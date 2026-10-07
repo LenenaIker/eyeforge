@@ -97,13 +97,25 @@ def tileable(img, share=0.15):
     return out.clip(0, 255).astype(np.uint8)
 
 
-def material(photo, mask, m, c, up, intr, ppm, name, out, min_side_m=0.12):
+def material(photo, mask, m, c, up, intr, ppm, name, out, min_side_m=0.12, depth=None, near=None, max_aspect=3.0):
     """A texture for plane m.X = c: the largest clean rectangle of its rectified pixels. Returns the texture file
-    and its size in metres, or the mean colour when no rectangle of min_side_m fits."""
+    and its size in metres, or the mean colour when no rectangle of min_side_m fits. Pixels much darker than the
+    surface's median are cast shadows and stay out of the ground's crop; with depth and near (a percentile), only the
+    nearer part of the mask is used (a street's far ground is a few blurred pixels per metre). The crop is at
+    most max_aspect long: a thin strip, repeated, drew stripes over a whole street (2026-10-07)."""
+    colour = (np.median(photo[mask], 0) / 255).tolist() if mask.any() else [0.6, 0.6, 0.6]
+    if depth is not None and near and mask.sum() > 1000:
+        mask = mask & (depth <= np.percentile(depth[mask], near))
     img, ok, (u0, v0, step, _, _) = rectify(photo, mask, m, c, up, intr, ppm)
+    lum = img.astype(np.float32).mean(2)
+    if near and ok.sum() > 100:  # ground only: a timber facade's dark beams are not shadows
+        ok &= lum > 0.6 * np.median(lum[ok])
     ok = cv2.erode(ok.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
     y0, x0, y1, x1 = max_rect(ok) if ok.any() else (0, 0, 0, 0)
-    colour = (np.median(photo[mask], 0) / 255).tolist() if mask.any() else [0.6, 0.6, 0.6]
+    if x1 - x0 > max_aspect * (y1 - y0):
+        x1 = x0 + int(max_aspect * (y1 - y0))
+    if y1 - y0 > max_aspect * (x1 - x0):
+        y1 = y0 + int(max_aspect * (x1 - x0))
     if min(y1 - y0, x1 - x0) * step < min_side_m:
         return {'colour': colour, 'rectified': img, 'crop': None}
     tex = tileable(img[y0:y1, x0:x1])
@@ -130,7 +142,8 @@ def quad(corners, mat, uv_axes=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir', required=True)
-    ap.add_argument('--meshes', required=True)
+    ap.add_argument('--meshes', default='', help='Mira case with the object meshes; empty: the place only (its '
+                    'objects are erased and come later from Replicator)')
     ap.add_argument('--fov-x', type=float, default=None)
     ap.add_argument('--camera-height', type=float, default=None)
     ap.add_argument('--views', type=int, default=20)
@@ -147,6 +160,8 @@ def main():
                     'it, no room is closed and the sky is an HDRI')
     ap.add_argument('--indoor', action='store_true', help='close a room even when the photo shows no wall (a table '
                     'shot indoors); its walls take a plain plaster colour')
+    ap.add_argument('--depth', choices=['photo', 'background'], default='photo',
+                    help='MoGe of the photo or of the erased photo (the flow: the same depth Mira gets)')
     args = ap.parse_args()
     d, out = args.dir, os.path.join(args.dir, 'isaac')
     os.makedirs(out, exist_ok=True)
@@ -159,7 +174,7 @@ def main():
     inst = np.load(os.path.join(d, 'instances.npz'))
     masks, phrases = inst['masks'], list(inst['phrases'])
     surf = np.load(os.path.join(d, 'surfaces.npz'))
-    dp = np.load(os.path.join(d, 'depth_photo.npz'))
+    dp = np.load(os.path.join(d, f'depth_{args.depth}.npz'))
     k = dp['intrinsics']
     fx, fy, cx, cy = k[0, 0] * w, k[1, 1] * h, k[0, 2] * w, k[1, 2] * h
     if args.fov_x:
@@ -221,13 +236,14 @@ def main():
 
     # Objects where the photo has them.
     meas, replica = photo_replica(masks, phrases, P, vp, depth_p, n, dd, intr, args.meshes, solid,
-                                  os.path.join(args.meshes, 'ccm_pose.json'), fixed)
+                                  os.path.join(args.meshes, 'ccm_pose.json'), fixed) if args.meshes else ({}, [])
     good = [(j, obj, tf) for j, obj, tf in replica if meas[j]['fit_iou'] >= args.min_iou]
     print(f'{len(good)} of {len(replica)} replica objects fit (silhouette IoU >= {args.min_iou})', flush=True)
     pivot = np.mean([meas[j]['base'] for j, _, _ in good], 0) if good else -n * dd
 
     # Materials, cut from the photo.
-    mats = {'floor': material(photo, floor_mask, n, -floor_dd, up, intr, ppm, 'floor', out)}
+    mats = {'floor': material(photo, floor_mask, n, -floor_dd, up, intr, ppm, 'floor', out, depth=depth_p,
+                              near=50 if args.outdoor else None)}
     if not on_floor:
         mats['support'] = material(photo, support, n, -dd, up, intr, ppm, 'support', out)
     for i, wl in enumerate(walls):
@@ -252,6 +268,10 @@ def main():
     room = None
     if args.outdoor:
         lo, hi = lo - 10, hi + 10  # open ground to the horizon
+        if not good:  # the place only: the ground must reach every ground pixel, the far buildings stand on it
+            g2 = np.array([to2(p) for p in P[support][:: max(1, int(support.sum()) // 20000)]])
+            lo = np.minimum(lo, np.percentile(g2, 1, 0) - 15)
+            hi = np.maximum(hi, np.percentile(g2, 99, 0) + 15)
     elif walls:
         # The photo's walls bound the room; the sides it does not show close it behind and beside the camera.
         lo[1] = walls[0]['c']  # on the wall m.X = c, and y = (X - floor_o).m with floor_o.m = 0

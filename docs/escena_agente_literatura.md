@@ -136,3 +136,7 @@ Cada subtarea tiene una sola responsabilidad, entrada y salida en disco, su comp
    - 3.3 Separar lugar y objetos, exportar ligero. *Existe (`--no-objects`).*
    - 3.4 Cámaras de prueba: puertas de distancia a paredes y exposición, preguntas por vista. *Puertas en código existen.*
    - 3.5 Entrega a Replicator. *Falta.*
+
+### Estado (2026-10-07)
+
+Orquestador `experiments/scene3d/scene_flow.py` con registro por escena (`flow.json`) y banco de 9 fotos reales en `data/street_test/`. Hecho: 1.1 (`flow_observe.py`), 1.2 (`flow_route.py`), 1.3 con revisión por máscara, reparación y segunda opinión (`flow_segment.py`, `flow_check_masks.py`), 1.4 con puerta (`flow_camera.py`), 1.5 con caso de Mira propio, refinado de pose y revisión por malla (`flow_mira_case.py`, `flow_refine.py`, `flow_check_meshes.py`), 2.2 puertas geométricas (`flow_gates.py`), 2.4 comparación (`flow_compare.py`, sin calibrar: poco fiable), 3.1 elección de plantilla con calle recta nueva (`street_template.py`), 3.4 revisión por vista (`flow_check_views.py`). Falta: plantilla de plaza, 3.5 entrega a Replicator, calibrar 2.4 con hojas etiquetadas y fachadas vistas muy de lado. Detalle y números en `experiments/NOTES.md`.
