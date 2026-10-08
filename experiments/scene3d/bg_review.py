@@ -48,7 +48,10 @@ def sheet(d):
         im = Image.open(os.path.join(d, 'isaac', k)).convert('RGB')
         dr = ImageDraw.Draw(im)
         for b in labels[k]:
-            dr.rectangle(b, outline=(255, 0, 0), width=4)
+            if isinstance(b, dict):  # with roles: targets in red, distractors in blue
+                dr.rectangle(b['box'], outline=(255, 0, 0) if b['role'] == 'target' else (0, 90, 255), width=4)
+            else:
+                dr.rectangle(b, outline=(255, 0, 0), width=4)
         tiles.append(im)
     # Tiles keep the photo's shape: a portrait photo squeezed into 16:9 tiles made the VLM see stretched,
     # oversized objects that were not (bottles, 2026-10-08).

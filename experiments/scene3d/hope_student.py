@@ -78,6 +78,9 @@ def synthetic(skip=()):
             continue
         w, h = json.loads((d / 'scene.json').read_text())['size']
         for name, boxes in json.loads(Path(lab).read_text()).items():
+            # With roles (view_labels.py on a scene from flow_assets.py) only the targets are trained on.
+            boxes = [b['box'] if isinstance(b, dict) else b for b in boxes
+                     if not isinstance(b, dict) or b['role'] == 'target']
             if (d / name).exists() and boxes:
                 items.append({'path': str(d / name), 'boxes': [[b[0] / w, b[1] / h, b[2] / w, b[3] / h, 0]
                                                                for b in boxes]})

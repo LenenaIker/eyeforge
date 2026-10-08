@@ -668,8 +668,17 @@ def main():
     # Each replica object's photo pixels where it is the front object of the replica and agrees with the photo depth
     # (within 5%): Isaac fits light and colour on them.
     agree = np.abs(rep_dep - depth_p) <= 0.05 * depth_p
+    # flow_assets.py's catalogue (asked instances first, in instances.npz order): which Isaac object is one of the
+    # user's classes and which a distractor, so view_labels.py boxes only what the student must learn.
+    cat = os.path.join(d, 'assets.json')
+    roles = None
+    if os.path.exists(cat):
+        rows = json.load(open(cat))['assets']
+        roles = [{'name': rows[j]['name'], 'role': rows[j]['role']} if j < len(rows) else
+                 {'name': str(phrases[j]), 'role': 'distractor'} for j, _, _ in replica]
     export_isaac(os.path.join(d, 'isaac'), bg_mesh, background, [o for _, o, _ in replica], isaac_views,
-                 (w, h, fx, fy, cx, cy), n, [masks[j] & agree & f for (j, _, _), f in zip(replica, front)], sun)
+                 (w, h, fx, fy, cx, cy), n, [masks[j] & agree & f for (j, _, _), f in zip(replica, front)], sun,
+                 roles)
 
     scene = trimesh.Scene()
     scene.add_geometry(bg_mesh, node_name='background')
@@ -687,7 +696,7 @@ def main():
     print(f'{views} views accepted out of {tries} tries')
 
 
-def export_isaac(out, bg_mesh, background, objects, views, intr, n, photo_masks, sun=None):
+def export_isaac(out, bg_mesh, background, objects, views, intr, n, photo_masks, sun=None, roles=None):
     """Plain arrays and JSON for bg_isaac.py (Isaac's python has no trimesh): the background mesh with UVs into
     background.png, every object mesh with vertex colours (in its own frame), and per view the camera pose, the
     object poses and the background seen unlit from that camera."""
@@ -710,7 +719,7 @@ def export_isaac(out, bg_mesh, background, objects, views, intr, n, photo_masks,
         Image.fromarray(view.pop('background')).save(os.path.join(out, f'bg_unlit_{k:02d}.png'))
     with open(os.path.join(out, 'scene.json'), 'w') as f:
         json.dump({'size': [int(w), int(h)], 'fx': float(fx), 'fy': float(fy), 'cx': float(cx), 'cy': float(cy), 'up': n.tolist(),
-                   'objects': len(objects), 'views': views, 'sun': sun}, f)
+                   'objects': len(objects), 'views': views, 'sun': sun, **({'roles': roles} if roles else {})}, f)
 
 
 if __name__ == '__main__':
