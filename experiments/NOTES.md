@@ -620,3 +620,11 @@ Foto de ejemplo de Mira (`data/scene3d_test/images/003_home_office.png`), ruta i
 Resultado: filtros geométricos con las 3 mallas (IoU 0,59, 0,71 y 0,82), ΔE 21,4, comparación del VLM bien en todo y 15 de 16 vistas aceptadas. Defectos a la vista: la ventana se pierde (la pared es una textura repetida de un trozo de la foto, con manchas), la estantería sale vacía y oscura por dentro y con parches de la foto borrada, y la cara vista del aparador lleva el relleno de LaMa.
 
 Control en calle (basque_street desde 1.3a con estos cambios): solo una señal pegada a una casa deja de borrarse; 7 mallas pasan los filtros igual que antes, ΔE 25,4 a 25,3, comparación bien; vistas aceptadas 94 % a 75 % (3 rechazos por "street_view", revisión de vistas ya ruidosa antes).
+
+### Borrado de objetos: LaMa frente a Qwen-Image-Edit (2026-10-08)
+
+`erase_qwen.py`: Qwen-Image-Edit-2511 con el LoRA Object-Remover (ambos Apache 2.0), los objetos de `prepare.json` nombrados en el prompt, pegado solo dentro de la máscara de borrado de LaMa con borde suave. En la 3090 en 4 bits (nf4) con descarga a CPU, 40 pasos: unos 4,6 min por foto (LaMa, segundos). Cuantizar en 4 bits la modulación del primer bloque y las proyecciones de entrada y salida llena toda la imagen de ruido fino; se dejan en bf16. Entorno `/media/lenena-iker/Crucial/envs/eyeforge-qwenedit`, pesos en `/media/lenena-iker/Crucial/hf_cache` (54 GB). Hojas: `data/scene3d_test/erase_compare/` (original con la máscara / LaMa / Qwen).
+
+- Qwen mucho mejor en 6 de 8: reconstruye lo que hay detrás (estantería y libros tras la silla en home_office, verja, zócalo y bordillo tras el coche en facade_car, fachada y escaleras en corner_timber, casas del fondo en terrace_row y church_corner). LaMa deja borrones y cuadros repetidos.
+- Conserva las sombras que no son del objeto (sombra de la casa en corner_timber y church_corner), que LaMa borraba con la máscara de sombras; mejor para ajustar la luz.
+- Fallos: no siempre quita lo que se le nombra (straight_road: deja una farola y una señal; el rótulo pintado en la fachada también se queda, que ahí es lo correcto). En straight_whitewash, igual que LaMa.
