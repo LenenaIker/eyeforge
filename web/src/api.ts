@@ -217,3 +217,64 @@ export const mediaUrl = (job: string, path: string, big = false) =>
   `/api/jobs/${job}/media/${path}${big ? "?size=1024" : ""}`;
 export const fileUrl = (job: string, file: string) => `/api/jobs/${job}/files/${file}`;
 export const versionFileUrl = (job: string, n: number, file: string) => `/api/jobs/${job}/versions/${n}/files/${file}`;
+
+// The library (sim2chip/library.py): models are the visitor's jobs; datasets, objects and scenes are kept for good
+// and kits are named lists of references to them.
+export type ModelCard = {
+  job: string; created: number; running: boolean; task: string | null; hardware: string | null; classes: string[];
+  model: { metric: string | null; score: number | null; kb: number | null; hardware: string | null } | null;
+};
+export type DatasetCard = { id: string; name: string; created: number; labeled: boolean; photos: number;
+                            splits: Record<string, number>; labels: string[]; sample: string[]; jobs: string[] };
+export type ObjectCard = { id: string; name: string; concept: string; source: "online" | "photos" | "scene" | "upload";
+                           has_file: boolean; thumb: boolean; kept: boolean; license?: string; author?: string;
+                           url?: string; created: number; jobs: string[] };
+export type SceneCard = { id: string; name: string; thumb: boolean; created: number };
+export type Kit = { id: string; name: string; datasets: string[]; objects: string[]; scenes: string[];
+                    created: number; updated: number };
+export type LibraryData = { models: ModelCard[]; datasets: DatasetCard[]; objects: ObjectCard[]; scenes: SceneCard[];
+                            kits: Kit[] };
+export const getLibrary = () => api<LibraryData>("/api/library");
+export const libraryPhotoUrl = (key: string) => `/api/library/photos/${key}`;
+export const cardUrl = (kind: "object" | "scene", id: string) => `/api/library/${kind}/${id}/card`;
+
+export type CreditMove = { amount: number; reason: string; detail: string | null; t: number };
+export type Billing = { enabled: boolean; costs: { run: number; interview: number };
+                        tier?: "judge" | "normal" | "banned"; balance?: number; moves?: CreditMove[] };
+export const getBilling = () => api<Billing>("/api/billing");
+
+// Editing the library. Photos go in batches like the chat's: the first batch makes the dataset, the rest join it.
+export type LibraryKind = "datasets" | "objects" | "scenes" | "kits";
+export async function createDataset(name: string, files: File[]) {
+  const [first, ...rest] = batches(files);
+  const form = new FormData();
+  form.append("name", name);
+  first.forEach((f) => form.append("photos", f, f.name));
+  const made = await api<{ id: string; photos: number }>("/api/library/datasets", { method: "POST", body: form });
+  for (const part of rest) await addDatasetPhotos(made.id, part);
+  return made;
+}
+export function addDatasetPhotos(id: string, files: File[]) {
+  const form = new FormData();
+  files.forEach((f) => form.append("photos", f, f.name));
+  return api<{ photos: number }>(`/api/library/datasets/${id}/photos`, { method: "POST", body: form });
+}
+// card: the picture of the model the app rendered (glbCard.ts), shown on its card.
+export function uploadObject(name: string, concept: string, model: File, card: Blob | null) {
+  const form = new FormData();
+  form.append("name", name);
+  form.append("concept", concept);
+  form.append("model", model, model.name);
+  if (card) form.append("card", card, "card.png");
+  return api<{ id: string }>("/api/library/objects", { method: "POST", body: form });
+}
+export const renameItem = (kind: LibraryKind, id: string, name: string) =>
+  api<{ ok: boolean }>(`/api/library/${kind}/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+                                                       body: JSON.stringify({ name }) });
+// kits: how many kits the item was taken out of.
+export const deleteItem = (kind: LibraryKind, id: string) =>
+  api<{ kits: number }>(`/api/library/${kind}/${id}`, { method: "DELETE" });
+export type KitRefs = { name: string; datasets: string[]; objects: string[]; scenes: string[] };
+export const saveKit = (id: string | null, kit: KitRefs) =>
+  api<{ id: string }>(id ? `/api/library/kits/${id}` : "/api/library/kits",
+                      { method: id ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(kit) });

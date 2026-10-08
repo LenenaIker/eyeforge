@@ -22,7 +22,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
-from . import config, review, usage, warm as warm_mod
+from . import config, library, review, usage, warm as warm_mod
 from .accounts import INTERVIEW_COST, RUN_COST
 from .job_service import CALIBRATION, JobService, cloud_spent
 from . import spec as spec_mod
@@ -165,6 +165,11 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     new_session = interviewer
     jobs = JobService(home, backend, max_usd, launcher=launcher, warm=warm, public=public, max_runs=max_runs,
                       daily_usd=daily_usd)
+
+    lib = library.Library(home, home / "cache")
+
+    def owner_of(request: Request) -> str:
+        return visitor(request) or "local"
 
     def visitor(request: Request) -> str | None:
         if auth is not None:
@@ -384,7 +389,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return {"steps": [dict(s) for s in steps], "now": time.time()}
 
     @app.post("/api/interview/{sid}/photos")
-    def interview_photos(sid: str, purpose: str = Form("training"), cls: str = Form(""),
+    def interview_photos(sid: str, request: Request, purpose: str = Form("training"), cls: str = Form(""),
                                photos: list[UploadFile] = File(...), act: str | None = None,
                                more: bool = Form(False), total: int = Form(0)):
         """Photos uploaded in the chat, asked for by the interview or not. They wait in uploads/<session>
@@ -398,11 +403,14 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         purpose = "3d" if purpose == "3d" else "training"
         folder = home / "uploads" / sid / (f"3d_{slug(cls)}" if purpose == "3d" and cls else purpose)
         folder.mkdir(parents=True, exist_ok=True)
-        n = 0
+        saved = []
         for p in photos:
             if Path(p.filename or "").suffix.lower() in IMAGE_EXT:
                 (folder / Path(p.filename).name).write_bytes(p.file.read())
-                n += 1
+                saved.append(folder / Path(p.filename).name)
+        n = len(saved)
+        # Every real photo belongs to a dataset: the chat's own, made with its first photos (user, 2026-10-08).
+        lib.add_chat_photos(owner_of(request), sid, saved, "3d" if purpose == "3d" else "train", cls or None)
         if not n and not total:
             raise HTTPException(400, "no images among the files")
         if purpose == "training":  # the GPU starts while the interview goes on
@@ -491,6 +499,133 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         names = sorted(d.name for d in root.iterdir() if ((d / "spec.json").exists() or (d / "request.json").exists())
                        and mine(Job(d), request)) if root.exists() else []
         return {"jobs": names}
+
+    @app.get("/api/library")
+    def library_data(request: Request):
+        """Everything the visitor owns: models (jobs), datasets of real photos, 3D objects, scenes and kits.
+        Their jobs are read into the library first (only the new or changed ones)."""
+        mine_jobs = [Job(home / "jobs" / n) for n in list_jobs(request)["jobs"]]
+        owner = owner_of(request)
+        lib.sync(owner, mine_jobs)
+        return {"models": [library.model_summary(j, jobs.running(j)) for j in mine_jobs],
+                "datasets": lib.datasets(owner), "objects": lib.objects(owner), "scenes": lib.scenes(owner),
+                "kits": lib.kits(owner)}
+
+    @app.get("/api/library/photos/{key}")
+    def library_photo(key: str, request: Request, size: int = 360):
+        src = lib.photo_file(owner_of(request), key) if re.fullmatch(r"[0-9a-f]{16}", key) else None
+        if src is None or not src.exists():
+            raise HTTPException(404, "no such photo")
+        return FileResponse(photo_thumb(lib.root / "_thumbs", src, Path(f"{key}.{size}.jpg"), 1024 if size > 360 else 360))
+
+    @app.get("/api/library/{kind}/{item}/card")
+    def library_card(kind: str, item: str, request: Request):
+        src = lib.card_file(owner_of(request), kind, item) if kind in ("object", "scene") else None
+        if src is None or not src.exists():
+            raise HTTPException(404, "no picture")
+        return FileResponse(src)
+
+    LIB_KINDS = {"datasets": "dataset", "objects": "object", "scenes": "scene", "kits": "kit"}
+
+    def owned(request: Request, kinds: str, item: str) -> tuple[str, str]:
+        kind = LIB_KINDS.get(kinds)
+        owner = owner_of(request)
+        if kind is None or not lib.owns(owner, kind, item):
+            raise HTTPException(404, f"no such {kind or 'item'}")
+        return owner, kind
+
+    def incoming(files: list[UploadFile], ext: set[str]) -> tuple[Path, list[Path]]:
+        """Uploaded files into a fresh temporary folder (the library links or copies them from there)."""
+        import tempfile
+        (lib.root / "_incoming").mkdir(exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(dir=lib.root / "_incoming"))
+        out = []
+        for i, f in enumerate(files):
+            suffix = Path(f.filename or "").suffix.lower()
+            if suffix in ext:
+                out.append(tmp / f"{i:05d}{suffix}")
+                out[-1].write_bytes(f.file.read())
+        return tmp, out
+
+    @app.post("/api/library/datasets")
+    def library_new_dataset(request: Request, name: str = Form(...), photos: list[UploadFile] = File(...)):
+        """Photos uploaded on the Datasets page become a new dataset (more come with .../photos)."""
+        import shutil
+        tmp, files = incoming(photos, IMAGE_EXT)
+        try:
+            if not files:
+                raise HTTPException(400, "no images among the files")
+            return {"id": lib.new_dataset(owner_of(request), name.strip()[:80] or "My photos", files), "photos": len(files)}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @app.post("/api/library/datasets/{item}/photos")
+    def library_add_photos(item: str, request: Request, photos: list[UploadFile] = File(...)):
+        import shutil
+        owner, _ = owned(request, "datasets", item)
+        tmp, files = incoming(photos, IMAGE_EXT)
+        try:
+            return {"photos": lib.add_photos(owner, item, files)}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @app.post("/api/library/objects")
+    def library_new_object(request: Request, name: str = Form(...), concept: str = Form(""),
+                           model: UploadFile = File(...), card: UploadFile | None = File(None)):
+        """A GLB the owner uploads; card: the picture the app rendered of it."""
+        import shutil
+        tmp, files = incoming([model], {".glb"})
+        try:
+            if not files:
+                raise HTTPException(400, "send a .glb file")
+            pic = None
+            if card is not None:
+                pic = tmp / "card.png"
+                pic.write_bytes(card.file.read())
+            name = name.strip()[:80] or "My object"
+            return {"id": lib.new_object(owner_of(request), name, concept.strip()[:80] or name, files[0], pic)}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @app.patch("/api/library/{kinds}/{item}")
+    async def library_rename(kinds: str, item: str, request: Request):
+        owner, kind = owned(request, kinds, item)
+        name = str((await request.json()).get("name", "")).strip()[:80]
+        if not name:
+            raise HTTPException(400, "a name is needed")
+        lib.rename(owner, kind, item, name)
+        return {"ok": True}
+
+    @app.delete("/api/library/{kinds}/{item}")
+    def library_delete(kinds: str, item: str, request: Request):
+        owner, kind = owned(request, kinds, item)
+        return {"kits": lib.delete(owner, kind, item)}
+
+    @app.post("/api/library/kits")
+    async def library_new_kit(request: Request):
+        body = await request.json()
+        name = str(body.get("name", "")).strip()[:80]
+        if not name:
+            raise HTTPException(400, "a kit needs a name")
+        return {"id": lib.save_kit(owner_of(request), None, name, body)}
+
+    @app.put("/api/library/kits/{item}")
+    async def library_save_kit(item: str, request: Request):
+        owner, _ = owned(request, "kits", item)
+        body = await request.json()
+        name = str(body.get("name", "")).strip()[:80]
+        if not name:
+            raise HTTPException(400, "a kit needs a name")
+        return {"id": lib.save_kit(owner, item, name, body)}
+
+    @app.get("/api/billing")
+    def billing(request: Request):
+        """Credits and their moves (a server with accounts); prices of a run and an interview."""
+        acc = getattr(request.state, "account", None)
+        out = {"enabled": accounts is not None, "costs": {"run": RUN_COST, "interview": INTERVIEW_COST}}
+        if acc is not None:
+            out.update(tier=accounts.tier(acc), balance=accounts.balance(acc.id), moves=accounts.moves(acc.id))
+        return out
 
     @app.get("/api/jobs/{name}")
     def job_status(name: str, request: Request):

@@ -11,6 +11,8 @@ function FreshInterview() {
   return <Interview key={useSearchParams()[0].get("revise") ?? ""} />;
 }
 import JobPage from "./pages/Job";
+import { Datasets, Kits, Models, Objects, Scenes } from "./pages/Library";
+import Billing from "./pages/Billing";
 // The live test pulls in the model runtime: loaded only when someone opens it.
 const Live = lazy(() => import("./pages/Live"));
 
@@ -22,6 +24,12 @@ createRoot(document.getElementById("root")!).render(
         <Route path="/app" element={<AppShell />}>
           <Route index element={<FreshInterview />} />
           <Route path="job/:name" element={<JobPage />} />
+          <Route path="models" element={<Models />} />
+          <Route path="datasets" element={<Datasets />} />
+          <Route path="assets/objects" element={<Objects />} />
+          <Route path="assets/scenes" element={<Scenes />} />
+          <Route path="kits" element={<Kits />} />
+          <Route path="billing" element={<Billing />} />
         </Route>
         <Route path="/app/job/:name/live" element={<Suspense><Live /></Suspense>} />
         <Route path="*" element={<Landing />} />

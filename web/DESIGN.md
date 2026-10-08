@@ -6,27 +6,23 @@ Plan general en `docs/plan_web.md`. Esto fija la identidad y las pantallas para 
 
 - **Tono**: claro y amable (Stripe, Notion), para no expertos: un biólogo o un agricultor tiene que entenderlo todo sin saber qué es un F1. Frases cortas, verbos de acción, cifras explicadas.
 - **Logo**: un ojo cuyo iris es un chip (cuadrado con patillas). SVG en `web/public/logo.svg`; el mismo dibujo sirve de icono de la PWA.
-- **Color de marca**: índigo `#4f46e5` (acciones, enlaces, foco). Acento cálido ámbar `#f59e0b` solo para lo que "forja" (el chip, el progreso activo, la cifra estrella). Éxito verde `#16a34a`, error rojo `#dc2626`, aviso ámbar.
-- **Neutros**: fondo `#fafaf9` (piedra muy clara), tarjetas blancas, texto `#1c1917`, secundario `#57534e`, bordes `#e7e5e4`.
+- **Color de marca** (propuesta D, usuario 2026-10-08, estilo claro de nebius.com): índigo `#614efa` (acciones, enlaces, foco). Acento cálido ámbar `#f59e0b` solo para lo que "forja" (el chip, el progreso activo, la cifra estrella). Éxito verde `#16a34a`, error rojo `#dc2626`, aviso ámbar.
+- **Neutros**: grises fríos. Fondo de la app `#f3f4f5` (las bandas de la landing), tarjetas blancas, texto `#0f1b24`, secundario `#55626c`, bordes `#e3e6e9`, pie oscuro `#0f1b2d`. Clases `gray-*` de Tailwind, no `stone-*`.
 - **Tipografía**: Inter variable (autoalojada con `@fontsource-variable/inter`, sin llamadas a Google: la PWA debe arrancar sin red). Titulares 600-700 con `tracking-tight`; cuerpo 16 px en móvil.
-- **Forma**: radios 12 px (tarjetas) y 10 px (botones), sombras suaves (`shadow-sm`, una `shadow-lg` difusa solo en el héroe), mucho aire. Iconos `lucide-react`, trazo 1.75.
+- **Forma**: radios 16 px (tarjetas) y 10 px (botones), sombras suaves (`shadow-sm`, una `shadow-lg` difusa solo en el héroe), mucho aire. Iconos `lucide-react`, trazo 1.75.
 - **Movimiento**: transiciones de 150-250 ms; la etapa activa late suavemente; nada de animaciones de adorno. Respetar `prefers-reduced-motion`.
 
 Los tokens viven en `web/src/index.css` (`@theme` de Tailwind v4): `--color-brand-*`, `--color-ember-*`, `--font-sans`, `--radius-*`.
 
 ## Pantallas
 
-Rutas: `/` landing, `/app` crear modelo, `/app/job/:name` un trabajo (progreso, resultado, revisión).
+Rutas: `/` landing; dentro de `/app`, con barra lateral (como la consola de Nebius): `/app` chat (crear modelo), `/app/models`, `/app/datasets`, `/app/assets/objects`, `/app/assets/scenes`, `/app/kits`, `/app/billing` y `/app/job/:name` un trabajo (progreso, resultado, revisión).
+
+Biblioteca (usuario, 2026-10-08): toda foto real pertenece a un dataset (las que se adjuntan en un chat crean uno al momento); todo objeto 3D y escena se guarda con una foto para su tarjeta; de lo sintético solo se guardan las muestras que se enseñan; un kit no pesa, es una lista de referencias a datasets, objetos y escenas que se nombra en el chat ("usando el kit X, quiero..."). Código en `sim2chip/library.py`.
 
 ### Landing `/`
 
-1. Barra: logo, "How it works", "GitHub", botón "Try it".
-2. Héroe: titular "Describe what your camera should see. Get a tiny model ready to flash on a $10 chip.", subtítulo de una línea, botón "Build a model" y a la derecha (debajo en móvil) una composición de tres tarjetas encadenadas: burbuja de chat ("Count the flower pots on balconies"), barra de progreso de etapas, y un chip con "3 pots".
-3. "How it works" en tres pasos con icono: Describe (entrevista con Nemotron), Generate (Isaac Sim crea miles de imágenes a medida en Nebius), Deploy (modelo int8 de ~130 KB para tu dispositivo).
-4. "Why a specialist": los modelos grandes saben de todo pero necesitan un centro de datos; los usamos de profesores y destilamos uno del tamaño de tu hardware. Tarjetas por perfil: ESP32-CAM, Raspberry Pi, Jetson, tu GPU.
-5. "Built with": NVIDIA Nemotron, Isaac Sim, Nebius AI Cloud, Nebius Token Factory (texto, sin logos de terceros).
-6. Cifras reales medidas (no inventar): una ejecución completa en Nebius, 22 min, 0,56 $ de GPU, modelo de 133 KB.
-7. Pie: licencia MIT, repo, hackathon.
+Propuesta D (usuario, 2026-10-08), en `src/pages/Landing.tsx` y `landing.css` (copiado del HTML aprobado y acotado a `.lp`). Los textos son del usuario: no reordenar ni reescribir sin permiso. Estructura: barra (How it works, Real numbers, Devices, GitHub, "Try it"); héroe "Describe it. Forge it. Spot it." con la estantería dibujada en CSS; cuatro promesas; cifras medidas en bloques de color; los tres pasos en filas alternas; dispositivos con precio y "Built with"; llamada final y pie oscuro. Pendiente: sustituir los dibujos por ejemplos reales del pipeline (etiquetado del profesor, filtro de tamaño, escena construida).
 
 ### Crear modelo `/app`
 

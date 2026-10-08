@@ -1,28 +1,31 @@
-import { ChevronDown, CircleUser, FolderOpen, KeyRound, LogOut, Plus, WifiOff } from "lucide-react";
+import { Box, CircleUser, CreditCard, Cpu, Images, KeyRound, LogOut, Menu, MessageSquare, Mountain, Package, Plus,
+         Shapes, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Link, Outlet, useLocation, useNavigate, useOutletContext } from "react-router-dom";
-import { getConfig, getMe, listJobs, loginUrl, logout, onAccountChange, unlock, type Config, type Me } from "../api";
+import { NavLink, Outlet, useLocation, useNavigate, useOutletContext } from "react-router-dom";
+import { getConfig, getMe, loginUrl, logout, onAccountChange, unlock, type Config, type Me } from "../api";
 import InstallButton from "../components/InstallButton";
-import { savedJobs } from "../live/saved";
 import { Badge, Button, Card, Logo, Notice, cx } from "../components/ui";
 
 // me: the signed-in account on a server with accounts (null before it loads, or on a server without them).
-export type AppContext = { config: Config | null; me: Me | null; refreshJobs: () => void };
+// stamp: bumped by refreshJobs when a job starts, so the library pages load again.
+export type AppContext = { config: Config | null; me: Me | null; refreshJobs: () => void; stamp: number };
 export const useApp = () => useOutletContext<AppContext>();
 
 export default function AppShell() {
   const [config, setConfig] = useState<Config | null>(null);
-  const [jobs, setJobs] = useState<string[]>([]);
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [stamp, setStamp] = useState(0);
+  const [menu, setMenu] = useState(false);  // the sidebar as a drawer, on a phone
+  const { pathname } = useLocation();
+  useEffect(() => setMenu(false), [pathname]);
 
-  const refreshJobs = () => listJobs().then((r) => setJobs(r.jobs)).catch(() => {});
-  const loadMe = () => getMe().then((m) => { setMe(m); if (m.signed_in) refreshJobs(); }).catch(() => {});
+  const refreshJobs = () => setStamp((n) => n + 1);
+  const loadMe = () => getMe().then(setMe).catch(() => {});
   const load = () => {
     getConfig().then((c) => {
       setConfig(c);
       if (c.login) loadMe();
-      else if (!c.locked) refreshJobs();
     }).catch((e) => setError(e.message));
   };
   useEffect(load, []);
@@ -35,33 +38,102 @@ export default function AppShell() {
     : config?.login && !me ? "wait" : null;
 
   return (
-    <div className="flex min-h-dvh flex-col">
-      <header className="sticky top-0 z-20 border-b border-line bg-white/90 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between gap-3 px-4">
-          <Logo />
-          <div className="flex items-center gap-2">
-            {config && (
-              <span className="hidden sm:block">
-                <Badge tone={config.backend === "nebius" ? "brand" : "neutral"}>
-                  {config.backend === "nebius" ? "Nebius AI Cloud" : "Local GPU"}
-                </Badge>
-              </span>
-            )}
-            <InstallButton />
-            {!gate && <JobsMenu jobs={jobs} />}
-            {account && <AccountMenu me={me!} />}
+    <div className="flex min-h-dvh">
+      {!gate && (
+        <>
+          <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 border-r border-line bg-white lg:block"><Sidebar /></aside>
+          {menu && (
+            <div className="fixed inset-0 z-40 lg:hidden" onClick={() => setMenu(false)}>
+              <div className="absolute inset-0 bg-black/30" />
+              <aside className="absolute inset-y-0 left-0 w-64 bg-white shadow-lg" onClick={(e) => e.stopPropagation()}>
+                <Sidebar onClose={() => setMenu(false)} />
+              </aside>
+            </div>
+          )}
+        </>
+      )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="sticky top-0 z-20 border-b border-line bg-white/90 backdrop-blur">
+          <div className="flex h-14 items-center justify-between gap-3 px-4">
+            <div className="flex items-center gap-2">
+              {!gate && (
+                <button onClick={() => setMenu(true)} aria-label="Menu"
+                        className="flex h-9 w-9 items-center justify-center rounded-lg text-muted hover:bg-gray-100 lg:hidden">
+                  <Menu className="h-5 w-5" />
+                </button>
+              )}
+              <Logo className={cx(!gate && "lg:hidden")} />
+            </div>
+            <div className="flex items-center gap-2">
+              {config && (
+                <span className="hidden sm:block">
+                  <Badge tone={config.backend === "nebius" ? "brand" : "neutral"}>
+                    {config.backend === "nebius" ? "Nebius AI Cloud" : "Local GPU"}
+                  </Badge>
+                </span>
+              )}
+              <InstallButton />
+              {account && <AccountMenu me={me!} />}
+            </div>
           </div>
-        </div>
-      </header>
-      {error && <div className="mx-auto w-full max-w-5xl px-4 pt-4"><Notice tone="bad">Cannot reach the server: {error}</Notice></div>}
-      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4">
-        {gate === "key" && <KeyGate onOpen={load} />}
-        {gate === "login" && <SignIn me={me!} providers={config!.login!} />}
-        {gate === "paused" && <Paused contact={me!.contact} />}
-        {!gate && me?.signed_in && account?.tier === "normal" && account.credits < me.costs.run && <CreditsNotice me={me} />}
-        {!gate && <Outlet context={{ config, me, refreshJobs } satisfies AppContext} />}
-      </main>
+        </header>
+        {error && <div className="mx-auto w-full max-w-5xl px-4 pt-4"><Notice tone="bad">Cannot reach the server: {error}</Notice></div>}
+        <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4">
+          {gate === "key" && <KeyGate onOpen={load} />}
+          {gate === "login" && <SignIn me={me!} providers={config!.login!} />}
+          {gate === "paused" && <Paused contact={me!.contact} />}
+          {!gate && me?.signed_in && account?.tier === "normal" && account.credits < me.costs.run && <CreditsNotice me={me} />}
+          {!gate && <Outlet context={{ config, me, refreshJobs, stamp } satisfies AppContext} />}
+        </main>
+      </div>
     </div>
+  );
+}
+
+// An item without `to` heads the items marked sub under it (Assets: objects and scenes).
+type NavItem = { to?: string; label: string; icon: typeof MessageSquare; sub?: boolean };
+const NAV: { title?: string; items: NavItem[] }[] = [
+  { items: [{ to: "/app", label: "Chat", icon: MessageSquare }] },
+  { title: "Library", items: [
+    { to: "/app/models", label: "Models", icon: Cpu },
+    { to: "/app/datasets", label: "Datasets", icon: Images },
+    { label: "Assets", icon: Shapes },
+    { to: "/app/assets/objects", label: "Objects", icon: Box, sub: true },
+    { to: "/app/assets/scenes", label: "Scenes", icon: Mountain, sub: true },
+    { to: "/app/kits", label: "Kits", icon: Package },
+  ] },
+  { title: "Manage", items: [{ to: "/app/billing", label: "Billing", icon: CreditCard }] },
+];
+
+function Sidebar({ onClose }: { onClose?: () => void }) {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const inJob = pathname.startsWith("/app/job/");  // a model's own page belongs to Models
+  const link = ({ isActive }: { isActive: boolean }) => cx(
+    "flex h-9 items-center gap-2.5 rounded-lg px-3 text-sm font-medium transition-colors",
+    isActive ? "bg-brand-50 text-brand-700" : "text-muted hover:bg-gray-100 hover:text-ink");
+  return (
+    <nav className="flex h-full flex-col gap-1 overflow-y-auto p-3">
+      <div className="flex h-11 items-center justify-between px-1">
+        <Logo />
+        {onClose && <button onClick={onClose} aria-label="Close menu" className="rounded-lg p-1.5 text-muted hover:bg-gray-100"><X className="h-5 w-5" /></button>}
+      </div>
+      <Button size="sm" className="my-3" onClick={() => navigate("/app")}><Plus className="h-4 w-4" /> New model</Button>
+      {NAV.map((group, i) => (
+        <div key={i} className="mb-2">
+          {group.title && <div className="px-3 pt-3 pb-1.5 text-xs font-medium tracking-wide text-muted/80 uppercase">{group.title}</div>}
+          {group.items.map((it) => it.to ? (
+            <NavLink key={it.to} to={it.to} end className={({ isActive }) => cx(link({ isActive: isActive || (inJob && it.to === "/app/models") }), it.sub && "ml-6")}>
+              <it.icon className="h-4 w-4" strokeWidth={1.75} /> {it.label}
+            </NavLink>
+          ) : (
+            <div key={it.label} className="flex h-9 items-center gap-2.5 px-3 text-sm font-medium text-muted">
+              <it.icon className="h-4 w-4" strokeWidth={1.75} /> {it.label}
+            </div>
+          ))}
+        </div>
+      ))}
+    </nav>
   );
 }
 
@@ -119,7 +191,7 @@ function SignIn({ me, providers }: { me: Me; providers: string[] }) {
         <div className="flex flex-col gap-3">
           {providers.map((p) => (
             <a key={p} href={loginUrl(p, next)}
-               className="inline-flex h-11 items-center justify-center gap-2.5 rounded-[var(--radius-control)] border border-line bg-white px-4 text-[15px] font-medium shadow-sm hover:bg-stone-50">
+               className="inline-flex h-11 items-center justify-center gap-2.5 rounded-[var(--radius-control)] border border-line bg-white px-4 text-[15px] font-medium shadow-sm hover:bg-gray-50">
               <ProviderIcon provider={p} /> Continue with {PROVIDER_NAMES[p] ?? p}
             </a>
           ))}
@@ -180,7 +252,7 @@ function AccountMenu({ me }: { me: Me }) {
   return (
     <div ref={ref} className="relative">
       <button onClick={() => setOpen(!open)} aria-label="Account"
-              className="flex h-9 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-muted hover:bg-stone-100 hover:text-ink">
+              className="flex h-9 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-muted hover:bg-gray-100 hover:text-ink">
         <CircleUser className="h-5 w-5" strokeWidth={1.75} />
         {acc.tier === "judge" ? <Badge tone="brand">Judge</Badge>
           : acc.tier === "normal" ? <Badge tone={acc.credits > 0 ? "neutral" : "ember"}>{acc.credits} credits</Badge> : null}
@@ -228,49 +300,4 @@ function ProviderIcon({ provider }: { provider: string }) {
     );
   }
   return null;
-}
-
-function JobsMenu({ jobs }: { jobs: string[] }) {
-  const [open, setOpen] = useState(false);
-  const [offline, setOffline] = useState<Set<string>>(new Set());  // models saved on this device for the live test
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (open) savedJobs().then(setOffline).catch(() => {}); }, [open]);
-  const navigate = useNavigate();
-  const { pathname } = useLocation();
-  useEffect(() => { setOpen(false); }, [pathname]);
-  useEffect(() => {
-    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, []);
-
-  return (
-    <div ref={ref} className="relative">
-      <button onClick={() => setOpen(!open)}
-              className="flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-medium whitespace-nowrap text-muted hover:bg-stone-100 hover:text-ink">
-        <FolderOpen className="h-4 w-4" strokeWidth={1.75} /> <span className="hidden sm:inline">Your</span> models <ChevronDown className="h-4 w-4" />
-      </button>
-      {open && (
-        <div className="absolute right-0 mt-2 w-64 overflow-hidden rounded-[var(--radius-card)] border border-line bg-white py-1 shadow-lg">
-          <button onClick={() => navigate("/app")}
-                  className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm font-medium text-brand-600 hover:bg-brand-50">
-            <Plus className="h-4 w-4" /> New model
-          </button>
-          <div className="max-h-72 overflow-y-auto border-t border-line">
-            {jobs.length === 0 && <p className="px-4 py-3 text-sm text-muted">Nothing trained yet.</p>}
-            {[...jobs].reverse().map((j) => (
-              <Link key={j} to={`/app/job/${j}`}
-                    className={cx("block truncate px-4 py-2.5 text-sm hover:bg-stone-50",
-                                  pathname.endsWith(`/${j}`) && "bg-stone-50 font-medium")}>
-                <span className="flex items-center justify-between gap-2">
-                  <span className="truncate">{j}</span>
-                  {offline.has(j) && <WifiOff className="h-3.5 w-3.5 shrink-0 text-muted" aria-label="works offline on this device" />}
-                </span>
-              </Link>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
 }

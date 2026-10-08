@@ -115,6 +115,12 @@ class Accounts:
         v = self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ?", (acc_id,)).fetchone()
         return round(v[0], 4)
 
+    def moves(self, acc_id: str, limit: int = 200) -> list[dict]:
+        """The latest moves of the ledger, newest first."""
+        rows = self.db.execute("SELECT amount, reason, detail, t FROM credits WHERE account = ? ORDER BY t DESC "
+                               "LIMIT ?", (acc_id, limit)).fetchall()
+        return [{"amount": round(a, 4), "reason": r, "detail": d, "t": t} for a, r, d, t in rows]
+
     def add(self, acc_id: str, amount: float, reason: str, detail: str | None = None) -> None:
         with self.lock:
             self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)", (acc_id, amount, reason, detail, time.time()))
