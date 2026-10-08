@@ -6,8 +6,8 @@ real ones stood, and renders new compositions from moved cameras. Run in the `tr
         --meshes data/scene3d_test/cases/bottles [--fov-x 45.9]
 
 --camera-height (metres) rescales everything to a known camera height; MoGe alone was ~10% too large.
---meshes is a Mira-Scene case whose mesh/sam3d/NNN.glb match its input/mask_NNN.png (matched to our instances by
-mask IoU); --fov-x (degrees, horizontal) overrides MoGe's field of view, e.g. from EXIF.
+--meshes is flow_sam3d.py's --out folder for instances.npz (mesh NNN is instance NNN, oriented by SAM 3D's pose),
+or a Mira-Scene case whose mesh/sam3d/NNN.glb match its input/mask_NNN.png (matched to our instances by mask IoU); --fov-x (degrees, horizontal) overrides MoGe's field of view, e.g. from EXIF.
 --layout photo keeps every object where the photo has it and only moves the camera (a copy of the scene, not
 training variety).
 World frame = the photo's OpenCV camera (+X right, +Y down, +Z forward, metres).
@@ -367,27 +367,40 @@ def photo_replica(masks, phrases, P, vp, depth_p, n, dd, intr, meshes, solid, cc
         base = c - (c @ n + dd) * n
         meas.append(measure(P[sel], hgt, n, phrase, base, None))
 
-    # Mira meshes matched to our instances by IoU on Mira's 518 centre crop.
-    crop = json.load(open(os.path.join(meshes, 'input', 'preprocessing.json')))['crop_xywh']
-    sx = w / json.load(open(os.path.join(meshes, 'input', 'preprocessing.json')))['original_size'][0]
-    l, tp, side = [round(v * sx) for v in (crop[0], crop[1], crop[2])]
-    ccm = json.load(open(ccm_path)) if os.path.exists(ccm_path) else {}
     replica = []
+    ours = os.path.exists(os.path.join(meshes, 'scene_graph.json'))
+    if ours:
+        # flow_sam3d.py --masks instances.npz: mesh NNN is instance NNN, its orientation from SAM 3D's own pose.
+        ccm = {}
+        for j in range(len(meas)):
+            info = os.path.join(meshes, 'sam3d', f'{j:03d}.json')
+            if os.path.exists(info) and 'rot_cv' in json.load(open(info)):
+                ccm[f'{j:03d}'] = json.load(open(info))['rot_cv']
+    else:
+        # Mira meshes matched to our instances by IoU on Mira's 518 centre crop.
+        crop = json.load(open(os.path.join(meshes, 'input', 'preprocessing.json')))['crop_xywh']
+        sx = w / json.load(open(os.path.join(meshes, 'input', 'preprocessing.json')))['original_size'][0]
+        l, tp, side = [round(v * sx) for v in (crop[0], crop[1], crop[2])]
+        ccm = json.load(open(ccm_path)) if os.path.exists(ccm_path) else {}
     for j, mi in enumerate(meas):
-        crop_mask = np.asarray(Image.fromarray(masks[j][tp:tp + side, l:l + side].astype(np.uint8) * 255).resize((518, 518))) > 127
-        best, best_iou = None, 0.1
-        for f in sorted(os.listdir(os.path.join(meshes, 'input'))):
-            if f.startswith('mask_'):
-                mm = np.asarray(Image.open(os.path.join(meshes, 'input', f))) > 0
-                iou = (mm & crop_mask).sum() / max((mm | crop_mask).sum(), 1)
-                if iou > best_iou:
-                    best, best_iou = f[5:8], iou
-        if best and not os.path.exists(os.path.join(meshes, 'mesh', 'sam3d', f'{best}.glb')):
+        if ours:
+            best = f'{j:03d}'
+            path = os.path.join(meshes, 'sam3d', f'{best}_canon.glb')
+        else:
+            crop_mask = np.asarray(Image.fromarray(masks[j][tp:tp + side, l:l + side].astype(np.uint8) * 255).resize((518, 518))) > 127
+            best, best_iou = None, 0.1
+            for f in sorted(os.listdir(os.path.join(meshes, 'input'))):
+                if f.startswith('mask_'):
+                    mm = np.asarray(Image.open(os.path.join(meshes, 'input', f))) > 0
+                    iou = (mm & crop_mask).sum() / max((mm | crop_mask).sum(), 1)
+                    if iou > best_iou:
+                        best, best_iou = f[5:8], iou
+            path = os.path.join(meshes, 'mesh', 'sam3d', f'{best}.glb')
+        if best and not os.path.exists(path):
             best = None  # SAM 3D failed on it (e.g. out of memory): the object stays out of the replica
         mi['mesh'] = best
         if best:
-            obj = load_object(os.path.join(meshes, 'mesh', 'sam3d', f'{best}.glb'), mi['phrase'] in solid,
-                              cap=mi['phrase'] not in fixed)
+            obj = load_object(path, mi['phrase'] in solid, cap=mi['phrase'] not in fixed)
             others = np.any([masks[k] for k in range(len(masks)) if k != j], axis=0) if len(masks) > 1 else None
             yaw0 = ccm_yaw(ccm[best], n) if best in ccm else None
             fitted = fit_pose(obj, masks[j], others, mi, n, (w, h, fx, fy, cx, cy), yaw0=yaw0)

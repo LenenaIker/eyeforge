@@ -8,8 +8,12 @@ offload. Run in /media/lenena-iker/Crucial/envs/eyeforge-qwenedit with HF_HOME o
 
     python experiments/scene3d/erase_qwen.py --dir data/scene3d_test/flow/home_office [--dir ...]
 
+Qwen does not always remove every object it is told to (bottles 2026-10-08: of three bottles and three caps it
+took one bottle). Each instance whose pixels barely changed (mean difference under --left, 0-255) is still there:
+a second pass names only those, and what is left after it takes LaMa's fill inside its mask.
+
 Writes <dir>/background_qwen.png (the model's whole picture, or pasted when it moved), background_qwen_raw.png
-and erase_qwen.json (shift, which one was used). With
+and erase_qwen.json (shift, which one was used, what each pass left). With
 --replace (photo2scene.py step 1.3a_erase) LaMa's background.png is kept as background_lama.png and the Qwen one
 takes its place, so every later step reads it.
 """
@@ -46,6 +50,18 @@ def shift(a, b, keep):
     return float(np.hypot(x, y))
 
 
+def left_behind(photo, out, masks, thr):
+    """Indices of the instances whose pixels the edit barely changed: the object is still there."""
+    a = np.asarray(photo, np.float32)
+    b = np.asarray(out, np.float32)
+    return [i for i, m in enumerate(masks) if m.any() and np.abs(a[m] - b[m]).mean() < thr]
+
+
+def prompt_for(names):
+    names = list(dict.fromkeys(names))
+    return PROMPT.format(objects=', '.join(names[:-1]) + (' and ' if len(names) > 1 else '') + names[-1])
+
+
 def load(bits):
     if bits == 16:
         pipe = QwenImageEditPlusPipeline.from_pretrained(BASE, torch_dtype=torch.bfloat16)
@@ -77,6 +93,9 @@ def main():
     ap.add_argument('--paste', choices=['auto', 'raw', 'mask'], default='auto',
                     help="auto: the model's whole picture unless it moved half a pixel or more, then mask")
     ap.add_argument('--replace', action='store_true', help='background.png becomes the Qwen one (LaMa kept aside)')
+    ap.add_argument('--passes', type=int, default=2, help='Qwen passes; later ones name only what is left')
+    ap.add_argument('--left', type=float, default=12.0, help='mean change under which an object is still there '
+                    '(left ones measured 4-10, erased ones 15 and up on 5 photos)')
     args = ap.parse_args()
     pipe = load(args.bits)
     for d in args.dir:
@@ -84,14 +103,27 @@ def main():
         names = list(dict.fromkeys(json.load(open(os.path.join(d, 'prepare.json')))['instances']))
         if not names:
             continue
-        prompt = PROMPT.format(objects=', '.join(names[:-1]) + (' and ' if len(names) > 1 else '') + names[-1])
+        z = np.load(os.path.join(d, 'instances.npz'))
+        masks, phrases = z['masks'].astype(bool), [str(p) for p in z['phrases']]
         t = time.time()
-        out = pipe(image=[photo], prompt=prompt, negative_prompt=' ', true_cfg_scale=args.cfg,
-                   num_inference_steps=args.steps, generator=torch.Generator('cpu').manual_seed(args.seed)).images[0]
-        out = out.resize(photo.size, Image.Resampling.LANCZOS)
+        out, todo, passes = photo, list(range(len(masks))), []
+        for k in range(args.passes):
+            out = pipe(image=[out], prompt=prompt_for(phrases[i] for i in todo) if k else prompt_for(names),
+                       negative_prompt=' ', true_cfg_scale=args.cfg, num_inference_steps=args.steps,
+                       generator=torch.Generator('cpu').manual_seed(args.seed + k)).images[0]
+            out = out.resize(photo.size, Image.Resampling.LANCZOS)
+            todo = [i for i in left_behind(photo, out, masks, args.left)]
+            passes.append([phrases[i] for i in todo])
+            if not todo:
+                break
         bg, qw = os.path.join(d, 'background.png'), os.path.join(d, 'background_qwen.png')
         # On a redo of this step alone background.png is already the last Qwen one: LaMa's copy must stay.
         fresh_lama = not (os.path.exists(qw) and filecmp.cmp(bg, qw, shallow=False))
+        lama = Image.open(bg if fresh_lama else os.path.join(d, 'background_lama.png')).convert('RGB')
+        if todo:
+            # Still there after every pass: LaMa's fill inside those masks (grown, feathered).
+            m = Image.fromarray((np.any(masks[todo], 0) * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(15))
+            out = Image.composite(lama, out, m.filter(ImageFilter.GaussianBlur(args.feather)))
         out.save(os.path.join(d, 'background_qwen_raw.png'))
         erased = Image.open(os.path.join(d, 'erased.png')).convert('L')
         mask = erased.filter(ImageFilter.GaussianBlur(args.feather))
@@ -106,7 +138,8 @@ def main():
             if fresh_lama:
                 shutil.copy(bg, os.path.join(d, 'background_lama.png'))
             shutil.copy(qw, bg)
-        info = {'objects': names, 'shift_px': round(moved, 2), 'used': 'raw' if use_raw else 'mask',
+        info = {'objects': names, 'left_after_pass': passes, 'lama_for': [phrases[i] for i in todo],
+                'shift_px': round(moved, 2), 'used': 'raw' if use_raw else 'mask',
                 'seconds': round(time.time() - t, 1)}
         json.dump(info, open(os.path.join(d, 'erase_qwen.json'), 'w'), indent=1)
         print(json.dumps({'dir': d, **info}), flush=True)

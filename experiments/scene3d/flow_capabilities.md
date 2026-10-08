@@ -8,7 +8,10 @@ detector. Read this before planning: plan only what the builder can do, and say 
 - `village_street_day`: outdoors, daylight (sunny or overcast), camera at pedestrian height (0.5 to 4 m), a
   street, lane or small square of a town or village with buildings, walls or hedges along it. The ground must be
   roughly flat (a gentle slope is fine; stairs or a steep hill are not).
-- `table`: indoors or outdoors, small objects resting on one flat support (a table top, a desk, one shelf board).
+- `support`: indoors or outdoors, the camera looks at one working surface and little else matters: small
+  objects on a table top, a desk or one shelf board, a conveyor belt or a workbench seen by a fixed camera, or a
+  patch of ground (lawn, soil, floor) seen from above or close. Place `work_surface` or `ground_close`. The cheap
+  route: the photo stays the background, only the surface is rebuilt, objects go on it.
 - `indoor_floor`: a room seen from inside, furniture and objects on its floor.
 - `out_of_scope`: anything else, for example night or dusk, rain or snow on the ground, an aerial or rooftop view,
   a landscape without a street, a crowd covering the ground, a steep street with stairs, water, a close-up of a
@@ -43,4 +46,4 @@ detector. Read this before planning: plan only what the builder can do, and say 
   corner. The visible side is repeated along the street and faced by a copy across it.
 - `square`: an open paved square with buildings on several sides.
 - `room`: a closed room (indoor routes only).
-- `none`: the table route keeps the support and its surroundings only.
+- `none`: the support route keeps the surface and the photo around it only.

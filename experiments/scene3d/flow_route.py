@@ -12,6 +12,7 @@ import json
 import os
 import sys
 
+SUPPORT_PLACES = {'work_surface', 'ground_close'}
 STREET_PLACES = {'village_street', 'city_street', 'square', 'road_outside_town', 'garden_or_yard'}
 TEMPLATE = {'corner': 'crossroads', 'straight_street': 'straight_street', 'facade_only': 'straight_street',
             'square': 'square', 'room': 'room', 'support_only': 'none'}
@@ -21,8 +22,11 @@ BUILT = {'crossroads', 'straight_street', 'room'}  # templates crossroad.py etc.
 def route(obs):
     f = obs['final']
     why = []
-    if obs.get('unsure'):
-        why.append('the three answers disagree on ' + ', '.join(obs['unsure']))
+    unsure = obs.get('unsure') or []
+    if f['place'] in SUPPORT_PLACES:  # light and weather do not matter on the support route, the place does
+        unsure = [k for k in unsure if k in ('place', 'route')]
+    if unsure:
+        why.append('the three answers disagree on ' + ', '.join(unsure))
     street = {
         'outdoor': f['outdoor'] is True,
         'daylight': f['time_of_day'] == 'day',
@@ -33,8 +37,16 @@ def route(obs):
         'ground phrase': bool(f['ground']),
         'surroundings phrase': bool(f['surroundings']),
     }
-    if f['outdoor'] is False:
-        r = 'table' if f['place'] == 'table_or_shelf' else 'indoor_floor' if f['place'] == 'room' else 'out_of_scope'
+    if f['place'] in SUPPORT_PLACES:
+        # One working surface seen by the camera (bottles on a table, a conveyor belt, a lawn from above): the
+        # cheap route, indoors or outdoors, any light; the photo stays the background.
+        r = 'support'
+        checks = {'a working surface': True, 'ground phrase': bool(f['ground'])}
+        if not f['ground']:
+            r = 'out_of_scope'
+            why.append('fails: ground phrase')
+    elif f['outdoor'] is False:
+        r = 'indoor_floor' if f['place'] == 'room' else 'out_of_scope'
         checks = {'indoor place known': r != 'out_of_scope'}
     elif all(street.values()):
         r, checks = 'village_street_day', street
@@ -46,13 +58,13 @@ def route(obs):
         r = 'out_of_scope'
     if why and r != 'out_of_scope':
         r = 'out_of_scope'
-    template = TEMPLATE.get(f['layout'], 'none') if r != 'out_of_scope' else 'none'
+    template = 'none' if r in ('out_of_scope', 'support') else TEMPLATE.get(f['layout'], 'none')
     if r != 'out_of_scope' and f.get('template') != template:
         why.append(f"template by rule {template}, the VLM said {f.get('template')}")
     # Village streets and squares open onto fields and hills: the urban skies put tower blocks and tram wires
     # behind a village church (church_corner, 2026-10-07).
     hdri = 'urban' if r == 'village_street_day' and f['place'] == 'city_street' else \
-        'countryside' if r == 'village_street_day' else 'indoor'
+        'countryside' if r == 'village_street_day' or (r == 'support' and f['outdoor']) else 'indoor'
     return {'route': r, 'template': template, 'template_built': template in BUILT, 'hdri_group': hdri,
             'checks': checks, 'why': why}
 
@@ -60,8 +72,13 @@ def route(obs):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir', required=True)
+    ap.add_argument('--force', choices=['support'], help="the spec already says so (a fixed camera on a work "
+                    "surface): the route the photo takes whatever the VLM saw")
     args = ap.parse_args()
     obs = json.load(open(os.path.join(args.dir, 'observe.json')))
+    if args.force:
+        obs['final']['place'] = 'work_surface'
+        obs['unsure'] = []
     out = route(obs)
     with open(os.path.join(args.dir, 'route.json'), 'w') as fh:
         json.dump(out, fh, indent=1)

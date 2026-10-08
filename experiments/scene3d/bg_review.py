@@ -50,7 +50,10 @@ def sheet(d):
         for b in labels[k]:
             dr.rectangle(b, outline=(255, 0, 0), width=4)
         tiles.append(im)
-    w, h = 672, 378
+    # Tiles keep the photo's shape: a portrait photo squeezed into 16:9 tiles made the VLM see stretched,
+    # oversized objects that were not (bottles, 2026-10-08).
+    pw, ph = tiles[0].size
+    w, h = (672, round(672 * ph / pw)) if pw >= ph else (round(672 * pw / ph), 672)
     out = Image.new('RGB', (w * 3, h * 2), 'white')
     for i, t in enumerate(tiles):
         out.paste(t.resize((w, h)), ((i % 3) * w, (i // 3) * h))

@@ -9,6 +9,13 @@ floor, gravity placement): flow_refine.py fits the poses to our depth afterwards
 Writes <dir>/meshes/sam3d/NNN.glb (mesh NNN of mask NNN, OpenGL camera frame: +X right, +Y up, -Z forward,
 metres, vertex colours), NNN.json (SAM 3D's pose, seconds, GPU peak) and <dir>/meshes/scene_graph.json (names).
 A mesh already on disk is kept, so a fresh process after a GPU memory failure only fills the gaps.
+
+The support route meshes the photo's movable objects instead (bg_build.py puts them back and shuffles them):
+
+    python experiments/scene3d/flow_sam3d.py --dir <dir> --masks instances.npz --image photo --out meshes_objects
+
+which also writes NNN_canon.glb (SAM 3D's own y-up frame) and the rotation from it to the OpenCV camera
+("rot_cv" in NNN.json), the orientation bg_build.py starts its silhouette fit from.
 """
 import argparse
 import json
@@ -152,30 +159,35 @@ def main():
     ap.add_argument('--voxels', choices=['sam3d', 'ccm', 'hybrid'], default='sam3d',
                     help='stage-2 voxels: SAM 3D stage 1 (invents the back), Mira-CCM (flow_ccm.py, pixel aligned, '
                          'seen side only) or both, SAM 3D carved by the photo depth')
+    ap.add_argument('--masks', default='env_masks.npz', help='npz (masks, phrases) in --dir')
+    ap.add_argument('--image', choices=['background', 'photo'], default='background',
+                    help='the picture SAM 3D sees, with depth_<image>.npz as its point map')
+    ap.add_argument('--out', default='meshes', help='folder in --dir; meshes go to <out>/sam3d')
     args = ap.parse_args()
     d = args.dir
-    out_dir = os.path.join(d, 'meshes', 'sam3d')
+    root = os.path.join(d, args.out)
+    out_dir = os.path.join(root, 'sam3d')
     if args.fresh:  # everything but flow_ccm.py's output
-        for name in os.listdir(os.path.join(d, 'meshes')) if os.path.isdir(os.path.join(d, 'meshes')) else []:
+        for name in os.listdir(root) if os.path.isdir(root) else []:
             if name != 'ccm':
-                path = os.path.join(d, 'meshes', name)
+                path = os.path.join(root, name)
                 shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
     os.makedirs(out_dir, exist_ok=True)
 
-    em = np.load(os.path.join(d, 'env_masks.npz'))
+    em = np.load(os.path.join(d, args.masks))
     phrases = [str(p) for p in em['phrases']]
     graph = {'nodes': [{'id': f'object_{k:03d}', 'kind': 'object', 'mask_index': k, 'name': p}
                        for k, p in enumerate(phrases)]}
-    with open(os.path.join(d, 'meshes', 'scene_graph.json'), 'w') as f:
+    with open(os.path.join(root, 'scene_graph.json'), 'w') as f:
         json.dump(graph, f, indent=1)
     todo = [k for k in range(len(phrases)) if not os.path.exists(os.path.join(out_dir, f'{k:03d}.glb'))]
     if not todo:
         print(json.dumps({'meshes': len(phrases), 'made': 0}))
         return
 
-    image = np.asarray(Image.open(os.path.join(d, 'background.png')).convert('RGB'))
+    image = np.asarray(Image.open(os.path.join(d, f'{args.image}.png')).convert('RGB'))
     h, w = image.shape[:2]
-    dp = np.load(os.path.join(d, 'depth_background.npz'))
+    dp = np.load(os.path.join(d, f'depth_{args.image}.npz'))
     pts = dp['points'].astype(np.float32)  # OpenCV camera
     if pts.shape[:2] != (h, w):
         raise ValueError(f'depth {pts.shape[:2]} does not match the photo {(h, w)}')
@@ -217,13 +229,18 @@ def main():
             torch.cuda.empty_cache()
             continue
         mesh = glb
+        rot_cv = None
+        if args.out != 'meshes':
+            mesh.export(os.path.join(out_dir, f'{k:03d}_canon.glb'))
+            R = (np.diag([1.0, -1.0, -1.0, 1.0]) @ pose_matrix(M))[:3, :3]  # OpenGL to OpenCV camera
+            rot_cv = (R / np.cbrt(np.linalg.det(R))).round(5).tolist()
         mesh.apply_transform(pose_matrix(M))
         mesh.export(os.path.join(out_dir, f'{k:03d}.glb'))
         info = {'phrase': phrases[k], 'seconds': round(time.time() - t0, 1),
                 'peak_gib': round(torch.cuda.max_memory_allocated() / 2 ** 30, 1), 'faces': int(len(mesh.faces)),
                 'extent_m': np.ptp(mesh.vertices, 0).round(2).tolist(),
                 'pose': {n: out[n].detach().cpu().numpy().round(4).tolist() for n in ('rotation', 'translation', 'scale')},
-                'voxels': args.voxels, **extra}
+                'voxels': args.voxels, **({'rot_cv': rot_cv} if rot_cv else {}), **extra}
         with open(os.path.join(out_dir, f'{k:03d}.json'), 'w') as f:
             json.dump(info, f, indent=1)
         made.append(k)

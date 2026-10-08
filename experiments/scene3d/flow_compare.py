@@ -42,7 +42,7 @@ QUESTIONS = {
                  'landscape showing under it?', 'no', True),
     'missing': ('Is a large building, wall or hedge of the PHOTO missing from the RENDER?', 'no', False),
 }
-# Indoors (routes indoor_floor and table): a closed room, no sky; the same split of blocking and logged ones.
+# Indoors (route indoor_floor): a closed room, no sky; the same split of blocking and logged ones.
 QUESTIONS_INDOOR = {
     'upright': ('In the RENDER, is the floor at the bottom and are the walls upright (not sideways or upside '
                 'down)?', 'yes', True),
@@ -94,7 +94,7 @@ def main():
     side_by_side(photo, render, ('PHOTO', 'RENDER'), os.path.join(d, 'compare_ab.jpg'))
     side_by_side(render, photo, ('RENDER', 'PHOTO'), os.path.join(d, 'compare_ba.jpg'))
     client = Client(usage_log=ROOT / 'runs' / 'llm_usage.jsonl')
-    indoor = json.load(open(os.path.join(d, 'route.json')))['route'] in ('indoor_floor', 'table')
+    indoor = json.load(open(os.path.join(d, 'route.json')))['route'] == 'indoor_floor'
     questions = QUESTIONS_INDOOR if indoor else QUESTIONS
     words = (dict(place='room', erased='movable objects', backs='furniture') if indoor else
              dict(place='street', erased='cars and people', backs='buildings'))

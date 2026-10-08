@@ -1,4 +1,4 @@
-"""Step 3.2 of the scene flow for a room (route indoor_floor or table): the place from phase 2 is already closed
+"""Step 3.2 of the scene flow for a room (route indoor_floor): the place from phase 2 is already closed
 (piece_build.py --indoor builds the walls the photo does not show and a ceiling), so creating the place is only
 new cameras inside it. Each camera stands at a person's or a robot's height, clear of the walls and the
 furniture, and looks at one of the photo's pieces of furniture or along a wall, slightly down. Run in the

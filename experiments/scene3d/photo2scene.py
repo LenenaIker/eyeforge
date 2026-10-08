@@ -100,18 +100,21 @@ def phase1(f, until):
     obs = jload(d, 'observe.json')
     f.check('1.1_observe', True, {'unsure': obs['unsure'], 'route_vlm': obs['final']['route']})
     # 1.2 Route: rules in code.
-    code = f.run('1.2_route', 'sam3', [s3 / 'flow_route.py', '--dir', d], ['route.json'], ok_codes=(0, 3))
+    code = f.run('1.2_route', 'sam3', [s3 / 'flow_route.py', '--dir', d]
+                 + (['--force', f.force_route] if f.force_route else []), ['route.json'], ok_codes=(0, 3))
     r = jload(d, 'route.json')
     if not f.check('1.2_route', code == 0, {k: r[k] for k in ('route', 'template', 'hdri_group')},
                    '; '.join(r['why']) or 'out of scope'):
         return False
     if until == '1.2':
         return True
+    if r['route'] == 'support':
+        return support(f, obs)
     fin = obs['final']
     ground = ','.join(e['phrase'] if isinstance(e, dict) else e for e in fin['ground'])
     objects = ','.join(e['phrase'] if isinstance(e, dict) else e for e in fin['objects']) or 'car'
     surroundings = ','.join(e['phrase'] if isinstance(e, dict) else e for e in fin['surroundings'])
-    room = r['route'] in ('indoor_floor', 'table')
+    room = r['route'] == 'indoor_floor'
     if room:
         # 1.3a in a room: every thing as a whole object (VLM boxes, SAM 3 masks), measured on the photo's depth;
         # the big ones are scene, the small ones and the user's classes are erased (scene_split.py). A street
@@ -199,6 +202,48 @@ def phase1(f, until):
     if until == '1.5':
         return True
     return True
+
+
+def support(f, obs):
+    """The cheap route (one working surface: bottles on a table, a conveyor belt, a lawn from above): the photo
+    stays the background, only the support plane is rebuilt from its depth, the photo's objects are meshed and
+    placed again at random on it, and Isaac renders them composited on the photo (bg_build.py, bg_isaac.py; the
+    HOPE test of 2026-10-06 ran this path with Mira's meshes, now SAM 3D's own). No room, no street, no phase 3."""
+    d, s3 = f.d, HERE
+    # S.1 Plan: one flat support or not, the object phrases, which are closed solids, which are fixed furniture.
+    code = f.run('S.1_plan', 'sam3', [s3 / 'bg_plan.py', '--image', f.image, '--out', d], ['plan.json'],
+                 ok_codes=(0, 3))
+    plan = jload(d, 'plan.json')
+    if not f.check('S.1_plan', code == 0, {k: plan.get(k) for k in ('support', 'objects', 'solid', 'fixed')},
+                   plan.get('reason', 'no single flat support')):
+        return False
+    weather = obs['final'].get('weather')
+    f.run('S.2_prepare', 'sam3', [s3 / 'bg_prepare.py', '--image', f.image, '--objects', ','.join(plan['objects']),
+                                  '--support', plan['support'], '--out', d]
+          + (['--shadows'] if weather == 'sunny' else []), ['background.png', 'instances.npz'])
+    if f.eraser == 'qwen':
+        f.run('S.2_erase', 'qwen', [s3 / 'erase_qwen.py', '--dir', d, '--replace'], ['background_qwen.png'])
+    prep = jload(d, 'prepare.json')
+    if not f.check('S.2_prepare', prep['support_frac'] > 0.03 and bool(prep['instances']),
+                   {'instances': len(prep['instances']), 'support_frac': prep['support_frac']},
+                   'no support or no objects found'):
+        return False
+    f.run('S.3_depth', 'mesh', [s3 / 'bg_depth.py', '--dir', d], ['depth_photo.npz', 'depth_background.npz'])
+    # S.4 The photo's objects as meshes, posed by SAM 3D on the photo with its own depth.
+    f.run('S.4_sam3d', 'mesh', [s3 / 'flow_sam3d.py', '--dir', d, '--masks', 'instances.npz', '--image', 'photo',
+                                '--out', 'meshes_objects'], ['meshes_objects/scene_graph.json'])
+    f.run('S.4_sam3d_retry', 'mesh', [s3 / 'flow_sam3d.py', '--dir', d, '--masks', 'instances.npz', '--image',
+                                      'photo', '--out', 'meshes_objects'], [])  # fills GPU memory failures
+    # S.5 Support plane, replica check, shuffled layouts and views; S.6 Isaac renders and labels; S.7 VLM review.
+    f.run('S.5_build', 'trellis', [s3 / 'bg_build.py', '--dir', d, '--meshes', d / 'meshes_objects', '--views',
+                                   str(f.views), '--solid', ','.join(plan.get('solid', [])), '--fixed',
+                                   ','.join(plan.get('fixed', [])), '--stack', '0.2'], ['report.json'])
+    f.run('S.6_isaac', 'isaac', [s3 / 'bg_isaac.py', '--dir', d], ['isaac/fit.json'])
+    f.run('S.6_labels', 'trellis', [s3 / 'view_labels.py', '--dir', d], ['isaac/labels.json'])
+    code = f.run('S.7_review', 'sam3', [s3 / 'bg_review.py', '--dir', d], ['review.json'], ok_codes=(0, 3))
+    rv = jload(d, 'review.json')
+    return f.check('S.7_review', code == 0, {'score': rv.get('score'), 'worst': rv.get('worst')},
+                   'the VLM rejected the views')
 
 
 def phase2(f, until):
@@ -338,6 +383,9 @@ def main():
     ap.add_argument('--eraser', choices=['qwen', 'lama'], default='qwen',
                     help='object removal: Qwen-Image-Edit (about 5 min a photo on the 3090) or LaMa alone')
     ap.add_argument('--axis-scale', action='store_true', help='flow_refine.py --axis-scale')
+    ap.add_argument('--route', choices=['support'], help='force the route (the spec says the camera is fixed on '
+                    'a work surface), whatever the VLM saw')
+    ap.add_argument('--views', type=int, default=20, help='views of the support route')
     ap.add_argument('--targets', default='', help="comma-separated classes the user's model detects: a room erases "
                     'them whatever their size (flow_things.py)')
     args = ap.parse_args()
@@ -346,9 +394,12 @@ def main():
     f.axis_scale = args.axis_scale
     f.eraser = args.eraser
     f.targets = args.targets
+    f.views = args.views
+    f.force_route = args.route
     if args.redo:
         # The step and every step after it in the flow's order: later outputs depend on earlier ones.
-        order = ['1.1', '1.2', '1.3a', '1.4', '1.3b', '1.3c', '1.5a', '1.5b', '1.5c', '2', '3']
+        order = ['1.1', '1.2', 'S.1', 'S.2', 'S.3', 'S.4', 'S.5', 'S.6', 'S.7', '1.3a', '1.4', '1.3b', '1.3c',
+                 '1.5a', '1.5b', '1.5c', '2', '3']
         start = min(i for i, o in enumerate(order) if any(o.startswith(r) or r.startswith(o)
                                                            for r in args.redo.split(',')))
         for k, rec in f.log['steps'].items():
@@ -358,6 +409,9 @@ def main():
         print('stopped in phase 1')
         return
     if args.until.startswith('1'):
+        return
+    if jload(f.d, 'route.json')['route'] == 'support':
+        print('views ready:', f.d / 'isaac')
         return
     if not phase2(f, args.until):
         print('stopped in phase 2')
