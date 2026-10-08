@@ -109,7 +109,8 @@ for i, pc in enumerate(scene["pieces"]):
             Gf.Vec3f(*(linear(pc["colour"]) * albedo(pc["points"]) * np.asarray(pc.get("gain") or [1, 1, 1])).tolist()))
     UsdShade.MaterialBindingAPI.Apply(m.GetPrim()).Bind(mat)
 
-# Objects: SAM 3D meshes with vertex colours, one prim each, posed and shown per view.
+# Objects: SAM 3D meshes with vertex colours, one prim each, posed and shown per view. Faces the photo saw
+# (env_add.py --photo-texture) take the photo itself as texture, through a face subset with its own material.
 objs = []
 for i in range(scene["objects"]):
     xf = UsdGeom.Xform.Define(stage, f"/World/Objects/o{i}")
@@ -121,6 +122,31 @@ for i in range(scene["objects"]):
     rd.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("displayColor")
     sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(rd.ConnectableAPI(), "result")
     UsdShade.MaterialBindingAPI.Apply(m.GetPrim()).Bind(mat)
+    photo = np.nonzero(arr[f"obj{i}_photo_faces"])[0] if f"obj{i}_photo_faces" in arr.files else []
+    if len(photo):
+        UsdGeom.PrimvarsAPI(m).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex).Set(
+            Vt.Vec2fArray.FromNumpy(np.asarray(arr[f"obj{i}_uv"], np.float32)))
+        pmat, psh = surface(f"/World/Looks/ObjPhoto{i}", 0.8)
+        tex = UsdShade.Shader.Define(stage, f"/World/Looks/ObjPhoto{i}/Tex")
+        tex.CreateIdAttr("UsdUVTexture")
+        tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(str(arr[f"obj{i}_texture"]))
+        for wrap in ("wrapS", "wrapT"):
+            tex.CreateInput(wrap, Sdf.ValueTypeNames.Token).Set("clamp")
+        st = UsdShade.Shader.Define(stage, f"/World/Looks/ObjPhoto{i}/St")
+        st.CreateIdAttr("UsdPrimvarReader_float2")
+        st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+        tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st.ConnectableAPI(), "result")
+        g = np.asarray(arr[f"obj{i}_gain"] if f"obj{i}_gain" in arr.files else [1, 1, 1], float) * ALBEDO
+        tex.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(*g.tolist(), 1))
+        psh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(tex.ConnectableAPI(), "rgb")
+        sub = UsdGeom.Subset.CreateGeomSubset(m, "photo", UsdGeom.Tokens.face, Vt.IntArray(photo.tolist()),
+                                              "materialBind")
+        UsdShade.MaterialBindingAPI.Apply(sub.GetPrim()).Bind(pmat)
+        rest = np.setdiff1d(np.arange(len(arr[f"obj{i}_faces"])), photo)
+        if len(rest):
+            sub = UsdGeom.Subset.CreateGeomSubset(m, "colour", UsdGeom.Tokens.face, Vt.IntArray(rest.tolist()),
+                                                  "materialBind")
+            UsdShade.MaterialBindingAPI.Apply(sub.GetPrim()).Bind(mat)
     objs.append((xf, xf.AddTransformOp()))
 
 # Light: an HDRI sky (one per scene, turned per view) and a sun outdoors; indoors (closed room) a ceiling panel

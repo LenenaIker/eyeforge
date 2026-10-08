@@ -1,13 +1,13 @@
-"""Step 1.5e2 of the scene flow: each surroundings mesh's pose, refined on our own depth. On the street test
-Mira's placement (stage 5, gravity_joint) put several houses off their masks (silhouette IoU 0.0-0.3 on
-basque_street), and even its initial pose only reached 0.3-0.6. Here every mesh starts from the best of Mira's
-two poses and is fitted to MoGe's points inside its mask by ICP with scale (Umeyama on closest points, the mesh
-seen from the camera), kept only if its silhouette IoU on the mask goes up. Run in the `trellis2` env:
+"""Step 1.5b of photo2scene: each surroundings mesh's pose, refined on our own depth. SAM 3D's layout head
+(flow_sam3d.py) places each mesh from one look at the photo; here it is fitted to MoGe's points inside its mask by
+ICP with scale (Umeyama on closest points, the mesh seen from the camera), and a step is kept only if the mesh's
+silhouette IoU on its mask goes up. (With Mira-Scene's gravity placement it took a house from IoU 0.008 to 0.65,
+basque_street 2026-10-07.) Run in the `trellis2` env:
 
     PYOPENGL_PLATFORM=egl python experiments/scene3d/flow_refine.py --dir data/street_test/flow/basque_street
 
-Writes <dir>/mira/env/scene_refined.glb (each mesh in Mira's OpenGL camera frame, named by its object id) and
-<dir>/refine.json (IoU per mesh: gravity, initial, refined, chosen).
+Writes <dir>/meshes/scene_refined.glb (each mesh in the OpenGL photo camera frame, named object_NNN by its mask)
+and <dir>/refine.json (IoU per mesh: SAM 3D's pose, refined).
 """
 import argparse
 import glob
@@ -17,7 +17,7 @@ import os
 import numpy as np
 import pyrender
 import trimesh
-from PIL import Image
+from PIL import Image, ImageFilter
 from scipy.spatial import cKDTree
 
 
@@ -34,9 +34,11 @@ def umeyama(src, dst):
 
 
 class View:
-    def __init__(self, K, size=518):
-        self.K, self.size = K, size
-        self.r = pyrender.OffscreenRenderer(size, size)
+    """The photo's camera at a reduced size: pixel intrinsics, OpenGL frame."""
+
+    def __init__(self, K, w, h):
+        self.K, self.w, self.h = K, w, h
+        self.r = pyrender.OffscreenRenderer(w, h)
 
     def depth(self, m):
         sc = pyrender.Scene()
@@ -53,58 +55,68 @@ class View:
         return np.stack([(xs + 0.5 - K[0, 2]) / K[0, 0] * z, -(ys + 0.5 - K[1, 2]) / K[1, 1] * z, -z], 1)
 
 
+def axis_fit(src, dst):
+    """Per-axis scale and shift (s_j a_j + t_j ~ b_j), least squares on each axis alone."""
+    a, b = src - src.mean(0), dst - dst.mean(0)
+    s = (a * b).sum(0) / np.maximum((a ** 2).sum(0), 1e-12)
+    return s, dst.mean(0) - s * src.mean(0)
+
+
 def iou(a, b):
     return float((a & b).sum() / max((a | b).sum(), 1))
 
 
-def meshes_of(path):
-    sc = trimesh.load(path)
-    out = {}
-    for node in sc.graph.nodes_geometry:
-        tf, name = sc.graph[node]
-        if 'object_' not in node:
-            continue
-        m = sc.geometry[name].copy()
-        m.apply_transform(tf)
-        out[node[node.index('object_'):][:10]] = m
-    return out
+def load(path):
+    m = trimesh.load(path, force='mesh')
+    if m.visual.kind == 'texture':
+        m.visual = m.visual.to_color()
+    return m
+
+
+def resize(a, w, h):
+    return np.asarray(Image.fromarray(a).resize((w, h), Image.Resampling.NEAREST))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir', required=True)
     ap.add_argument('--iters', type=int, default=30)
+    ap.add_argument('--size', type=int, default=640, help='longest side of the IoU renders')
+    ap.add_argument('--axis-scale', action='store_true',
+                    help='after the similarity ICP, also scale each of the mesh\'s own axes (Mira-CCM shapes are not '
+                         'a similarity of the MoGe points)')
     args = ap.parse_args()
-    case = os.path.join(args.dir, 'mira', 'env')
-    sdir = glob.glob(os.path.join(case, 'scene', '*', '*', 'scene.glb'))[0]
-    gravity = meshes_of(sdir)
-    initial = meshes_of(os.path.join(os.path.dirname(sdir), 'scene_initial.glb'))
-    dep = glob.glob(os.path.join(case, 'depth', '*'))[0]
-    K = np.load(os.path.join(dep, 'intrinsics.npy'))
-    P = np.load(os.path.join(dep, 'camera_pts_map.npy'))
-    V = np.load(os.path.join(dep, 'valid_mask.npy'))
-    view = View(K)
+    d = args.dir
+    case = os.path.join(d, 'meshes')
+    em = np.load(os.path.join(d, 'env_masks.npz'))
+    dp = np.load(os.path.join(d, 'depth_background.npz'))
+    H, W = dp['depth'].shape
+    f = args.size / max(W, H)
+    w, h = round(W * f), round(H * f)
+    K = dp['intrinsics'] * np.array([[w], [h], [1]])  # normalised to pixels of the small render
+    P = np.stack([resize(dp['points'][..., i].astype(np.float32), w, h) for i in range(3)], -1)
+    P = P * np.array([1, -1, -1], np.float32)  # OpenCV to OpenGL
+    V = resize((dp['mask'] > 0).astype(np.uint8), w, h).astype(bool) & np.isfinite(P).all(-1)
+    view = View(K, w, h)
     out_scene = trimesh.Scene()
     report = {}
-    for oid in sorted(gravity):
-        k = int(oid[7:10])
-        mask = np.asarray(Image.open(os.path.join(case, 'input', f'mask_{k:03d}.png'))) > 0
+    for path in sorted(glob.glob(os.path.join(case, 'sam3d', '[0-9][0-9][0-9].glb'))):
+        k = int(os.path.basename(path)[:3])
+        oid = f'object_{k:03d}'
+        mask = resize(em['masks'][k].astype(np.uint8) * 255, w, h) > 0
         # Inner points only: MoGe smears depth across object edges.
-        inner = np.asarray(Image.fromarray(mask.astype(np.uint8) * 255).filter(
-            __import__('PIL.ImageFilter', fromlist=['MinFilter']).MinFilter(5))) > 0
+        inner = np.asarray(Image.fromarray(mask.astype(np.uint8) * 255).filter(ImageFilter.MinFilter(5))) > 0
         target = P[inner & V]
-        cands = {'gravity': gravity[oid], 'initial': initial.get(oid, gravity[oid])}
-        scores = {n: iou(view.depth(m) > 0, mask) for n, m in cands.items()}
-        start = max(scores, key=scores.get)
-        m = cands[start].copy()
-        best, best_iou = m.copy(), scores[start]
+        m = load(path)
+        scores = {'sam3d': iou(view.depth(m) > 0, mask)}
+        best, best_iou = m.copy(), scores['sam3d']
         if len(target) > 200:
             tree = cKDTree(target)
             for _ in range(args.iters):
-                d = view.depth(m)
-                if not (d > 0).any():
+                z = view.depth(m)
+                if not (z > 0).any():
                     break
-                Q = view.points(d)
+                Q = view.points(z)
                 if len(Q) > 20000:
                     Q = Q[np.random.default_rng(0).choice(len(Q), 20000, replace=False)]
                 dist, idx = tree.query(Q)
@@ -118,8 +130,59 @@ def main():
                 score = iou(view.depth(m) > 0, mask)
                 if score > best_iou:
                     best, best_iou = m.copy(), score
+            if args.axis_scale:
+                # From the best similarity pose: stretch along the mesh's oriented box axes, total 0.5-2x per axis.
+                m = best.copy()
+                F = m.bounding_box_oriented.primitive.transform  # box frame to camera
+                Fi = np.linalg.inv(F)
+                total = np.ones(3)
+                for _ in range(args.iters):
+                    z = view.depth(m)
+                    if not (z > 0).any():
+                        break
+                    Q = view.points(z)
+                    if len(Q) > 20000:
+                        Q = Q[np.random.default_rng(0).choice(len(Q), 20000, replace=False)]
+                    dist, idx = tree.query(Q)
+                    keep = dist < np.percentile(dist, 80)
+                    a = Q[keep] @ Fi[:3, :3].T + Fi[:3, 3]
+                    b = target[idx[keep]] @ Fi[:3, :3].T + Fi[:3, 3]
+                    sc, t = axis_fit(a, b)
+                    sc = np.clip(sc, 0.8, 1.25)
+                    sc = np.clip(total * sc, 0.5, 2.0) / total
+                    t = (b - a * sc).mean(0)
+                    total *= sc
+                    A = np.eye(4)
+                    A[:3, :3], A[:3, 3] = np.diag(sc), t
+                    m.apply_transform(F @ A @ Fi)
+                    score = iou(view.depth(m) > 0, mask)
+                    if score > best_iou:
+                        best, best_iou = m.copy(), score
+                # Then the silhouette itself: coordinate search on the box-axis scales and the shift across the view
+                # (x, y at the mesh's depth), halving the step when no move helps.
+                F = best.bounding_box_oriented.primitive.transform
+                Fi = np.linalg.inv(F)
+                step = 0.08
+                while step > 0.005:
+                    moved = False
+                    for j in range(5):
+                        for sign in (1, -1):
+                            A = np.eye(4)
+                            if j < 3:
+                                A[j, j] = 1 + sign * step
+                                T = F @ A @ Fi
+                            else:
+                                T = np.eye(4)
+                                T[j - 3, 3] = sign * step * np.abs(best.centroid[2])
+                            cand = best.copy()
+                            cand.apply_transform(T)
+                            score = iou(view.depth(cand) > 0, mask)
+                            if score > best_iou + 1e-4:
+                                best, best_iou, moved = cand, score, True
+                    if not moved:
+                        step /= 2
         scores['refined'] = best_iou
-        report[oid] = {k2: round(v, 3) for k2, v in scores.items()} | {'start': start}
+        report[oid] = {k2: round(v, 3) for k2, v in scores.items()}
         out_scene.add_geometry(best, node_name=oid, geom_name=oid)
     out_scene.export(os.path.join(case, 'scene_refined.glb'))
     with open(os.path.join(args.dir, 'refine.json'), 'w') as f:

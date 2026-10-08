@@ -161,7 +161,7 @@ def main():
     ap.add_argument('--indoor', action='store_true', help='close a room even when the photo shows no wall (a table '
                     'shot indoors); its walls take a plain plaster colour')
     ap.add_argument('--depth', choices=['photo', 'background'], default='photo',
-                    help='MoGe of the photo or of the erased photo (the flow: the same depth Mira gets)')
+                    help='MoGe of the photo or of the erased photo (photo2scene: the same depth SAM 3D gets)')
     args = ap.parse_args()
     d, out = args.dir, os.path.join(args.dir, 'isaac')
     os.makedirs(out, exist_ok=True)

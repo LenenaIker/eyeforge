@@ -1,4 +1,5 @@
-"""Step 2: MoGe-2 metric point maps of the photo and of the erased background (run in the `mira-geometry` env):
+"""Step 2: MoGe-2 metric point maps of the photo and of the erased background (run in the `eyeforge-sam3d` env; MoGe's
+own utils3d versions come from MOGE_DEPS, ahead of the env's, which SAM 3D needs as they are):
 
     python bg_depth.py --dir data/scene3d_test/ours/bottles
 
@@ -13,10 +14,11 @@ import numpy as np
 import torch
 from PIL import Image
 
+sys.path.insert(0, os.environ.get('MOGE_DEPS', '/media/lenena-iker/Crucial/tools/moge_deps'))
 sys.path.insert(0, os.environ.get('MOGE_ROOT', '/media/lenena-iker/Crucial/tools/MoGe'))
 from moge.model.v2 import MoGeModel  # noqa: E402
 
-CKPT = '/media/lenena-iker/Crucial/tools/mira_ckpt/moge-2-vitl/model.pt'
+CKPT = os.environ.get('MOGE_CKPT', '/media/lenena-iker/Crucial/tools/moge_ckpt/moge-2-vitl/model.pt')
 
 
 def main():

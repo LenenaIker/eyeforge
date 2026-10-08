@@ -230,6 +230,8 @@ def apply(d, report, args, samples):
             scene['pieces'][o['index']]['gain'] = applied[key]
         else:
             arr[f"obj{o['index']}_colors"] = np.clip(arr[f"obj{o['index']}_colors"] * g, 0, 1).astype(np.float32)
+            if f"obj{o['index']}_photo_faces" in arr:  # its photo-textured faces take the gain in the material
+                arr[f"obj{o['index']}_gain"] = np.asarray(g, np.float32)
     json.dump(scene, open(os.path.join(src, 'scene.json'), 'w'))
     np.savez_compressed(os.path.join(src, 'meshes.npz'), **arr)
     return applied

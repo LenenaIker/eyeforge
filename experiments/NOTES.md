@@ -537,7 +537,7 @@ La esquina como bloque en una cuadrícula: ejes desde la normal de la fachada, e
 
 ### Flujo de escena en tres fases sobre fotos reales de calle (2026-10-07)
 
-Banco: 9 fotos de Wikimedia Commons (`data/street_test/`, licencias en `sources.json`): 7 calles de pueblo de día a la altura del peatón (esquinas, calles rectas, una fachada con coche) y 2 de noche para probar el enrutado. Orquestador `experiments/scene3d/scene_flow.py`: cada subtarea es un script con salida en disco, su comprobación y su registro en `flow.json`; se reanuda donde se paró y `--redo X` repite X y todo lo que depende de él.
+Banco: 9 fotos de Wikimedia Commons (`data/street_test/`, licencias en `sources.json`): 7 calles de pueblo de día a la altura del peatón (esquinas, calles rectas, una fachada con coche) y 2 de noche para probar el enrutado. Orquestador `experiments/scene3d/photo2scene.py` (antes `scene_flow.py`): cada subtarea es un script con salida en disco, su comprobación y su registro en `flow.json`; se reanuda donde se paró y `--redo X` repite X y todo lo que depende de él.
 
 Fase 1 (Extracción):
 - 1.1 `flow_observe.py`: Kimi-K3 con la ficha de capacidades (`flow_capabilities.md`) y el catálogo de fallos (`flow_failures.md`), observación antes de decidir, 3 muestras votadas. Rutas bien en 9/9 (las dos de noche fuera de alcance), los tres votos coinciden siempre. Las notas por entorno ("cortado por el borde", "puede fundirse con la casa de detrás") son útiles. La altura de cámara del VLM es siempre 1,6 m: la mide MoGe.
@@ -575,3 +575,34 @@ Primero se mide la relación foto / render de cada objeto y se compara con la de
 - Referencia = suelo y fachadas planas (`--reference pieces`, por defecto): su textura sale de la propia foto, así que su ratio es solo luz y exposición. church_corner 25,6 a 23,7 (iglesia más cálida, cruz de piedra 27 a 15); basque_street 27,4 a 27,7, corner_timber 26,3 a 26,4, straight_road igual. En esos dos se deja el estado anterior (solo balance de blancos).
 - Límites: una ganancia por malla no arregla materiales mezclados (tejado, pared y flores); el tope de ganancia 2 no alcanza a las casas en sombra de corner_timber, que son luz. Hojas: `data/street_test/flow/<foto>/photometry_global_vs_rel.jpg`.
 - Umbral 10 % frente a 25 % (usuario): mismo resultado (basque 27,73 frente a 27,68, church 23,73 en ambos, corner_timber 26,42, straight_road 24,06). Casi todas las desviaciones ya pasaban del 25 %; se deja 10 % por defecto.
+
+### photo2scene sin Mira-Scene y con la foto como textura (2026-10-07)
+
+El flujo se llama photo2scene (usuario) y ya no llama a nada externo: `photo2scene.py` (antes `scene_flow.py`). Mira-Scene, sus entornos y sus pesos se borraron de Crucial (27 GB, usuario).
+
+- Profundidad: MoGe-2 corre en `eyeforge-sam3d` con su checkpoint en `tools/moge_ckpt` y sus versiones de utils3d en `tools/moge_deps` (delante en `sys.path`, el entorno conserva las que pide SAM 3D). Misma salida bit a bit que en `mira-geometry`.
+- Mallas: `flow_sam3d.py` lanza SAM 3D Objects entero (etapas 1 y 2 más la cabeza de pose) con nuestra profundidad como point map; la pose sale ya en nuestro marco (PyTorch3D a OpenGL). Unos 20 s por instancia (Mira, unos 2 min); IoU con la máscara 0,43-0,68 de salida y 0,45-0,93 tras `flow_refine.py`. Geometría más completa (inventa lo oculto) y el VLM acepta 27 mallas frente a 21; texturas más lisas que con el CCM de Mira.
+- Textura de la foto (`env_add.py --photo-texture`): cada vértice se proyecta en `background.png` y guarda esa posición como coordenada de textura; las caras vistas (delante de las demás mallas, dentro de su máscara erosionada 2 px, no rasantes) usan la foto a resolución completa, el resto los colores de SAM 3D ajustados al tono de la parte vista. Antes se subdividen las caras orientadas a la cámara hasta 16 px en la foto (la decimación deja una fachada en pocos triángulos grandes y un vértice fuera de la máscara perdía el triángulo entero: 6 % de caras con foto en la casa de basque_street). En Isaac, un GeomSubset con material de textura. Las copias de las plantillas no llevan la foto (se rebrickean).
+
+| Foto | ΔE Mira | ΔE SAM 3D | ΔE SAM 3D + foto | Vistas aceptadas (Mira, SAM 3D, + foto) |
+|---|---|---|---|---|
+| church_corner | 25,6 | 25,1 | 17,2 | (sin plantilla de plaza) |
+| basque_street | 27,4 | 29,8 | 25,4 | 81 %, 100 %, 94 % |
+| corner_timber | 26,3 | 29,5 | 21,8 | 94 %, 82 %, 76 % |
+| facade_car | 34,4 | 30,0 | 14,7 | 75 %, 75 %, 94 % |
+| straight_road | 24,1 | 24,2 | 15,5 | 88 %, 81 %, 88 % |
+| straight_whitewash | 22,9 | 26,5 | 24,4 | 44 %, 44 %, 75 % |
+| terrace_row | 22,7 | 26,6 | 19,9 | 59 %, 59 %, 77 % |
+
+Seis de siete lugares quedan listos (church_corner espera la plaza). Exposición de la vista 0: se fijaba con su primer render y, con una luz que deja en sombra la fachada que la foto muestra al sol, terrace_row salía 4,5 veces más oscura que la foto (ΔE 35). Ahora, si la exposición final sale fuera de 0,8-1,25, se corrige la de la vista 0 y se mide otra vez (terrace_row 35 a 19,9, straight_road 23,7 a 15,5). Hoja: `data/street_test/flow/photo_texture_compare.jpg`. La revisión de vistas del VLM sigue siendo ruidosa (cambia sin que cambien las vistas). Pendiente: `run_photo.sh` y `run_hope_train.sh` (ruta de producto) aún llaman a Mira.
+
+### CCM de Mira dentro de photo2scene (2026-10-07)
+
+Solo el código de Mira-CCM (`tools/mira_src`, 69 MB) y sus pesos (`tools/ccm_ckpt/pipeline`, 6 GB), en `eyeforge-sam3d` con diffusers 0.35, transformers 4.48 y peft 0.17 aparte en `tools/ccm_deps` (solo los carga `flow_ccm.py`). Unos 19 s por instancia. `flow_sam3d.py --voxels sam3d|ccm|hybrid` y `photo2scene.py --voxels`; por defecto sigue `sam3d`. Prueba en basque_street (copias en `data/street_test/flow_ccm/`, hoja `sheet/compare.jpg`):
+
+- `ccm`: la geometría sigue la foto (balcón corrido, ménsulas, puerta de la casa 0) y la malla sale cerrada, porque el generador de forma del CCM también inventa la trasera. SAM 3D inventa una casa genérica.
+- La pose del CCM contra la profundidad de MoGe es floja (inliers 11-58 %): un ajuste afín encaja 2-3 veces mejor que una similitud, las fachadas casi planas dejan el grosor mal definido. Tras `flow_refine.py`, IoU con la máscara mejor en 4 de 9 y peor en 5.
+- El lugar completo se para en 2.2b: las puertas de silueta tiran 4 de 7 mallas (casa 0: IoU 0,41 frente a 0,61 con SAM 3D) y otra tras rehacer.
+- `hybrid` (vóxeles del CCM más los de SAM 3D detrás de lo visto, llevados al marco del CCM con su pose): las dos formas no casan y sale un amasijo; la casa grande no cabe en la GPU. Descartado.
+- `flow_refine.py --axis-scale` (también `photo2scene.py --axis-scale`): tras la similitud, escala por eje de la caja orientada de la malla (ICP) y búsqueda directa sobre el IoU (escalas por eje y desplazamiento en x, y, paso que se parte a la mitad). CCM en basque_street: IoU 0,59-0,88 en las 9 mallas (antes 0,31-0,78) y pasan las 7 que llegan a las puertas de silueta. Pero el VLM tira la casa de los balcones ("foreign"): el CCM copia también lo que su máscara arrastra (portal y seto), mientras SAM 3D lo ignora. ΔE 21,8 (sin esa casa, no comparable) y el lugar se para en 2.4 por "floating", que es la casa del fondo sobre un bloque que también tiene la versión SAM 3D (que pasó).
+- Mismo ajuste con SAM 3D: puertas de silueta 9 de 9 (antes 7), ΔE 26,3 (antes 25,4), vistas 81 % (antes 94 %). Neutro.

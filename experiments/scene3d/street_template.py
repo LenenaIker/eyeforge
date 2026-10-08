@@ -25,7 +25,7 @@ import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
 
-from crossroad import ASPHALT, BRICKS, ROAD_WORDS, _axis_rotation, look, quad, rebrick
+from crossroad import ASPHALT, BRICKS, ROAD_WORDS, _axis_rotation, look, photo_keys, quad, rebrick
 
 
 def main():
@@ -82,7 +82,7 @@ def main():
         p = arr[f'obj{i}_points'] @ np.asarray(t)[:3, :3].T + np.asarray(t)[:3, 3]
         p = p + (level - np.percentile(p @ up, 0.5)) * up
         s = 1 if float((p.mean(0) - centre) @ b) >= 0 else -1
-        sides[s].append((p, arr[f'obj{i}_faces'], arr[f'obj{i}_colors'], names[i]))
+        sides[s].append((p, arr[f'obj{i}_faces'], arr[f'obj{i}_colors'], names[i], photo_keys(arr, i)))
     # Facade planes env_add.py kept where no mesh stands: they go with their side, like the meshes.
     facades = {1: [], -1: []}
     for p in scene['pieces']:
@@ -97,7 +97,7 @@ def main():
         # The road's own pixels rarely show its whole width (a parked car, the camera on one lane): the camera
         # stands in the street, so the centre line goes under it and the road reaches to the shown facades less
         # a sidewalk. A centre line from the road pixels put the turned copy on top of the camera (basque_street).
-        pts_s = np.concatenate([p for p, _, _, _ in sides[s0]] + [np.asarray(fp['points']) for fp in facades[s0]])
+        pts_s = np.concatenate([p for p, *_ in sides[s0]] + [np.asarray(fp['points']) for fp in facades[s0]])
         # The facade line: the block's points nearest the street (signed b coordinate from the old centre).
         facade_b = s0 * float(np.percentile(s0 * ((pts_s - centre) @ b), 2))
         cam_b = float((np.zeros(3) - centre) @ b)
@@ -106,7 +106,8 @@ def main():
         half = float(np.clip(gap - 1.5, 2.0, 7.0))
         width = 2 * half
         rot = np.asarray(_axis_rotation(up, math.pi))
-        sides[-s0] = [((p - centre) @ rot.T + centre, f, col, n) for p, f, col, n in sides[s0]]
+        # The turned side is a copy: rebricked, without the photo's texture.
+        sides[-s0] = [((p - centre) @ rot.T + centre, f, col, n, {}) for p, f, col, n, _ in sides[s0]]
         facades[-s0] = [{**fp, 'points': ((np.asarray(fp['points']) - centre) @ rot.T + centre).tolist()}
                         for fp in facades[s0]]
 
@@ -118,7 +119,7 @@ def main():
     out_arr, objects = {}, 0
     lengths, facade_quads = {}, []
     for s, block in sides.items():
-        allp = np.concatenate([p for p, _, _, _ in block] + [np.asarray(fp['points']) for fp in facades[s]])
+        allp = np.concatenate([p for p, *_ in block] + [np.asarray(fp['points']) for fp in facades[s]])
         along = (allp - centre) @ a
         a0, a1 = np.percentile(along, [1, 99])
         L = float(max(a1 - a0, 8.0))
@@ -132,12 +133,14 @@ def main():
                 if k and not along_street(fp):
                     continue
                 facade_quads.append({**fp, 'points': (np.asarray(fp['points']) + shift).tolist()})
-            for p, f, col, n in block:
+            for p, f, col, n, photo in block:
                 if any(w in n for w in ('house', 'wall', 'building')):
                     col = rebrick(col, brick)
                 out_arr[f'obj{objects}_points'] = (p + shift).astype(np.float32)
                 out_arr[f'obj{objects}_faces'] = f
                 out_arr[f'obj{objects}_colors'] = np.asarray(col, np.float32)
+                if k == 0:  # the block where the photo has it keeps the photo's texture; copies are rebricked
+                    out_arr.update({f'obj{objects}_{key}': v for key, v in photo.items()})
                 objects += 1
 
     # Ground: the road along the street, a sidewalk with the photo's material on each side, curb faces.

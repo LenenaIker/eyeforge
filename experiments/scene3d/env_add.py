@@ -9,6 +9,13 @@ a sheet of each mesh alone, turned, to judge what SAM 3D makes of things that ar
 
     PYOPENGL_PLATFORM=egl python env_add.py --env data/scene3d_test/env_cases/006_street_env \
         --scene data/scene3d_test/ours/street_orbit --out data/scene3d_test/ours/street_env [--drop-walls]
+
+With --photo-texture (photo2scene), every mesh face the photo's camera sees takes the photo itself as its texture:
+each vertex is projected into the erased photo (background.png) and keeps that position as its texture
+coordinate, so a flat facade of a few large triangles still shows every window at the photo's resolution. Faces
+the camera does not see (sides, back, the skirts) keep SAM 3D's vertex colours, toned to the photo by the median
+ratio on the faces it sees. Per object in meshes.npz: obj{i}_uv, obj{i}_photo_faces (bool per face) and
+obj{i}_texture (the image).
 """
 import argparse
 import glob
@@ -20,7 +27,7 @@ import numpy as np
 import open3d as o3d
 import pyrender
 import trimesh
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from scipy.spatial import ConvexHull, cKDTree
 
 GL2CV = np.diag([1.0, -1.0, -1.0, 1.0])
@@ -39,8 +46,8 @@ def simplify(m, max_faces):
 
 
 def env_meshes(case, max_faces):
-    """Each surroundings mesh in Mira's OpenGL photo camera frame, with vertex colours, by node name. A flow
-    case's poses refined on our depth (flow_refine.py, scene_refined.glb) take the place of Mira's."""
+    """Each surroundings mesh in the OpenGL photo camera frame, with vertex colours, by node name: photo2scene's
+    refined poses (flow_refine.py, scene_refined.glb), or an older Mira-Scene case's own placement."""
     refined = os.path.join(case, 'scene_refined.glb')
     if os.path.exists(refined):
         scene = trimesh.load(refined)
@@ -66,6 +73,88 @@ def env_meshes(case, max_faces):
             m.visual = m.visual.to_color()
         m.apply_transform(to_cam @ tf)
         out[node] = simplify(m, max_faces)
+    return out
+
+
+def to_linear(c):
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def to_srgb(c):
+    c = np.clip(c, 0, 1)
+    return np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)
+
+
+def project(v, K):
+    """Continuous pixel coordinates (pixel centres at +0.5) and depth of OpenGL camera points."""
+    z = -v[:, 2]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return K[0, 2] + K[0, 0] * v[:, 0] / z, K[1, 2] - K[1, 1] * v[:, 1] / z, z
+
+
+def split_facing(m, K, W, H, max_px=16.0, rounds=6):
+    """Faces turned to the camera split until none spans more than max_px on the photo: decimation leaves a flat
+    facade as a few large triangles, and one corner past the mask's edge would cost the whole triangle its photo
+    (basque_street's main house: photo on 6 % of its faces, 2026-10-07)."""
+    v, f = np.asarray(m.vertices), np.asarray(m.faces)
+    col = m.visual.vertex_colors[:, :3].astype(float)
+    for _ in range(rounds):
+        u, w, z = project(v, K)
+        uv = np.stack([u, w], 1)[f]
+        span = np.max([np.linalg.norm(uv[:, a] - uv[:, b], axis=1) for a, b in ((0, 1), (1, 2), (2, 0))], 0)
+        cen = v[f].mean(1)
+        n = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+        facing = np.abs((n * cen).sum(1)) > 0.25 * np.linalg.norm(n, axis=1) * np.linalg.norm(cen, axis=1)
+        on = (z[f] > 0.05).all(1) & ((uv[..., 0] >= 0) & (uv[..., 0] < W) & (uv[..., 1] >= 0) & (uv[..., 1] < H)).any(1)
+        big = np.nonzero(facing & on & (span > max_px))[0]
+        if not len(big):
+            break
+        v, f, attr = trimesh.remesh.subdivide(v, f, face_index=big, vertex_attributes={'col': col})
+        col = attr['col']
+    return trimesh.Trimesh(v, f, vertex_colors=np.clip(col, 0, 255).astype(np.uint8), process=False)
+
+
+def photo_texture(meshes, d, tol=0.03, min_cos=0.25):
+    """Per mesh (OpenGL photo camera frame, named "NNN phrase" by its mask): the mesh with its faces turned to
+    the camera split small (split_facing), texture coordinates of every vertex in the photo, which faces show the
+    photo (all three vertices seen: in front of every other mesh, inside the mesh's own mask, the face not
+    grazing), and its vertex colours toned to the photo."""
+    photo = np.asarray(Image.open(os.path.join(d, 'background.png')).convert('RGB'))
+    H, W = photo.shape[:2]
+    K = np.load(os.path.join(d, 'depth_background.npz'))['intrinsics'] * np.array([[W], [H], [1]])
+    em = np.load(os.path.join(d, 'env_masks.npz'))['masks']
+    meshes = {name: split_facing(m, K, W, H) for name, m in meshes.items()}
+    sc = pyrender.Scene()
+    for m in meshes.values():
+        sc.add(pyrender.Mesh.from_trimesh(trimesh.Trimesh(m.vertices, m.faces, process=False)))
+    sc.add(pyrender.IntrinsicsCamera(K[0, 0], K[1, 1], K[0, 2], K[1, 2], znear=0.05, zfar=2000), pose=np.eye(4))
+    r = pyrender.OffscreenRenderer(W, H)
+    depth = r.render(sc, flags=pyrender.RenderFlags.DEPTH_ONLY)
+    r.delete()
+    lin = to_linear(photo / 255.0)
+    out = {}
+    for name, m in meshes.items():
+        mask = em[int(name[:3])].astype(np.uint8) * 255
+        # A pixel short of the mask's edge: the edge mixes the thing with what stands behind it.
+        mask = np.asarray(Image.fromarray(mask).resize((W, H), Image.Resampling.NEAREST)
+                          .filter(ImageFilter.MinFilter(5))) > 0
+        v = np.asarray(m.vertices)
+        u, w, z = project(v, K)
+        inside = (z > 0.05) & (u >= 0) & (u < W) & (w >= 0) & (w < H)
+        xi = np.clip(np.nan_to_num(u), 0, W - 1).astype(int)
+        yi = np.clip(np.nan_to_num(w), 0, H - 1).astype(int)
+        dz = depth[yi, xi]
+        seen = inside & (dz > 0) & (np.abs(dz - z) < tol * z + 0.05) & mask[yi, xi]
+        cen = v[m.faces].mean(1)
+        cos = np.abs((m.face_normals * cen).sum(1)) / np.maximum(np.linalg.norm(cen, axis=1), 1e-6)
+        faces = seen[m.faces].all(1) & (cos > min_cos)
+        uv = np.where(inside[:, None], np.stack([u / W, 1 - w / H], 1), 0).astype(np.float32)
+        cols = m.visual.vertex_colors[:, :3] / 255.0
+        if seen.sum() > 50:
+            gain = np.median(lin[yi, xi][seen], 0) / np.maximum(np.median(to_linear(cols)[seen], 0), 1e-4)
+            cols = to_srgb(to_linear(cols) * np.clip(gain, 0.5, 2.0))
+        out[name] = (m, uv, faces, cols)
+        print(f'{name}: photo on {faces.mean():.0%} of the faces')
     return out
 
 
@@ -145,6 +234,7 @@ def main():
     ap.add_argument('--snap-ground', action='store_true', help='set each mesh on the floor by its lowest points')
     ap.add_argument('--fill-ground', action='store_true', help='a mesh above the floor gets a skirt down to it '
                     '(its base was hidden in the photo, so SAM 3D left it out); keeps where the photo put it')
+    ap.add_argument('--photo-texture', action='store_true', help='faces the photo sees take the photo as texture')
     ap.add_argument('--keep', default=None, help='comma-separated mask indices of the meshes to add (the ones '
                     'flow_check_meshes.py passed); default all')
     args = ap.parse_args()
@@ -160,10 +250,16 @@ def main():
     if meshes:
         turntable(meshes, os.path.join(args.out, 'env_meshes.jpg'))
 
-    masks = np.any([np.asarray(Image.open(p)) > 0 for p in glob.glob(os.path.join(args.env, 'input', 'mask_*.png'))], 0)
-    # A flow case (flow_mira_case.py) already carries our own depth, padded: same frame and scale.
-    padded = os.path.exists(os.path.join(os.path.dirname(os.path.normpath(args.env)), 'pad.json'))
-    s = 1.0 if padded else depth_scale(args.env, args.scene, masks)
+    # photo2scene's meshes (flow_sam3d.py) and a padded Mira flow case are posed on our own depth: same frame and
+    # scale. An older Mira case had its own depth.
+    same = os.path.isdir(os.path.join(args.env, 'sam3d')) or \
+        os.path.exists(os.path.join(os.path.dirname(os.path.normpath(args.env)), 'pad.json'))
+    if same:
+        s = 1.0
+    else:
+        masks = np.any([np.asarray(Image.open(p)) > 0
+                        for p in glob.glob(os.path.join(args.env, 'input', 'mask_*.png'))], 0)
+        s = depth_scale(args.env, args.scene, masks)
     src = os.path.join(args.scene, 'isaac')
     scene = json.load(open(os.path.join(src, 'scene.json')))
     arr = dict(np.load(os.path.join(src, 'meshes.npz')))
@@ -171,15 +267,27 @@ def main():
     up = np.asarray(scene['up'], float)
     up /= np.linalg.norm(up)
     level = float(np.mean(np.asarray(scene['pieces'][0]['points']) @ up))  # piece_build's floor comes first
+    tex = photo_texture(meshes, args.scene) if args.photo_texture and meshes else {}
+    if tex:
+        tex_path = os.path.abspath(os.path.join(args.out, 'isaac', 'tex_photo.png'))
+        shutil.copy(os.path.join(args.scene, 'background.png'), tex_path)
     for k, (name, m) in enumerate(meshes.items()):
         i = first + k
         pts = trimesh.transform_points(m.vertices, GL2CV) * s
         cols = m.visual.vertex_colors[:, :3] / 255
         faces = m.faces
+        if name in tex:
+            m, uv, photo_faces, cols = tex[name]
+            pts = trimesh.transform_points(m.vertices, GL2CV) * s
+            faces = m.faces
         if args.snap_ground:  # catalog entry 1: a base hidden in the photo comes out floating or sunk
             pts = pts + (level - np.percentile(pts @ up, 0.5)) * up
         elif args.fill_ground:
             pts, faces, cols = skirt(pts, faces, cols, up, level)
+        if name in tex:  # the skirt's new vertices and faces take no photo
+            arr[f'obj{i}_uv'] = np.concatenate([uv, np.zeros((len(pts) - len(uv), 2), np.float32)])
+            arr[f'obj{i}_photo_faces'] = np.concatenate([photo_faces, np.zeros(len(faces) - len(photo_faces), bool)])
+            arr[f'obj{i}_texture'] = np.array(tex_path)
         arr[f'obj{i}_points'] = pts.astype(np.float32)
         arr[f'obj{i}_faces'] = np.asarray(faces).astype(np.int32)
         arr[f'obj{i}_colors'] = np.asarray(cols).astype(np.float32)

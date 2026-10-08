@@ -1,9 +1,12 @@
-"""The scene flow from one photo (docs/escena_agente_literatura.md, three phases): each step is one script with its
+"""photo2scene: a place for Isaac Sim from one photo (docs/escena_agente_literatura.md, three phases): each step is one script with its
 outputs on disk and its own check, run in its own env; a step whose outputs exist is skipped, so a run resumes
 where it stopped. Every step writes its part of <dir>/flow.json (status, seconds, check, why). No loop crosses
 phases: a failed check stops the photo there, with the reason in the log.
 
-    python experiments/scene3d/scene_flow.py --image data/street_test/images/basque_street.jpg \
+Everything it runs lives here or in its envs (SAM 3, SAM 3D Objects, MoGe-2, LaMa, Isaac Sim); no outside
+pipeline is called.
+
+    python experiments/scene3d/photo2scene.py --image data/street_test/images/basque_street.jpg \
         --dir data/street_test/flow/basque_street [--until 1.5] [--redo 1.3b]
 """
 import argparse
@@ -18,20 +21,14 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-TOOLS = Path('/media/lenena-iker/Crucial/tools')
-MIRA = TOOLS / 'Mira-Scene'
 HOME = Path.home()
 PY = {
     'sam3': HOME / 'miniforge3/envs/teacher-sam3/bin/python',
     'trellis': HOME / 'miniforge3/envs/trellis2/bin/python',
-    'geo': TOOLS / 'envs/mira-geometry/bin/python',
-    'ccm': TOOLS / 'envs/mira-ccm/bin/python',
     'mesh': Path('/media/lenena-iker/Crucial/envs/eyeforge-sam3d/bin/python'),
     'isaac': Path('/opt/isaacsim/isaac-sim-5.1.0-20260318-clean/python.sh'),
 }
-ENV = {'PYTHONPATH': f'{MIRA}/infer_scripts:{MIRA}/Mira-CCM/src:{MIRA}/UniDataset/src',
-       'MIRA_MOGE2_ROOT': str(TOOLS / 'MoGe'), 'MIRA_MOGE2_CHECKPOINT': str(TOOLS / 'mira_ckpt/moge-2-vitl/model.pt'),
-       'PYOPENGL_PLATFORM': 'egl', 'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True'}
+ENV = {'PYOPENGL_PLATFORM': 'egl', 'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True'}
 
 
 def gpu_temp():
@@ -67,7 +64,7 @@ class Flow:
         rec = self.log['steps'].setdefault(step, {})
         if outputs and all((self.d / o).exists() for o in outputs) and rec.get('status') in ('ok', 'stop'):
             return rec.get('code', 0)
-        if env in ('mesh', 'ccm', 'sam3', 'geo', 'isaac', 'trellis'):
+        if env in ('mesh', 'sam3', 'isaac', 'trellis'):
             gpu_temp()
         t0 = time.time()
         logf = self.d / 'logs' / f'{step}.log'
@@ -121,7 +118,7 @@ def phase1(f, until):
                    'the segmenter found almost no ground'):
         return False
     # 1.4 Depth and camera: MoGe-2 on the photo and on the erased photo.
-    f.run('1.4_depth', 'geo', [s3 / 'bg_depth.py', '--dir', d], ['depth_photo.npz', 'depth_background.npz'])
+    f.run('1.4_depth', 'mesh', [s3 / 'bg_depth.py', '--dir', d], ['depth_photo.npz', 'depth_background.npz'])
     f.run('1.4_camera', 'trellis', [s3 / 'flow_camera.py', '--dir', d], ['camera.json'], ok_codes=(0, 3))
     cam = jload(d, 'camera.json')
     if not f.check('1.4_camera', cam['ok'], cam['checks'], '; '.join(cam['why'])):
@@ -140,51 +137,39 @@ def phase1(f, until):
         return False
     if until == '1.3':
         return True
-    # 1.5 Meshes: Mira's stages 2-5 on the kept surroundings, with our depth (flow_mira_case.py).
-    m = (d / 'mira').resolve()
-    mira = MIRA / 'infer_scripts'
+    # 1.5 Meshes: SAM 3D Objects whole on each kept surroundings mask, with our depth as its point map.
+    # With --voxels ccm|hybrid, Mira-CCM's pixel-aligned voxels go into SAM 3D's stage 2 (flow_ccm.py).
     for attempt in range(2):
-        f.run('1.5a_mira_case', 'sam3', [s3 / 'flow_mira_case.py', '--dir', d], ['mira/env/scene_graph.json'])
-        f.run('1.5b_ccm', 'ccm', ['2_inference_CCM.py', '--demo_dir', m, '--output_dir', m, '--ckpt_dir',
-                                  TOOLS / 'mira_ckpt/mira-scene/pipeline', '--use_cropped_condition', '--case', 'env'],
-              ['mira/env/CCM/masks.npy'], cwd=mira)
-        f.run('1.5c_sam3d', 'mesh', ['3_inference_mesh.py', '--demo_dir', m, '--output_dir', m, '--ckpt_dir',
-                                     TOOLS / 'sam-3d-objects/checkpoints/hf/pipeline.yaml', '--case', 'env'],
-              ['mira/env/mesh/sam3d'], cwd=mira)
-        # A mesh can fail on GPU memory after a large one; SAM 3D keeps the meshes it has, so a fresh process
-        # fills the gap. An instance that fails twice is too big for the GPU (a whole row of houses, straight_road
-        # 2026-10-07): it leaves the kept masks and the case is made again without it (Mira's placement needs every
-        # mesh of its case).
-        n_masks = len(list((d / 'mira/env/input').glob('mask_*.png')))
-        have = {int(p.stem) for p in (d / 'mira/env/mesh/sam3d').glob('[0-9][0-9][0-9].glb')}
+        if f.voxels != 'sam3d':
+            f.run('1.5a_ccm', 'mesh', [s3 / 'flow_ccm.py', '--dir', d, '--fresh'], [])
+        f.run('1.5a_sam3d', 'mesh', [s3 / 'flow_sam3d.py', '--dir', d, '--fresh', '--voxels', f.voxels],
+              ['meshes/scene_graph.json'])
+        # A mesh can fail on GPU memory after a large one; the meshes made are kept, so a fresh process fills the
+        # gap. An instance that fails twice is too big for the GPU (a whole row of houses, straight_road
+        # 2026-10-07): it leaves the kept masks and the meshes are made again without it (indices follow masks).
+        n_masks = len(np.load(d / 'env_masks.npz')['phrases'])
+        have = {int(p.stem) for p in (d / 'meshes/sam3d').glob('[0-9][0-9][0-9].glb')}
         if len(have) < n_masks:
-            f.run('1.5c_sam3d_retry', 'mesh', ['3_inference_mesh.py', '--demo_dir', m, '--output_dir', m,
-                                               '--ckpt_dir', TOOLS / 'sam-3d-objects/checkpoints/hf/pipeline.yaml',
-                                               '--case', 'env'], [], cwd=mira)
-            have = {int(p.stem) for p in (d / 'mira/env/mesh/sam3d').glob('[0-9][0-9][0-9].glb')}
+            f.run('1.5a_sam3d_retry', 'mesh', [s3 / 'flow_sam3d.py', '--dir', d, '--voxels', f.voxels], [])
+            have = {int(p.stem) for p in (d / 'meshes/sam3d').glob('[0-9][0-9][0-9].glb')}
         missing = sorted(set(range(n_masks)) - have)
         if not missing:
             break
         z = dict(np.load(d / 'env_masks.npz'))
         keep = [i for i in range(len(z['phrases'])) if i not in missing]
         np.savez_compressed(d / 'env_masks.npz', **{k: v[keep] for k, v in z.items()})
-        f.check('1.5c_sam3d', True, {'dropped_no_mesh': [str(z['phrases'][i]) for i in missing]})
-        for k, rec in f.log['steps'].items():  # every step from the Mira case on
+        f.check('1.5a_sam3d', True, {'dropped_no_mesh': [str(z['phrases'][i]) for i in missing]})
+        for k, rec in f.log['steps'].items():  # every step from the meshes on
             if k.startswith(('1.5', '2', '3')):
                 rec['status'] = 'redo'
     else:
-        return f.check('1.5c_sam3d', False, {'missing': missing}, 'meshes still missing after dropping instances')
-    f.run('1.5d_floor', 'geo', ['4_estimate_floor.py', '--demo_dir', m, '--output_dir', m, '--depth_method', 'moge2',
-                              '--case', 'env'],
-          ['mira/env/floor/floor_alignment.json'], cwd=mira)
-    f.run('1.5e_place', 'geo', ['5_construct_scene.py', '--data_dir', m, '--output_dir', m, '--depth_method', 'moge2',
-                                '--solve_method', 'gravity_joint', '--mesh-backend', 'sam3d', '--case', 'env'], ['mira/env/scene'],
-          cwd=mira)
-    f.run('1.5e2_refine', 'trellis', [s3 / 'flow_refine.py', '--dir', d], ['refine.json'])
-    f.run('1.5f_check_meshes', 'trellis', [s3 / 'flow_check_meshes.py', '--dir', d], ['meshes.json'])
+        return f.check('1.5a_sam3d', False, {'missing': missing}, 'meshes still missing after dropping instances')
+    f.run('1.5b_refine', 'trellis', [s3 / 'flow_refine.py', '--dir', d] + (['--axis-scale'] if f.axis_scale else []),
+          ['refine.json'])
+    f.run('1.5c_check_meshes', 'trellis', [s3 / 'flow_check_meshes.py', '--dir', d], ['meshes.json'])
     ms = jload(d, 'meshes.json')['meshes']
     kept = [x for x in ms if x['keep']]
-    if not f.check('1.5f_check_meshes', bool(kept), {'kept': [(x['index'], x['phrase']) for x in kept],
+    if not f.check('1.5c_check_meshes', bool(kept), {'kept': [(x['index'], x['phrase']) for x in kept],
                                                    'dropped': [(x['index'], x['phrase'], x['why'])
                                                                for x in ms if not x['keep']]},
                    'no surroundings mesh passed'):
@@ -204,8 +189,9 @@ def phase2(f, until):
     keep = [x['index'] for x in jload(d, 'meshes.json')['meshes'] if x['keep']]
     # 2.2 Surroundings meshes into the place, then the geometric gates; a mesh that fails is dropped once.
     for attempt in range(2):
-        f.run(f'2.2a_env_{attempt}', 'trellis', [s3 / 'env_add.py', '--env', d / 'mira' / 'env', '--scene', d,
-                                                 '--out', d / 'place', '--drop-covered-walls', '--fill-ground', '--keep',
+        f.run(f'2.2a_env_{attempt}', 'trellis', [s3 / 'env_add.py', '--env', d / 'meshes', '--scene', d,
+                                                 '--out', d / 'place', '--drop-covered-walls', '--fill-ground', '--photo-texture',
+                                                 '--keep',
                                                  ','.join(map(str, keep))], ['place/isaac/scene.json'])
         f.run(f'2.2b_gates_{attempt}', 'trellis', [s3 / 'flow_gates.py', '--dir', d], ['gates.json'])
         g = jload(d, 'gates.json')
@@ -260,6 +246,22 @@ def phase2(f, until):
                 sc = json.load(open(p))
                 sc['exposure_scale'] = round(min(1.5, max(0.5, fin['exposure'])), 3)
                 json.dump(sc, open(p, 'w'))
+        # View 0 itself keeps a fixed exposure from its first render: with a light that shades the facade the
+        # photo shows lit, it stayed 4.5 times darker than the photo (terrace_row, 2026-10-07). Corrected and
+        # measured again.
+        src = d / 'place/isaac'
+        sc = json.load(open(src / 'scene.json'))
+        gain0 = sc.get('exposure_0') or json.load(open(src / 'exposure_0.json'))['gain']
+        for name in ('scene.json', 'orig_scene.json'):
+            p = src / name
+            if p.exists():
+                sc = json.load(open(p))
+                sc['exposure_0'] = float(gain0 * min(4.0, max(0.25, fin['exposure'])))
+                json.dump(sc, open(p, 'w'))
+        f.run('2.4a_render_exposure', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri], [])
+        f.run('2.4a_photometry_exposed', 'trellis', [s3 / 'flow_photometry.py', '--dir', d, '--out',
+                                                     'photometry_final'], [])
+        fin = jload(d, 'photometry_final.json')
     if not f.check('2.4a_photometry', fin['mean_de'] <= 35,
                    {'mean_de': [first['mean_de'], fin['mean_de']], 'exposure': fin['exposure'], 'cast': fin['cast'],
                     'worst': fin['worst'], 'checks': fin['checks']},
@@ -301,12 +303,16 @@ def main():
     ap.add_argument('--dir', required=True)
     ap.add_argument('--until', default='', help='stop after this step number (1.2, 1.4, 1.3, ...)')
     ap.add_argument('--redo', default='', help='a step number (1.3c) to run again with all the steps after it')
+    ap.add_argument('--voxels', choices=['sam3d', 'ccm', 'hybrid'], default='sam3d',
+                    help="SAM 3D stage-2 voxels (flow_sam3d.py --voxels)")
+    ap.add_argument('--axis-scale', action='store_true', help='flow_refine.py --axis-scale')
     args = ap.parse_args()
     f = Flow(args.image, args.dir)
+    f.voxels = args.voxels
+    f.axis_scale = args.axis_scale
     if args.redo:
         # The step and every step after it in the flow's order: later outputs depend on earlier ones.
-        order = ['1.1', '1.2', '1.3a', '1.4', '1.3b', '1.3c', '1.5a', '1.5b', '1.5c', '1.5d', '1.5e', '1.5e2', '1.5f',
-                 '2', '3']
+        order = ['1.1', '1.2', '1.3a', '1.4', '1.3b', '1.3c', '1.5a', '1.5b', '1.5c', '2', '3']
         start = min(i for i, o in enumerate(order) if any(o.startswith(r) or r.startswith(o)
                                                            for r in args.redo.split(',')))
         for k, rec in f.log['steps'].items():

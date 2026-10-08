@@ -1,5 +1,5 @@
-"""Step 1.5f of the scene flow: the VLM checks each SAM 3D surroundings mesh that Mira placed (flow_mira_case.py
-and Mira's stages 2-5), next to the photo crop it came from. Closed yes/no questions, three samples voted per
+"""Step 1.5c of photo2scene: the VLM checks each SAM 3D surroundings mesh (flow_sam3d.py, posed by flow_refine.py),
+next to the photo crop it came from. Closed yes/no questions, three samples voted per
 question (one answer changed between runs on the mask check): is it recognisable as the thing, does it carry
 pieces of something else, is it a solid shape rather than a sheet. A mesh that fails is left out of the scene
 (this replaces the hand-picked `crossroad.py --drop`). Run in the `trellis2` env:
@@ -51,11 +51,11 @@ def main():
     ap.add_argument('--votes', type=int, default=3)
     args = ap.parse_args()
     d = args.dir
-    case = os.path.join(d, 'mira', 'env')
+    case = os.path.join(d, 'meshes')
     meshes = env_meshes(case, 20000)
     graph = json.load(open(os.path.join(case, 'scene_graph.json')))
     nodes = {n['id']: n for n in graph['nodes'] if n['kind'] == 'object'}
-    # Mira's mask k is the k-th kept mask of flow_check_masks.py; its picture (repaired or not) is stored there.
+    # Mesh k is the k-th kept mask of flow_check_masks.py; its picture (repaired or not) is stored there.
     pictures = list(np.load(os.path.join(d, 'env_masks.npz'))['pictures'])
     out_dir = os.path.join(d, 'mesh_check')
     os.makedirs(out_dir, exist_ok=True)
