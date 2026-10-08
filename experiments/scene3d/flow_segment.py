@@ -2,7 +2,8 @@
 (flow_observe.py), on the photo with the movable objects erased (bg_prepare.py background.png), so a car parked
 in front of a house does not cut it. Cheap gates in code first (catalog entries 4 and 7): too small, a sliver
 cut by the border, or mostly inside another instance. Each candidate that passes gets a picture for the VLM
-check (flow_check_masks.py). Run in the `teacher-sam3` env:
+check (flow_check_masks.py). In a room (--from-split) the candidates are the things scene_split.py measured
+as scene, from their boxes. Run in the `teacher-sam3` env:
 
     python experiments/scene3d/flow_segment.py --dir data/street_test/flow/basque_street
 
@@ -14,8 +15,9 @@ import json
 import os
 
 import numpy as np
+import torch
 from PIL import Image, ImageDraw
-from transformers import Sam3Model, Sam3Processor
+from transformers import Sam3Model, Sam3Processor, Sam3TrackerModel, Sam3TrackerProcessor
 
 from bg_prepare import segment
 
@@ -61,16 +63,35 @@ def main():
     ap.add_argument('--min-area-cut', type=float, default=0.02,
                     help='smallest instance that touches the photo border (slivers out)')
     ap.add_argument('--max', type=int, default=12, help='most candidates kept, largest first (2 min of SAM 3D each)')
+    ap.add_argument('--from-split', action='store_true', help="a room: the things scene_split.py measured as "
+                    "scene meshes, by their boxes, instead of the observation's surroundings phrases")
     args = ap.parse_args()
-    obs = json.load(open(os.path.join(args.dir, 'observe.json')))['final']
-    phrases = [e['phrase'] if isinstance(e, dict) else e for e in obs['surroundings']]
     img = Image.open(os.path.join(args.dir, 'background.png')).convert('RGB')
-    model = Sam3Model.from_pretrained('facebook/sam3').cuda().eval()
-    proc = Sam3Processor.from_pretrained('facebook/sam3')
     cands = []
-    for phrase in phrases:
-        for score, m in segment(model, proc, img, phrase, args.threshold):
-            cands.append({'phrase': phrase, 'score': round(score, 3), 'mask': m})
+    if args.from_split:
+        # Box prompts on the erased photo: the desk's mask takes in what the chair in front of it hid.
+        rows = [r for r in json.load(open(os.path.join(args.dir, 'split.json')))['things'] if r['kind'] == 'mesh']
+        if rows:
+            model = Sam3TrackerModel.from_pretrained('facebook/sam3').cuda().eval()
+            proc = Sam3TrackerProcessor.from_pretrained('facebook/sam3')
+            w, h = img.size
+            boxes = [[r['box'][0] * w / 1000, r['box'][1] * h / 1000, r['box'][2] * w / 1000, r['box'][3] * h / 1000]
+                     for r in rows]
+            p = proc(images=img, input_boxes=[boxes], return_tensors='pt').to('cuda')
+            with torch.no_grad():
+                out = model(**p, multimask_output=False)
+            ms = proc.post_process_masks(out.pred_masks.cpu(), p['original_sizes'].cpu())[0][:, 0].numpy()
+            sc = out.iou_scores[0, :, 0].float().cpu().numpy()
+            for r, m, score in zip(rows, ms, sc):
+                cands.append({'phrase': r['name'], 'score': round(float(score), 3), 'mask': m})
+    else:
+        obs = json.load(open(os.path.join(args.dir, 'observe.json')))['final']
+        phrases = [e['phrase'] if isinstance(e, dict) else e for e in obs['surroundings']]
+        model = Sam3Model.from_pretrained('facebook/sam3').cuda().eval()
+        proc = Sam3Processor.from_pretrained('facebook/sam3')
+        for phrase in phrases:
+            for score, m in segment(model, proc, img, phrase, args.threshold):
+                cands.append({'phrase': phrase, 'score': round(score, 3), 'mask': m})
     cands.sort(key=lambda c: -c['mask'].sum())
     kept = []
     for c in cands:

@@ -1,13 +1,13 @@
 """Step 1.4 of the scene flow, the gate after depth: the ground plane on MoGe-2's points of the erased photo
 (bg_depth.py) gives the camera's height, pitch and roll and where the horizon crosses the image. They are checked
 against the route (a pedestrian camera stands 0.5 to 4 m up, level within a few degrees of roll) and against the
-VLM's own horizon guess from the observation: a far miss means MoGe or the ground mask went wrong, and the
-scene would be built tilted or sunk. Any env with numpy:
+VLM's own horizon guess from the observation (when its samples agree): a far miss means MoGe or the ground mask
+went wrong, and the scene would be built tilted or sunk. Any env with numpy:
 
     python experiments/scene3d/flow_camera.py --dir data/street_test/flow/basque_street
 
 Writes <dir>/camera.json: {"ok", "height_m", "pitch_deg", "roll_deg", "horizon_y", "horizon_y_vlm",
-"ground_inliers", "checks", "why"}. Exit code 3 when a check fails.
+"horizon_vlm_spread", "ground_inliers", "checks", "why"}. Exit code 3 when a check fails.
 """
 import argparse
 import json
@@ -27,7 +27,8 @@ def main():
     ap.add_argument('--dir', required=True)
     ap.add_argument('--horizon-tol', type=float, default=0.15, help='largest miss against the VLM, image heights')
     args = ap.parse_args()
-    obs = json.load(open(os.path.join(args.dir, 'observe.json')))['final']
+    observed = json.load(open(os.path.join(args.dir, 'observe.json')))
+    obs = observed['final']
     dp = np.load(os.path.join(args.dir, 'depth_background.npz'))
     g = np.load(os.path.join(args.dir, 'ground.npz'))
     erased = np.asarray(__import__('PIL.Image', fromlist=['Image']).open(
@@ -49,6 +50,13 @@ def main():
     # Horizon at the image centre column: rays r = (0, (y - cy)/fy, 1) with r.n = 0.
     horizon = (cy - fy * n[2] / n[1]) / h if abs(n[1]) > 1e-6 else float('nan')
     vlm = obs.get('horizon_y')
+    # The VLM's samples must agree for its horizon to judge ours. Looking down into a room (user_desk,
+    # 2026-10-08) they gave 0.5, 0.42 and -0.1, taking the wall-ceiling edge for the horizon, while the
+    # streets never spread more than 0.1: a VLM that disagrees with itself is not asked.
+    guesses = [s['horizon_y'] for s in observed.get('samples', []) if isinstance(s.get('horizon_y'), (int, float))]
+    spread = max(guesses) - min(guesses) if guesses else 0.0
+    if spread > 2 * args.horizon_tol:
+        vlm = None
     lo, hi = HEIGHT.get(obs['camera_height'], (0.05, 50))
     checks = {
         'ground found': inl > 0.25,
@@ -59,7 +67,8 @@ def main():
     checks = {k2: bool(v) for k2, v in checks.items()}
     why = [k2 for k2, v in checks.items() if not v]
     out = {'ok': not why, 'height_m': round(float(dd), 3), 'pitch_deg': round(pitch, 2), 'roll_deg': round(roll, 2),
-           'horizon_y': round(float(horizon), 3), 'horizon_y_vlm': vlm, 'ground_inliers': round(inl, 3),
+           'horizon_y': round(float(horizon), 3), 'horizon_y_vlm': vlm,
+           'horizon_vlm_spread': round(spread, 3), 'ground_inliers': round(inl, 3),
            'tolerance_m': round(tol, 3), 'checks': checks, 'why': why}
     with open(os.path.join(args.dir, 'camera.json'), 'w') as f:
         json.dump(out, f, indent=1)

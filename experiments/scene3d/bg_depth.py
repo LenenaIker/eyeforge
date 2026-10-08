@@ -24,9 +24,11 @@ CKPT = os.environ.get('MOGE_CKPT', '/media/lenena-iker/Crucial/tools/moge_ckpt/m
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir', required=True)
+    ap.add_argument('--only', choices=['photo', 'background'], help='one image (a room measures its things on the '
+                    'photo before deciding what to erase)')
     args = ap.parse_args()
     model = MoGeModel.from_pretrained(CKPT).cuda().eval()
-    for name in ('photo', 'background'):
+    for name in [args.only] if args.only else ('photo', 'background'):
         img = np.asarray(Image.open(os.path.join(args.dir, f'{name}.png')).convert('RGB'))
         x = torch.from_numpy(img).permute(2, 0, 1).float().cuda() / 255
         with torch.no_grad():

@@ -111,10 +111,24 @@ def phase1(f, until):
     ground = ','.join(e['phrase'] if isinstance(e, dict) else e for e in fin['ground'])
     objects = ','.join(e['phrase'] if isinstance(e, dict) else e for e in fin['objects']) or 'car'
     surroundings = ','.join(e['phrase'] if isinstance(e, dict) else e for e in fin['surroundings'])
-    # 1.3a Movable objects erased, ground masks (one per phrase, the union is the support).
-    f.run('1.3a_prepare', 'sam3', [s3 / 'bg_prepare.py', '--image', f.image, '--objects', objects, '--support', ground,
-                                   '--keep-inside', surroundings, '--out', d] + (['--shadows'] if fin['weather'] == 'sunny' else []),
-          ['background.png', 'ground.npz'])
+    room = r['route'] in ('indoor_floor', 'table')
+    if room:
+        # 1.3a in a room: every thing as a whole object (VLM boxes, SAM 3 masks), measured on the photo's depth;
+        # the big ones are scene, the small ones and the user's classes are erased (scene_split.py). A street
+        # still erases the observation's movable objects: a car is big and is the target there.
+        f.run('1.3a_things', 'sam3', [s3 / 'flow_things.py', '--image', f.image, '--dir', d, '--targets', f.targets],
+              ['things.json', 'things.npz'])
+        f.run('1.3a_depth_photo', 'mesh', [s3 / 'bg_depth.py', '--dir', d, '--only', 'photo'], ['depth_photo.npz'])
+        f.run('1.3a_split', 'sam3', [s3 / 'scene_split.py', '--dir', d], ['split.json', 'objects.npz'])
+        sp = jload(d, 'split.json')['things']
+        f.check('1.3a_split', True, {k: [x['name'] for x in sp if x['kind'] == k] for k in ('mesh', 'erase')})
+        f.run('1.3a_prepare', 'sam3', [s3 / 'bg_prepare.py', '--image', f.image, '--object-masks', d / 'objects.npz',
+                                       '--support', ground, '--out', d], ['background.png', 'ground.npz'])
+    else:
+        # 1.3a Movable objects erased, ground masks (one per phrase, the union is the support).
+        f.run('1.3a_prepare', 'sam3', [s3 / 'bg_prepare.py', '--image', f.image, '--objects', objects, '--support',
+                                       ground, '--keep-inside', surroundings, '--out', d]
+              + (['--shadows'] if fin['weather'] == 'sunny' else []), ['background.png', 'ground.npz'])
     # 1.3a_erase: Qwen-Image-Edit redraws what stood behind the objects inside LaMa's mask; LaMa only blurred it
     # (experiments/NOTES.md, 2026-10-08). background.png becomes Qwen's, LaMa's stays as background_lama.png.
     if f.eraser == 'qwen':
@@ -133,7 +147,8 @@ def phase1(f, until):
     if until == '1.4':
         return True
     # 1.3b Surroundings: SAM 3 candidates on the erased photo, gates in code, then the VLM per candidate.
-    f.run('1.3b_segment', 'sam3', [s3 / 'flow_segment.py', '--dir', d], ['env_candidates.npz'])
+    f.run('1.3b_segment', 'sam3', [s3 / 'flow_segment.py', '--dir', d] + (['--from-split'] if room else []),
+          ['env_candidates.npz'])
     f.run('1.3c_check_masks', 'sam3', [s3 / 'flow_check_masks.py', '--dir', d], ['env_masks.json'])
     em = jload(d, 'env_masks.json')
     kept = [c for c in em['candidates'] if c['keep']]
@@ -323,11 +338,14 @@ def main():
     ap.add_argument('--eraser', choices=['qwen', 'lama'], default='qwen',
                     help='object removal: Qwen-Image-Edit (about 5 min a photo on the 3090) or LaMa alone')
     ap.add_argument('--axis-scale', action='store_true', help='flow_refine.py --axis-scale')
+    ap.add_argument('--targets', default='', help="comma-separated classes the user's model detects: a room erases "
+                    'them whatever their size (flow_things.py)')
     args = ap.parse_args()
     f = Flow(args.image, args.dir)
     f.voxels = args.voxels
     f.axis_scale = args.axis_scale
     f.eraser = args.eraser
+    f.targets = args.targets
     if args.redo:
         # The step and every step after it in the flow's order: later outputs depend on earlier ones.
         order = ['1.1', '1.2', '1.3a', '1.4', '1.3b', '1.3c', '1.5a', '1.5b', '1.5c', '2', '3']

@@ -70,7 +70,9 @@ def inpaint(image, mask):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--image', required=True)
-    ap.add_argument('--objects', required=True, help='comma-separated phrases to erase')
+    ap.add_argument('--objects', default='', help='comma-separated phrases to erase')
+    ap.add_argument('--object-masks', default='', help='npz (masks, phrases) of the things to erase, from '
+                    'scene_split.py, instead of --objects')
     ap.add_argument("--support", required=True, help="surface the objects rest on (table, floor, road), or several "
                     "comma-separated (sidewalk,asphalt road: their union); erased pixels count as support")
     ap.add_argument('--out', required=True)
@@ -92,7 +94,10 @@ def main():
     model = Sam3Model.from_pretrained('facebook/sam3').cuda().eval()
     proc = Sam3Processor.from_pretrained('facebook/sam3')
     masks, phrases = [], []
-    for phrase in [p.strip() for p in args.objects.split(',')]:
+    if args.object_masks:
+        z = np.load(args.object_masks)
+        masks, phrases = [m for m in z['masks']], [str(p) for p in z['phrases']]
+    for phrase in [p.strip() for p in args.objects.split(',') if p.strip()]:
         for _, m in segment(model, proc, photo, phrase, args.threshold):
             if not any((m & k).sum() / max((m | k).sum(), 1) > 0.7 for k in masks):
                 masks.append(m)
