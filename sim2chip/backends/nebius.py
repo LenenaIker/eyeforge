@@ -256,8 +256,8 @@ def kit_keys(teacher: bool, picodet: bool = False) -> list[str]:
 def trains_picodet(spec, todo) -> bool:
     """The run trains a counter with PicoDet (hardware profile counter), not the grid head."""
     from .. import hardware
-    return spec.task == "count" and any(st.name == "train" for st in todo) and \
-        hardware.get(spec.hardware).counter == "picodet_s"
+    from ..tasks import task_of
+    return any(st.name == "train" for st in todo) and task_of(spec).detector(hardware.get(spec.hardware)) == "picodet_s"
 
 
 # Streams one kit from its presigned URL to stdout (into zstd and tar) and writes how many bytes came.

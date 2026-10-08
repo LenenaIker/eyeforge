@@ -183,6 +183,26 @@ def test_export_report_is_portable(tmp_path):
     assert (out / "model_data.h").exists() == (ctx.hardware.runtime == "tflite-micro")
 
 
+def test_export_ships_the_best_count_detector_as_its_recipe_says(tmp_path):
+    from sim2chip.stages.export import Export
+    ctx = ctx_for(tmp_path, task="count", hardware="generic", user_data={"raw": "photos"})
+    for seed in (0, 1):
+        d = ctx.job.stage_dir("train") / f"seed_{seed}"
+        d.mkdir(parents=True)
+        (d / "model.tflite").write_bytes(bytes([seed]) * 1024)
+    seeds = {str(s): {"recipe": "picodet_s", "counter": "picodet_s", "input": 320, "val_f1": f1, "threshold": 0.4}
+             for s, f1 in ((0, 0.6), (1, 0.8))}
+    (ctx.job.stage_dir("train") / "summary.json").write_text(json.dumps(seeds))
+    Export().run(ctx)
+    report = json.loads((ctx.job.stage_dir("export") / "report.json").read_text())
+    assert report["seed"] == 1 and report["metric"] == "f1" and report["val_score"] == 0.8
+    assert report["model_path"] == "model.tflite" and report["quantization"] == "float16"
+    assert report["input"] == [320, 320, 3] and report["output"]["kind"] == "boxes"
+    assert report["output"]["model"] == "picodet_s"
+    assert (ctx.job.stage_dir("export") / "model.tflite").read_bytes() == b"\x01" * 1024
+    assert not (ctx.job.stage_dir("export") / "model_int8.tflite").exists()
+
+
 def test_qa_caps_oversampled_search_classes(tmp_path):
     classes = [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
                 "assets": {"source": "search", "queries": ["cow"], "count": 2}},

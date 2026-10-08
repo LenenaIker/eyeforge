@@ -76,13 +76,17 @@ class Stage:
         """What the stage runs on, as shown to the user. Only what really happens: a local run says local,
         never Nebius AI Cloud. The backend decides where the stage's own process runs; models called through
         Token Factory always run on Nebius, whatever the backend (they do not fit a local GPU)."""
-        from ..config import gpu_name
-        where = f"Nebius AI Cloud, {gpu_name()}" if backend == "nebius" else "local GPU" if self.gpu else "local CPU"
+        where = self.where(backend)
         if self.calls_llm(spec):
             name = model.split("/")[-1] if model else "vision model"
             return f"{name} on Nebius Token Factory, called from {where}"
         tech = RUNTIME_TECH.get(self.runtime)
         return f"{tech} | {where}" if tech else where
+
+    def where(self, backend: str) -> str:
+        """The machine the stage's own process runs on, as shown to the user."""
+        from ..config import gpu_name
+        return f"Nebius AI Cloud, {gpu_name()}" if backend == "nebius" else "local GPU" if self.gpu else "local CPU"
 
     def run(self, ctx: Context) -> dict | None:
         """Do the work. The optional returned dict is stored in the stage's _done.json."""

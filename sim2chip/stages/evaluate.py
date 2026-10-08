@@ -15,7 +15,7 @@ import statistics
 
 from ..workspace import PREVIOUS
 from .base import Context, Stage
-from .train import is_detector
+from ..tasks import recipe_of, task_of
 
 
 def previous_model(ctx: Context, size: int | None = None):
@@ -58,7 +58,7 @@ class Evaluate(Stage):
 
         from .. import student as tu
 
-        if ctx.spec.task == "count":
+        if task_of(ctx.spec).points:
             return self._count(ctx)
         labels = ctx.spec.labels
         test_dir = ctx.job.stage_dir("ingest") / "test"
@@ -89,7 +89,7 @@ class Evaluate(Stage):
             (out / "previous.json").write_text(json.dumps(prev, indent=1))
             ctx.log(f"previous model (v{n}) on the same test photos: {prev}")
         vals = list(accs.values())
-        summary = {"metric": "accuracy", "mean": round(statistics.mean(vals), 4), "std": round(statistics.pstdev(vals), 4),
+        summary = {"metric": task_of(ctx.spec).metric, "mean": round(statistics.mean(vals), 4), "std": round(statistics.pstdev(vals), 4),
                    "seeds": sorted(accs), "per_seed": {str(k): round(v, 4) for k, v in accs.items()},
                    "test_size": int(len(xt))}
         (out / "summary.json").write_text(json.dumps(summary, indent=2))
@@ -111,7 +111,8 @@ class Evaluate(Stage):
         truth = [[tuple(q) for q in info[n]["points"]] for n in names]  # with box sizes: a hit anywhere in the core counts
         out = ctx.out(self.name)
         chosen = json.loads((ctx.job.stage_dir("train") / "summary.json").read_text())
-        boxes = any(is_detector(r) for r in chosen.values())
+        recipes = {s: recipe_of(r) for s, r in chosen.items()}
+        boxes = any(r.boxes for r in recipes.values())
         # A detector sees the full size photos at its own size; the grid head the ingest copies at the profile's.
         size = next(iter(chosen.values())).get("input", ctx.hardware.input_size)
         grid = counting.grid_size(size)
@@ -130,8 +131,9 @@ class Evaluate(Stage):
 
         scores = {}
         for d in sorted(ctx.job.stage_dir("train").glob("seed_*")):
-            th = chosen[d.name.split("_")[1]].get("threshold", counting.THRESHOLD)
-            blob = (d / ("model.tflite" if boxes else "model_int8.tflite")).read_bytes()
+            key = d.name.split("_")[1]
+            th = chosen[key].get("threshold", counting.THRESHOLD)
+            blob = (d / recipes[key].model_file).read_bytes()
             preds, counts = run(blob, th, boxes)
             sc = counting.score(preds, truth, grid, counts)
             seed = int(d.name.split("_")[1])
@@ -155,7 +157,7 @@ class Evaluate(Stage):
             (out / "previous.json").write_text(json.dumps(prev, indent=1))
             ctx.log(f"previous model (v{n}) on the same test photos: {prev}")
         f1 = [s["f1"] for s in scores.values()]
-        summary = {"metric": "f1", "mean": round(statistics.mean(f1), 4), "std": round(statistics.pstdev(f1), 4),
+        summary = {"metric": task_of(ctx.spec).metric, "mean": round(statistics.mean(f1), 4), "std": round(statistics.pstdev(f1), 4),
                    "count_mae": round(float(np.mean([s["count_mae"] for s in scores.values()])), 3),
                    "exact": round(float(np.mean([s["exact"] for s in scores.values()])), 4),
                    "seeds": sorted(scores), "per_seed": {str(k): v["f1"] for k, v in scores.items()},

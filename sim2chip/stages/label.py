@@ -23,6 +23,7 @@ import os
 import shutil
 
 from .. import counting, review, teacher
+from ..tasks import task_of
 from ..workspace import IMAGE_EXT, cache_key, content_key, copy_name
 from .base import Context, Stage
 
@@ -44,9 +45,7 @@ class Label(Stage):
         return bool(spec.user_data.raw)
 
     def powered_by(self, spec, backend: str, model: str | None = None) -> str:
-        from ..config import gpu_name
-        where = f"Nebius AI Cloud, {gpu_name()}" if backend == "nebius" else "local GPU"
-        return f"Meta {teacher.NAME} | {where}" if spec.task == "count" else f"Google {teacher.SIGLIP_NAME} | {where}"
+        return f"{task_of(spec).teacher} | {self.where(backend)}"
 
     @staticmethod
     def _timeline(ctx: Context):
@@ -64,7 +63,7 @@ class Label(Stage):
         sample = self._sample()
         keys = {f: str(f.relative_to(src)) for f in files}
         corrections = review.load_corrections(ctx.job)
-        if spec.task == "count":
+        if task_of(spec).points:
             verdicts, learned, info = self._count(ctx, files, keys, previous, sample, corrections)
         else:
             verdicts, learned, info = self._classify(ctx, files, keys, previous, sample, corrections["labels"])
@@ -81,7 +80,7 @@ class Label(Stage):
             shutil.copy2(src / key, d / copy_name(key))
         (out / "verdicts.json").write_text(json.dumps(verdicts, indent=1))
         (out / "teacher.json").write_text(json.dumps(learned, indent=1))
-        if spec.task == "count":
+        if task_of(spec).points:
             n = sum(len(v["objects"]) for v in verdicts.values() if v["objects"] is not None)
             ctx.log(f"{counts.get('images', 0)} photos with {n} objects marked, {counts.get('unsure', 0)} unsure")
             return {"labels": counts, "objects": n, **info}
@@ -242,7 +241,7 @@ class Label(Stage):
         if not files:
             return True
         sample = self._sample()
-        if ctx.spec.task == "count":
+        if task_of(ctx.spec).points:
             if sample:
                 if any(not self._embedding_file(ctx, f).exists() for f in files):
                     return True

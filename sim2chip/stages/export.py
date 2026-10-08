@@ -15,7 +15,7 @@ import shutil
 import struct
 
 from .base import Context, Stage
-from .train import is_detector
+from ..tasks import recipe_of, task_of
 
 
 class Export(Stage):
@@ -29,17 +29,19 @@ class Export(Stage):
     def run(self, ctx: Context) -> dict:
         hw = ctx.hardware
         summary = json.loads((ctx.job.stage_dir("train") / "summary.json").read_text())
-        counting = ctx.spec.task == "count"
-        val = "val_f1" if counting else "val_acc"
+        task = task_of(ctx.spec)
+        counting = task.points
+        val = task.val_key
         seed = max(summary, key=lambda s: summary[s][val])
         src = ctx.job.stage_dir("train") / f"seed_{seed}"
-        boxes = is_detector(summary[seed])
+        recipe = recipe_of(summary[seed])
+        boxes = recipe.boxes
         out = ctx.job.stage_dir(self.name)
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
         if boxes:  # a count detector: one float16 model for phones and PCs, nothing for a chip
-            blob = (src / "model.tflite").read_bytes()
-            (out / "model.tflite").write_bytes(blob)
+            blob = (src / recipe.model_file).read_bytes()
+            (out / recipe.model_file).write_bytes(blob)
         else:
             blob = fixed_batch((src / "model_int8.tflite").read_bytes())
             (out / "model_int8.tflite").write_bytes(blob)
@@ -58,12 +60,12 @@ class Export(Stage):
         report = {
             "job": ctx.spec.name, "hardware": hw.name, "labels": ctx.spec.labels, "background": ctx.spec.background_class,
             "input": [summary[seed].get("input", hw.input_size)] * 2 + [3],
-            "quantization": "float16" if boxes else hw.quantization,
-            "model_path": "model.tflite" if boxes else "model_int8.tflite", "model_kb": kb,
+            "quantization": recipe.quantization or hw.quantization,
+            "model_path": recipe.model_file, "model_kb": kb,
             # model.tflite: float32 RGB 0-255 in (no normalization, the model does it), probabilities out.
             "portable_model_path": "model.tflite", "portable_input": "float32 RGB 0-255, no normalization",
             "c_array_path": "model_data.h" if hw.runtime == "tflite-micro" else None,
-            "seed": int(seed), "task": ctx.spec.task, "metric": "f1" if counting else "accuracy",
+            "seed": int(seed), "task": ctx.spec.task, "metric": task.metric,
             "val_score": summary[seed][val], "val_accuracy": None if counting else summary[seed]["val_acc"],
             "real_test": json.loads(ev.read_text()) if ev.exists() else None,
             **({"output": box_output(summary[seed]) if boxes else count_output(hw.input_size, summary[seed].get("threshold"))}

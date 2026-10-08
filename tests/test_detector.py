@@ -43,7 +43,18 @@ def test_profiles_count_with_a_detector_only_where_it_fits():
 
 
 def test_export_and_evaluate_read_the_recipe_each_seed_recorded():
-    from sim2chip.stages.train import is_detector
-    assert is_detector({"recipe": "picodet_s", "counter": "picodet_s", "val_f1": 0.8})
+    from sim2chip.tasks import recipe_of
+    det = recipe_of({"recipe": "picodet_s", "counter": "picodet_s", "val_f1": 0.8})
+    assert det.boxes and det.model_file == "model.tflite" and det.quantization == "float16"
     for grid in ({"recipe": "fine_tune", "val_f1": 0.6}, {"recipe": "head", "val_acc": 0.9}, {}):
-        assert not is_detector(grid)
+        r = recipe_of(grid)
+        assert not r.boxes and r.model_file == "model_int8.tflite" and r.quantization is None
+
+
+def test_the_task_decides_the_metric_the_teacher_and_the_detector():
+    from sim2chip.tasks import TASKS
+    count, classify = TASKS["count"], TASKS["roi_classification"]
+    assert (count.metric, count.val_key, classify.metric, classify.val_key) == ("f1", "val_f1", "accuracy", "val_acc")
+    assert "SAM 3" in count.teacher and "SigLIP 2" in classify.teacher
+    assert count.detector(hardware.get("generic")) == "picodet_s" and count.detector(hardware.get("esp32cam")) is None
+    assert classify.detector(hardware.get("generic")) is None
