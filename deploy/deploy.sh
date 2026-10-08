@@ -15,10 +15,11 @@ ssh "$HOST" "test -f $DIR/.env" || {
 
 docker build --platform linux/amd64 -t eyeforge:latest .
 docker save eyeforge:latest | gzip | ssh "$HOST" 'gunzip | docker load'
-rsync -a deploy/docker-compose.yml "$HOST:$DIR/"
+rsync -a deploy/docker-compose.yml deploy/backup.sh "$HOST:$DIR/"
 ssh "$HOST" "set -e
   mkdir -p $DIR/data $DIR/nebius
   docker network inspect eyeforge >/dev/null 2>&1 || docker network create eyeforge
+  echo '15 4 * * * root $DIR/backup.sh >> $DIR/data/backups/backup.log 2>&1' > /etc/cron.d/eyeforge-backup
   cd $DIR && docker compose up -d
   docker image prune -f >/dev/null"
 echo "EyeForge is up on $HOST; logs: ssh $HOST docker logs -f eyeforge"

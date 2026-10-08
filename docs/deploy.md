@@ -53,4 +53,10 @@ Por SSH, dentro del contenedor:
 - `credits grant <correo> <n>`;
 - logs con `docker logs -f eyeforge`.
 
+Copia diaria (2026-10-09): `deploy/backup.sh`, a las 04:15 hora del servidor, por `/etc/cron.d/eyeforge-backup`. Ambos los instala `deploy.sh`.
+- Copia en caliente de `accounts.db` (saldos y pagos) y `library.db`, comprobadas y comprimidas.
+- Se guardan 7 días en `/opt/eyeforge/data/backups`, con el registro en `backup.log`.
+- Restaurar: parar el contenedor, `gunzip` de la copia sobre `data/accounts.db` y arrancarlo.
+- Las copias están en el mismo disco: no protegen si se pierde el servidor.
+
 Actualizar la versión: `deploy/deploy.sh` otra vez. Los datos están en el volumen y no se pierden.
