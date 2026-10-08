@@ -15,7 +15,7 @@ Sistema polivalente para entrenar modelos de visión especialistas que corren en
 
 **Lo más relevante del proyecto (usuario, 2026-09-24): la GENERALIZACIÓN.** Cualquiera (un biólogo que quiere saber si pasó el animal que estudia, un comprador de lora_alarm, una obra con excavadoras) aporta fotos y texto y el pipeline se adapta a su objeto y su hardware. El tráfico de lora_alarm es solo el primer caso de demo, no el producto. Es lo que más valorará el jurado, pero no es una tarea aparte: sale de la arquitectura (roadmap en `TODO.md`: primero construir el sistema, pulir el realismo al final). Debe funcionar al vuelo desde el spec, sin ajustes manuales por clase.
 
-Proyecto para el **Nebius x NVIDIA Global AI Hackathon** (https://nebiusglobalaihackathon.devpost.com/). Track: **Physical AI** ("embodied and edge agents... robotics, IoT, and on-device intelligence").
+Proyecto para el **Nebius x NVIDIA Global AI Hackathon** (https://nebiusglobalaihackathon.devpost.com/). Se presenta como **app** (usuario, 2026-10-08; no Physical AI).
 
 ## Pipeline previsto
 
@@ -46,7 +46,7 @@ Desarrollo en la RTX 3090 local; el producto final lanza los trabajos en **Nebiu
 Deadline: **2026-10-30, 10:00 PDT**.
 
 - Corre en Nebius Token Factory o AI Cloud y usa al menos un modelo open-source de NVIDIA (destacar Nemotron y dónde aceleró Token Factory).
-- Vídeo ≤ 3 min; en Physical AI, al menos 1 min del hardware real funcionando.
+- Vídeo ≤ 3 min.
 - Repo público con licencia open-source, README con instrucciones de setup, descripción del proyecto.
 - Criterios: implementación técnica, coherencia de diseño, impacto, calidad de la idea.
 - Créditos: Nebius Builder Program (Token Factory, Tavily).
