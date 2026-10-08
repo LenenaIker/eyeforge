@@ -669,3 +669,10 @@ Qwen-Image-Edit a 40 pasos tarda 260 s por pasada en la 3090. Sin benchmark púb
 - Por pasada Lightning deja más (home_office 12 de 24 frente a 1), pero 3 pasadas nombrando lo que queda salen más limpias que una de 40 pasos en user_desk, home_office y botellas, en 45-90 s. Queda por defecto en `erase_qwen.py` (`--full` para 40 pasos). En las botellas también quitó la cafetera, que no se le nombró.
 - Descartados por licencia: ObjectClear y TurboClear (los mejores en los benchmarks de borrado, 1,7 s y 0,04 s, pero pesos con licencia NTU S-Lab no comercial).
 - LaMa sigue solo como último recurso para lo que queda tras las 3 pasadas (1 objeto en 3 fotos).
+
+### Lo borrado como assets para el generador (2026-10-08)
+
+Decisión del usuario: todo lo que se borra (objetivos y distractores) debe salir de la fase 1 como asset, para recolocarlo al generar. `flow_assets.py` (paso 1.6 en calle y habitación, S.4 en la ruta support) junta lo pedido (instances.npz) y lo que el editor quitó sin pedírselo: zonas fuera de las máscaras con cambio medio difuminado mayor de 30 y más del 0,2 % de la foto; el VLM ve cada zona antes y después y nombra lo que desapareció o dice que no hay objeto; SAM 3 la recorta con su caja. Tamaño con la profundidad métrica y el plano de apoyo; papel `target` si el nombre está en `--targets`, si no `distractor`. Luego `flow_sam3d.py --masks assets.npz --out assets` hace las mallas canónicas. Catálogo en `<dir>/assets.json`; en la ruta support `bg_build.py` usa esas mismas mallas.
+
+- Botellas con Lightning: 8 assets (3 botellas, 3 tapones y las dos piezas de la cafetera, que Qwen quitó sin pedírselo y el VLM llamó "metal container"; una tercera zona descartada). Mallas buenas. Ruta support completa en unos 9 min (antes 15) y revisión 5 (antes 3).
+- user_desk: 25 assets en 7,6 min de SAM 3D (unos 18 s cada uno). Bien: lámpara, monitores, teclado, ratón, silla, gafas y cajas. Flojos: papeles y libretas como losas planas, y una libreta con las gafas dentro (máscaras solapadas).

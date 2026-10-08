@@ -199,9 +199,24 @@ def phase1(f, until):
                                                                for x in ms if not x['keep']]},
                    'no surroundings mesh passed'):
         return False
+    # 1.6 Everything erased as assets for the generator (targets and distractors).
+    assets(f, '1.6')
     if until == '1.5':
         return True
     return True
+
+
+def assets(f, step):
+    """Every erased thing becomes an asset the generator places again (flow_assets.py, flow_sam3d.py)."""
+    d, s3 = f.d, HERE
+    f.run(f'{step}_assets', 'sam3', [s3 / 'flow_assets.py', '--dir', d, '--targets', f.targets], ['assets.json'])
+    args = [s3 / 'flow_sam3d.py', '--dir', d, '--masks', 'assets.npz', '--image', 'photo', '--out', 'assets']
+    f.run(f'{step}_assets_sam3d', 'mesh', args, ['assets/scene_graph.json'])
+    f.run(f'{step}_assets_sam3d_retry', 'mesh', args, [])  # fills the meshes a GPU memory failure left out
+    a = jload(d, 'assets.json')['assets']
+    have = sum((d / r['mesh']).exists() for r in a)
+    f.check(f'{step}_assets', True, {'assets': len(a), 'meshes': have,
+                                     'found_by_change': [r['name'] for r in a if r['found']]})
 
 
 def support(f, obs):
@@ -229,13 +244,11 @@ def support(f, obs):
                    'no support or no objects found'):
         return False
     f.run('S.3_depth', 'mesh', [s3 / 'bg_depth.py', '--dir', d], ['depth_photo.npz', 'depth_background.npz'])
-    # S.4 The photo's objects as meshes, posed by SAM 3D on the photo with its own depth.
-    f.run('S.4_sam3d', 'mesh', [s3 / 'flow_sam3d.py', '--dir', d, '--masks', 'instances.npz', '--image', 'photo',
-                                '--out', 'meshes_objects'], ['meshes_objects/scene_graph.json'])
-    f.run('S.4_sam3d_retry', 'mesh', [s3 / 'flow_sam3d.py', '--dir', d, '--masks', 'instances.npz', '--image',
-                                      'photo', '--out', 'meshes_objects'], [])  # fills GPU memory failures
+    # S.4 Everything erased (the asked objects first, then what the edit took on its own) as assets, posed by
+    # SAM 3D on the photo with its own depth; bg_build uses the asked ones, the generator all of them.
+    assets(f, 'S.4')
     # S.5 Support plane, replica check, shuffled layouts and views; S.6 Isaac renders and labels; S.7 VLM review.
-    f.run('S.5_build', 'trellis', [s3 / 'bg_build.py', '--dir', d, '--meshes', d / 'meshes_objects', '--views',
+    f.run('S.5_build', 'trellis', [s3 / 'bg_build.py', '--dir', d, '--meshes', d / 'assets', '--views',
                                    str(f.views), '--solid', ','.join(plan.get('solid', [])), '--fixed',
                                    ','.join(plan.get('fixed', [])), '--stack', '0.2'], ['report.json'])
     f.run('S.6_isaac', 'isaac', [s3 / 'bg_isaac.py', '--dir', d], ['isaac/fit.json'])
@@ -399,7 +412,7 @@ def main():
     if args.redo:
         # The step and every step after it in the flow's order: later outputs depend on earlier ones.
         order = ['1.1', '1.2', 'S.1', 'S.2', 'S.3', 'S.4', 'S.5', 'S.6', 'S.7', '1.3a', '1.4', '1.3b', '1.3c',
-                 '1.5a', '1.5b', '1.5c', '2', '3']
+                 '1.5a', '1.5b', '1.5c', '1.6', '2', '3']
         start = min(i for i, o in enumerate(order) if any(o.startswith(r) or r.startswith(o)
                                                            for r in args.redo.split(',')))
         for k, rec in f.log['steps'].items():
