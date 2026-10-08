@@ -660,3 +660,12 @@ Pregunta del usuario: ¿distingue el pipeline una escena simple (botellas en una
 - `bg_review.py`: la hoja estiraba las fotos verticales a 16:9 y el VLM veía formas estiradas y tapas enormes que no lo eran; ahora las casillas mantienen la forma de la foto.
 
 Resultado: botellas, 15 min (Qwen 2 pasadas 8,6 min, SAM 3D 2,3 min, Isaac 2,3 min), revisión 3 (se queda): falla la cafetera, que SAM 3 no encontró con "moka pot" y queda en el fondo sin etiqueta. Baldosas con hojas mirando al suelo (`data/real/grass`): ruta support sola, 16 hojas borradas y recolocadas, revisión 3: sobran cajas diminutas de restos que SAM 3 tomó por hojas. HOPE y una cinta transportadora sin probar.
+
+### Borrado más rápido: Qwen Lightning frente a otros (2026-10-08)
+
+Qwen-Image-Edit a 40 pasos tarda 260 s por pasada en la 3090. Sin benchmark público que compare los candidatos con Qwen-Image-Edit, se probaron en las fotos ya medidas (`erase_bench.py`, `data/scene3d_test/flow/<foto>/erase_bench/`): mismas cosas a borrar, tiempo, objetos que quedan (cambio medio menor de 12 en su máscara) y cambio fuera de la máscara.
+
+- user_desk (25 cosas): Qwen 40 pasos 260 s, quedan 10; Qwen con el LoRA Lightning de 4 pasos (lightx2v, Apache 2.0) 23 s, quedan 12, imagen casi igual; FLUX.2 klein 4B (Apache 2.0) 20 s, quedan 7 pero deja monitores y silla y cambia el resto de la foto (6,8 fuera de la máscara frente a 2,4); RORem (SDXL con máscara) 2,3 s, borra a base de emborronar la mesa entera. LaMa y RORem descartados por el usuario.
+- Por pasada Lightning deja más (home_office 12 de 24 frente a 1), pero 3 pasadas nombrando lo que queda salen más limpias que una de 40 pasos en user_desk, home_office y botellas, en 45-90 s. Queda por defecto en `erase_qwen.py` (`--full` para 40 pasos). En las botellas también quitó la cafetera, que no se le nombró.
+- Descartados por licencia: ObjectClear y TurboClear (los mejores en los benchmarks de borrado, 1,7 s y 0,04 s, pero pesos con licencia NTU S-Lab no comercial).
+- LaMa sigue solo como último recurso para lo que queda tras las 3 pasadas (1 objeto en 3 fotos).

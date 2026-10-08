@@ -4,7 +4,8 @@ bookshelf) comes out as a blur; an edit model can invent what stands behind. The
 the prompt (bg_prepare.py's instances). Its whole picture is kept, since it also clears the shadows LaMa's mask
 left out, unless it moved off the photo's pixels; then the edit is pasted back only inside bg_prepare.py's erase
 mask, feathered, so the rest of the photo stays exact. Fits the 3090 with both big models in 4 bits and CPU
-offload. Run in /media/lenena-iker/Crucial/envs/eyeforge-qwenedit with HF_HOME on Crucial:
+offload. By default with the Lightning 4-step LoRA (lightx2v, Apache 2.0) and three passes, under a minute and
+a half per photo; --full for the 40-step model. Run in /media/lenena-iker/Crucial/envs/eyeforge-qwenedit with HF_HOME on Crucial:
 
     python experiments/scene3d/erase_qwen.py --dir data/scene3d_test/flow/home_office [--dir ...]
 
@@ -62,7 +63,10 @@ def prompt_for(names):
     return PROMPT.format(objects=', '.join(names[:-1]) + (' and ' if len(names) > 1 else '') + names[-1])
 
 
-def load(bits):
+LIGHTNING = ('lightx2v/Qwen-Image-Edit-2511-Lightning', 'Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors')
+
+
+def load(bits, lightning=False):
     if bits == 16:
         pipe = QwenImageEditPlusPipeline.from_pretrained(BASE, torch_dtype=torch.bfloat16)
     else:
@@ -77,7 +81,13 @@ def load(bits):
             BASE, subfolder='text_encoder', quantization_config=TransformersBnb(**nf4), torch_dtype=torch.bfloat16)
         pipe = QwenImageEditPlusPipeline.from_pretrained(BASE, transformer=transformer, text_encoder=encoder,
                                                          torch_dtype=torch.bfloat16)
-    pipe.load_lora_weights(LORA)
+    pipe.load_lora_weights(LORA, adapter_name='remover')
+    if lightning:
+        # 4 steps instead of 40 (lightx2v, Apache 2.0): 23 s instead of 260 on the 3090. One pass leaves more
+        # behind (home_office 12 of 24 against 1), but three passes, each naming what is left, came out cleaner
+        # than one full pass on user_desk, home_office and bottles in 45-90 s (erase_bench.py, 2026-10-08).
+        pipe.load_lora_weights(LIGHTNING[0], weight_name=LIGHTNING[1], adapter_name='lightning')
+        pipe.set_adapters(['remover', 'lightning'], adapter_weights=[1.0, 1.0])
     pipe.enable_model_cpu_offload()
     return pipe
 
@@ -93,11 +103,15 @@ def main():
     ap.add_argument('--paste', choices=['auto', 'raw', 'mask'], default='auto',
                     help="auto: the model's whole picture unless it moved half a pixel or more, then mask")
     ap.add_argument('--replace', action='store_true', help='background.png becomes the Qwen one (LaMa kept aside)')
-    ap.add_argument('--passes', type=int, default=2, help='Qwen passes; later ones name only what is left')
+    ap.add_argument('--full', action='store_true', help='40 steps without the Lightning LoRA (the default is '
+                    'Lightning, 4 steps and true_cfg 1: 3 passes cleaner than one full pass, in a fifth of the time)')
+    ap.add_argument('--passes', type=int, default=3, help='Qwen passes; later ones name only what is left')
     ap.add_argument('--left', type=float, default=12.0, help='mean change under which an object is still there '
                     '(left ones measured 4-10, erased ones 15 and up on 5 photos)')
     args = ap.parse_args()
-    pipe = load(args.bits)
+    if not args.full:
+        args.steps, args.cfg = 4, 1.0
+    pipe = load(args.bits, lightning=not args.full)
     for d in args.dir:
         photo = Image.open(os.path.join(d, 'photo.png')).convert('RGB')
         names = list(dict.fromkeys(json.load(open(os.path.join(d, 'prepare.json')))['instances']))
