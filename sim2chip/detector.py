@@ -13,10 +13,8 @@ returns their centres; web/src/live/boxes.ts does the same for the live test.
 """
 from __future__ import annotations
 
-import json
 import os
 import statistics
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -80,19 +78,17 @@ def train(train_items: list[dict], val_items: list[dict], labels: list[str], siz
     req = {"paddledet": det, "out": str(out), "size": size, "classes": labels[1:],
            "steps": int(os.environ.get("SIM2CHIP_PICODET_STEPS") or STEPS),
            "train": train_items, "val": val_items}
-    repo = str(Path(__file__).resolve().parents[1])
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONPATH": repo}
-    tail = []
-    with subprocess.Popen([py, "-m", "sim2chip.detector_worker"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, env=env) as proc:
-        proc.stdin.write(json.dumps(req))
-        proc.stdin.close()
-        for line in proc.stdout:
-            tail = (tail + [line.rstrip()])[-20:]
-            if line.startswith(("picodet", "  ")):
-                log(f"  {line.rstrip()}")
-    if proc.returncode != 0 or not (out / "model.onnx").exists():
-        raise DetectorError(f"PicoDet training failed (exit {proc.returncode}):\n" + "\n".join(tail[-10:]))
+    from .subproc import python_env, run_module
+
+    def show(line: str) -> None:
+        if line.startswith(("picodet", "  ")):
+            log(f"  {line.rstrip()}")
+
+    # Only the repo on PYTHONPATH: PaddlePaddle's Python must not see this environment's packages.
+    code, tail = run_module([py], "sim2chip.detector_worker", request=req, on_line=show,
+                            env=python_env(inherit_path=False))
+    if code != 0 or not (out / "model.onnx").exists():
+        raise DetectorError(f"PicoDet training failed (exit {code}):\n" + "\n".join(tail[-10:]))
     return out / "model.onnx"
 
 

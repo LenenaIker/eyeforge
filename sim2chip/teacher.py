@@ -19,7 +19,6 @@ import importlib.util
 import json
 import math
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -108,21 +107,16 @@ def _worker(module: str, name: str, req: dict, log=print) -> None:
         raise TeacherError(f"the teacher ({name}) needs a GPU Python with torch and transformers: set "
                            "SIM2CHIP_SAM3_PYTHON, or run with --backend nebius")
     from .config import env
+    from .subproc import python_env, run_module
     extra = {k: v for k in ("HF_HUB_CACHE", "HF_TOKEN", "TORCH_HOME") if (v := env(k))}
-    repo = str(Path(__file__).resolve().parents[1])
-    run_env = {**os.environ, **extra, "PYTHONUNBUFFERED": "1",
-               "PYTHONPATH": os.pathsep.join(filter(None, [repo, os.environ.get("PYTHONPATH")]))}
-    with subprocess.Popen(exe + ["-m", module], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, env=run_env) as proc:
-        proc.stdin.write(json.dumps(req))
-        proc.stdin.close()
-        tail = []
-        for line in proc.stdout:
-            tail = (tail + [line.rstrip()])[-20:]
-            if line.startswith((f"{name} on", "  ")) or "/" in line.split(" ", 1)[0]:
-                log(f"  {line.rstrip()}")
-    if proc.returncode != 0:
-        raise TeacherError(f"{name} failed (exit {proc.returncode}):\n" + "\n".join(tail[-10:]))
+
+    def show(line: str) -> None:
+        if line.startswith((f"{name} on", "  ")) or "/" in line.split(" ", 1)[0]:
+            log(f"  {line.rstrip()}")
+
+    code, tail = run_module(exe, module, request=req, on_line=show, env=python_env(extra))
+    if code != 0:
+        raise TeacherError(f"{name} failed (exit {code}):\n" + "\n".join(tail[-10:]))
 
 
 WEIGHTS_PREFIX = "weights"  # in the cache bucket: weights/<repo id>/<file>, uploaded by scripts/upload_weights.py

@@ -8,13 +8,12 @@ Interpreters come from environment variables, with defaults for the development 
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
-from collections import deque
 from pathlib import Path
 
 from .. import config
 from ..stages import Stage
+from ..subproc import python_env, run_module
 from ..workspace import LOG_PREFIX as PREFIX, REPO, Cache, Job
 
 # Where this machine keeps the other runtimes: environment or .env (see README). Isaac Sim's default is the
@@ -54,23 +53,18 @@ class LocalBackend:
     def run_stage(self, stage: Stage, job: Job, cache: Cache, fp: str) -> None:
         if self.before_stage:
             self.before_stage(stage, job, cache)
-        cmd = self.interpreter(stage.runtime) + ["-m", "sim2chip.run_stage", stage.name, "--job", str(job.root),
-                                                 "--cache", str(cache.root), "--fingerprint", fp]
-        env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH")])),
-               "PYTHONUNBUFFERED": "1"}
-        if stage.runtime == "trellis":
-            env = {**{k: v for k in TRELLIS_ENV if (v := config.env(k))}, **env}
+        extra = {k: v for k in TRELLIS_ENV if (v := config.env(k))} if stage.runtime == "trellis" else {}
         log_path = job.logs / f"{stage.name}.log"
-        tail: deque[str] = deque(maxlen=40)
-        with open(log_path, "w") as log, subprocess.Popen(cmd, env=env, cwd=REPO, stdout=subprocess.PIPE,
-                                                          stderr=subprocess.STDOUT, text=True, bufsize=1) as proc:
-            for line in proc.stdout:
-                log.write(line)
-                tail.append(line)
-                # Isaac Sim and TensorFlow are very chatty: show only our own lines unless verbose.
-                if self.verbose or line.startswith(PREFIX):
-                    print("  " + line.removeprefix(PREFIX).strip(), flush=True)
+
+        def show(line: str) -> None:
+            # Isaac Sim and TensorFlow are very chatty: show only our own lines unless verbose.
+            if self.verbose or line.startswith(PREFIX):
+                print("  " + line.removeprefix(PREFIX).strip(), flush=True)
+
+        code, tail = run_module(self.interpreter(stage.runtime), "sim2chip.run_stage",
+                                [stage.name, "--job", str(job.root), "--cache", str(cache.root), "--fingerprint", fp],
+                                on_line=show, log_file=log_path, env=python_env(extra), tail=40, cwd=REPO)
         if job.done(stage.name) is None or job.done(stage.name).get("fingerprint") != fp:
-            print(f"  {stage.name} failed (exit {proc.returncode}), last lines of {log_path}:", flush=True)
+            print(f"  {stage.name} failed (exit {code}), last lines of {log_path}:", flush=True)
             for line in tail:
-                print("  | " + line.rstrip(), flush=True)
+                print("  | " + line, flush=True)
