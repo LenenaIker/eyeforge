@@ -14,7 +14,13 @@ let nextId = 0;
 export default function Interview() {
   const { config, refreshJobs } = useApp();
   const navigate = useNavigate();
-  const revising = useSearchParams()[0].get("revise");  // a trained job whose setup the user wants to change
+  const [params] = useSearchParams();
+  const revising = params.get("revise");  // a trained job whose setup the user wants to change
+  const kit = revising ? null : params.get("kit");  // a kit of the library the new model starts from
+  const [kitName, setKitName] = useState<string | null>(null);
+  useEffect(() => {
+    if (kit) API.getLibrary().then((l) => setKitName(l.kits.find((k) => k.id === kit)?.name ?? null)).catch(() => {});
+  }, [kit]);
   const [plan, setPlan] = useState<RevisePlan | null>(null);  // what a revision would run again
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
@@ -49,7 +55,7 @@ export default function Interview() {
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [msgs, busy, live?.steps.length]);
 
   const ensureSession = async () => {
-    if (!session.current) session.current = (await API.startInterview(revising)).session;
+    if (!session.current) session.current = (await API.startInterview(revising, kit)).session;
     return session.current;
   };
 
@@ -156,6 +162,7 @@ export default function Interview() {
          onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
       <div className="flex-1 space-y-4 py-6">
         {revising && <Notice>Changing the setup of <b>{revising.replace(/_/g, " ")}</b>. Only the steps your change affects run again.</Notice>}
+        {kitName && <Notice>Starting from your kit <b>{kitName}</b>: its photos and 3D objects are used, nothing is built twice.</Notice>}
         {msgs.map((m) => (
           <Message key={m.id} m={m} session={session.current}
                    onPick={(files, cls) => {

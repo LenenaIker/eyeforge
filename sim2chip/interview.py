@@ -405,6 +405,7 @@ def spec_paths(spec: spec_mod.Spec) -> list[str]:
     ud, qa = spec.user_data, spec.qa
     paths = [ud.raw, ud.labeled, ud.test, qa.exclude, qa.class_override, qa.no_color]
     paths += [c.assets.photos for c in spec.classes if c.assets]
+    paths += [m for c in spec.classes if c.assets for m in c.assets.models] + [m for p in spec.props for m in p.models]
     return [p for p in paths if p]
 
 
@@ -412,6 +413,23 @@ NO_PHOTO_MODELS = """
 On this server 3D models cannot be made from the user's photos yet: never set assets.photos, never use
 "source": "photos" or pick_photos; find models with "search" (English queries). The user's photos still
 train and test the model (user_data)."""
+
+LIBRARY = """
+The user's library: things they already have, kept from earlier models or uploaded. A kit is a named list of
+them. When the user names a kit (or a dataset or object listed below), use those instead of searching for 3D
+models or asking for new photos:
+- a dataset as the user's photos: user_data "raw": "library:<id>" (the teacher labels them), or "labeled":
+  "library:<id>" when the dataset's photos carry labels that match the classes (class_map maps each class to
+  those labels);
+- objects as 3D models of a class: "assets": {{"source": "library", "models": ["library:<id>", ...]}} (with
+  source "search" and queries instead if more models should be searched too, keeping "models");
+- objects that are not one of the classes go into props ({{"id", "queries": [], "models": ["library:<id>"],
+  "size_m"}}): look-alikes and background things the camera must learn to ignore.
+Decide for each object whether it is a class or a prop from what the user wants now: the same object can be the
+target of one model and a distractor of another. Every class or prop with 3D models still needs size_m. Use only
+the ids listed here.
+{items}
+"""
 
 RESEARCH = """
 You can look facts up on the web: {{"research": "<one precise question>"}} returns a short answer and its sources.
@@ -447,7 +465,11 @@ def summary(s: spec_mod.Spec) -> str:
         size = f"{c.size_m.measure} {c.size_m.range[0]}-{c.size_m.range[1]} m" if c.size_m else "no 3D size"
         a = c.assets
         cats = "no 3D models" if not a else ", ".join(a.categories) if a.source == "objaverse_lvis" else \
-            f"search {a.queries}" if a.source == "search" else f"made from photos ({a.queries[0] if a.queries else '?'})"
+            f"search {a.queries}" if a.source == "search" else \
+            f"{len(a.models)} from your library" if a.source == "library" else \
+            f"made from photos ({a.queries[0] if a.queries else '?'})"
+        if a and a.models and a.source != "library":
+            cats += f" + {len(a.models)} from your library"
         if a and a.photos and a.source != "photos":
             cats += f" + made from photos ({a.queries[0]})"
         lines.append(f"  - {c.id}: {c.description} | {size} | models: {cats}")
@@ -493,6 +515,14 @@ def _foreign_folders(session, s: spec_mod.Spec) -> str | None:
         if foreign else None
 
 
+def _library_refs(session, s: spec_mod.Spec) -> str | None:
+    # A model often writes an object's id without the prefix: a bare library-style id counts as a reference too.
+    refs = {p[len("library:"):] for p in spec_paths(s) if p.startswith("library:")} | \
+        {p for p in spec_paths(s) if re.fullmatch(r"[0-9a-f]{16}", p)}
+    unknown = sorted(refs - getattr(session, "library_ids", set()))
+    return f"these library ids are not in the user's library: {unknown}; use only the listed ones" if unknown else None
+
+
 def _scene_problem(session, s: spec_mod.Spec) -> str | None:
     return session.scene_check(s.scene) if session.scene_check else None
 
@@ -504,7 +534,7 @@ def _photo_models_problem(session, s: spec_mod.Spec) -> str | None:
 
 
 # What a proposed spec must pass beyond spec.validate, in order: the first problem goes back to the model.
-SPEC_CHECKS = (_unknown_categories, _foreign_folders, _scene_problem, lambda _, s: check_photos(s),
+SPEC_CHECKS = (_unknown_categories, _foreign_folders, _library_refs, _scene_problem, lambda _, s: check_photos(s),
                lambda _, s: sam3_names_problem(s), _photo_models_problem)
 
 
@@ -550,6 +580,15 @@ class Session:
         # `activity_id` is the caller's id for the turn, so a poll never shows the steps of the previous one.
         self.activity: list[dict] = []
         self.activity_id: str | None = None
+        self.library_ids: set[str] = set()  # library items this chat may reference (see use_library)
+
+    def use_library(self, items: str, ids: set[str], kit: str | None = None) -> None:
+        """Tell the model what the user's library holds (kits and datasets, see LIBRARY); kit: the name of the kit
+        the user chose to start from."""
+        self.library_ids = set(ids)
+        self.messages[0]["content"] += LIBRARY.format(items=items)
+        if kit:
+            self._note(f"The user starts this model from their kit \"{kit}\": use its datasets and objects.")
 
     def begin(self, activity_id: str | None = None) -> None:
         """Start a new turn's activity list; call before reply, add_photos or choose."""

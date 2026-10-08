@@ -6,9 +6,10 @@ import Landing from "./pages/Landing";
 import AppShell from "./pages/AppShell";
 import Interview from "./pages/Interview";
 
-// A new chat when "?revise=<job>" comes or goes: a revision and a new model are different conversations.
+// A new chat when "?revise=<job>" or "?kit=<id>" comes or goes: they are different conversations.
 function FreshInterview() {
-  return <Interview key={useSearchParams()[0].get("revise") ?? ""} />;
+  const [params] = useSearchParams();
+  return <Interview key={`${params.get("revise") ?? ""}|${params.get("kit") ?? ""}`} />;
 }
 import JobPage from "./pages/Job";
 import { Datasets, Kits, Models, Objects, Scenes } from "./pages/Library";

@@ -365,6 +365,9 @@ export function Kits() {
                     {[[k.datasets.length, "dataset"], [k.objects.length, "object"], [k.scenes.length, "scene"]]
                       .map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(" · ")}
                   </div>
+                  <ButtonLink to={`/app?kit=${k.id}`} variant="secondary" className="mt-3 h-10 w-full text-sm">
+                    <Plus className="h-4 w-4" /> New model with this kit
+                  </ButtonLink>
                 </div>
               </Card>
             );

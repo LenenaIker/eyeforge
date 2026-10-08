@@ -135,9 +135,14 @@ export const getMe = () => api<Me>("/api/me");
 export const loginUrl = (provider: string, next: string) =>
   `/auth/${provider}/login?next=${encodeURIComponent(next)}`;
 export const logout = () => api<{ ok: boolean }>("/auth/logout", { method: "POST" });
-// With a job: an interview that starts from that job's spec, to change something and retrain it.
-export const startInterview = (job?: string | null) =>
-  api<{ session: string; text: string; job?: string }>(`/api/interview${job ? `?job=${encodeURIComponent(job)}` : ""}`, { method: "POST" });
+// With a job: an interview that starts from that job's spec, to change something and retrain it. With a kit: a new
+// model that starts from that kit of the user's library.
+export const startInterview = (job?: string | null, kit?: string | null) => {
+  const q = new URLSearchParams();
+  if (job) q.set("job", job);
+  if (kit) q.set("kit", kit);
+  return api<{ session: string; text: string; job?: string }>(`/api/interview${q.size ? `?${q}` : ""}`, { method: "POST" });
+};
 // act: an id the caller makes up for the turn, to follow its steps with activity() while it runs.
 export const reply = (sid: string, text: string, act?: string) =>
   api<Turn>(`/api/interview/${sid}${actQuery(act)}`, json({ text }));
