@@ -185,7 +185,7 @@ function Tile({ src, overlay, children, onClick, changed, dim, title }: {
   return (
     <Card className={cx("overflow-hidden text-left", changed && "ring-2 ring-ember-500", onClick && "transition hover:shadow-md")}>
       <Tag onClick={onClick} title={title} className="block w-full">
-        <div className={cx("relative bg-stone-100", dim && "opacity-40")}>
+        <div className={cx("relative bg-gray-100", dim && "opacity-40")}>
           {src ? <img src={src} alt="" loading="lazy" className="block w-full" /> : <div className="aspect-square" />}
           {overlay}
         </div>
@@ -225,9 +225,9 @@ function Editor({ editing, labels, media, hue, teacher, onClose, onDone }: {
             <p className="truncate font-medium">{editing.title}</p>
             <p className="text-xs text-muted">Tap where an object is missing; tap a mark to remove it. {points.length} marked.</p>
           </div>
-          <button onClick={onClose} className="rounded-lg p-2 text-muted hover:bg-stone-100" aria-label="Close"><X className="h-5 w-5" /></button>
+          <button onClick={onClose} className="rounded-lg p-2 text-muted hover:bg-gray-100" aria-label="Close"><X className="h-5 w-5" /></button>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto bg-stone-900">
+        <div className="min-h-0 flex-1 overflow-auto bg-gray-900">
           <div className="relative mx-auto w-fit">
             <img src={media(editing.image, true)} alt="" className="block max-h-[70dvh] w-auto cursor-crosshair select-none"
                  onClick={(e) => {

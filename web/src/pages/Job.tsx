@@ -103,9 +103,9 @@ function Calibration({ s, reviewKey, onRerun }: { s: Status; reviewKey: number; 
 
 function Skeleton() {
   return <div className="animate-pulse space-y-4">
-    <div className="h-8 w-1/3 rounded bg-stone-200" />
-    <div className="h-40 rounded-[var(--radius-card)] bg-stone-200" />
-    <div className="h-64 rounded-[var(--radius-card)] bg-stone-200" />
+    <div className="h-8 w-1/3 rounded bg-gray-200" />
+    <div className="h-40 rounded-[var(--radius-card)] bg-gray-200" />
+    <div className="h-64 rounded-[var(--radius-card)] bg-gray-200" />
   </div>;
 }
 
@@ -144,7 +144,7 @@ function Progress({ s, failed }: { s: Status; failed: boolean }) {
             </div>
           ) : <Button variant="danger" size="sm" onClick={() => setAsking(true)} disabled={stopping}><Square className="h-3.5 w-3.5" /> Stop</Button>)}
         </div>
-        <div className="h-2 overflow-hidden rounded-full bg-stone-100">
+        <div className="h-2 overflow-hidden rounded-full bg-gray-100">
           <div className={cx("h-full rounded-full transition-all duration-700", failed ? "bg-red-400" : "bg-gradient-to-r from-brand-500 to-ember-500")}
                style={{ width: `${Math.max(pct, s.running ? 4 : 0)}%` }} />
         </div>
@@ -154,7 +154,7 @@ function Progress({ s, failed }: { s: Status; failed: boolean }) {
       </ol>
       <details className="border-t border-line px-5 py-3 text-sm">
         <summary className="cursor-pointer text-muted hover:text-ink">Details</summary>
-        <pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-stone-900 p-3 text-xs leading-relaxed text-stone-100">{s.log.join("\n")}</pre>
+        <pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-gray-900 p-3 text-xs leading-relaxed text-gray-100">{s.log.join("\n")}</pre>
       </details>
     </Card>
   );
@@ -172,7 +172,7 @@ function StageRow({ st }: { st: Stage }) {
       </span>
       <div className="min-w-0 flex-1">
         <p className={cx("text-sm font-medium", st.state === "pending" && "text-muted")}>{FRIENDLY[st.name] ?? st.name}</p>
-        <p className="truncate text-xs text-stone-400">{st.powered_by}</p>
+        <p className="truncate text-xs text-gray-400">{st.powered_by}</p>
       </div>
       {st.seconds != null && <span className="text-xs text-muted tabular-nums">{st.seconds < 60 ? `${Math.round(st.seconds)} s` : `${(st.seconds / 60).toFixed(1)} min`}</span>}
     </li>
@@ -236,9 +236,9 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
           <div className="mt-3 space-y-1">
             {files.filter(([, , show]) => show).map(([f, label]) => (
               <a key={f} href={API.fileUrl(job, f)}
-                 className="flex items-center justify-between rounded-lg px-3 py-2.5 text-sm hover:bg-stone-50">
+                 className="flex items-center justify-between rounded-lg px-3 py-2.5 text-sm hover:bg-gray-50">
                 <span className="flex items-center gap-2"><Download className="h-4 w-4 text-muted" /> {label}</span>
-                <span className="text-xs text-stone-400">{f}</span>
+                <span className="text-xs text-gray-400">{f}</span>
               </a>
             ))}
           </div>
@@ -262,10 +262,10 @@ function Compare({ p, counting }: { p: NonNullable<Report["previous"]>; counting
   }
   const up = p.now - p.score;
   return (
-    <p className="mt-3 inline-flex flex-wrap items-center gap-x-2 rounded-full bg-stone-50 px-3 py-1.5 text-sm">
+    <p className="mt-3 inline-flex flex-wrap items-center gap-x-2 rounded-full bg-gray-50 px-3 py-1.5 text-sm">
       <span className="text-muted">v{p.version} {pct(p.score)}{p.then != null && Math.round(p.then * 100) !== Math.round(p.score * 100)
         ? ` (${pct(p.then)} before the test changed)` : ""}</span>
-      <ChevronRight className="h-3.5 w-3.5 text-stone-400" />
+      <ChevronRight className="h-3.5 w-3.5 text-gray-400" />
       <span className="font-semibold">now {pct(p.now)}</span>
       <span className={cx("font-medium", up > 0 ? "text-green-700" : up < 0 ? "text-red-700" : "text-muted")}>
         ({up >= 0 ? "+" : ""}{Math.round(up * 100)} pts{counting && p.count_mae != null && p.now_count_mae != null
@@ -326,7 +326,7 @@ function Improve({ job, counting, onRerun }: { job: string; counting: boolean; o
       {total > 0 && (
         <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-6">
           {previews.map((url, i) => (
-            <div key={url} className="relative aspect-square overflow-hidden rounded-lg bg-stone-100">
+            <div key={url} className="relative aspect-square overflow-hidden rounded-lg bg-gray-100">
               <img src={url} alt={i < caps.length ? "Frame saved in the live test" : "Photo to add"} className="h-full w-full object-cover" />
               {i < caps.length && <span className="absolute bottom-1 left-1 rounded bg-black/60 px-1 text-[10px] font-medium text-white">live</span>}
               <button onClick={() => drop(i)} aria-label="Remove"
@@ -339,7 +339,7 @@ function Improve({ job, counting, onRerun }: { job: string; counting: boolean; o
         {isHandheld() && <Button variant="secondary" size="sm" onClick={() => camera.current?.click()}><Camera className="h-4 w-4" /> Take photos</Button>}
         <Button variant="secondary" size="sm" onClick={() => gallery.current?.click()}><ImagePlus className="h-4 w-4" /> Choose photos</Button>
         <Link to={`/app?revise=${job}`}
-              className="inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-control)] px-3 text-sm font-medium text-muted hover:bg-stone-100 hover:text-ink">
+              className="inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-control)] px-3 text-sm font-medium text-muted hover:bg-gray-100 hover:text-ink">
           <Pencil className="h-4 w-4" /> Change the setup
         </Link>
         <Button size="sm" className="sm:ml-auto" onClick={send} disabled={!total || busy}>
@@ -419,7 +419,7 @@ function UsagePanel({ u }: { u: Usage }) {
 }
 
 function Mini({ label, value }: { label: string; value: string }) {
-  return <div className="rounded-[var(--radius-control)] bg-stone-50 p-3">
+  return <div className="rounded-[var(--radius-control)] bg-gray-50 p-3">
     <p className="text-lg font-semibold tracking-tight">{value}</p>
     <p className="text-xs text-muted">{label}</p>
   </div>;

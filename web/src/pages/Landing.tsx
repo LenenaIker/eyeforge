@@ -1,191 +1,198 @@
-import { ArrowRight, Box, Camera, Code, Cpu, MessageSquare, Sparkles } from "lucide-react";
-import type { ReactNode } from "react";
-import { Badge, ButtonLink, Card, Logo } from "../components/ui";
+import type { CSSProperties, ReactNode } from "react";
+import { Link } from "react-router-dom";
+import "./landing.css";
 
-// The public repository, set at build time (VITE_REPO_URL); the link is hidden until there is one.
+// The landing, proposal D (user, 2026-10-08): the light structure of nebius.com with EyeForge's own colors. The
+// wording is the user's: keep its order and lines. Styles in landing.css, scoped to .lp.
+
+// The public repository, set at build time (VITE_REPO_URL); its links are hidden until there is one.
 const REPO = import.meta.env.VITE_REPO_URL as string | undefined;
 
 export default function Landing() {
   return (
-    <div className="min-h-dvh">
-      <header className="sticky top-0 z-10 border-b border-line/60 bg-canvas/85 backdrop-blur">
-        <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-          <Logo />
-          <div className="flex items-center gap-1 sm:gap-2">
-            <a href="#how" className="hidden rounded-lg px-3 py-2 text-sm text-muted hover:text-ink sm:block">How it works</a>
-            {REPO && (
-              <a href={REPO} className="rounded-lg p-2 text-muted hover:text-ink" aria-label="Source code">
-                <Code className="h-5 w-5" strokeWidth={1.75} />
-              </a>
-            )}
-            <ButtonLink to="/app" className="h-10 px-4 text-sm">Try it</ButtonLink>
+    <div className="lp">
+      <header><div className="wrap"><nav>
+        <Link className="logo" to="/"><LogoMark /> EyeForge</Link>
+        <div className="links">
+          <a href="#how">How it works</a><a href="#numbers">Real numbers</a><a href="#devices">Devices</a>
+          {REPO && <a href={REPO}>GitHub</a>}
+        </div>
+        <Link className="btn btn-p btn-sm" to="/app">Try it</Link>
+      </nav></div></header>
+
+      <div className="wrap hero">
+        <h1>Describe it. <span>Forge it.</span> Spot it.</h1>
+        <p className="lead">Add a few photos and EyeForge trains a model that runs on your device, ready to flash.</p>
+        <div className="ctas"><Link className="btn btn-p" to="/app">Build a model</Link><a className="btn btn-s" href="#how">See how it works</a></div>
+        <Shelf />
+      </div>
+
+      <section>
+        <div className="wrap">
+          <span className="eyebrow">Why EyeForge</span>
+          <h2>Vision on your own device, without being an expert</h2>
+          <div className="four">
+            <Promise icon={<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />} title="Plain words">
+              Say what you want to spot or count. No labels, no code, no jargon.
+            </Promise>
+            <Promise icon={<><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z" /><circle cx="12" cy="13" r="3" /></>} title="A few photos">
+              Raw phone photos are enough. Big models label them for you.
+            </Promise>
+            <Promise icon={<><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" /><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3" /></>} title="Sized for your device">
+              From a $10 chip to your own GPU. The model fits the hardware.
+            </Promise>
+            <Promise icon={<><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></>} title="Stays private">
+              The answer is computed on the camera. No images leave it.
+            </Promise>
           </div>
-        </nav>
-      </header>
-
-      <main>
-        <Hero />
-        <How />
-        <Why />
-        <BuiltWith />
-      </main>
-
-      <footer className="border-t border-line">
-        <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-8 text-sm text-muted sm:flex-row sm:justify-between sm:px-6">
-          <span>EyeForge, open source under the AGPL-3.0 license.</span>
-          <span>Built for the Nebius x NVIDIA Global AI Hackathon.</span>
         </div>
-      </footer>
-    </div>
-  );
-}
+      </section>
 
-function Hero() {
-  return (
-    <section className="mx-auto grid max-w-6xl items-start gap-12 px-4 pt-6 pb-20 sm:px-6 lg:grid-cols-2 lg:pt-8">
-      <div>
-        <Badge tone="brand" className="mb-5"><Sparkles className="h-3.5 w-3.5" /> On-device vision, no cloud needed</Badge>
-        <h1 className="text-4xl font-bold tracking-tight text-balance sm:text-5xl lg:text-6xl">
-          Describe what your camera should see.
-          <span className="block text-brand-600">Get a tiny model for a $10 chip.</span>
-        </h1>
-        <p className="mt-6 max-w-xl text-lg text-muted text-pretty">
-          Tell EyeForge what to spot or count and add a few phone photos. It builds thousands of made-to-measure
-          training images, trains a specialist and hands you a model small enough to run on the device itself.
-        </p>
-        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-          <ButtonLink to="/app">Build a model <ArrowRight className="h-4 w-4" /></ButtonLink>
-          <a href="#how" className="inline-flex h-12 items-center justify-center rounded-[var(--radius-control)] px-6 font-medium text-muted hover:text-ink">
-            See how it works
-          </a>
+      <section className="band" id="numbers">
+        <div className="wrap">
+          <span className="eyebrow">Measured, not promised</span>
+          <h2>Two real runs, start to finish</h2>
+          <div className="stats">
+            <div className="st"><b>~5 min</b><span>from photos to model, with your photos only</span></div>
+            <div className="st"><b>~11 min</b><span>adding 1,500 synthetic images</span></div>
+            <div className="st amber"><b>$0.13</b><span>of cloud GPU per run, from</span></div>
+            <div className="st"><b>612 KB</b><span>int8 model for an ESP32-CAM, no network</span></div>
+          </div>
+          <p className="note">Measured on 2026-10-04 on Nebius AI Cloud.</p>
         </div>
-      </div>
-      <Proof />
-    </section>
-  );
-}
+      </section>
 
-// Measured on Nebius with the account the web uses (2026-10-04, worker kits): kits_photos_4 (69 lawn photos,
-// no synthetic data, 5.0 min, $0.13) and kits_synth (smoke_farm_animals for the ESP32-CAM, 1,500 renders,
-// 11.0 min, $0.28). Keep these real: measure again when the images or the pipeline change.
-function Proof() {
-  const stats: [string, ReactNode][] = [["~5 min", "photos to model, with your photos only"],
-                 ["~11 min", "adding 1,500 synthetic images from Isaac Sim"],
-                 ["from $0.13", "of cloud GPU per run on Nebius AI Cloud"],
-                 ["612 KB", <>int8 model for an <Esp32Cam />, no network</>]];
-  return (
-    <div className="relative mx-auto w-full max-w-md">
-      <div className="absolute -inset-6 -z-10 rounded-[32px] bg-gradient-to-br from-brand-100 via-white to-ember-100 blur-2xl" />
-      <p className="mb-3 text-sm font-semibold text-brand-600">Measured, not promised: two runs, start to finish</p>
-      <div className="grid grid-cols-2 gap-3">
-        {stats.map(([v, l]) => (
-          <Card key={v} className="p-5 shadow-lg">
-            <p className="text-2xl font-bold tracking-tight sm:text-3xl">{v}</p>
-            <p className="mt-1 text-sm text-muted">{l}</p>
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// The board's name: its price on hover (stated here, not in the text, where a price reads like a promise), and
-// a click opens a shop that sells it.
-const ESP32_CAM_SHOP = "https://www.aliexpress.com/w/wholesale-esp32-cam.html";
-function Esp32Cam() {
-  return (
-    <a href={ESP32_CAM_SHOP} target="_blank" rel="noopener noreferrer"
-       className="group relative whitespace-nowrap underline decoration-dotted underline-offset-2 hover:text-ink">
-      ESP32-CAM
-      <span className="pointer-events-none absolute top-full left-1/2 z-10 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-ink px-2 py-1 text-xs text-white opacity-0 shadow transition-opacity group-hover:opacity-100">
-        About $6
-      </span>
-    </a>
-  );
-}
-
-function Section({ id, eyebrow, title, children }: { id?: string; eyebrow: string; title: string; children: ReactNode }) {
-  return (
-    <section id={id} className="mx-auto max-w-6xl scroll-mt-20 px-4 py-16 sm:px-6">
-      <p className="text-sm font-semibold text-brand-600">{eyebrow}</p>
-      <h2 className="mt-2 max-w-2xl text-3xl font-bold tracking-tight text-balance">{title}</h2>
-      <div className="mt-10">{children}</div>
-    </section>
-  );
-}
-
-function How() {
-  const steps = [
-    { icon: MessageSquare, title: "Describe", text: "Chat with the assistant (NVIDIA Nemotron) about what to detect or count, and add a few photos from your phone. No vision expertise needed: it looks at your photos and works out sizes, scenes and look-alikes itself." },
-    { icon: Box, title: "Generate", text: "EyeForge finds 3D models, builds scenes like yours in NVIDIA Isaac Sim and renders thousands of labelled images, all on a GPU in Nebius AI Cloud that shuts down when done." },
-    { icon: Cpu, title: "Deploy", text: "A small int8 model trained on those images and your photos, scored on real pictures, ready for an ESP32-CAM, a Raspberry Pi, a Jetson or your own computer." },
-  ];
-  return (
-    <Section id="how" eyebrow="How it works" title="From a sentence to a model on your device">
-      <div className="grid gap-4 md:grid-cols-3">
-        {steps.map(({ icon: Icon, title, text }, i) => (
-          <Card key={title} className="p-6">
-            <div className="flex items-center gap-3">
-              <div className="grid h-10 w-10 place-items-center rounded-xl bg-brand-50 text-brand-600">
-                <Icon className="h-5 w-5" strokeWidth={1.75} />
+      <section id="how">
+        <div className="wrap">
+          <span className="eyebrow">How it works</span>
+          <h2>From a sentence to a model on your device</h2>
+          <div className="rows">
+            <div className="row">
+              <div>
+                <span className="step"><b>1</b> Describe</span>
+                <h3>Talk to it like you would to a friend who knows cameras</h3>
+                <p>The assistant asks what matters: what to look for, where the camera hangs, the light, the look-alikes. It looks at your photos and works out sizes and scenes itself.</p>
+                <p className="pw">Interview by <b>NVIDIA Nemotron</b></p>
               </div>
-              <span className="text-sm font-medium text-muted">Step {i + 1}</span>
+              <div className="shot">
+                <div className="bub bot">What should the camera count, and where will it hang?</div>
+                <div className="bub me">Bottles on the shelf of my shop, so I know when to restock. The camera faces the shelf.</div>
+                <div className="bub bot">Nice. Add 10 to 20 photos of that shelf, some full and some half empty.</div>
+                <span className="typing"><i /><i /><i /></span>
+              </div>
             </div>
-            <h3 className="mt-4 text-lg font-semibold">{title}</h3>
-            <p className="mt-2 text-muted">{text}</p>
-          </Card>
-        ))}
-      </div>
-    </Section>
-  );
-}
+            <div className="row rev">
+              <div>
+                <span className="step"><b>2</b> Generate</span>
+                <h3>Thousands of training images, made to measure</h3>
+                <p>EyeForge finds 3D models of your object, builds scenes like yours and renders them with labels. Your own photos join them. A cloud GPU does it and switches off when done.</p>
+                <p className="pw">Rendered with <b>NVIDIA Isaac Sim</b>, runs on Nebius AI Cloud</p>
+              </div>
+              <div className="shot">
+                <div className="gallery">{Array.from({ length: 8 }, (_, i) => <i key={i} />)}</div>
+                <div className="glabel"><span>1,120 of 1,500 images</span><span>about 4 min left</span></div>
+              </div>
+            </div>
+            <div className="row">
+              <div>
+                <span className="step"><b>3</b> Deploy</span>
+                <h3>A tiny model, tested on your real photos</h3>
+                <p>You get a score in plain words, the photos it got right and wrong, and a file ready for your board. Spot a mistake? Fix it and retrain.</p>
+                <p className="pw">int8, for <b>ESP32-CAM, Raspberry Pi, Jetson</b> or your computer</p>
+              </div>
+              <div className="shot">
+                <div className="chipcard">
+                  <div className="dl"><span>Model for ESP32-CAM<br /><small>int8, 612 KB</small></span><span className="btn btn-p btn-sm">Download</span></div>
+                  <div className="dl"><span>C array for Arduino<br /><small>ready to paste</small></span><span className="btn btn-s btn-sm">Download</span></div>
+                  <div className="dl"><span>Report<br /><small>score, examples, settings</small></span><span className="btn btn-s btn-sm">Open</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
-function Why() {
-  const devices = [
-    ["ESP32-CAM", "96 px, a few coarse classes", "about $10"],
-    ["Raspberry Pi", "detect and count", "about $60"],
-    ["NVIDIA Jetson", "fine distinctions", "from $250"],
-    ["Your GPU", "the biggest student", "what you have"],
-  ];
-  return (
-    <Section eyebrow="Why a specialist" title="Big models know a bit of everything. Your camera needs one thing, done well.">
-      <div className="grid gap-8 lg:grid-cols-2">
-        <p className="text-lg text-muted text-pretty">
-          Foundation models can read almost any photo, but they need a data center and still miss fine details.
-          EyeForge uses them as teachers: they label your photos and check the 3D models, and a student sized for
-          your hardware learns from them. The answer stays on the device: no images leave it, no subscription, no
-          network needed.
-        </p>
-        <div className="grid grid-cols-2 gap-3">
-          {devices.map(([name, what, price]) => (
-            <Card key={name} className="p-4">
-              <p className="font-semibold">{name}</p>
-              <p className="mt-1 text-sm text-muted">{what}</p>
-              <p className="mt-3 text-xs font-medium text-ember-700">{price}</p>
-            </Card>
-          ))}
+      <section className="band" id="devices">
+        <div className="wrap">
+          <span className="eyebrow">Why a specialist</span>
+          <h2>Big models know a bit of everything. Your camera needs one thing, done well.</h2>
+          <p className="sub">Foundation models are the teachers. A student sized for your hardware learns from them.</p>
+          <div className="devs">
+            <div className="d"><h3>ESP32-CAM</h3><p>96 px, a few coarse classes</p><span className="price">about $10</span></div>
+            <div className="d"><h3>Raspberry Pi</h3><p>Detect and count</p><span className="price">about $60</span></div>
+            <div className="d"><h3>NVIDIA Jetson</h3><p>Fine distinctions</p><span className="price">from $250</span></div>
+            <div className="d"><h3>Your GPU</h3><p>The biggest student</p><span className="price">what you have</span></div>
+          </div>
+          <div className="built">
+            <div><b>NVIDIA Nemotron</b><span>interview and reasoning</span></div>
+            <div><b>NVIDIA Isaac Sim</b><span>synthetic images</span></div>
+            <div><b>Nebius AI Cloud</b><span>L40S GPU, pay per run</span></div>
+            <div><b>Nebius Token Factory</b><span>open models as teachers</span></div>
+          </div>
+        </div>
+      </section>
+
+      <div className="wrap cta">
+        <h2>Build your first model</h2>
+        <p className="sub" style={{ marginLeft: "auto", marginRight: "auto" }}>One sentence and a few photos. About the price of a coffee.</p>
+        <div className="ctas">
+          <Link className="btn btn-p" to="/app">Start now</Link>
+          {REPO && <a className="btn btn-s" href={REPO}>Read the code</a>}
         </div>
       </div>
-    </Section>
+
+      <footer><div className="wrap">
+        <span className="logo">EyeForge</span>
+        <span>Open source under the AGPL-3.0 license. Built for the Nebius x NVIDIA Global AI Hackathon.</span>
+      </div></footer>
+    </div>
   );
 }
 
-function BuiltWith() {
-  const parts = [["NVIDIA Nemotron", "interview and reasoning"], ["NVIDIA Isaac Sim", "synthetic images"],
-                 ["Nebius AI Cloud", "L40S GPU, pay per run"], ["Nebius Token Factory", "open models as teachers"]];
+function LogoMark() {
   return (
-    <section className="border-y border-line bg-white">
-      <div className="mx-auto grid max-w-6xl grid-cols-2 gap-6 px-4 py-10 sm:px-6 lg:grid-cols-4">
-        {parts.map(([name, what]) => (
-          <div key={name}>
-            <p className="font-semibold">{name}</p>
-            <p className="text-sm text-muted">{what}</p>
-          </div>
-        ))}
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden="true">
+      <path d="M4 32C11 19 21 12 32 12s21 7 28 20c-7 13-17 20-28 20S11 45 4 32Z" fill="#efedff" stroke="#614efa" strokeWidth="4" strokeLinejoin="round" />
+      <g stroke="#b45309" strokeWidth="2.5" strokeLinecap="round"><path d="M27 20v4M32 20v4M37 20v4M27 40v4M32 40v4M37 40v4M20 27h4M20 32h4M20 37h4M40 27h4M40 32h4M40 37h4" /></g>
+      <rect x="23" y="23" width="18" height="18" rx="3.5" fill="#f59e0b" /><circle cx="32" cy="32" r="4" fill="#1c1917" />
+    </svg>
+  );
+}
+
+function Promise({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
+  return (
+    <div className="f">
+      <div className="ic"><svg viewBox="0 0 24 24" fill="none" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">{icon}</svg></div>
+      <h3>{title}</h3><p>{children}</p>
+    </div>
+  );
+}
+
+// A shop shelf drawn in CSS: products on three boards, the bottles boxed by the model. [kind, left %, color, label]
+type Item = [string, number, string, string?];
+const BOARDS: [number, Item[]][] = [
+  [70, [["pack", 4, "#c75b4a"], ["pack", 13, "#e2b04a"], ["bottle", 26, "#4f8a5b", "bottle 0.94"], ["bottle", 34, "#b86a2c", "bottle 0.91"],
+        ["pack", 46, "#5b7fb5"], ["can", 58, "#c94a4a"], ["can", 63, "#c94a4a"], ["pack", 73, "#7a9a5a"], ["pack", 84, "#e2b04a"]]],
+  [38, [["bottle", 6, "#7fa7c4", "bottle 0.90"], ["bottle", 14, "#4f8a5b", "bottle 0.88"], ["can", 26, "#9aa3ad"], ["can", 31, "#9aa3ad"],
+        ["pack", 42, "#c75b4a"], ["bottle", 64, "#b86a2c", "bottle 0.86"], ["pack", 76, "#5b7fb5"], ["can", 88, "#c94a4a"]]],
+  [6, [["pack", 4, "#7a9a5a"], ["pack", 13, "#5b7fb5"], ["pack", 22, "#e2b04a"], ["can", 36, "#c94a4a"], ["can", 41, "#c94a4a"],
+       ["can", 46, "#9aa3ad"], ["pack", 58, "#c75b4a"], ["pack", 67, "#c75b4a"], ["pack", 80, "#7a9a5a"]]],
+];
+
+function Shelf() {
+  return (
+    <div className="visual" role="img" aria-label="A camera counting bottles on a shop shelf">
+      <div className="shelf">
+        {[30, 62, 94].map((top) => <div key={top} className="board" style={{ top: `${top}%` }} />)}
+        {BOARDS.flatMap(([bottom, items]) => items.map(([kind, left, color, label]) => {
+          const style: CSSProperties = { left: `${left}%`, bottom: `${bottom}%`, background: color };
+          return <div key={`${bottom}-${left}`} className={`item ${kind}${label ? " hit" : ""}`} style={style}>{label && <b>{label}</b>}</div>;
+        }))}
       </div>
-      <div className="mx-auto max-w-6xl px-4 pb-10 sm:px-6">
-        <ButtonLink to="/app" className="w-full sm:w-auto"><Camera className="h-4 w-4" /> Build your first model</ButtonLink>
+      <div className="hud">
+        <div className="cnt"><small>Counted on the chip</small><strong>5 bottles</strong></div>
+        <div className="dev"><i /> ESP32-CAM · offline</div>
       </div>
-    </section>
+    </div>
   );
 }

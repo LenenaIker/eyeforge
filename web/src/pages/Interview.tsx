@@ -185,14 +185,14 @@ export default function Interview() {
       <div className="sticky bottom-0 -mx-4 border-t border-line bg-canvas/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
         <div className="flex items-end gap-2 rounded-2xl border border-line bg-white p-2 shadow-sm focus-within:border-brand-500">
           <button onClick={() => fileInput.current?.click()} disabled={!!busy}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-muted hover:bg-stone-100 hover:text-ink"
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-muted hover:bg-gray-100 hover:text-ink"
                   aria-label="Add photos">
             <ImagePlus className="h-5 w-5" strokeWidth={1.75} />
           </button>
           <textarea ref={textInput} rows={1} value={text} onChange={(e) => setText(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
                     placeholder={revising ? "e.g. run it on an ESP32-CAM, or the camera is 5 m high" : "e.g. count the flower pots on balconies, camera on a street lamp"}
-                    className="max-h-40 min-h-11 flex-1 resize-none bg-transparent px-1 py-2.5 text-[16px] outline-none placeholder:text-stone-400" />
+                    className="max-h-40 min-h-11 flex-1 resize-none bg-transparent px-1 py-2.5 text-[16px] outline-none placeholder:text-gray-400" />
           <Button onClick={() => send()} disabled={!text.trim() || !!busy} className="h-11 w-11 shrink-0 px-0" aria-label="Send">
             <ArrowUp className="h-5 w-5" />
           </Button>
@@ -237,9 +237,9 @@ function Steps({ steps, offset = 0 }: { steps: Step[]; offset?: number }) {
             <span className={cx(s.state === "running" ? "text-ink" : "text-muted")}>
               {s.text}{s.total ? ` (${s.done ?? 0}/${s.total})` : ""}
             </span>
-            {s.detail && <span className="block text-xs text-stone-400">{s.detail}</span>}
+            {s.detail && <span className="block text-xs text-gray-400">{s.detail}</span>}
           </span>
-          <span className="shrink-0 text-xs tabular-nums text-stone-400">{seconds((s.ended ?? now) - s.started)}</span>
+          <span className="shrink-0 text-xs tabular-nums text-gray-400">{seconds((s.ended ?? now) - s.started)}</span>
         </li>
       ))}
     </ol>
@@ -339,7 +339,7 @@ function ConfirmCard({ spec, proposal, onEdit, blocked, onYes, onChange, plan, r
     <Card className="overflow-hidden">
       <SpecSummary spec={spec} />
       {!sent && <SpecOptions spec={spec} proposal={proposal} onEdit={onEdit} realPhotos={realPhotos} />}
-      <div className="space-y-3 border-t border-line bg-stone-50 p-4">
+      <div className="space-y-3 border-t border-line bg-gray-50 p-4">
         {blocked && <Notice>{blocked}</Notice>}
         {plan && (nothing ? <Notice>That is the setup your model already has: nothing to retrain.</Notice> : (
           <p className="text-sm text-muted">
@@ -467,7 +467,7 @@ function Choice({ options, value, onChange, disabled = {} }: {
         <button key={k} onClick={() => onChange(k)} disabled={disabled[k] || k === value}
                 className={cx("rounded-full px-3 py-1.5 ring-1 transition",
                               k === value ? "bg-brand-600 text-white ring-brand-600" :
-                              disabled[k] ? "text-stone-400 ring-line" : "bg-white text-ink ring-line hover:ring-brand-500")}>
+                              disabled[k] ? "text-gray-400 ring-line" : "bg-white text-ink ring-line hover:ring-brand-500")}>
           {label}
         </button>
       ))}

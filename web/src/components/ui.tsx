@@ -7,8 +7,8 @@ export const cx = clsx;
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 const VARIANTS: Record<Variant, string> = {
   primary: "bg-brand-600 text-white shadow-sm hover:bg-brand-700 disabled:bg-brand-200",
-  secondary: "bg-white text-ink border border-line shadow-sm hover:bg-stone-50 disabled:text-stone-400",
-  ghost: "text-muted hover:bg-stone-100 hover:text-ink disabled:text-stone-300",
+  secondary: "bg-white text-ink border border-line shadow-sm hover:bg-gray-50 disabled:text-gray-400",
+  ghost: "text-muted hover:bg-gray-100 hover:text-ink disabled:text-gray-300",
   danger: "bg-white text-red-600 border border-red-200 hover:bg-red-50",
 };
 
@@ -44,7 +44,7 @@ export function Card({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
 
 type Tone = "neutral" | "good" | "bad" | "brand" | "ember";
 const TONES: Record<Tone, string> = {
-  neutral: "bg-stone-100 text-muted",
+  neutral: "bg-gray-100 text-muted",
   good: "bg-green-50 text-green-700",
   bad: "bg-red-50 text-red-700",
   brand: "bg-brand-50 text-brand-700",

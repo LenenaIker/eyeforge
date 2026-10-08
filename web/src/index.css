@@ -1,25 +1,25 @@
 @import "@fontsource-variable/inter";
 @import "tailwindcss";
 
-/* Design tokens: web/DESIGN.md */
+/* Design tokens: web/DESIGN.md (colors of the landing, proposal D, 2026-10-08) */
 @theme {
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
-  --color-brand-50: #eef2ff;
-  --color-brand-100: #e0e7ff;
-  --color-brand-200: #c7d2fe;
-  --color-brand-500: #6366f1;
-  --color-brand-600: #4f46e5;
-  --color-brand-700: #4338ca;
+  --color-brand-50: #efedff;
+  --color-brand-100: #e0e4ff;
+  --color-brand-200: #c9c2fe;
+  --color-brand-500: #7a6bfb;
+  --color-brand-600: #614efa;
+  --color-brand-700: #4d3be0;
   --color-ember-50: #fffbeb;
   --color-ember-100: #fef3c7;
   --color-ember-400: #fbbf24;
   --color-ember-500: #f59e0b;
   --color-ember-700: #b45309;
-  --color-canvas: #fafaf9;
-  --color-ink: #1c1917;
-  --color-muted: #57534e;
-  --color-line: #e7e5e4;
-  --radius-card: 12px;
+  --color-canvas: #f3f4f5;
+  --color-ink: #0f1b24;
+  --color-muted: #55626c;
+  --color-line: #e3e6e9;
+  --radius-card: 16px;
   --radius-control: 10px;
   --animate-beat: beat 1.6s ease-in-out infinite;
   @keyframes beat {
