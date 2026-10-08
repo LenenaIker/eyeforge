@@ -403,6 +403,13 @@ def _from_dict(data: dict) -> Spec:
 
 
 def validate(spec: Spec) -> None:
+    """Every rule a spec must pass, section by section; the first broken one is the SpecError."""
+    for check in (_validate_labels, _validate_classes, _validate_props, _validate_scene, _validate_user_data,
+                  _validate_places, _validate_task, _validate_rest):
+        check(spec)
+
+
+def _validate_labels(spec: Spec) -> None:
     from .hardware import PROFILES
     if spec.hardware not in PROFILES:
         raise SpecError(f"hardware: unknown '{spec.hardware}', known: {sorted(PROFILES)}")
@@ -415,6 +422,9 @@ def validate(spec: Spec) -> None:
         raise SpecError("background_class: counting needs one (the places with no object)")
     if spec.background_class is None and len(ids) < 2:
         raise SpecError("background_class: with no background class, list at least two classes")
+
+
+def _validate_classes(spec: Spec) -> None:
     for c in spec.classes:
         if c.names is not None and (not isinstance(c.names, list) or not c.names
                                     or not all(isinstance(n, str) and n.strip() for n in c.names)):
@@ -432,21 +442,28 @@ def validate(spec: Spec) -> None:
         if c.assets and not c.size_m:
             raise SpecError(f"class {c.id}: 3D assets need size_m to be scaled to real size")
         if c.assets:
-            if c.assets.source not in ASSET_SOURCES:
-                raise SpecError(f"class {c.id}: assets.source must be one of {ASSET_SOURCES}")
-            if c.assets.source == "objaverse_lvis" and not c.assets.categories:
-                raise SpecError(f"class {c.id}: objaverse_lvis assets need categories")
-            if c.assets.source == "search" and not c.assets.queries:
-                raise SpecError(f"class {c.id}: search assets need queries")
-            if c.assets.count < 1:
-                raise SpecError(f"class {c.id}: assets.count must be at least 1")
-            if c.assets.source == "photos" and not c.assets.photos:
-                raise SpecError(f"class {c.id}: photos assets need a photos folder (or \"user_data\")")
-            if c.assets.photos and c.assets.n_generate < 1:
-                raise SpecError(f"class {c.id}: assets.generate must be at least 1")
-            if c.assets.photos and not (c.assets.queries or c.assets.categories):
-                raise SpecError(f"class {c.id}: photo-made models need assets.queries, an English name of the "
-                                "object for the detector (e.g. [\"flower pot\"])")
+            _validate_assets(c)
+
+
+def _validate_assets(c: ClassSpec) -> None:
+    if c.assets.source not in ASSET_SOURCES:
+        raise SpecError(f"class {c.id}: assets.source must be one of {ASSET_SOURCES}")
+    if c.assets.source == "objaverse_lvis" and not c.assets.categories:
+        raise SpecError(f"class {c.id}: objaverse_lvis assets need categories")
+    if c.assets.source == "search" and not c.assets.queries:
+        raise SpecError(f"class {c.id}: search assets need queries")
+    if c.assets.count < 1:
+        raise SpecError(f"class {c.id}: assets.count must be at least 1")
+    if c.assets.source == "photos" and not c.assets.photos:
+        raise SpecError(f"class {c.id}: photos assets need a photos folder (or \"user_data\")")
+    if c.assets.photos and c.assets.n_generate < 1:
+        raise SpecError(f"class {c.id}: assets.generate must be at least 1")
+    if c.assets.photos and not (c.assets.queries or c.assets.categories):
+        raise SpecError(f"class {c.id}: photo-made models need assets.queries, an English name of the "
+                        "object for the detector (e.g. [\"flower pot\"])")
+
+
+def _validate_props(spec: Spec) -> None:
     pids = [p.id for p in spec.props]
     if len(set(pids)) != len(pids) or set(pids) & set(spec.labels):
         raise SpecError("props: ids must be unique and differ from the class ids and background_class")
@@ -457,6 +474,9 @@ def validate(spec: Spec) -> None:
             raise SpecError(f"prop {p.id}: queries cannot be empty")
         if p.count < 1 or p.max_per_frame < 1:
             raise SpecError(f"prop {p.id}: count and max_per_frame must be at least 1")
+
+
+def _validate_scene(spec: Spec) -> None:
     from .scenes import TEMPLATES
     named = sorted(set(TEMPLATES) - {"places"})  # places is chosen by scene.contexts, not by name
     if spec.scene.template not in named:
@@ -469,17 +489,27 @@ def validate(spec: Spec) -> None:
         if not {s.weather for s in SKIES} & set(spec.scene.weather):
             raise SpecError(f"scene.weather {spec.scene.weather}: the road template's own skies have none of "
                             "these; add scene.sky_tags to take skies from Poly Haven")
+
+
+def _validate_user_data(spec: Spec) -> None:
     for k in spec.user_data.class_map:
         if k not in spec.labels:
             raise SpecError(f"user_data.class_map: '{k}' is not a class of the spec")
     for k, dirs in spec.user_data.class_map.items():
         if not dirs or any(not str(d).strip() for d in dirs):
             raise SpecError(f"user_data.class_map: '{k}' needs subfolder names; unsorted photos go in user_data.raw")
+
+
+def _validate_places(spec: Spec) -> None:
+    """Contexts, mixed ground and distractors of the scene."""
     _validate_contexts(spec.scene)
     _validate_ground_mix(spec.scene)
     bad = [d for d in spec.scene.distractors if d not in DISTRACTORS]
     if bad:
         raise SpecError(f"scene.distractors {bad} are not available, only {list(DISTRACTORS)}")
+
+
+def _validate_task(spec: Spec) -> None:
     if spec.errors is not None and spec.errors not in ERRORS:
         raise SpecError(f"errors must be one of {ERRORS}")
     if spec.training.orientation is not None and spec.training.orientation not in ORIENTATIONS:
@@ -492,6 +522,10 @@ def validate(spec: Spec) -> None:
                             "you fix its marks in review (class folders cannot say where the objects are)")
         if spec.generation.n_targets < 1:
             raise SpecError("generation.max_targets must be at least 1")
+
+
+def _validate_rest(spec: Spec) -> None:
+    """Asset QA, camera, generation, look and training."""
     if spec.qa.mode not in ("none", "manual", "auto"):
         raise SpecError("qa.mode must be 'none', 'manual' or 'auto'")
     if spec.qa.strategy not in ("vision", "describe_then_decide"):

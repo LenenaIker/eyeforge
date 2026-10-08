@@ -481,6 +481,33 @@ FIRST_QUESTION = "Describe what your camera should see / Describe qué debe ver 
 CONFIRM = "Is this right? / ¿Es correcto? (yes/sí, or tell me what to change / o dime qué cambiar)"
 
 
+def _unknown_categories(session, s: spec_mod.Spec) -> str | None:
+    unknown = [cat for c in s.classes if c.assets and c.assets.source == "objaverse_lvis"
+               for cat in c.assets.categories if cat not in session.categories.counts]
+    return f"categories not found in Objaverse-LVIS: {unknown}, use search" if unknown else None
+
+
+def _foreign_folders(session, s: spec_mod.Spec) -> str | None:
+    foreign = [f for f in spec_paths(s) if Path(f).is_absolute() and session._foreign(f)]
+    return (f"these folders are not photos uploaded in this chat: {foreign}. " + UPLOADS_ONLY.strip()) \
+        if foreign else None
+
+
+def _scene_problem(session, s: spec_mod.Spec) -> str | None:
+    return session.scene_check(s.scene) if session.scene_check else None
+
+
+def _photo_models_problem(session, s: spec_mod.Spec) -> str | None:
+    if not session.photo_models and any(c.assets and c.assets.photos for c in s.classes):
+        return NO_PHOTO_MODELS.strip()
+    return None
+
+
+# What a proposed spec must pass beyond spec.validate, in order: the first problem goes back to the model.
+SPEC_CHECKS = (_unknown_categories, _foreign_folders, _scene_problem, lambda _, s: check_photos(s),
+               lambda _, s: sam3_names_problem(s), _photo_models_problem)
+
+
 @dataclass
 class Turn:
     kind: str                       # "say" (a question), "photos" (asks for photos), "pick" (proposes some of
@@ -699,10 +726,19 @@ class Session:
                        "around the objects, to search as props when they cannot be mistaken for the class). Use all "
                        "this in the spec without asking the user about it; tell them in one plain sentence what you saw.")
 
+    # The model's actions, in the order they are looked for in its answer, and the method that handles each. A
+    # handler returns the Turn that ends the user's wait, or None to ask the model again. Text sent with a spec
+    # gives way to it: seen 2026-09-27, {"say": "check it", "spec": {...}} was shown as plain text, so the user
+    # never got the spec to confirm and the model kept saying it was ready.
+    ACTIONS = (("say", "_on_say"), ("pick_photos", "_on_pick"), ("describe_scene", "_on_describe"),
+               ("photos", "_on_photos"), ("research", "_on_research"), ("search", "_on_search"),
+               ("spec", "_on_spec"))
+    OBJECT_ACTIONS = {"pick_photos", "describe_scene", "photos"}  # taken only with an object as value
+
     def _advance(self) -> Turn:
         from .llm import parse_json
 
-        invalid = 0  # spec proposals rejected in a row
+        self._invalid = 0  # spec proposals rejected in a row
         bad_format = 0  # answers in a row that were not one JSON object
         for i in range(self.max_turns):
             step = self._step("Thinking" if i == 0 else "Thinking about what it found")
@@ -734,78 +770,83 @@ class Session:
                 continue
             bad_format = 0
             self._end(step)
-            # A spec wins over text sent with it: seen 2026-09-27, {"say": "check it", "spec": {...}} was shown as
-            # plain text, so the user never got the spec to confirm and the model kept saying it was ready.
-            if "say" in action and "spec" not in action:
-                if not str(action["say"]).strip():
-                    self._note("Your say message was empty. Ask the user something or propose the spec.")
-                    continue
-                return Turn("say", str(action["say"]))
-            if isinstance(action.get("pick_photos"), dict):
-                turn = self._pick(action["pick_photos"])
-                if turn:
-                    return turn
-                continue
-            if isinstance(action.get("describe_scene"), dict):
-                self._describe(action["describe_scene"])
-                continue
-            if isinstance(action.get("photos"), dict):
-                req = action["photos"]
-                purpose = req.get("for") if req.get("for") in ("3d", "training") else "training"
-                return Turn("photos", str(req.get("say") or "Do you have photos for this?"),
-                            request={"for": purpose, "class": req.get("class")})
-            if "research" in action:
-                self._research(str(action["research"]))
-                continue
-            if "search" in action:
-                q = action["search"] if isinstance(action["search"], list) else [action["search"]]
-                step = self._step("Searching the 3D model catalog: " + ", ".join(map(str, q)))
-                found = self.categories.search(q)
-                self._end(step, detail=f"{len(found)} categories found" if found else "nothing found")
-                self._note("search results (category: number of models): "
-                           + json.dumps(found or "nothing found, try other words"))
-            elif "spec" in action:
-                if isinstance(action["spec"], dict):
-                    self._english_queries(action["spec"])
-                    _drop_background_class(action["spec"])
-                step = self._step("Checking the proposed setup")
-                try:
-                    s = spec_mod.from_dict(action["spec"])
-                    unknown = [cat for c in s.classes if c.assets and c.assets.source == "objaverse_lvis"
-                               for cat in c.assets.categories if cat not in self.categories.counts]
-                    if unknown:
-                        raise spec_mod.SpecError(f"categories not found in Objaverse-LVIS: {unknown}, use search")
-                    foreign = [f for f in spec_paths(s) if Path(f).is_absolute() and self._foreign(f)]
-                    problem = (f"these folders are not photos uploaded in this chat: {foreign}. "
-                               + UPLOADS_ONLY.strip()) if foreign else None
-                    problem = problem or (self.scene_check(s.scene) if self.scene_check else None) or check_photos(s)
-                    problem = problem or sam3_names_problem(s)
-                    if not self.photo_models and any(c.assets and c.assets.photos for c in s.classes):
-                        problem = problem or NO_PHOTO_MODELS.strip()
-                    if problem:
-                        raise spec_mod.SpecError(problem)
-                except spec_mod.SpecError as e:
-                    # Seen 2026-09-27: 25 rejected proposals in a row, 4 minutes of "thinking" for the user.
-                    self._end(step, "failed", f"{e} (fixing it)")
-                    invalid += 1
-                    if invalid >= MAX_INVALID_SPECS * 2:
-                        self.finished = True
-                        return Turn("failed", f"The interview could not produce a valid setup: {e}")
-                    if invalid >= MAX_INVALID_SPECS:
-                        self._note(f"The spec is invalid again: {e}. Stop proposing it: tell the user, in their "
-                                   "language and in plain words, what is missing or wrong and ask how to fix it "
-                                   "(say action).")
-                    else:
-                        self._note(f"The spec is invalid: {e}. Fix it and send it again.")
-                    continue
-                self._end(step)
-                self.proposed = s
-                intro = str(action.get("say") or "").strip()
-                return Turn("confirm", (intro + "\n\n" if intro else "") + summary(s), s, intro=intro)
-            else:
+            handler = self._handler(action)
+            if handler is None:
                 self._note("Unknown action. Use say, search or spec.")
+                continue
+            turn = handler(action)
+            if turn is not None:
+                return turn
         self.finished = True
         return Turn("failed", "The interview did not converge; nothing was saved.")
+
+    def _handler(self, action: dict):
+        """The method for the first action of ACTIONS the answer holds, or None."""
+        for key, method in self.ACTIONS:
+            if key not in action or key in self.OBJECT_ACTIONS and not isinstance(action[key], dict):
+                continue
+            if key == "say" and "spec" in action:
+                continue
+            return getattr(self, method)
+        return None
+
+    def _on_say(self, action: dict) -> Turn | None:
+        if not str(action["say"]).strip():
+            self._note("Your say message was empty. Ask the user something or propose the spec.")
+            return None
+        return Turn("say", str(action["say"]))
+
+    def _on_pick(self, action: dict) -> Turn | None:
+        return self._pick(action["pick_photos"])
+
+    def _on_describe(self, action: dict) -> None:
+        self._describe(action["describe_scene"])
+
+    def _on_photos(self, action: dict) -> Turn:
+        req = action["photos"]
+        purpose = req.get("for") if req.get("for") in ("3d", "training") else "training"
+        return Turn("photos", str(req.get("say") or "Do you have photos for this?"),
+                    request={"for": purpose, "class": req.get("class")})
+
+    def _on_research(self, action: dict) -> None:
+        self._research(str(action["research"]))
+
+    def _on_search(self, action: dict) -> None:
+        q = action["search"] if isinstance(action["search"], list) else [action["search"]]
+        step = self._step("Searching the 3D model catalog: " + ", ".join(map(str, q)))
+        found = self.categories.search(q)
+        self._end(step, detail=f"{len(found)} categories found" if found else "nothing found")
+        self._note("search results (category: number of models): "
+                   + json.dumps(found or "nothing found, try other words"))
+
+    def _on_spec(self, action: dict) -> Turn | None:
+        if isinstance(action["spec"], dict):
+            self._english_queries(action["spec"])
+            _drop_background_class(action["spec"])
+        step = self._step("Checking the proposed setup")
+        try:
+            s = spec_mod.from_dict(action["spec"])
+            problem = next((p for check in SPEC_CHECKS if (p := check(self, s))), None)
+            if problem:
+                raise spec_mod.SpecError(problem)
+        except spec_mod.SpecError as e:
+            # Seen 2026-09-27: 25 rejected proposals in a row, 4 minutes of "thinking" for the user.
+            self._end(step, "failed", f"{e} (fixing it)")
+            self._invalid += 1
+            if self._invalid >= MAX_INVALID_SPECS * 2:
+                self.finished = True
+                return Turn("failed", f"The interview could not produce a valid setup: {e}")
+            if self._invalid >= MAX_INVALID_SPECS:
+                self._note(f"The spec is invalid again: {e}. Stop proposing it: tell the user, in their "
+                           "language and in plain words, what is missing or wrong and ask how to fix it "
+                           "(say action).")
+            else:
+                self._note(f"The spec is invalid: {e}. Fix it and send it again.")
+            return None
+        self._end(step)
+        self.proposed = s
+        intro = str(action.get("say") or "").strip()
+        return Turn("confirm", (intro + "\n\n" if intro else "") + summary(s), s, intro=intro)
 
     def _english_queries(self, spec: dict) -> None:
         """Put an English name first in every search query list. The prompt asks for English, but the model

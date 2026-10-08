@@ -36,6 +36,15 @@ def test_interview_flow():
     assert "cow" in told[0]
 
 
+def test_every_action_has_a_handler_and_unknown_ones_go_back_to_the_model():
+    assert all(callable(getattr(interview.Session, m, None)) for _, m in interview.Session.ACTIONS)
+    client = Scripted([{"dance": True}, {"photos": "not an object"}, {"say": "Where is the camera?"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 1}))
+    turn = s.reply("cows")
+    assert turn.kind == "say" and turn.text == "Where is the camera?"
+    assert client.seen[1].startswith("Unknown action") and client.seen[2].startswith("Unknown action")
+
+
 def test_system_prompt_mentions_schema():
     p = interview.system_prompt()
     assert '"target_fill"' in p and "esp32cam" in p and "road" in p
