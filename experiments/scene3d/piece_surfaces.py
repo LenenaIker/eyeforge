@@ -1,9 +1,9 @@
-"""Surfaces of the place in one photo, for the scene built in pieces (piece_build.py): SAM 3 masks of the walls
-and the floor, on the photo that bg_prepare.py saved. Run in the `teacher-sam3` env:
+"""Surfaces of the place in one photo, for the scene built in pieces (piece_build.py): SAM 3 masks of the walls,
+the floor and the windows, on the photo that bg_prepare.py saved. Run in the `teacher-sam3` env:
 
     python piece_surfaces.py --dir data/scene3d_test/ours/office_pieces
 
-Writes <dir>/surfaces.npz: masks (one per instance, photo size) and kinds ("wall" or "floor").
+Writes <dir>/surfaces.npz: masks (one per instance, photo size) and kinds ("wall", "floor" or "window").
 """
 import argparse
 import json
@@ -26,9 +26,11 @@ def main():
     model = Sam3Model.from_pretrained('facebook/sam3').cuda().eval()
     proc = Sam3Processor.from_pretrained('facebook/sam3')
     masks, kinds = [], []
-    for kind in ('wall', 'floor'):
+    for kind in ('wall', 'floor', 'window'):
         for _, m in segment(model, proc, photo, kind, args.threshold):
-            if m.mean() >= args.min_area and not any((m & k).sum() / max(m.sum(), 1) > 0.5 for k in masks):
+            # A window lies in a wall (its light goes in the room, piece_build.py): only windows exclude windows.
+            same = [k for k, kk in zip(masks, kinds) if kind != 'window' or kk == 'window']
+            if m.mean() >= args.min_area and not any((m & k).sum() / max(m.sum(), 1) > 0.5 for k in same):
                 masks.append(m)
                 kinds.append(kind)
     np.savez_compressed(os.path.join(args.dir, 'surfaces.npz'), masks=np.array(masks, bool).reshape(-1, *photo.size[::-1]),

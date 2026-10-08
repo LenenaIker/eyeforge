@@ -52,7 +52,7 @@ def main():
         p = os.path.join(src, name)
         if os.path.exists(p):
             sc = json.load(open(p))
-            sc['light'] = {k: best[k] for k in ('elevation', 'azimuth', 'sun')}
+            sc['light'] = {k: v for k, v in best.items() if k != 'median_de'}  # sun, or indoor intensities
             json.dump(sc, open(p, 'w'))
     out = {'best': best, 'worst_de': max(s['median_de'] for s in scores), 'lights': scores}
     json.dump(out, open(os.path.join(d, 'light.json'), 'w'), indent=1)

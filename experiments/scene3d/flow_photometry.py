@@ -225,6 +225,10 @@ def apply(d, report, args, samples):
             g = glob if args.mode == 'global' or o['ok'] or o['lighting'] else np.array(o['gain'])
         g = g * np.array(prev.get(key, [1, 1, 1]))  # rounds build on what was applied before
         g = g.clip(1 / args.max_gain, args.max_gain)
+        # Brightness is fixed whole, colour only a little: a render far off the photo in one channel is light, not
+        # paint (home_office walls went green and the sideboard blue with free channels, 2026-10-08).
+        lum = max(float(g @ LUMA), 1e-6)
+        g = lum * np.clip(g / lum, 1 - args.max_tint, 1 + args.max_tint)
         applied[key] = g.round(3).tolist()
         if o['kind'] == 'piece':
             scene['pieces'][o['index']]['gain'] = applied[key]
@@ -242,6 +246,8 @@ def main():
     ap.add_argument('--dir', required=True)
     ap.add_argument('--max-de', type=float, default=20.0, help='largest median delta E per object')
     ap.add_argument('--max-gain', type=float, default=2.0)
+    ap.add_argument('--max-tint', type=float, default=0.15, help='largest share a channel gain may differ from '
+                    'the luminance gain')
     ap.add_argument('--min-samples', type=int, default=200, help='objects with fewer sampled pixels are skipped')
     ap.add_argument('--apply', action='store_true')
     ap.add_argument('--max-dev', type=float, default=1.10,

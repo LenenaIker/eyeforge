@@ -164,16 +164,38 @@ sun.CreateAngleAttr().Set(2.0)
 sun.CreateIntensityAttr().Set(0 if scene["indoor"] else 2500)
 sun_op = sun.AddTransformOp()
 lamp_op = None
+panel_size, window_lights, ceiling = (1.2, 1.2), [], None
+PANEL, WINDOW, LAMP = 2000.0, 12000.0, 5000.0  # base intensities, scaled by the light set_indoor() picks
 if scene["indoor"]:
+    # A panel over most of the ceiling: a room's light is mostly bounced and even. A 1.2 m panel and a hot lamp
+    # left home_office 4 times darker than the photo and warm; the photometry's per-channel gains then tinted the
+    # walls green and the sideboard blue (2026-10-08).
+    flat = [np.asarray(p["points"]) for p in scene["pieces"] if np.ptp(np.asarray(p["points"]) @ up) < 0.05]
+    ceiling = max(flat, key=lambda c: float(np.mean(c @ up))) if len(flat) > 1 else None
     panel = UsdLux.RectLight.Define(stage, "/World/Panel")
-    panel.CreateWidthAttr().Set(1.2)
-    panel.CreateHeightAttr().Set(1.2)
-    panel.CreateIntensityAttr().Set(8000)
+    if ceiling is not None:
+        panel_size = (0.8 * float(np.linalg.norm(ceiling[1] - ceiling[0])),
+                      0.8 * float(np.linalg.norm(ceiling[3] - ceiling[0])))
+    panel.CreateWidthAttr().Set(panel_size[0])
+    panel.CreateHeightAttr().Set(panel_size[1])
+    panel.CreateIntensityAttr().Set(PANEL)
     panel_op = panel.AddTransformOp()
     lamp = UsdLux.SphereLight.Define(stage, "/World/Lamp")
     lamp.CreateRadiusAttr().Set(0.15)
-    lamp.CreateIntensityAttr().Set(2e4)
+    lamp.CreateIntensityAttr().Set(LAMP)
     lamp_op = lamp.AddTranslateOp()
+    # Daylight through the photo's windows (piece_build.py), a panel on each facing into the room.
+    for i, wd in enumerate(scene.get("windows", [])):
+        wl = UsdLux.RectLight.Define(stage, f"/World/Window{i}")
+        wl.CreateWidthAttr().Set(wd["size"][0])
+        wl.CreateHeightAttr().Set(wd["size"][1])
+        wl.CreateIntensityAttr().Set(WINDOW)
+        wl.CreateColorAttr().Set(Gf.Vec3f(0.92, 0.96, 1.0))
+        rot = np.eye(4)  # local X along the wall, Y up, -Z (where a rect light shines) into the room
+        rot[:3, 0], rot[:3, 1] = -np.asarray(wd["along"]), up  # -along keeps the frame right-handed
+        rot[:3, 2], rot[:3, 3] = -np.asarray(wd["normal"]), wd["centre"]
+        wl.AddTransformOp().Set(Gf.Matrix4d(rot.T.tolist()))
+        window_lights.append(wl)
 
 
 def frame(z):
@@ -204,8 +226,18 @@ def set_light(e, a, sun_on=True):
     dome_op.Set(Gf.Matrix4d(rot.T.tolist()))
 
 
+def set_indoor(panel_k, window_k, lamp_k=1.0):
+    """Indoors: the ceiling panel, the windows' daylight and the lamp as multiples of their base intensities."""
+    panel.CreateIntensityAttr().Set(PANEL * panel_k)
+    lamp.CreateIntensityAttr().Set(LAMP * lamp_k)
+    for wl in window_lights:
+        wl.CreateIntensityAttr().Set(WINDOW * window_k)
+
+
 def randomize_light():
     set_light(math.radians(rng.uniform(30, 70)), rng.uniform(0, 2 * math.pi))
+    if scene["indoor"]:
+        set_indoor(rng.uniform(0.5, 2.0), rng.uniform(0.3, 2.0), rng.uniform(0.0, 1.5))
 
 
 
@@ -213,8 +245,15 @@ def place_lights(view):
     """Indoors: the panel on the ceiling facing down (a rect light shines along its -Z), the view's lamp."""
     if lamp_op is None:
         return
-    m = frame(-up)
-    m.SetTranslateOnly(Gf.Vec3d(*scene["lamp"]))
+    if ceiling is not None:  # its sides along the ceiling's, just under it
+        rot = np.eye(4)
+        x = (ceiling[1] - ceiling[0]) / np.linalg.norm(ceiling[1] - ceiling[0])
+        rot[:3, 0], rot[:3, 1], rot[:3, 2] = x, np.cross(up, x), up
+        rot[:3, 3] = ceiling.mean(0) - 0.03 * up
+        m = Gf.Matrix4d(rot.T.tolist())
+    else:
+        m = frame(-up)
+        m.SetTranslateOnly(Gf.Vec3d(*scene["lamp"]))
     panel_op.Set(m)
     lamp_op.Set(Gf.Vec3d(*view["lamp"]))
 
@@ -264,6 +303,9 @@ if args.sweep:
     # Step 2.3b of the scene flow: view 0 (the photo's camera) under a fixed set of lights, for flow_light.py to
     # pick the one whose light falls like the photo's.
     lights = [(el, az, True) for el in (20, 45, 70) for az in range(0, 360, 45)] + [(60, 0, False)]
+    if scene["indoor"]:  # no sun indoors: how strong the ceiling, the windows and the lamp are against each other
+        lights = [dict(panel=p, window=wk, lamp=lk) for p in (0.3, 1.0, 3.0)
+                  for wk in ((0.0, 1.0, 3.0) if window_lights else (0.0,)) for lk in (0.0, 1.0)]
     os.makedirs(os.path.join(src, "sweep"), exist_ok=True)
     view = scene["views"][0]
     cam_op.Set(Gf.Matrix4d((np.asarray(view["pose"]) @ CV2GL).T.tolist()))
@@ -271,12 +313,17 @@ if args.sweep:
         (xf.MakeVisible if i in {j for j, _ in view["objects"]} else xf.MakeInvisible)()
     for i, t in view["objects"]:
         objs[i][1].Set(Gf.Matrix4d(np.asarray(t).T.tolist()))
-    for k, (el, az, on) in enumerate(lights):
-        set_light(math.radians(el), math.radians(az), on)
+    place_lights(view)
+    for k, L in enumerate(lights):
+        if scene["indoor"]:
+            set_indoor(L["panel"], L["window"], L["lamp"])
+        else:
+            set_light(math.radians(L[0]), math.radians(L[1]), L[2])
         rep.orchestrator.step(rt_subframes=16)
         Image.fromarray(expose(rgb.get_data()[..., :3].astype(np.float32))).save(
             os.path.join(src, "sweep", f"sweep_{k:02d}.png"))
-    json.dump([{"elevation": el, "azimuth": az, "sun": on} for el, az, on in lights],
+    json.dump(lights if scene["indoor"] else
+              [{"elevation": el, "azimuth": az, "sun": on} for el, az, on in lights],
               open(os.path.join(src, "sweep", "lights.json"), "w"))
     app.close()
     raise SystemExit(0)
@@ -285,7 +332,10 @@ for k, view in enumerate(scene["views"]):
     randomize_light()
     if k == 0 and scene.get("light"):  # the light flow_light.py matched to the photo
         L = scene["light"]
-        set_light(math.radians(L["elevation"]), math.radians(L["azimuth"]), L["sun"])
+        if scene["indoor"]:
+            set_indoor(L["panel"], L["window"], L["lamp"])
+        else:
+            set_light(math.radians(L["elevation"]), math.radians(L["azimuth"]), L["sun"])
     place_lights(view)
     cam_op.Set(Gf.Matrix4d((np.asarray(view["pose"]) @ CV2GL).T.tolist()))
     shown = {i for i, _ in view["objects"]}

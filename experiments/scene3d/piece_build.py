@@ -234,6 +234,31 @@ def main():
             continue
         walls.append({'m': wm, 'c': c, 'mask': sel, 'inliers': round(float(inl.mean()), 3)})
 
+    # Windows: each on the wall around it, as a rectangle on that wall's plane (the glass's own depth is the view
+    # through it). piece_isaac.py puts a daylight panel there facing into the room.
+    windows = []
+    rays = points_from_depth(np.ones((h, w)), fx, fy, cx, cy)
+    for m, kind in zip(surf['masks'], surf['kinds']):
+        if kind != 'window' or not walls:
+            continue
+        # The frame and the reveal part the window from the wall mask: a ring of 3 % of the photo (home_office,
+        # 2026-10-08: with 15 px the window touched no wall).
+        r_px = 2 * max(8, round(0.03 * max(h, w))) + 1
+        ring = (cv2.dilate(m.astype(np.uint8), np.ones((r_px, r_px), np.uint8)) > 0) & ~m
+        wl = max(walls, key=lambda x: (ring & x['mask']).sum())
+        if (ring & wl['mask']).sum() < 0.1 * ring.sum():
+            continue  # not in a wall the room has
+        r = rays[m]
+        t = wl['c'] / (r @ wl['m'])
+        X = r[t > 0] * t[t > 0][:, None]
+        along = np.cross(n, wl['m'])
+        a = np.percentile(X @ along, [2, 98])
+        v = np.percentile(X @ n, [2, 98])
+        centre = wl['m'] * wl['c'] + along * a.mean() + n * v.mean()
+        centre = centre - wl['m'] * (centre @ wl['m'] - wl['c'])
+        windows.append({'centre': centre + wl['m'] * 0.02, 'normal': wl['m'], 'along': along,
+                        'size': [float(np.ptp(a)), float(np.ptp(v))]})
+
     # Objects where the photo has them.
     meas, replica = photo_replica(masks, phrases, P, vp, depth_p, n, dd, intr, args.meshes, solid,
                                   os.path.join(args.meshes, 'ccm_pose.json'), fixed) if args.meshes else ({}, [])
@@ -406,7 +431,9 @@ def main():
     with open(os.path.join(out, 'scene.json'), 'w') as f:
         json.dump({'size': [w, h], 'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy, 'up': n.tolist(), 'objects': len(good),
                    'views': views, 'pieces': pieces, 'indoor': room is not None,
-                   'lamp': None if lamp is None else lamp.tolist()}, f, default=float)
+                   'lamp': None if lamp is None else lamp.tolist(),
+                   'windows': [{k2: np.asarray(v).tolist() for k2, v in x.items()} for x in windows] if room else []},
+                  f, default=float)
 
     # Sheet of the materials: each surface's rectified pixels with the crop used, then the crops.
     tiles = []
