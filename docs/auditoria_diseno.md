@@ -307,6 +307,15 @@ Después de la entrega, en este orden:
 | 10 | `Settings` central (C.2), lanzador común (E), partir `Render.run` (C.1) | 1 a 2 días | Al tocar esas zonas |
 | 11 | Abstract Factory por hardware | | Solo cuando entre un perfil con compilador propio (Coral, TensorRT) |
 
+Estado de los pasos 6 a 10 (2026-10-08, un commit por paso, 228 tests en verde):
+
+- **6, hecho** (`77c7956`). `Session.ACTIONS` con un método por acción, en el mismo orden de antes (el spec sigue ganando al texto); `SPEC_CHECKS` como lista de funciones; `spec.validate` partido por secciones con el orden de las reglas intacto.
+- **7, hecho en parte** (`f2e354f`). `workspace.cache_key` (claves idénticas byte a byte, verificado), `Literal` en `Stage.runtime`, `Stage.gpu` y `Hardware.counter`, lambdas a funciones. `Literal` no se puso en `Spec`: su validación lee el tipo anotado como texto (`"str"`) y cambiarlo rompería `_build`. `_map_seeds` descartado: las dos ramas difieren en lo importante (datos en fichero o en memoria, descarga previa de pesos) y unificarlas costaba más que las ocho líneas repetidas.
+- **8, hecho en versión intermedia** (`ca90459`). `sim2chip/tasks.py`: `Task` (métrica, clave de validación, profesor, si responde con puntos, qué detector entrena en cada hardware) y `Recipe` (si es detector, fichero que se exporta, cuantización), más `SeedResult` (`TypedDict`). `label`, `train`, `evaluate`, `export` y la elección de kits de Nebius preguntan ahí. El código de entrenar y puntuar sigue en las etapas: con dos tareas los métodos serían una apuesta; la tercera (seguir líneas) dirá cuáles. Test nuevo de export de un detector, que pasa también con el código anterior.
+- **9, hecho** (`73f9f68`). `sim2chip/job_service.py` con `JobService` (calibración, prefetch con su lock, lanzar y cancelar, límite público, presupuesto). `create_app` baja de 704 a 581 líneas, todas rutas. `ServerConfig` descartado: los parámetros ya van por nombre y `serve` y los tests los usan así; no aportaba nada. Partir las rutas en `APIRouter` queda para cuando se toque la web.
+- **10**. Lanzador común `subproc.run_module` y `python_env` en backend local, profesores y PicoDet (`39baf77`), con tests que arrancan un Python hijo real. `Settings` central descartado con motivo: unas 50 variables leídas donde se usan, algunas después de que los tests las cambien; lo que faltaba era encontrarlas, así que `.env.example` las lista todas con su valor por defecto. `Render.run` partido en `_new_stage`, `_build_scene`, `_camera`, `_load_models` y `_Shots` (una toma por tipo), verificado renderizando dos trabajos reales antes y después con la misma semilla.
+- **C.4** (dos canales para la muestra de calibración) se queda: la variable de entorno es lo único que cruza al proceso del CLI que lanza la calibración en la nube.
+
 Patrones descartados explícitamente para no volver a discutirlos: Singleton, Builder, Composite, Interpreter, Iterator, Mediator, Memento (ya está), Visitor, Observer con bus de eventos, Decorator del cliente LLM (hasta que haya un segundo proveedor).
 
 ## 6. Opinión
