@@ -175,9 +175,10 @@ class UserData:
     """Photos from the user. `labeled` is a folder with one subfolder per source class and `class_map`
     maps each spec class to the source subfolders that belong to it. `raw` is a folder of unlabeled
     photos that the teacher model labels. `test` is an optional labeled folder (same layout and class_map as
-    `labeled`) used only for the real test."""
+    `labeled`) used only for the real test. `raw` may list several sources (a library dataset and the photos
+    attached in the chat): the web server puts them in one folder of the job before it runs."""
     labeled: str | None = None
-    raw: str | None = None
+    raw: str | list[str] | None = None
     test: str | None = None
     # No longer used, kept so older specs load: the teacher always commits to a class, there is no "unsure" pile
     # (user, 2026-09-30).
@@ -501,6 +502,14 @@ def _validate_scene(spec: Spec) -> None:
 
 
 def _validate_user_data(spec: Spec) -> None:
+    raw = spec.user_data.raw
+    if isinstance(raw, list):
+        if not raw or not all(isinstance(r, str) and r for r in raw):
+            raise SpecError("user_data.raw: a folder, or a list of folders and library datasets")
+        if len(raw) == 1:
+            spec.user_data.raw = raw[0]
+    elif raw is not None and not isinstance(raw, str):
+        raise SpecError("user_data.raw: a folder, or a list of folders and library datasets")
     for k in spec.user_data.class_map:
         if k not in spec.labels:
             raise SpecError(f"user_data.class_map: '{k}' is not a class of the spec")

@@ -77,6 +77,8 @@ export type Status = {
   spec: Spec | null;
   running: boolean;
   calibration: { state: "labeling" | "ready" | "failed"; error?: string } | null;  // teacher check before the first run
+  // A job that only labels a library dataset (Datasets page): checking the teacher, labeling every photo, done.
+  labeling?: { dataset: string; state: "checking" | "labeling" | "done" | "failed"; error?: string } | null;
   stages: Stage[];
   log: string[];
   cloud_usd: number;
@@ -218,6 +220,8 @@ export const applyFixes = (job: string, fixes: Fixes, calibrating = false) =>
   api<{ rerun_from: string | null }>(`/api/jobs/${job}/corrections`, json({ ...fixes, calibrating }));
 export const trainCalibrated = (job: string, fixes: Fixes) =>
   api<{ rerun_from: null }>(`/api/jobs/${job}/train`, json(fixes));
+export const labelAll = (job: string, fixes: Fixes) =>
+  api<{ rerun_from: string }>(`/api/jobs/${job}/label_all`, json(fixes));
 export const mediaUrl = (job: string, path: string, big = false) =>
   `/api/jobs/${job}/media/${path}${big ? "?size=1024" : ""}`;
 export const fileUrl = (job: string, file: string) => `/api/jobs/${job}/files/${file}`;
@@ -229,8 +233,22 @@ export type ModelCard = {
   job: string; created: number; running: boolean; task: string | null; hardware: string | null; classes: string[];
   model: { metric: string | null; score: number | null; kb: number | null; hardware: string | null } | null;
 };
+// What was seen in a dataset before any goal: objects with the share of photos they show up in, backgrounds.
+export type DatasetProfile = { summary: string; photos: number; created: number;
+                               objects: { name: string; share: number; count: number }[]; backgrounds: string[] };
 export type DatasetCard = { id: string; name: string; created: number; labeled: boolean; photos: number;
-                            splits: Record<string, number>; labels: string[]; sample: string[]; jobs: string[] };
+                            splits: Record<string, number>; labels: string[]; sample: string[]; jobs: string[];
+                            profile: DatasetProfile | null; profiling: boolean };
+// What is known about one photo: the teacher's boxes, the user's points, a label, a scene description.
+export type PhotoNote = { kind: "scene" | "boxes" | "points" | "class"; ref: string; source: "model" | "user";
+                          model: string | null; data: any };
+export type DatasetNotes = { keys: string[]; notes: Record<string, PhotoNote[]>; profile: DatasetProfile | null;
+                             profiling: boolean };
+export const getDatasetNotes = (id: string) => api<DatasetNotes>(`/api/library/datasets/${id}/notes`);
+export const labelDataset = (id: string, task: "count" | "classify", classes: string[]) =>
+  api<{ job: string }>(`/api/library/datasets/${id}/label`, { method: "POST", headers: { "Content-Type": "application/json" },
+                                                            body: JSON.stringify({ task, classes }) });
+export const reprofileDataset = (id: string) => api<{ profiling: boolean }>(`/api/library/datasets/${id}/profile`, { method: "POST" });
 export type ObjectCard = { id: string; name: string; concept: string; source: "online" | "photos" | "scene" | "upload";
                            has_file: boolean; thumb: boolean; kept: boolean; license?: string; author?: string;
                            url?: string; created: number; jobs: string[] };

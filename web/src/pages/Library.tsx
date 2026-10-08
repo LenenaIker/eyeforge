@@ -2,9 +2,9 @@ import { Box, Cpu, Images, Mountain, Package, Pencil, Plus, Upload } from "lucid
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { cardUrl, createDataset, addDatasetPhotos, getLibrary, libraryPhotoUrl, saveKit, uploadObject,
-         type Kit, type LibraryData, type ModelCard } from "../api";
+         type DatasetCard, type Kit, type LibraryData, type ModelCard } from "../api";
 import { Dialog, ItemMenu, SelectBar, Tick, field, useSelection } from "../components/library";
-import { Badge, Button, ButtonLink, Card, Notice, cx } from "../components/ui";
+import { Badge, Button, ButtonLink, Card, Notice, Spinner, cx } from "../components/ui";
 import { glbCard } from "../glbCard";
 import { useApp } from "./AppShell";
 
@@ -131,15 +131,16 @@ export function Datasets() {
               </div>
               <div className="p-4">
                 <div className="flex items-start justify-between gap-2">
-                  <div className="truncate font-medium">{d.name}</div>
+                  <Link to={`/app/datasets/${d.id}`} className="truncate font-medium hover:text-brand-600">{d.name}</Link>
                   <ItemMenu kind="datasets" id={d.id} name={d.name} onChanged={reload}
                             extra={<button className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50"
                                            onClick={() => setUpload({ id: d.id, name: d.name })}><Plus className="h-4 w-4" /> Add photos</button>} />
                 </div>
                 <div className="text-sm text-muted">
-                  {d.photos} photos{d.splits.test ? ` (${d.splits.test} to test)` : ""}
+                  {d.photos} photo{d.photos === 1 ? "" : "s"}{d.splits.test ? ` (${d.splits.test} to test)` : ""}
                   {d.labels.length > 0 && ` · ${d.labels.map(pretty).join(", ")}`}
                 </div>
+                <Seen d={d} />
                 <Used jobs={d.jobs} />
               </div>
             </Card>
@@ -186,6 +187,16 @@ function PhotoUpload({ into, onClose, onDone }: { into: { id: string; name: stri
       </form>
     </Dialog>
   );
+}
+
+// The objects seen in a dataset's photos, as chips, or that we are still looking.
+function Seen({ d }: { d: DatasetCard }) {
+  if (!d.profile) return d.profiling
+    ? <div className="mt-2 flex items-center gap-2 text-xs text-muted"><Spinner className="h-3 w-3" /> Looking at the photos...</div>
+    : null;
+  return <div className="mt-2 flex flex-wrap gap-1">
+    {d.profile.objects.slice(0, 4).map((o) => <Badge key={o.name}>{o.name}</Badge>)}
+  </div>;
 }
 
 function Used({ jobs }: { jobs: string[] }) {

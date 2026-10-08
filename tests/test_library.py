@@ -98,3 +98,63 @@ def test_a_job_using_library_objects_does_not_copy_them(tmp_path):
     lib.sync("u", [job])
     (obj,) = lib.objects("u")
     assert obj["id"] == oid and obj["jobs"] == ["j"]
+
+
+def test_a_dataset_profile_is_made_once_and_read_by_the_chat(tmp_path):
+    lib = Library(tmp_path, tmp_path / "cache")
+    ds = lib.new_dataset("u", "Table", photos(tmp_path / "up", ["red", "blue", "green"]))
+    asked = []
+
+    def run(files):
+        asked.extend(files)
+        return [{"photo": f.name, "context": "indoor", "distance_m": 0.8, "light": "indoor", "floor": "wood",
+                 "objects": [{"name": "Bottle", "count": 4}, {"name": "shoe", "count": 1}],
+                 "background": "dark wooden table"} for f in files]
+    assert lib.profile_stale("u", ds)
+    lib.profile_dataset("u", ds, run)
+    assert len(asked) == 3 and not lib.profile_stale("u", ds)
+    prof = lib.datasets("u")[0]["profile"]
+    assert prof["objects"][0] == {"name": "bottle", "share": 1.0, "count": 4}
+    assert "dark wooden table" in prof["summary"] and "dark wooden table" in lib.for_chat("u")[0]
+    lib.profile_dataset("u", ds, run)  # every photo already described
+    assert len(asked) == 3
+    assert lib.notes("other", [p for p in lib.dataset_notes("u", ds)], "scene", "x") == {}
+    lib.delete("u", "dataset", ds)
+    assert lib.db.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == 0
+
+
+def test_corrections_of_one_job_come_back_in_the_next(tmp_path):
+    lib = Library(tmp_path, tmp_path / "cache")
+    job = job_with(tmp_path, "a", ["red", "blue"])
+    (job.root / "spec.json").write_text(json.dumps({"task": "count", "classes": [{"id": "botella"}],
+                                                    "user_data": {"raw": "photos"}}))
+    label = job.stage_dir("label")
+    label.mkdir(parents=True)
+    (label / "teacher.json").write_text(json.dumps({"phrases": {"botella": ["bottle"]}}))
+    (label / "verdicts.json").write_text(json.dumps({
+        "0.jpg": {"objects": [{"x": 0.5, "y": 0.5, "class": "botella", "box": [0.4, 0.4, 0.6, 0.6], "score": 0.9}],
+                  "model": "facebook/sam3", "threshold": 0.5, "assigned": "images"},
+        "1.jpg": {"objects": [], "model": "facebook/sam3", "threshold": 0.5, "assigned": "images"}}))
+    (job.input / "corrections.json").write_text(json.dumps({"points": {"1.jpg": [[0.2, 0.3, "botella"]]}}))
+    lib.sync("u", [job])
+    ds = lib.datasets("u")[0]["id"]
+    kinds = sorted((n["kind"], n["source"]) for v in lib.dataset_notes("u", ds).values() for n in v)
+    assert kinds == [("boxes", "model"), ("boxes", "model"), ("points", "user")]
+    # A new job with the same photos in another folder, its class named differently but the same in English.
+    other = photos(tmp_path / "b" / "fotos", ["blue", "red"])
+    got = lib.corrections_for("u", other[0].parent, ["bottle_cls"], {"bottle_cls": "bottle"}, [])
+    assert got == {"points": {"0.jpg": [[0.2, 0.3, "bottle_cls"]]}}
+    # A second class the user never marked: the photo stays the teacher's.
+    assert lib.corrections_for("u", other[0].parent, ["bottle_cls", "cup"], {"bottle_cls": "bottle", "cup": "cup"}, []) == {}
+
+
+def test_several_raw_sources_become_one_folder(tmp_path):
+    from sim2chip import spec as spec_mod
+    from sim2chip.server import merge_sources
+    job = Job(tmp_path / "j")
+    photos(job.input / "dataset_x", ["red", "blue"])
+    photos(job.input / "photos", ["blue", "green"])
+    assert merge_sources(job, ["dataset_x", "photos"]) == "raw"
+    assert len(list((job.input / "raw").rglob("*.jpg"))) == 3
+    s = spec_mod.from_dict({"name": "t", "classes": [{"id": "a"}], "user_data": {"raw": ["library:aaaaaaaaaaaaaaaa"]}})
+    assert s.user_data.raw == "library:aaaaaaaaaaaaaaaa"

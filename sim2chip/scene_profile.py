@@ -43,6 +43,9 @@ Answer only with JSON:
  "camera_height_m": <height of the camera above the floor it stands on, meters>,
  "others": [up to 6 other movable things standing near them on the same surfaces, English nouns: "chair",
   "watering can", "bicycle"; not parts of the building (shutters, awnings, lamps, windows) and not vehicles],
+ "objects": [every kind of object that stands out in the photo, those above included, up to 8:
+  {{"name": "<English noun, singular>", "count": <how many>}}],
+ "background": "<what is under and behind the objects, a few English words: dark wooden table, white wall>",
  "floor": "<what those objects stand on, one or two English words: tiles, concrete, grass, wood, asphalt>",
  "light": "sun" | "overcast" | "evening" | "night" | "indoor",
  "context": """ + " | ".join(f'"{k}" ({CONTEXT_WORDS[k]})' for k in CONTEXTS) + """,
@@ -53,6 +56,15 @@ Answer only with JSON:
 
 LIGHT_WEATHER = {"sun": "clear", "overcast": "cloudy", "evening": "evening", "night": "night"}
 MIN_OTHER = 0.15  # things seen near the objects in fewer photos than this are not proposed as props
+# The classes of a dataset's own profile, made before anyone says what the camera should look for.
+GENERAL = "nothing chosen yet; the objects are whatever stands out in the photo"
+
+
+def sample(photos: list, seed: int = 0) -> list:
+    """The photos looked at: SAMPLE of them, drawn at random but always the same for the same photos."""
+    out = sorted(photos)
+    random.Random(seed).shuffle(out)
+    return out[:SAMPLE]
 
 
 def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0, progress=None) -> list[dict]:
@@ -62,9 +74,7 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
 
     from .llm import PHOTO_CALL, REASONING_TOKENS, ask_json, image_part, map_within
 
-    sample = sorted(photos)
-    random.Random(seed).shuffle(sample)
-    sample = sample[:SAMPLE]
+    picked = sample(photos, seed)
     tmp = Path(tempfile.mkdtemp())
 
     def one(item):
@@ -81,7 +91,7 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
         return {**v, "photo": f.name} if v else None
 
     try:
-        out = map_within(one, list(enumerate(sample)), DEADLINE_S, progress=progress)
+        out = map_within(one, list(enumerate(picked)), DEADLINE_S, progress=progress)
         return [d for d in out if d]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)  # late threads then fail on their own, harmlessly
@@ -148,6 +158,13 @@ def _objects_and_light(descriptions: list[dict]) -> dict:
         sug["objects_per_photo"] = {"median": counts[len(counts) // 2], "max": counts[-1]}
     others = Counter(o.strip().lower() for d in descriptions for o in set(d.get("others") or []) if isinstance(o, str))
     sug["props"] = [o for o, k in others.most_common(6) if k / n >= MIN_OTHER]
+    seen = Counter(o["name"].strip().lower() for d in descriptions for o in _objects(d))
+    sug["seen"] = [{"name": name, "share": round(k / n, 2),
+                    "count": sorted(o["count"] for d in descriptions for o in _objects(d)
+                                    if o["name"].strip().lower() == name)[(k - 1) // 2]}
+                   for name, k in seen.most_common(10) if k / n >= MIN_OTHER]
+    backs = Counter(str(d["background"]).strip().lower() for d in descriptions if d.get("background"))
+    sug["backgrounds"] = [b for b, _ in backs.most_common(4)]
     if light.get("indoor", 0) / n >= 0.5:
         sug["indoor"] = True
     sug["photos"] = [f"{d.get('photo', '?')}: {d['description']}" for d in descriptions if d.get("description")]
@@ -178,14 +195,44 @@ def summary(profile: dict, n_photos: int) -> str:
     return text
 
 
-def profile_folder(folder: Path, classes: str, client, model: str, progress=None) -> tuple[dict, str]:
+def dataset_summary(profile: dict, n_photos: int) -> str:
+    """One paragraph on a dataset before any goal: what objects show up and where."""
+    sug = profile.get("suggest", {})
+    parts = []
+    if sug.get("seen"):
+        parts.append("Objects: " + ", ".join(f"{o['name']} (in {round(o['share'] * 100)}% of photos, about "
+                                             f"{o['count']} each)" for o in sug["seen"]) + ".")
+    if sug.get("backgrounds"):
+        parts.append("Backgrounds: " + "; ".join(sug["backgrounds"]) + ".")
+    names = {"facade": "building fronts", "balcony": "balconies", "indoor": "indoors", "ground": "open ground"}
+    if profile.get("contexts"):
+        parts.append("Places: " + ", ".join(f"{names[c['kind']]} {round(c['share'] * 100)}%"
+                                            + (f" at {c['distance_m'][0]}-{c['distance_m'][1]} m" if c.get("distance_m")
+                                               else "") for c in profile["contexts"]) + ".")
+    if profile.get("weather"):
+        parts.append(f"Light: {', '.join(profile['weather'])}.")
+    if sug.get("camera_height_m"):
+        parts.append(f"Camera {sug['camera_height_m'][0]}-{sug['camera_height_m'][1]} m above the floor.")
+    return f"From {n_photos} photo{'s' if n_photos != 1 else ''}. " + " ".join(parts) if parts else f"Nothing could be read from {n_photos} photos."
+
+
+def profile_folder(folder: Path, classes: str, client, model: str, progress=None, notes=None) -> tuple[dict, str]:
+    """notes(photos, classes, run): the descriptions kept from earlier (library.Library.describe), calling
+    run(photos) for those it lacks."""
     from .workspace import IMAGE_EXT
     photos = [f for f in Path(folder).rglob("*") if f.suffix.lower() in IMAGE_EXT]
     if not photos:
         raise FileNotFoundError(f"no photos in {folder}")
-    d = describe(photos, classes, client, model, progress=progress)
+    run = lambda some: describe(some, classes, client, model, progress=progress)  # noqa: E731
+    d = notes(sample(photos), classes, run) if notes else run(photos)
     prof = aggregate(d)
     return prof, summary(prof, len(d))
+
+
+def _objects(d: dict) -> list[dict]:
+    """A description's objects, the malformed ones left out."""
+    return [o for o in d.get("objects") or [] if isinstance(o, dict) and isinstance(o.get("name"), str)
+            and o["name"].strip() and isinstance(o.get("count"), (int, float)) and o["count"] >= 0]
 
 
 def _number(v) -> bool:

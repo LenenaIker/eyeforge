@@ -10,6 +10,7 @@ after the user confirms it.
 """
 from __future__ import annotations
 
+import functools
 import inspect
 import json
 import random
@@ -129,7 +130,7 @@ states that cover the whole view, like lawn / border / no grass, or day / night)
 so no extra class is added: the model must always pick one of the user's classes.
 repaint (0-1) is how often a model is painted a random solid color: set it (e.g. 0.35) only when real
 instances of the class come in many colors (cars), with metallic [0.2, 0.8] for shiny paint; omit both otherwise.
-user_data.labeled / user_data.raw / user_data.test are folder paths; class_map maps each class id to the subfolder names of
+user_data.labeled / user_data.raw / user_data.test are folder paths (raw may list several, merged); class_map maps each class id to the subfolder names of
 the labeled folder. Keep qa.mode "auto".
 
 How to talk: at most one short question per turn, only the ones allowed above, and skip what the user
@@ -341,8 +342,7 @@ def check_photos(s: spec_mod.Spec) -> str | None:
     def photos_in(d: Path) -> int:
         return sum(1 for f in d.iterdir() if f.suffix.lower() in IMAGE_EXT) if d.is_dir() else 0
 
-    for key in ("labeled", "raw", "test"):
-        rel = getattr(ud, key)
+    for key, rel in [("labeled", ud.labeled), ("test", ud.test)] + [("raw", r) for r in sources(ud.raw)]:
         if not rel or not Path(rel).is_absolute():
             continue
         d = Path(rel)
@@ -400,10 +400,15 @@ def _drop_background_class(spec: dict) -> None:
         spec["classes"] = [c for c in spec["classes"] if not (isinstance(c, dict) and c.get("id") == bg)]
 
 
+def sources(raw) -> list[str]:
+    """user_data.raw as a list: one folder, or several to merge."""
+    return [raw] if isinstance(raw, str) else list(raw or [])
+
+
 def spec_paths(spec: spec_mod.Spec) -> list[str]:
     """Every folder or file path a spec names (user photos, 3D photos, QA lists)."""
     ud, qa = spec.user_data, spec.qa
-    paths = [ud.raw, ud.labeled, ud.test, qa.exclude, qa.class_override, qa.no_color]
+    paths = [*sources(ud.raw), ud.labeled, ud.test, qa.exclude, qa.class_override, qa.no_color]
     paths += [c.assets.photos for c in spec.classes if c.assets]
     paths += [m for c in spec.classes if c.assets for m in c.assets.models] + [m for p in spec.props for m in p.models]
     return [p for p in paths if p]
@@ -425,6 +430,10 @@ models or asking for new photos:
   source "search" and queries instead if more models should be searched too, keeping "models");
 - objects that are not one of the classes go into props ({{"id", "queries": [], "models": ["library:<id>"],
   "size_m"}}): look-alikes and background things the camera must learn to ignore.
+Each dataset comes with what was seen in it (objects, backgrounds, places). Before proposing a spec that uses
+a dataset, measure it for this goal: {{"describe_scene": {{"folder": "library:<id>", "classes": "<what to find>"}}}}
+(sizes, camera, scene fields). Photos the user attaches in this chat count too: when a dataset is also used,
+"raw" lists both, ["library:<id>", "<attached folder>"].
 Decide for each object whether it is a class or a prop from what the user wants now: the same object can be the
 target of one model and a distractor of another. Every class or prop with 3D models still needs size_m. Use only
 the ids listed here.
@@ -581,11 +590,15 @@ class Session:
         self.activity: list[dict] = []
         self.activity_id: str | None = None
         self.library_ids: set[str] = set()  # library items this chat may reference (see use_library)
+        self.photo_notes = None  # (photos, classes, run) -> descriptions, the kept ones reused (library)
+        self.open_dataset = None  # library dataset id -> a folder of its photos this session may read
 
-    def use_library(self, items: str, ids: set[str], kit: str | None = None) -> None:
+    def use_library(self, items: str, ids: set[str], kit: str | None = None, notes=None, open_dataset=None) -> None:
         """Tell the model what the user's library holds (kits and datasets, see LIBRARY); kit: the name of the kit
-        the user chose to start from."""
+        the user chose to start from. notes: keeps and reuses photo descriptions (Library.describe);
+        open_dataset(id): a folder with a dataset's photos, so describe_scene can measure it for this goal."""
         self.library_ids = set(ids)
+        self.photo_notes, self.open_dataset = notes, open_dataset
         self.messages[0]["content"] += LIBRARY.format(items=items)
         if kit:
             self._note(f"The user starts this model from their kit \"{kit}\": use its datasets and objects.")
@@ -670,7 +683,8 @@ class Session:
             raise RuntimeError("the interview is over")
         self.proposed = None
         what = f"to build 3D models of class {cls}" if purpose == "3d" else "from their camera, unsorted"
-        use = f"classes[{cls}].assets.photos" if purpose == "3d" else "user_data.raw"
+        use = f"classes[{cls}].assets.photos" if purpose == "3d" else \
+            "user_data.raw (with the dataset or folder already there, if any: a list of both)"
         self.messages.append({"role": "user", "content": f"[The user provided {count} photos {what}, in folder "
                                                          f"{folder}. Use it as {use}.]"})
         if purpose != "3d":
@@ -737,6 +751,12 @@ class Session:
     def _describe(self, req: dict) -> None:
         """Profile the user's photos and hand the proposed scene fields to the model."""
         folder = Path(str(req.get("folder", ""))).expanduser()
+        ref = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(req.get("folder", "")))
+        if ref and self.open_dataset is not None:
+            if ref.group(1) not in self.library_ids:
+                self._note(f"describe_scene: {ref.group(1)} is not one of the listed datasets.")
+                return
+            folder = self.open_dataset(ref.group(1)) or folder
         if self.scene_profiler is None:
             self._note("describe_scene is not available here; keep the default open ground scene.")
         elif self._foreign(folder):
@@ -746,7 +766,10 @@ class Session:
         else:
             step = self._step("Looking at your photos: place, distance, where the objects stand")
             try:
-                fields, text = self._counting(self.scene_profiler, step, str(folder),
+                profiler = self.scene_profiler
+                if self.photo_notes is not None and "notes" in inspect.signature(profiler).parameters:
+                    profiler = functools.partial(profiler, notes=self.photo_notes)
+                fields, text = self._counting(profiler, step, str(folder),
                                               str(req.get("classes") or "the objects"))
             except (OSError, ValueError, RuntimeError) as e:
                 self._end(step, "failed", str(e))
@@ -1013,6 +1036,6 @@ def scene_profiler(client, model: str):
     """(folder, classes) -> (proposed scene fields, summary) with a vision model."""
     from . import scene_profile
 
-    def profile(folder: str, classes: str, progress=None):
-        return scene_profile.profile_folder(Path(folder), classes, client, model, progress=progress)
+    def profile(folder: str, classes: str, progress=None, notes=None):
+        return scene_profile.profile_folder(Path(folder), classes, client, model, progress=progress, notes=notes)
     return profile

@@ -12,6 +12,7 @@ from the job folder (done markers, the pipeline log and the cloud usage log).
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import re
 import threading
@@ -24,7 +25,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from . import config, library, review, usage, warm as warm_mod
 from .accounts import INTERVIEW_COST, RUN_COST
-from .job_service import CALIBRATION, JobService, cloud_spent
+from .job_service import CALIBRATION, LABELING, JobService, cloud_spent
 from . import spec as spec_mod
 from .pipeline import Pipeline
 from .workspace import IMAGE_EXT, Cache, Job, current_version, open_job, snapshot, versions
@@ -82,7 +83,8 @@ PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets"}  # an int
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,
                launcher=None, public: bool = False, key: str | None = None, max_runs: int = 2,
-               daily_usd: float | None = None, auth=None, accounts=None, contact: str | None = None, warm=None):
+               daily_usd: float | None = None, auth=None, accounts=None, contact: str | None = None, warm=None,
+               describer=None):
     """public: a server others can reach. Specs may only use photos uploaded through it (no server paths),
     at most `max_runs` runs at a time, and, with `key`, the API needs it (a link with ?key=... or POST /api/key
     sets a cookie); the pages and the app's files stay open, so anyone sees the landing and the app asks for the
@@ -98,6 +100,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     from fastapi.responses import JSONResponse
 
     from .interview import FIRST_QUESTION, spec_paths
+    from .interview import sources as interview_sources
 
     app = FastAPI(title="EyeForge")
 
@@ -167,6 +170,25 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                       daily_usd=daily_usd)
 
     lib = library.Library(home, home / "cache")
+    profiling: set[str] = set()  # datasets whose profile is being made
+    from concurrent.futures import ThreadPoolExecutor
+    profiler = ThreadPoolExecutor(1, thread_name_prefix="profile")
+
+    def profile_soon(owner: str, ds: str) -> None:
+        """Make a dataset's profile in the background (describer: photos, classes -> descriptions)."""
+        if describer is None or ds in profiling:
+            return
+        profiling.add(ds)
+
+        def work():
+            from .scene_profile import GENERAL
+            try:
+                lib.profile_dataset(owner, ds, lambda photos: describer(photos, GENERAL), getattr(describer, "model", None))
+            except Exception as e:  # a failed profile is made again on the next visit
+                print(f"profile of dataset {ds} failed: {type(e).__name__}: {e}", flush=True)
+            finally:
+                profiling.discard(ds)
+        profiler.submit(work)
 
     def owner_of(request: Request) -> str:
         return visitor(request) or "local"
@@ -307,13 +329,19 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
 
         data = json.loads(parsed.to_json())
         ud = data["user_data"]
-        for k in ("raw", "labeled", "test"):
-            ds = ref(ud.get(k))
-            if ds:
-                if not lib.owns(owner, "dataset", ds):
-                    raise HTTPException(400, f"invalid spec: no dataset {ds} in your library")
-                lib.materialize_dataset(owner, ds, job.input / f"dataset_{ds}", by_label=k != "raw")
-                ud[k] = f"dataset_{ds}"
+
+        def dataset(v, by_label: bool):
+            ds = ref(v)
+            if not ds:
+                return v
+            if not lib.owns(owner, "dataset", ds):
+                raise HTTPException(400, f"invalid spec: no dataset {ds} in your library")
+            lib.materialize_dataset(owner, ds, job.input / f"dataset_{ds}", by_label=by_label)
+            return f"dataset_{ds}"
+        for k in ("labeled", "test"):
+            ud[k] = dataset(ud.get(k), True)
+        raw = [dataset(v, False) for v in interview_sources(ud.get("raw"))]
+        ud["raw"] = merge_sources(job, raw) if len(raw) > 1 else (raw[0] if raw else None)
         for item in [c["assets"] for c in data["classes"] if c.get("assets")] + data["props"]:
             ids = [ref(m) for m in item.get("models") or []]
             if not any(ids):
@@ -323,6 +351,26 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 raise HTTPException(400, f"invalid spec: models must be objects of your library ({missing})")
             item["models"] = [f"objects/{n}" for n in lib.materialize_objects(owner, ids, job.input / "objects")]
         return spec_mod.from_dict(data)
+
+    def reuse_corrections(parsed: spec_mod.Spec, owner: str, job: Job) -> None:
+        """The user's earlier corrections of these photos (other jobs, the Datasets page) as this job's, so they
+        are not asked again. Never over corrections the job already has."""
+        from . import teacher
+        f = job.input / review.CORRECTIONS
+        raw = parsed.user_data.raw
+        if f.exists() or not isinstance(raw, str):
+            return
+        try:
+            folder = job.resolve_input(raw)
+        except ValueError:
+            return
+        if not folder.is_dir():
+            return
+        phrases = {c: p[0] for c, p in teacher.phrases(parsed).items()} if parsed.task == "count" else {}
+        found = lib.corrections_for(owner, folder, [c.id for c in parsed.classes] if phrases else [], phrases,
+                                    parsed.labels if parsed.task != "count" else [])
+        if found:
+            f.write_text(json.dumps({"labels": {}, "assets": {}, "points": {}, **found}, indent=1))
 
     def check_paths(parsed: spec_mod.Spec, job: Job | None = None) -> None:
         """On a public server, only photos uploaded here (or, revising a job, the job's own folders): a path
@@ -364,7 +412,15 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if hasattr(sessions[sid], "use_library"):  # the user's kits and datasets, to start from them
             owner = owner_of(request)
             chosen = next((k["name"] for k in lib.kits(owner) if k["id"] == kit), None) if kit else None
-            sessions[sid].use_library(*lib.for_chat(owner), kit=chosen)
+            folders = home / "uploads" / sid
+
+            def open_dataset(ds: str, owner=owner, folders=folders) -> Path | None:
+                if not lib.owns(owner, "dataset", ds):
+                    return None
+                lib.materialize_dataset(owner, ds, folders / f"library_{ds}", by_label=False)
+                return folders / f"library_{ds}"
+            sessions[sid].use_library(*lib.for_chat(owner), kit=chosen,
+                                      notes=functools.partial(lib.describe, owner), open_dataset=open_dataset)
         if revising:
             turn = sessions[sid].revise(spec_mod.load(latest_spec(revising)))
             return {"session": sid, "text": turn.text, "job": revising.name}
@@ -490,7 +546,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             data = json.loads(spec)
             images = [p for p in photos if Path(p.filename or "").suffix.lower() in IMAGE_EXT]
             if images and not (data.get("user_data") or {}).get("labeled"):
-                data.setdefault("user_data", {})["raw"] = "photos"  # the teacher model labels them
+                ud = data.setdefault("user_data", {})  # the teacher model labels them, with any other raw photos
+                ud["raw"] = [*interview_sources(ud.get("raw")), "photos"] if ud.get("raw") not in (None, "photos") \
+                    else "photos"
             parsed = spec_mod.from_dict(data)
         except (json.JSONDecodeError, spec_mod.SpecError) as e:
             raise HTTPException(400, f"invalid spec: {e}") from None
@@ -513,15 +571,16 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if public:
             (job.root / OWNER).write_text(visitor(request))
         parsed = adopt_uploads(parsed, home / "uploads", job)
+        save_photos(job.input / "photos", images)  # before the library: raw may merge them with a dataset
         try:
             parsed = adopt_library(parsed, owner_of(request), job)
         except HTTPException:
             import shutil
             shutil.rmtree(job.root, ignore_errors=True)  # a refused spec leaves no empty job behind
             raise
+        reuse_corrections(parsed, owner_of(request), job)
         req = job.root / "request.json"
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
-        save_photos(job.input / "photos", images)
         credit_interview(job, session)
         if session:
             warm_mod.note(home, "job", name, session=f"session:{session}")
@@ -547,8 +606,14 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         mine_jobs = [Job(home / "jobs" / n) for n in list_jobs(request)["jobs"]]
         owner = owner_of(request)
         lib.sync(owner, mine_jobs)
-        return {"models": [library.model_summary(j, jobs.running(j)) for j in mine_jobs],
-                "datasets": lib.datasets(owner), "objects": lib.objects(owner), "scenes": lib.scenes(owner),
+        datasets = lib.datasets(owner)
+        for d in datasets:
+            if lib.profile_stale(owner, d["id"]):
+                profile_soon(owner, d["id"])
+            d["profiling"] = d["id"] in profiling
+        return {"models": [library.model_summary(j, jobs.running(j)) for j in mine_jobs
+                           if not (j.root / LABELING).exists()],
+                "datasets": datasets, "objects": lib.objects(owner), "scenes": lib.scenes(owner),
                 "kits": lib.kits(owner)}
 
     @app.get("/api/library/photos/{key}")
@@ -608,6 +673,66 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             return {"photos": lib.add_photos(owner, item, files)}
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    @app.post("/api/library/datasets/{item}/profile")
+    def library_profile(item: str, request: Request):
+        """Look at the dataset's photos again (new ones, or the last try failed)."""
+        owner, _ = owned(request, "datasets", item)
+        if describer is None:
+            raise HTTPException(503, "no vision model on this server")
+        profile_soon(owner, item)
+        return {"profiling": True}
+
+    @app.post("/api/library/datasets/{item}/label")
+    def library_label(item: str, body: dict, request: Request):
+        """Label a dataset without training a model: the teacher marks a few photos for the user to check, as
+        before a first run, then every photo (label_all). Count: boxes of each thing named; classify: one of
+        the names per photo. The marks and corrections stay with the photos, for any later model."""
+        owner, _ = owned(request, "datasets", item)
+        task = body.get("task")
+        names = list(dict.fromkeys(str(n).strip()[:60] for n in body.get("classes") or [] if str(n).strip()))
+        if task not in ("count", "classify") or not names or len(names) > 8:
+            raise HTTPException(400, "say what to label: count or classify, and 1 to 8 names")
+        if task == "classify" and len(names) < 2:
+            raise HTTPException(400, "classify needs at least two names to choose among")
+        ds_name = next((d["name"] for d in lib.datasets(owner) if d["id"] == item), "photos")
+        classes = []
+        for n in names:
+            cid = re.sub(r"[^a-z0-9]+", "_", n.lower()).strip("_") or f"class_{len(classes)}"
+            if cid not in [c["id"] for c in classes]:
+                classes.append({"id": cid, "description": n})
+        data = {"name": f"label {ds_name}", "task": "count" if task == "count" else "roi_classification",
+                "classes": classes, "user_data": {"raw": f"library:{item}"}}
+        try:
+            parsed = spec_mod.from_dict(data)
+        except spec_mod.SpecError as e:
+            raise HTTPException(400, f"invalid labels: {e}") from None
+        budget_left()
+        base = name = slug(parsed.name)
+        n = 1
+        while (home / "jobs" / name).exists():
+            n += 1
+            name = f"{base}_{n}"
+        pay(request, RUN_COST, "label", name)  # priced like a run for now
+        job = open_job(home, name)
+        if public:
+            (job.root / OWNER).write_text(visitor(request))
+        parsed = adopt_library(parsed, owner, job)
+        reuse_corrections(parsed, owner, job)
+        (job.root / "request.json").write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
+        (job.root / LABELING).write_text(json.dumps({"dataset": item, "state": "checking"}))
+        jobs.warm_up("calibration", name)
+        jobs.calibrate(job)
+        return {"job": name}
+
+    @app.get("/api/library/datasets/{item}/notes")
+    def library_notes(item: str, request: Request):
+        """What is known about each photo of the dataset: descriptions, the teacher's boxes, the user's marks
+        and labels."""
+        owner, _ = owned(request, "datasets", item)
+        keys = [k for (k,) in lib.db.execute("SELECT DISTINCT key FROM photos WHERE dataset = ? ORDER BY key", (item,))]
+        return {"keys": keys, "notes": lib.dataset_notes(owner, item), "profile": lib.profile(owner, item),
+                "profiling": item in profiling}
 
     @app.post("/api/library/objects")
     def library_new_object(request: Request, name: str = Form(...), concept: str = Form(""),
@@ -712,6 +837,20 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         start_run(job, job.root / "request.json")
         return {"rerun_from": None}
 
+    @app.post("/api/jobs/{name}/label_all")
+    def label_all(name: str, body: dict, request: Request):
+        """A labeling job: keep the last fixes of the check and let the teacher mark every photo."""
+        job = job_of(name, request)
+        if jobs.running(job):
+            raise HTTPException(409, ALREADY_RUNNING)
+        if not (job.root / LABELING).exists() or not (job.root / CALIBRATION).exists():
+            raise HTTPException(409, CHECK_OVER)
+        review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
+                     share=not public)
+        (job.root / CALIBRATION).unlink()
+        jobs.label_all(job)
+        return {"rerun_from": "label"}
+
     @app.post("/api/jobs/{name}/corrections")
     def corrections(name: str, body: dict, request: Request):
         job = job_of(name, request)
@@ -757,6 +896,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if not dry:
             parsed = adopt_uploads(parsed, home / "uploads", job)
             parsed = adopt_library(parsed, owner_of(request), job)
+            reuse_corrections(parsed, owner_of(request), job)
             credit_interview(job, session)
         todo = [p.stage.name for p in Pipeline(parsed, job, Cache(home / "cache")).plan() if p.action == "run"]
         if dry or not todo:
@@ -860,6 +1000,46 @@ def latest_spec(job: Job) -> Path:
     return max(paths, key=lambda p: p.stat().st_mtime)
 
 
+def default_describer(home: Path):
+    """photos, classes -> one description per photo with the scene model (scene_profile.describe): what the
+    library profiles datasets with. The client is made on first use."""
+    from . import scene_profile
+    from .llm import Client
+    made: dict = {}
+
+    def describe(photos: list[Path], classes: str) -> list[dict]:
+        if "client" not in made:
+            made["client"] = Client(usage_log=home / "logs" / "llm_usage.jsonl")
+        client = made["client"]
+        return scene_profile.describe(photos, classes, client, client.model_for("scene"))
+    return describe
+
+
+def merge_sources(job: Job, sources: list[str]) -> str:
+    """Several raw photo sources of a job (folders of its input) as one folder, input/raw, one subfolder each
+    (hard links: no extra space). The same photo in two sources is kept once."""
+    import os
+    import shutil
+
+    from .workspace import content_key
+    out = job.input / "raw"
+    seen = set()
+    for i, src in enumerate(sources):
+        base = job.resolve_input(src)
+        for f in sorted(base.rglob("*")):
+            if f.suffix.lower() not in IMAGE_EXT or (k := content_key(f)) in seen:
+                continue
+            seen.add(k)
+            dst = out / f"{i}_{Path(src).name}" / f.relative_to(base)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if not dst.exists():
+                try:
+                    os.link(f, dst)
+                except OSError:
+                    shutil.copy2(f, dst)
+    return "raw"
+
+
 def adopt_uploads(spec: spec_mod.Spec, uploads: Path, job: Job) -> spec_mod.Spec:
     """Move chat uploads the spec points to into the job's input folder and make the paths relative, so
     the photos travel with the job (to Nebius too) and outlive the interview session."""
@@ -879,7 +1059,7 @@ def adopt_uploads(spec: spec_mod.Spec, uploads: Path, job: Job) -> spec_mod.Spec
     data = json.loads(spec.to_json())
     ud = data["user_data"]
     for k in ("raw", "labeled", "test"):
-        ud[k] = adopt(ud.get(k))
+        ud[k] = [adopt(v) for v in ud[k]] if isinstance(ud.get(k), list) else adopt(ud.get(k))
     for c in data["classes"]:
         if c.get("assets"):
             c["assets"]["photos"] = adopt(c["assets"].get("photos"))
@@ -1024,6 +1204,7 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     calibration = job.root / CALIBRATION
     return {"job": job.name, "spec": json.loads(spec.to_json()), "running": running,
             "calibration": json.loads(calibration.read_text()) if calibration.exists() else None,
+            "labeling": json.loads((job.root / LABELING).read_text()) if (job.root / LABELING).exists() else None,
             "stages": stages, "log": log[-30:], "cloud_usd": round(cost, 2), "phase": phase(log, running),
             "timing": timing(job, home, stages, running, backend),
             "usage": usage.summary(job, usage.saved_prices(home / "cache"), config.gpu_name()),
@@ -1045,5 +1226,6 @@ def serve(home: Path, backend: str, host: str, port: int, max_usd: float | None,
     if gpu is not None and warm_mod.current(home):  # one left by the previous server process: note its end
         gpu.watch()
     uvicorn.run(create_app(home, backend, max_usd, public=public, key=key, max_runs=max_runs, daily_usd=daily_usd,
-                           auth=auth, accounts=accounts, contact=contact, warm=gpu),
+                           auth=auth, accounts=accounts, contact=contact, warm=gpu,
+                           describer=default_describer(home)),
                 host=host, port=port, proxy_headers=True)

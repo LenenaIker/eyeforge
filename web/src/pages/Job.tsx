@@ -60,18 +60,18 @@ export default function JobPage() {
   return (
     <div className="space-y-6 py-6">
       <div>
-        <p className="text-sm text-muted">Model</p>
+        <p className="text-sm text-muted">{s.labeling ? "Labeling" : "Model"}</p>
         <h1 className="text-2xl font-bold tracking-tight">{(s.spec?.name ?? s.job).replace(/_/g, " ")}</h1>
       </div>
       {error && <Notice tone="bad">Lost contact with the server, retrying: {error}</Notice>}
       {news && <Notice>{news}</Notice>}
-      {s.calibration ? <Calibration s={s} reviewKey={reviewKey} onRerun={restart} /> :
+      {s.labeling && !s.calibration ? <Labeling s={s} /> : s.calibration ? <Calibration s={s} reviewKey={reviewKey} onRerun={restart} /> :
         (s.running || !s.report) && <Progress s={s} failed={failed} />}
       {s.report && <Result job={s.job} r={s.report} usd={s.cloud_usd} version={s.version} />}
       {!s.running && s.report && <Improve job={s.job} counting={s.report.task === "count"} onRerun={restart} />}
       {s.report && s.usage && (s.usage.models.length > 0 || s.usage.gpu.length > 0) && <UsagePanel u={s.usage} />}
       {s.report && s.versions.length > 0 && <Versions job={s.job} versions={s.versions} />}
-      {!s.calibration && !s.running && (s.report || failed) && <ReviewPanel key={reviewKey} job={s.job} onRerun={restart} />}
+      {!s.calibration && !s.labeling && !s.running && (s.report || failed) && <ReviewPanel key={reviewKey} job={s.job} onRerun={restart} />}
     </div>
   );
 }
@@ -98,7 +98,21 @@ function Calibration({ s, reviewKey, onRerun }: { s: Status; reviewKey: number; 
       </div>
     );
   }
-  return <ReviewPanel key={reviewKey} job={s.job} onRerun={onRerun} calibrating />;
+  return <ReviewPanel key={reviewKey} job={s.job} onRerun={onRerun} calibrating labeling={!!s.labeling} />;
+}
+
+// A labeling job after the check: the teacher marks every photo; the labels then live in the dataset.
+function Labeling({ s }: { s: Status }) {
+  const l = s.labeling!;
+  const back = <Link to={`/app/datasets/${l.dataset}`} className="font-medium text-brand-600 hover:underline">See them in the dataset</Link>;
+  if (l.state === "failed") return <Notice tone="bad">The teacher could not label the photos: {l.error}</Notice>;
+  if (l.state === "done") return <Card className="p-4 text-sm">Every photo is labeled and kept with the dataset, for any model you build with it. {back}</Card>;
+  return (
+    <Card className="flex items-center gap-3 p-4 text-sm">
+      <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+      <span>The teacher is labeling every photo. You can leave: the labels go to the dataset when it ends.</span>
+    </Card>
+  );
 }
 
 function Skeleton() {

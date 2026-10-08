@@ -11,7 +11,9 @@ type Tab = "photos" | "assets" | "renders" | "test";
 type Editing = { key: string; image: string; title: string; points: Point[] };
 
 // calibrating: before the first run, only the teacher's marks on a few photos; fixes teach it, then train.
-export default function ReviewPanel({ job, onRerun, calibrating = false }: { job: string; onRerun: (news?: string) => void; calibrating?: boolean }) {
+// labeling: a job that only labels a dataset, so its last step labels every photo instead of training.
+export default function ReviewPanel({ job, onRerun, calibrating = false, labeling = false }:
+  { job: string; onRerun: (news?: string) => void; calibrating?: boolean; labeling?: boolean }) {
   const [review, setReview] = useState<Review | null>(null);
   const [tab, setTab] = useState<Tab>("test");
   const [fixes, setFixes] = useState<Fixes>({ labels: {}, assets: {}, points: {} });
@@ -37,7 +39,7 @@ export default function ReviewPanel({ job, onRerun, calibrating = false }: { job
   const apply = async (train = false) => {
     setApplying(true);
     try {
-      const r = train ? await API.trainCalibrated(job, fixes) : await API.applyFixes(job, fixes, calibrating);
+      const r = train ? await (labeling ? API.labelAll : API.trainCalibrated)(job, fixes) : await API.applyFixes(job, fixes, calibrating);
       if (train) { onRerun(); return; }
       setFixes({ labels: {}, assets: {}, points: {} });
       if (r.rerun_from) onRerun();
@@ -150,7 +152,9 @@ export default function ReviewPanel({ job, onRerun, calibrating = false }: { job
               {n > 0 && <Button variant="ghost" size="sm" onClick={() => setFixes({ labels: {}, assets: {}, points: {} })}>Undo all</Button>}
               {calibrating ? <>
                 <Button variant="ghost" size="sm" onClick={() => apply()} disabled={applying || n === 0}>Teach it</Button>
-                <Button size="sm" onClick={() => apply(true)} disabled={applying}>{n ? "Keep fixes and train" : "Looks right, train"}</Button>
+                <Button size="sm" onClick={() => apply(true)} disabled={applying}>
+                  {labeling ? (n ? "Keep fixes, label all" : "Looks right, label all") : n ? "Keep fixes and train" : "Looks right, train"}
+                </Button>
               </> : <Button size="sm" onClick={() => apply()} disabled={applying}>Apply and retrain</Button>}
             </div>
           </div>

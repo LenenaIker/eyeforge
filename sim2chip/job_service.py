@@ -20,6 +20,7 @@ from .workspace import REPO, Cache, Job
 
 CALIBRATION = "calibration.json"  # a new job whose teacher the user checks before the first run
 CALIBRATION_PHOTOS = 6  # photos the teacher marks per calibration round
+LABELING = "labeling.json"  # a job that only labels a library dataset: {"dataset", "state"} (Datasets page)
 
 
 def launch_run(home: Path, job: Job, request: Path, backend: str, max_usd: float | None,
@@ -176,7 +177,34 @@ class JobService:
         stage, ctx = self._label_sample(job)
         stage.run(ctx)
 
-    def _calibrate_in_cloud(self, job: Job) -> None:
+    def label_all(self, job: Job) -> None:
+        """A labeling job: after the check, the teacher marks every photo (the label stage alone, on this
+        machine's GPU or a cloud job). The library takes the marks in from the job (library.sync)."""
+        from . import teacher
+        state = job.root / LABELING
+
+        def put(**change) -> None:  # whole or not at all: the job page reads it meanwhile
+            tmp = state.with_suffix(".tmp")
+            tmp.write_text(json.dumps({**json.loads(state.read_text()), **change}))
+            tmp.replace(state)
+
+        def work():
+            try:
+                if teacher.available() or self.backend != "nebius":
+                    from .stages import Context
+                    from .stages.label import Label
+                    Label().run(Context(spec_mod.load(job.root / "request.json"), job, self.cache))
+                else:
+                    self._calibrate_in_cloud(job, sample=None)
+                put(state="done")
+            except Exception as e:
+                put(state="failed", error=str(e)[:300])
+
+        put(state="labeling")
+        self.calibrations[job.name] = threading.Thread(target=work, daemon=True)
+        self.calibrations[job.name].start()
+
+    def _calibrate_in_cloud(self, job: Job, sample: int | None = CALIBRATION_PHOTOS) -> None:
         cmd = [sys.executable, "-m", "sim2chip.cli", "--home", str(self.home), "run", str(job.root / "request.json"),
                "--job", job.name, "--backend", self.backend, "--only", "label"]
         if self.max_usd is not None:
@@ -184,13 +212,14 @@ class JobService:
         job.logs.mkdir(parents=True, exist_ok=True)
         with open(job.logs / "pipeline.log", "a") as log:
             proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
-                                    env={**os.environ, "SIM2CHIP_LABEL_SAMPLE": str(CALIBRATION_PHOTOS)})
+                                    env={**os.environ, "SIM2CHIP_LABEL_SAMPLE": str(sample or 0)})
             self.runs[job.name] = proc  # cancel stops it like a run
             if proc.wait() != 0:
                 lines = (job.logs / "pipeline.log").read_text(errors="replace").splitlines()
                 raise RuntimeError(next((ln for ln in reversed(lines) if "error" in ln.lower() or "FAILED" in ln),
                                         f"the teacher's cloud job failed (exit {proc.returncode})"))
-        job.clear_done("label")  # a sample, not the whole folder: the first run labels every photo
+        if sample:
+            job.clear_done("label")  # a sample, not the whole folder: the first run labels every photo
 
     def _answers_here(self, job: Job) -> bool:
         """Every answer the round needs is cached on this machine (the warm GPU's prefetch brought them): only
