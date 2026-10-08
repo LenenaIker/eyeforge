@@ -22,7 +22,7 @@ import common
 from report import match
 
 MODEL = "facebook/sam3"
-CALIBRATION = 6  # photos the user checks before the first run (server.CALIBRATION_PHOTOS)
+CALIBRATION = 6  # photos the user checks before the first run (job_service.CALIBRATION_PHOTOS)
 POS, NEG = 4, 4  # exemplars of each kind
 STRIP = 0.3  # strip width, share of the photo width
 

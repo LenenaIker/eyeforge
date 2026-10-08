@@ -13,10 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
-import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -27,6 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from . import config, review, usage, warm as warm_mod
 from .accounts import INTERVIEW_COST, RUN_COST
+from .job_service import CALIBRATION, JobService, cloud_spent
 from . import spec as spec_mod
 from .pipeline import Pipeline
 from .workspace import IMAGE_EXT, Cache, Job, current_version, open_job, snapshot, versions
@@ -78,8 +76,6 @@ def default_interviewer(home: Path, backend: str = "local", public: bool = False
 
 MAX_PHOTOS = 400  # per upload on a public server
 SESSION_HOURS = 6
-CALIBRATION = "calibration.json"  # a new job whose teacher the user checks before the first run
-CALIBRATION_PHOTOS = 6  # photos the teacher marks per calibration round
 # Model calls are logged by purpose, which is the stage name except for qa's two-step strategy.
 PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets"}  # an interview left open longer is dropped
 
@@ -165,11 +161,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return response
 
     sessions: dict[str, object] = {}
-    runs: dict[str, subprocess.Popen] = {}
-    calibrations: dict[str, threading.Thread] = {}
     started: dict[str, float] = {}  # interview session -> start time
     new_session = interviewer
-    launch = launcher or _launch
+    jobs = JobService(home, backend, max_usd, launcher=launcher, warm=warm, public=public, max_runs=max_runs,
+                      daily_usd=daily_usd)
 
     def visitor(request: Request) -> str | None:
         if auth is not None:
@@ -200,105 +195,6 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             raise HTTPException(404, f"no job {name}")
         return job
 
-    def calibrate(job: Job) -> None:
-        """Before any training, the teacher marks a few of the user's photos. The user corrects them; the next
-        round tunes the teacher to the corrections, marks the same photos again and a few new ones, so the user
-        sees if it understood. The first run starts from these answers. The teacher (SAM 3) needs a GPU: this
-        machine's when it has one, else a short Nebius job (the photos wait for the GPU to start)."""
-        from . import teacher
-        from .stages import Context
-        from .stages.label import Label
-        state = job.root / CALIBRATION
-
-        def here():
-            stage = Label()
-            stage.sample = CALIBRATION_PHOTOS
-            stage.run(Context(spec_mod.load(job.root / "request.json"), job, Cache(home / "cache")))
-
-        def cloud():
-            cmd = [sys.executable, "-m", "sim2chip.cli", "--home", str(home), "run", str(job.root / "request.json"),
-                   "--job", job.name, "--backend", backend, "--only", "label"]
-            if max_usd is not None:
-                cmd += ["--max-usd", str(max_usd)]
-            job.logs.mkdir(parents=True, exist_ok=True)
-            with open(job.logs / "pipeline.log", "a") as log:
-                proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=Path(__file__).resolve().parents[1],
-                                        env={**os.environ, "SIM2CHIP_LABEL_SAMPLE": str(CALIBRATION_PHOTOS)})
-                runs[job.name] = proc  # cancel stops it like a run
-                if proc.wait() != 0:
-                    lines = (job.logs / "pipeline.log").read_text(errors="replace").splitlines()
-                    raise RuntimeError(next((l for l in reversed(lines) if "error" in l.lower() or "FAILED" in l),
-                                            f"the teacher's cloud job failed (exit {proc.returncode})"))
-            job.clear_done("label")  # a sample, not the whole folder: the first run labels every photo
-
-        def answers_here() -> bool:
-            """Every answer the round needs is cached on this machine (the warm GPU's prefetch brought them): only
-            the threshold or the centres change with the corrections, which takes seconds without a GPU."""
-            try:
-                stage = Label()
-                stage.sample = CALIBRATION_PHOTOS
-                return not stage.gpu_needed(Context(spec_mod.load(job.root / "request.json"), job,
-                                                    Cache(home / "cache")))
-            except Exception as e:  # then the round asks the teacher for them
-                print(f"calibration {job.name}: could not check the cached answers ({type(e).__name__}: {e})",
-                      flush=True)
-                return False
-
-        def work():
-            try:
-                here() if teacher.available() or backend != "nebius" or answers_here() else cloud()
-                state.write_text(json.dumps({"state": "ready"}))
-                if warm is not None:
-                    warm.touch(who=job.name)  # the user checks the photos now: keep the GPU for the next round or the run
-                    prefetch(job)
-            except Exception as e:  # shown on the job page, with the option to train anyway
-                state.write_text(json.dumps({"state": "failed", "error": str(e)[:300]}))
-
-        state.write_text(json.dumps({"state": "labeling"}))
-        calibrations[job.name] = threading.Thread(target=work, daemon=True)
-        calibrations[job.name].start()
-
-    prefetching: set[str] = set()
-    prefetch_lock = threading.Lock()  # calibration threads and requests may ask for the same job at once
-
-    def prefetch(job: Job) -> None:
-        """Count calibration: while the user checks the first photos, the warm GPU answers for the rest, so the
-        next rounds and the first run need no GPU work for the teacher (warm.py, Label.prefetch)."""
-        from .stages import Context
-        from .stages.label import Label
-        spec = spec_mod.load(job.root / "request.json")
-        if spec.task != "count":
-            return
-        try:
-            if not Label().gpu_needed(Context(spec, job, Cache(home / "cache"))):
-                return  # every photo answered already
-        except Exception as e:  # prefetch anyway: the warm GPU skips the photos it finds answered
-            print(f"prefetch {job.name}: could not check the cached answers ({type(e).__name__}: {e})", flush=True)
-        with prefetch_lock:
-            if job.name in prefetching:
-                return
-            prefetching.add(job.name)
-
-        def go():
-            try:
-                from .backends.nebius import NebiusBackend
-                NebiusBackend(max_usd=max_usd).prefetch_warm(job, Cache(home / "cache"), spec, CALIBRATION_PHOTOS)
-            except Exception as e:  # the rounds and the run then ask the teacher themselves
-                print(f"prefetch {job.name} failed: {e}", flush=True)
-            finally:
-                prefetching.discard(job.name)
-        threading.Thread(target=go, daemon=True).start()
-
-    def warm_up(reason: str, who: str | None = None) -> None:
-        """Ask for the warm GPU, unless today's budget could not pay for it."""
-        if warm is None:
-            return
-        try:
-            budget_left()
-        except HTTPException:
-            return
-        warm.start(reason, who)
-
     def interview_usage(sid: str) -> Path:
         return home / "logs" / "interviews" / f"{sid}.usage.jsonl"
 
@@ -315,15 +211,15 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         """payer: the HTTP request of the user who pays this run (accounts mode), refunded if it cannot start."""
         acc = pay(payer, RUN_COST, "run", job.name) if payer is not None else None
         try:
-            (job.logs / "launched_at").write_text(f"{time.time():.3f}")
-            runs[job.name] = launch(home, job, request, backend, max_usd, start=start)
+            jobs.start(job, request, start)
         except Exception:
             if acc is not None:
                 accounts.refund(acc, RUN_COST, job.name)
             raise
 
-    def busy() -> bool:
-        return public and sum(p.poll() is None for p in runs.values()) >= max_runs
+    def room_for_a_run() -> None:
+        if jobs.busy():
+            raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
 
     @app.get("/", include_in_schema=False)
     def index():
@@ -341,7 +237,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             spent = cloud_spent(home)
             budget = {"daily_usd": daily_usd, "spent_usd": round(spent, 2),
                       "can_run": spent + WORKER_HOURS * USD_PER_HOUR <= daily_usd}
-        return {"backend": backend, "first_question": FIRST_QUESTION, "public": public, "busy": busy(),
+        return {"backend": backend, "first_question": FIRST_QUESTION, "public": public, "busy": jobs.busy(),
                 "max_runs": max_runs if public else None, "budget": budget,
                 "locked": auth is None and bool(key) and not getattr(request.state, "unlocked", False),
                 "login": auth.providers if auth is not None else None}
@@ -510,7 +406,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if not n and not total:
             raise HTTPException(400, "no images among the files")
         if purpose == "training":  # the GPU starts while the interview goes on
-            warm_up("photos uploaded", f"session:{sid}")
+            jobs.warm_up("photos uploaded", f"session:{sid}")
         if more:
             return {"stored": n}
         n = max(n, total)
@@ -534,13 +430,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                                      str(body.get("class", "")), act=act))
 
     def budget_left() -> None:
-        if daily_usd is None or backend != "nebius":
-            return
-        from .backends.nebius import USD_PER_HOUR, WORKER_HOURS
-        spent, worst = cloud_spent(home), WORKER_HOURS * USD_PER_HOUR
-        if spent + worst > daily_usd:
-            raise HTTPException(429, f"today's cloud budget is used up (${spent:.2f} of ${daily_usd:.2f}); "
-                                     "try again tomorrow")
+        problem = jobs.over_budget()
+        if problem:
+            raise HTTPException(429, problem)
 
     @app.post("/api/jobs")
     def create_job(request: Request, spec: str = Form(...), photos: list[UploadFile] = File(default=[]),
@@ -549,8 +441,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         to check (see calibrate); the run starts from the job page."""
         budget_left()
         if public:
-            if busy():
-                raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
+            room_for_a_run()
             if len(photos) > MAX_PHOTOS:
                 raise HTTPException(413, f"at most {MAX_PHOTOS} photos per run")
         try:
@@ -564,7 +455,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         check_paths(parsed)
         # The same setup sent twice (a double click, "Looks good" and Train together) must not pay for two runs.
         same = json.loads(parsed.to_json())
-        for other, proc in runs.items():
+        for other, proc in jobs.runs.items():
             req = home / "jobs" / other / "request.json"
             if proc.poll() is None and req.exists() and {**json.loads(req.read_text()), "name": same["name"]} == same \
                     and mine(Job(home / "jobs" / other), request):
@@ -588,8 +479,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             warm_mod.note(home, "job", name, session=f"session:{session}")
         if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled:
             pay(request, RUN_COST, "run", name)  # the teacher's check is the start of the paid run
-            warm_up("calibration", name)
-            calibrate(job)
+            jobs.warm_up("calibration", name)
+            jobs.calibrate(job)
             return {"job": name, "photos": len(images), "calibrating": True}
         start_run(job, req, payer=request)
         return {"job": name, "photos": len(images)}
@@ -604,7 +495,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     @app.get("/api/jobs/{name}")
     def job_status(name: str, request: Request):
         job = job_of(name, request)
-        return status(job, home, running=running(job), backend=backend)
+        return status(job, home, running=jobs.running(job), backend=backend)
 
     @app.get("/api/jobs/{name}/review")
     def review_data(name: str, request: Request):
@@ -623,31 +514,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             raise HTTPException(404, "no such image")
         return FileResponse(thumbnail(job, src, 1024 if size > 360 else 360))
 
-    def running(job: Job) -> bool:
-        """This server's run process, or a cloud job left by an earlier server process (still in time)."""
-        proc, cal = runs.get(job.name), calibrations.get(job.name)
-        return (proc is not None and proc.poll() is None) or cloud_job(job) is not None or \
-            (cal is not None and cal.is_alive())
-
     @app.post("/api/jobs/{name}/cancel")
     def cancel(name: str, request: Request):
         """Stops the run: the local process and, on Nebius, the cloud job (which bills until it ends)."""
-        job = job_of(name, request)
-        proc = runs.get(job.name)
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-        cj = cloud_job(job)
-        if cj and cj.get("warm"):  # a task of the shared warm GPU: stop the task, not the GPU
-            from .backends.nebius import NebiusBackend
-            be = NebiusBackend()
-            warm_mod.cancel(be.store, f"{be.prefix}-cache", cj["warm"], cj["task"])
-            (job.logs / "cloud_job.json").unlink(missing_ok=True)
-        elif cj:
-            from .backends.nebius import NebiusCLI
-            NebiusCLI().cancel(cj["id"])
-            (job.logs / "cloud_job.json").unlink(missing_ok=True)
-        with open(job.logs / "pipeline.log", "a") as f:
-            f.write("FAILED: cancelled by the user\n")
+        cj = jobs.cancel(job_of(name, request))
         return {"cancelled": True, "cloud_job": cj["id"] if cj else None}
 
     @app.post("/api/jobs/{name}/train")
@@ -655,13 +525,12 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         """The user is happy with the teacher: keep the last fixes and start the first run. Its label stage
         learns from all the fixes and marks every photo."""
         job = job_of(name, request)
-        if running(job):
+        if jobs.running(job):
             raise HTTPException(409, ALREADY_RUNNING)
         if not (job.root / CALIBRATION).exists():
             raise HTTPException(409, CHECK_OVER)
         budget_left()
-        if public and busy():
-            raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
+        room_for_a_run()
         review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
                      share=not public)
         (job.root / CALIBRATION).unlink()
@@ -671,7 +540,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     @app.post("/api/jobs/{name}/corrections")
     def corrections(name: str, body: dict, request: Request):
         job = job_of(name, request)
-        if running(job):
+        if jobs.running(job):
             raise HTTPException(409, ALREADY_RUNNING)
         # Fixes made on the teacher's check, sent after training started (from another device, or an old tab):
         # as fixes of a trained model they would start a run nobody asked for.
@@ -680,7 +549,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if (job.root / CALIBRATION).exists():  # still calibrating the teacher: another round, no training
             review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
                          share=not public)
-            calibrate(job)
+            jobs.calibrate(job)
             return {"rerun_from": "calibration"}
         budget_left()
         start = review.apply(job, Cache(home / "cache"), body.get("labels") or {}, body.get("assets") or {},
@@ -700,7 +569,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         """A changed spec for a trained job: the job keeps its folder, the old model is kept as a version, and
         only the stages whose inputs changed run again. dry: just the stages that would run."""
         job = job_of(name, request)
-        if running(job):
+        if jobs.running(job):
             raise HTTPException(409, f"job {job.name} is running")
         try:
             parsed = spec_mod.from_dict(json.loads(spec))
@@ -717,8 +586,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if dry or not todo:
             return {"stages": todo, "changed": changed, "rerun_from": None}
         budget_left()
-        if public and busy():
-            raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
+        room_for_a_run()
         req = job.root / "request.json"
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": old.name}, indent=2))
         snapshot(job, "changed " + (", ".join(changed) or "the setup"))
@@ -732,11 +600,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         go to test (the rest to training), and only the real-photo branch reruns: the synthetic data stays.
         In batches like the interview's photos: more=true stores, the last batch (total: all of them) reruns."""
         job = job_of(name, request)
-        if running(job):
+        if jobs.running(job):
             raise HTTPException(409, f"job {job.name} is running")
         budget_left()
-        if public and busy():
-            raise HTTPException(429, f"{max_runs} models are training right now; try again in a few minutes")
+        room_for_a_run()
         images = [p for p in photos if Path(p.filename or "").suffix.lower() in IMAGE_EXT]
         if not images:
             raise HTTPException(400, "no photos (jpg, png, bmp or webp)")
@@ -794,51 +661,6 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return index()
 
     return app
-
-
-def _launch(home: Path, job: Job, request: Path, backend: str, max_usd: float | None,
-            start: str | None = None) -> subprocess.Popen:
-    cmd = [sys.executable, "-m", "sim2chip.cli", "--home", str(home), "run", str(request), "--job", job.name,
-           "--backend", backend]
-    if start:
-        cmd += ["--from", start]
-    if max_usd is not None:
-        cmd += ["--max-usd", str(max_usd)]
-    job.logs.mkdir(parents=True, exist_ok=True)
-    with open(job.logs / "pipeline.log", "a") as log:  # the child keeps its own copy of the file
-        return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=Path(__file__).resolve().parents[1])
-
-
-def cloud_spent(home: Path, hours: float = 24) -> float:
-    """Cloud GPU dollars of every job's runs that ended in the last `hours`, plus the runs still going
-    (counted at their worst case, the whole timeout). The warm GPU counts once, for its whole life (warm.py):
-    its tasks' records in the jobs are left out."""
-    from . import warm
-    from .backends.nebius import USD_PER_HOUR
-    since = time.time() - hours * 3600
-    total = warm.spent(home, since)
-    for logs in (home / "jobs").glob("*/logs"):
-        try:
-            for line in (logs / "cloud_usage.jsonl").read_text().splitlines():
-                rec = json.loads(line)
-                if rec.get("t", 0) >= since and not rec.get("warm"):
-                    total += rec.get("usd_estimate", 0.0)
-        except (OSError, ValueError):
-            pass
-        cj = cloud_job(Job(logs.parent))
-        if cj and not cj.get("warm"):
-            total += cj["hours"] * USD_PER_HOUR
-    return total
-
-
-def cloud_job(job: Job) -> dict | None:
-    """The Nebius job a run left running, while it can still be running (its timeout plus the queue)."""
-    f = job.logs / "cloud_job.json"
-    try:
-        cj = json.loads(f.read_text())
-    except (OSError, ValueError):
-        return None
-    return cj if time.time() - cj["started"] < cj["hours"] * 3600 else None
 
 
 def save_photos(folder: Path, images: list[UploadFile]) -> int:

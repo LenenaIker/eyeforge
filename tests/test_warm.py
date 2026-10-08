@@ -259,7 +259,7 @@ def test_start_writes_the_worker_and_its_script(tmp_path, monkeypatch):
 
 
 def test_the_daily_budget_counts_the_warm_gpu_once(tmp_path):
-    from sim2chip.server import cloud_spent
+    from sim2chip.job_service import cloud_spent
 
     logs = tmp_path / "jobs" / "a" / "logs"
     logs.mkdir(parents=True)

@@ -408,7 +408,7 @@ def test_calibrate_the_teacher_before_the_first_run(app, tmp_path, monkeypatch):
     from PIL import Image
 
     from sim2chip import teacher
-    from sim2chip.server import CALIBRATION_PHOTOS
+    from sim2chip.job_service import CALIBRATION_PHOTOS
 
     asked = []
 
