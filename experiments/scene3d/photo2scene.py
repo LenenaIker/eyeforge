@@ -143,6 +143,9 @@ def phase1(f, until):
         return False
     # 1.4 Depth and camera: MoGe-2 on the photo and on the erased photo.
     f.run('1.4_depth', 'mesh', [s3 / 'bg_depth.py', '--dir', d], ['depth_photo.npz', 'depth_background.npz'])
+    # 1.4b Everything erased becomes an asset for the generator (targets and distractors). It needs only the
+    # erase, the support masks and the photo's depth, so it runs before any later gate can stop the flow.
+    assets(f, '1.4b')
     f.run('1.4_camera', 'trellis', [s3 / 'flow_camera.py', '--dir', d], ['camera.json'], ok_codes=(0, 3))
     cam = jload(d, 'camera.json')
     if not f.check('1.4_camera', cam['ok'], cam['checks'], '; '.join(cam['why'])):
@@ -199,8 +202,6 @@ def phase1(f, until):
                                                                for x in ms if not x['keep']]},
                    'no surroundings mesh passed'):
         return False
-    # 1.6 Everything erased as assets for the generator (targets and distractors).
-    assets(f, '1.6')
     if until == '1.5':
         return True
     return True
@@ -412,7 +413,7 @@ def main():
     if args.redo:
         # The step and every step after it in the flow's order: later outputs depend on earlier ones.
         order = ['1.1', '1.2', 'S.1', 'S.2', 'S.3', 'S.4', 'S.5', 'S.6', 'S.7', '1.3a', '1.4', '1.3b', '1.3c',
-                 '1.5a', '1.5b', '1.5c', '1.6', '2', '3']
+                 '1.5a', '1.5b', '1.5c', '2', '3']
         start = min(i for i, o in enumerate(order) if any(o.startswith(r) or r.startswith(o)
                                                            for r in args.redo.split(',')))
         for k, rec in f.log['steps'].items():

@@ -4,14 +4,15 @@ bookshelf) comes out as a blur; an edit model can invent what stands behind. The
 the prompt (bg_prepare.py's instances). Its whole picture is kept, since it also clears the shadows LaMa's mask
 left out, unless it moved off the photo's pixels; then the edit is pasted back only inside bg_prepare.py's erase
 mask, feathered, so the rest of the photo stays exact. Fits the 3090 with both big models in 4 bits and CPU
-offload. By default with the Lightning 4-step LoRA (lightx2v, Apache 2.0) and three passes, under a minute and
-a half per photo; --full for the 40-step model. Run in /media/lenena-iker/Crucial/envs/eyeforge-qwenedit with HF_HOME on Crucial:
+offload. By default with the Lightning 4-step LoRA (lightx2v, Apache 2.0) and up to five passes, under a minute
+and a half per photo; --full for the 40-step model. Run in /media/lenena-iker/Crucial/envs/eyeforge-qwenedit with HF_HOME on Crucial:
 
     python experiments/scene3d/erase_qwen.py --dir data/scene3d_test/flow/home_office [--dir ...]
 
 Qwen does not always remove every object it is told to (bottles 2026-10-08: of three bottles and three caps it
 took one bottle). Each instance whose pixels barely changed (mean difference under --left, 0-255) is still there:
-a second pass names only those, and what is left after it takes LaMa's fill inside its mask.
+the next pass names only those. What is still there after the last pass stays (no LaMa blur, user 2026-10-08)
+and is listed under "left" in erase_qwen.json.
 
 Writes <dir>/background_qwen.png (the model's whole picture, or pasted when it moved), background_qwen_raw.png
 and erase_qwen.json (shift, which one was used, what each pass left). With
@@ -105,7 +106,8 @@ def main():
     ap.add_argument('--replace', action='store_true', help='background.png becomes the Qwen one (LaMa kept aside)')
     ap.add_argument('--full', action='store_true', help='40 steps without the Lightning LoRA (the default is '
                     'Lightning, 4 steps and true_cfg 1: 3 passes cleaner than one full pass, in a fifth of the time)')
-    ap.add_argument('--passes', type=int, default=3, help='Qwen passes; later ones name only what is left')
+    ap.add_argument('--passes', type=int, default=5, help='most Qwen passes; later ones name only what is left, '
+                    'and they stop once nothing is (Lightning needed 1-2 on 5 photos)')
     ap.add_argument('--left', type=float, default=12.0, help='mean change under which an object is still there '
                     '(left ones measured 4-10, erased ones 15 and up on 5 photos)')
     args = ap.parse_args()
@@ -133,11 +135,6 @@ def main():
         bg, qw = os.path.join(d, 'background.png'), os.path.join(d, 'background_qwen.png')
         # On a redo of this step alone background.png is already the last Qwen one: LaMa's copy must stay.
         fresh_lama = not (os.path.exists(qw) and filecmp.cmp(bg, qw, shallow=False))
-        lama = Image.open(bg if fresh_lama else os.path.join(d, 'background_lama.png')).convert('RGB')
-        if todo:
-            # Still there after every pass: LaMa's fill inside those masks (grown, feathered).
-            m = Image.fromarray((np.any(masks[todo], 0) * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(15))
-            out = Image.composite(lama, out, m.filter(ImageFilter.GaussianBlur(args.feather)))
         out.save(os.path.join(d, 'background_qwen_raw.png'))
         erased = Image.open(os.path.join(d, 'erased.png')).convert('L')
         mask = erased.filter(ImageFilter.GaussianBlur(args.feather))
@@ -152,7 +149,7 @@ def main():
             if fresh_lama:
                 shutil.copy(bg, os.path.join(d, 'background_lama.png'))
             shutil.copy(qw, bg)
-        info = {'objects': names, 'left_after_pass': passes, 'lama_for': [phrases[i] for i in todo],
+        info = {'objects': names, 'left_after_pass': passes, 'left': [phrases[i] for i in todo],
                 'shift_px': round(moved, 2), 'used': 'raw' if use_raw else 'mask',
                 'seconds': round(time.time() - t, 1)}
         json.dump(info, open(os.path.join(d, 'erase_qwen.json'), 'w'), indent=1)
