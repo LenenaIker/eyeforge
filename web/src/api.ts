@@ -266,9 +266,19 @@ export type CreditMove = { amount: number; reason: string; detail: string | null
 // balance must hold to start each (about its usual price).
 export type Costs = { margin: number; start: Record<"run" | "label" | "chat" | "profile", number> };
 export const usd = (n: number) => `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
-export type Billing = { enabled: boolean; costs: Costs;
+// Top-ups with Stripe: the saved card (after a first card payment) and the auto top-up that uses it.
+export type AutoTopup = { available: boolean; on: boolean; below: number; amount: number; error: string | null };
+export type Topup = { enabled: boolean; amounts: number[]; min: number; max: number; tax: boolean;
+                      card: string | null; auto: AutoTopup };
+export type Billing = { enabled: boolean; costs: Costs; topup: Topup | null;
                         tier?: "judge" | "normal" | "banned"; balance?: number; moves?: CreditMove[] };
 export const getBilling = () => api<Billing>("/api/billing");
+const sendJson = (method: string, body: unknown): RequestInit =>
+  ({ method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+// The Stripe Checkout page to go to; the balance grows when Stripe confirms the payment.
+export const startTopup = (usd: number) => api<{ url: string }>("/api/billing/topup", sendJson("POST", { usd }));
+export const setAutoTopup = (on: boolean, below: number, amount: number) =>
+  api<Topup>("/api/billing/auto", sendJson("PUT", { on, below, amount }));
 
 // Editing the library. Photos go in batches like the chat's: the first batch makes the dataset, the rest join it.
 export type LibraryKind = "datasets" | "objects" | "scenes" | "kits";

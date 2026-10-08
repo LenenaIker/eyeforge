@@ -136,11 +136,20 @@ class Accounts:
         with self.lock:
             self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)", (acc_id, amount, reason, detail, time.time()))
 
-    def can_start(self, acc: Account, reason: str) -> bool:
+    def add_once(self, acc_id: str, amount: float, reason: str, detail: str) -> bool:
+        """Money in that must count once (a payment told twice by Stripe): False when `detail` is already there."""
+        with self.lock:
+            if self.db.execute("SELECT 1 FROM credits WHERE account = ? AND detail = ?", (acc_id, detail)).fetchone():
+                return False
+            self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)", (acc_id, amount, reason, detail, time.time()))
+            return True
+
+    def can_start(self, acc: Account, reason: str, held: float = 0.0) -> bool:
         """May this account start a run, a labeling, a chat...: free for a judge, never when banned, else when
-        the balance covers its usual price."""
+        the balance covers its usual price. held: the usual price of what it is already running, not charged
+        yet (one dollar must not start several runs at once)."""
         tier = self.tier(acc)
-        return tier == "judge" or (tier == "normal" and self.balance(acc.id) + 1e-9 >= START[reason])
+        return tier == "judge" or (tier == "normal" and self.balance(acc.id) - held + 1e-9 >= START[reason])
 
     def meter(self, acc_id: str, key: str, reason: str, cost: float) -> float:
         """What `key` (a job, a chat) has cost us so far, in dollars: its usage line becomes cost x MARGIN (free

@@ -38,7 +38,7 @@ PAYER = "payer"  # file in a job folder: the account paying what it uses (accoun
 METER_S = 30     # how often the usage of running jobs is charged
 NO_BUILD = ("<p>EyeForge: the web app is not built. Run <code>cd web && npm install && npm run build</code> in the "
             "repository, then reload. The API under /api works without it.</p>")
-OPEN_API = {"/api/config", "/api/key", "/api/me"}  # API calls open to a visitor without the key or a login
+OPEN_API = {"/api/config", "/api/key", "/api/me", "/api/stripe/webhook"}  # API calls open to a visitor without the key or a login
 SESSION = "eyeforge_session"  # cookie: the signed account id (login mode)
 STATE = "eyeforge_oauth"      # cookie: the signed nonce and return page of a login in progress
 SESSION_DAYS = 30
@@ -78,6 +78,9 @@ def default_interviewer(home: Path, backend: str = "local", public: bool = False
 
 
 MAX_PHOTOS = 400  # per upload on a public server
+MAX_PHOTO_BYTES = 30 << 20   # one photo: a 50 MP phone photo is about 20 MB
+MAX_MODEL_BYTES = 200 << 20  # one GLB the user uploads
+SESSION_OWNER = ".owner"     # file in uploads/<session>: who started that chat
 SESSION_HOURS = 6
 # Model calls are logged by purpose, which is the stage name except for qa's two-step strategy.
 PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets"}  # an interview left open longer is dropped
@@ -86,7 +89,7 @@ PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets"}  # an int
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,
                launcher=None, public: bool = False, key: str | None = None, max_runs: int = 2,
                daily_usd: float | None = None, auth=None, accounts=None, contact: str | None = None, warm=None,
-               describer=None):
+               describer=None, payments=None):
     """public: a server others can reach. Specs may only use photos uploaded through it (no server paths),
     at most `max_runs` runs at a time, and, with `key`, the API needs it (a link with ?key=... or POST /api/key
     sets a cookie); the pages and the app's files stay open, so anyone sees the landing and the app asks for the
@@ -105,6 +108,20 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     from .interview import sources as interview_sources
 
     app = FastAPI(title="EyeForge")
+
+    @app.middleware("http")
+    async def safety_headers(request: Request, call_next):
+        """No page of ours inside another site's frame (a hidden "turn on auto top-up" click), no guessing of
+        file types, no full addresses sent to other sites. The camera stays allowed for the live view."""
+        response = await call_next(request)
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
+        if auth is not None and auth.public_url.startswith("https"):
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+        return response
 
     if public:  # added before the key check, so it runs after it (the last middleware added runs first)
         @app.middleware("http")
@@ -215,7 +232,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if accounts is None:
             return None
         acc = request.state.account
-        if not accounts.can_start(acc, reason):
+        root = home / "jobs"
+        held = sum(START["label" if (d / LABELING).exists() else "run"] for d in (root.iterdir() if root.exists() else [])
+                   if (d / PAYER).exists() and (d / PAYER).read_text().strip() == acc.id and jobs.running(Job(d)))
+        if not accounts.can_start(acc, reason, held):
             if accounts.tier(acc) == "banned":
                 raise HTTPException(403, paused_text())
             raise HTTPException(402, f"your balance (${accounts.balance(acc.id):.2f}) does not cover a {reason}, "
@@ -232,7 +252,21 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def meter_chat(sid: str) -> None:
         if accounts is not None and sid in chat_payer and interview_usage(sid).exists():
             cost = usage.spent(usage.saved_prices(home / "cache"), [interview_usage(sid)])
-            accounts.meter(chat_payer[sid], f"chat:{sid}", "chat", cost)
+            charged(chat_payer[sid], accounts.meter(chat_payer[sid], f"chat:{sid}", "chat", cost))
+
+    def charged(acc_id: str, balance: float) -> None:
+        """Usage was charged: an auto top-up may be due (Stripe, in the background)."""
+        if payments is None:
+            return
+
+        def auto():
+            try:
+                done = payments.maybe_auto(acc_id, balance)
+                if done:
+                    print(f"auto top-up {acc_id}: {done}", flush=True)
+            except Exception as e:
+                print(f"auto top-up {acc_id} failed: {type(e).__name__}: {e}", flush=True)
+        threading.Thread(target=auto, daemon=True).start()
 
     def meter_job(job: Job, running: bool) -> None:
         """Charge what the job has used so far; a running job whose payer is out of money stops (it can go on
@@ -244,6 +278,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                            job.logs / "cloud_usage.jsonl")
         reason = "label" if (job.root / LABELING).exists() else "run"
         left = accounts.meter(payer.read_text().strip(), f"job:{job.name}", reason, cost)
+        charged(payer.read_text().strip(), left)
         if running and left < 0:
             jobs.cancel(job)
             with open(job.logs / "pipeline.log", "a") as log:
@@ -262,7 +297,6 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                         print(f"meter {d.name}: {type(e).__name__}: {e}", flush=True)
 
     if accounts is not None:
-        usage.refresh_prices(home / "cache")
         threading.Thread(target=meter_loop, daemon=True, name="meter").start()
 
     def mine(job: Job, request: Request) -> bool:
@@ -280,9 +314,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def interview_usage(sid: str) -> Path:
         return home / "logs" / "interviews" / f"{sid}.usage.jsonl"
 
-    def credit_interview(job: Job, sid: str | None) -> None:
+    def credit_interview(job: Job, sid: str | None, request: Request) -> None:
         """The model calls of the interview that wrote this job's spec go with the job (usage panel)."""
-        if not sid or not re.fullmatch(r"[0-9a-f]{32}", sid) or not interview_usage(sid).exists():
+        if not sid or not owns_upload(sid, request) or not interview_usage(sid).exists():
             return
         meter_chat(sid)  # the chat pays its calls; the job's own meter leaves them out
         job.logs.mkdir(parents=True, exist_ok=True)
@@ -339,7 +373,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             if provider not in auth.providers:
                 raise HTTPException(404, f"no login with {provider}")
             nonce = uuid.uuid4().hex
-            back = next if next.startswith("/") and not next.startswith("//") else "/app"
+            # A page of this site only: "//x" and "/\\x" are other sites to a browser.
+            back = next if re.fullmatch(r"/(?![/\\])[^\\\s]*", next) else "/app"
             response = RedirectResponse(auth.login_url(provider, nonce), 302)
             response.set_cookie(STATE, auth.sign(json.dumps({"nonce": nonce, "next": back}), 600),
                                 httponly=True, samesite="lax", secure=auth.public_url.startswith("https"),
@@ -424,16 +459,20 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if found:
             f.write_text(json.dumps({"labels": {}, "assets": {}, "points": {}, **found}, indent=1))
 
-    def check_paths(parsed: spec_mod.Spec, job: Job | None = None) -> None:
-        """On a public server, only photos uploaded here (or, revising a job, the job's own folders): a path
-        would let a spec read, and upload to the cloud, any file of the server."""
+    def check_paths(parsed: spec_mod.Spec, request: Request, job: Job | None = None) -> None:
+        """On a public server, only photos the requester uploaded in their chats (or, revising a job, the job's
+        own folders): a path would let a spec read, and upload to the cloud, any file of the server, and another
+        user's chat folder their photos."""
         if not public:
             return
         uploads = (home / "uploads").resolve()
 
         def ok(p: str) -> bool:
-            if p == "photos" or (Path(p).is_absolute() and Path(p).resolve().is_relative_to(uploads)):
+            if p == "photos":
                 return True
+            if Path(p).is_absolute() and Path(p).resolve().is_relative_to(uploads):
+                rel = Path(p).resolve().relative_to(uploads).parts
+                return bool(rel) and owns_upload(rel[0], request)
             if re.fullmatch(r"(library:)?[0-9a-f]{16}", p):  # the owner's library, checked when adopted
                 return True
             return job is not None and not Path(p).is_absolute() and ".." not in Path(p).parts \
@@ -457,6 +496,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         sid = uuid.uuid4().hex
         started[sid] = now
         sessions[sid] = new_session()
+        (home / "uploads" / sid).mkdir(parents=True, exist_ok=True)
+        (home / "uploads" / sid / SESSION_OWNER).write_text(owner_of(request))
         if acc is not None:
             chat_payer[sid] = acc.id
         sessions[sid].uploads = home / "uploads" / sid
@@ -481,6 +522,19 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return {"session": sid, "text": FIRST_QUESTION}
 
     locks: dict[str, threading.Lock] = {}
+
+    def chat_of(sid: str, request: Request):
+        """The interview session, only for who started it (its id alone is not enough)."""
+        session = sessions.get(sid)
+        if session is None or not owns_upload(sid, request):
+            raise HTTPException(404, "unknown interview session")
+        return session
+
+    def owns_upload(sid: str, request: Request) -> bool:
+        """Is uploads/<sid> (a chat's photos) the requester's? Kept on disk, so it holds after a restart."""
+        f = home / "uploads" / sid / SESSION_OWNER
+        return re.fullmatch(r"[0-9a-f]{32}", sid or "") is not None and f.exists() \
+            and f.read_text().strip() == owner_of(request)
 
     def guarded(sid: str, fn, *args, act: str | None = None):
         """One call at a time per interview (a double submit would interleave two model turns), and the
@@ -521,20 +575,16 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return out
 
     @app.post("/api/interview/{sid}")
-    def interview_reply(sid: str, body: dict, act: str | None = None):
-        session = sessions.get(sid)
-        if session is None:
-            raise HTTPException(404, "unknown interview session")
+    def interview_reply(sid: str, body: dict, request: Request, act: str | None = None):
+        session = chat_of(sid, request)
         return turn_out(sid, guarded(sid, session.reply, str(body.get("text", "")), act=act))
 
     @app.get("/api/interview/{sid}/activity")
-    def interview_activity(sid: str, act: str):
+    def interview_activity(sid: str, act: str, request: Request):
         """What the turn `act` is doing right now: its steps so far (thinking, searching, checking the setup),
         polled by the web while it waits. No lock: it must answer while the turn holds it. `now` lets the
         client time running steps with the server's clock."""
-        session = sessions.get(sid)
-        if session is None:
-            raise HTTPException(404, "unknown interview session")
+        session = chat_of(sid, request)
         steps = list(getattr(session, "activity", [])) if getattr(session, "activity_id", None) == act else []
         return {"steps": [dict(s) for s in steps], "now": time.time()}
 
@@ -547,16 +597,14 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         sync handlers in a thread pool instead of the event loop (async stalled every other request).
         A big upload comes in batches (a proxy caps the request size): more=true only stores the batch, and
         the last one, with the total of all batches, makes the interview's turn."""
-        session = sessions.get(sid)
-        if session is None:
-            raise HTTPException(404, "unknown interview session")
+        session = chat_of(sid, request)
         purpose = "3d" if purpose == "3d" else "training"
         folder = home / "uploads" / sid / (f"3d_{slug(cls)}" if purpose == "3d" and cls else purpose)
         folder.mkdir(parents=True, exist_ok=True)
         saved = []
         for p in photos:
             if Path(p.filename or "").suffix.lower() in IMAGE_EXT:
-                (folder / Path(p.filename).name).write_bytes(p.file.read())
+                (folder / Path(p.filename).name).write_bytes(capped(p, MAX_PHOTO_BYTES))
                 saved.append(folder / Path(p.filename).name)
         n = len(saved)
         # Every real photo belongs to a dataset: the chat's own, made with its first photos (user, 2026-10-08).
@@ -572,18 +620,16 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                                          act=act)), "photos": n}
 
     @app.get("/api/interview/{sid}/thumb")
-    def interview_thumb(sid: str, file: str):
+    def interview_thumb(sid: str, file: str, request: Request):
         """Thumbnail of a photo the interview is proposing (only those: the path comes from the user)."""
-        session = sessions.get(sid)
-        if session is None or file not in {c["file"] for c in session.candidates}:
+        session = chat_of(sid, request)
+        if file not in {c["file"] for c in session.candidates}:
             raise HTTPException(404, "not a proposed photo")
         return FileResponse(photo_thumb(home / "uploads" / sid / "_thumbs", Path(file)))
 
     @app.post("/api/interview/{sid}/pick")
-    def interview_pick(sid: str, body: dict, act: str | None = None):
-        session = sessions.get(sid)
-        if session is None:
-            raise HTTPException(404, "unknown interview session")
+    def interview_pick(sid: str, body: dict, request: Request, act: str | None = None):
+        session = chat_of(sid, request)
         return turn_out(sid, guarded(sid, session.choose, [str(f) for f in body.get("files") or []],
                                      str(body.get("class", "")), act=act))
 
@@ -612,7 +658,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             parsed = spec_mod.from_dict(data)
         except (json.JSONDecodeError, spec_mod.SpecError) as e:
             raise HTTPException(400, f"invalid spec: {e}") from None
-        check_paths(parsed)
+        check_paths(parsed, request)
         # The same setup sent twice (a double click, "Looks good" and Train together) must not pay for two runs.
         same = json.loads(parsed.to_json())
         for other, proc in jobs.runs.items():
@@ -642,7 +688,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         reuse_corrections(parsed, owner_of(request), job)
         req = job.root / "request.json"
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
-        credit_interview(job, session)
+        credit_interview(job, session, request)
         if session:
             warm_mod.note(home, "job", name, session=f"session:{session}")
         if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled:
@@ -710,13 +756,15 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             suffix = Path(f.filename or "").suffix.lower()
             if suffix in ext:
                 out.append(tmp / f"{i:05d}{suffix}")
-                out[-1].write_bytes(f.file.read())
+                out[-1].write_bytes(capped(f, MAX_MODEL_BYTES if suffix == ".glb" else MAX_PHOTO_BYTES))
         return tmp, out
 
     @app.post("/api/library/datasets")
     def library_new_dataset(request: Request, name: str = Form(...), photos: list[UploadFile] = File(...)):
         """Photos uploaded on the Datasets page become a new dataset (more come with .../photos)."""
         import shutil
+        if public and len(photos) > MAX_PHOTOS:
+            raise HTTPException(413, f"at most {MAX_PHOTOS} photos per upload")
         tmp, files = incoming(photos, IMAGE_EXT)
         try:
             if not files:
@@ -729,6 +777,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def library_add_photos(item: str, request: Request, photos: list[UploadFile] = File(...)):
         import shutil
         owner, _ = owned(request, "datasets", item)
+        if public and len(photos) > MAX_PHOTOS:
+            raise HTTPException(413, f"at most {MAX_PHOTOS} photos per upload")
         tmp, files = incoming(photos, IMAGE_EXT)
         try:
             return {"photos": lib.add_photos(owner, item, files)}
@@ -809,7 +859,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             pic = None
             if card is not None:
                 pic = tmp / "card.png"
-                pic.write_bytes(card.file.read())
+                pic.write_bytes(capped(card, MAX_PHOTO_BYTES))
             name = name.strip()[:80] or "My object"
             return {"id": lib.new_object(owner_of(request), name, concept.strip()[:80] or name, files[0], pic)}
         finally:
@@ -850,10 +900,53 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def billing(request: Request):
         """Credits and their moves (a server with accounts); prices of a run and an interview."""
         acc = getattr(request.state, "account", None)
-        out = {"enabled": accounts is not None, "costs": {"margin": MARGIN, "start": START}}
+        out = {"enabled": accounts is not None, "costs": {"margin": MARGIN, "start": START}, "topup": None}
         if acc is not None:
             out.update(tier=accounts.tier(acc), balance=accounts.balance(acc.id), moves=accounts.moves(acc.id))
+            if payments is not None and accounts.tier(acc) == "normal":
+                out["topup"] = payments.settings(acc.id)
         return out
+
+    def paying(request: Request):
+        acc = getattr(request.state, "account", None)
+        if payments is None or acc is None:
+            raise HTTPException(404, "top-ups are not available on this server")
+        return acc
+
+    @app.post("/api/billing/topup")
+    def topup(body: dict, request: Request):
+        """A Stripe Checkout page that adds the chosen dollars once paid."""
+        from .payments import PaymentError
+        acc = paying(request)
+        try:
+            return {"url": payments.checkout(acc, float(body.get("usd") or 0))}
+        except (PaymentError, ValueError) as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.put("/api/billing/auto")
+    def auto_topup(body: dict, request: Request):
+        from .payments import PaymentError
+        acc = paying(request)
+        try:
+            return payments.set_auto(acc.id, bool(body.get("on")), float(body.get("below", 2)),
+                                     float(body.get("amount", 10)))
+        except (PaymentError, ValueError) as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.post("/api/stripe/webhook", include_in_schema=False)
+    async def stripe_webhook(request: Request):
+        """Stripe telling us a payment went through: signed, each payment counted once."""
+        from .payments import PaymentError
+        if payments is None:
+            raise HTTPException(404, "no payments here")
+        payload = await request.body()
+        try:
+            event = payments.verify(payload, request.headers.get("stripe-signature"))
+        except PaymentError as e:
+            raise HTTPException(400, str(e)) from None
+        done = await asyncio.to_thread(payments.handle, event)
+        print(f"stripe {event.get('type')} {event.get('id')}: {done}", flush=True)
+        return {"ok": True}
 
     @app.get("/api/jobs/{name}")
     def job_status(name: str, request: Request):
@@ -894,6 +987,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             raise HTTPException(409, CHECK_OVER)
         budget_left()
         room_for_a_run()
+        may_start(request, "run")
         review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
                      share=not public)
         (job.root / CALIBRATION).unlink()
@@ -908,6 +1002,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             raise HTTPException(409, ALREADY_RUNNING)
         if not (job.root / LABELING).exists() or not (job.root / CALIBRATION).exists():
             raise HTTPException(409, CHECK_OVER)
+        may_start(request, "label")
         review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
                      share=not public)
         (job.root / CALIBRATION).unlink()
@@ -952,7 +1047,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             parsed = spec_mod.from_dict(json.loads(spec))
         except (json.JSONDecodeError, spec_mod.SpecError) as e:
             raise HTTPException(400, f"invalid spec: {e}") from None
-        check_paths(parsed, job)
+        check_paths(parsed, request, job)
         old = spec_mod.load(latest_spec(job))
         changed = [k for k, v in json.loads(parsed.to_json()).items()
                    if k != "name" and json.loads(old.to_json()).get(k) != v]
@@ -961,7 +1056,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             parsed = adopt_uploads(parsed, home / "uploads", job)
             parsed = adopt_library(parsed, owner_of(request), job)
             reuse_corrections(parsed, owner_of(request), job)
-            credit_interview(job, session)
+            credit_interview(job, session, request)
         todo = [p.stage.name for p in Pipeline(parsed, job, Cache(home / "cache")).plan() if p.action == "run"]
         if dry or not todo:
             return {"stages": todo, "changed": changed, "rerun_from": None}
@@ -1044,12 +1139,20 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     return app
 
 
+def capped(upload: UploadFile, limit: int) -> bytes:
+    """An uploaded file's bytes, refused (413) past `limit`: a huge file would fill the disk or the memory."""
+    data = upload.file.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(413, f"{Path(upload.filename or 'a file').name} is over {limit >> 20} MB")
+    return data
+
+
 def save_photos(folder: Path, images: list[UploadFile]) -> int:
     """Writes uploaded photos under their own names; a different photo with a name already there gets a
     numbered one (phones reuse names like image.jpg)."""
     folder.mkdir(parents=True, exist_ok=True)
     for p in images:
-        data, name = p.file.read(), Path(p.filename or "photo.jpg").name
+        data, name = capped(p, MAX_PHOTO_BYTES), Path(p.filename or "photo.jpg").name
         dst, n = folder / name, 1
         while dst.exists() and dst.read_bytes() != data:
             n += 1
@@ -1292,10 +1395,12 @@ def serve(home: Path, backend: str, host: str, port: int, max_usd: float | None,
     # Token Factory's prices for the usage panel, in the background: the server starts without waiting.
     threading.Thread(target=usage.refresh_prices, args=(home / "cache",), daemon=True).start()
     accounts = Accounts(home / ACCOUNTS_DB, judge_until) if auth is not None else None
+    from .payments import Payments
+    payments = Payments.from_env(accounts, auth.public_url) if accounts is not None else None
     gpu = warm_mod.WarmGPU(home) if backend == "nebius" and warm_mod.enabled() else None
     if gpu is not None and warm_mod.current(home):  # one left by the previous server process: note its end
         gpu.watch()
     uvicorn.run(create_app(home, backend, max_usd, public=public, key=key, max_runs=max_runs, daily_usd=daily_usd,
                            auth=auth, accounts=accounts, contact=contact, warm=gpu,
-                           describer=default_describer(home)),
+                           describer=default_describer(home), payments=payments),
                 host=host, port=port, proxy_headers=True)

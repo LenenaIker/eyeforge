@@ -204,3 +204,43 @@ def test_signed_values_expire_and_resist_tampering():
     assert a.unsign(tok[:-2] + "AA") is None
     assert a.unsign(a.sign("google:1", -1)) is None
     assert Auth("https://x", "t" * 32, {}).unsign(tok) is None
+
+
+def test_login_returns_only_to_a_page_of_this_site(server):
+    for bad in ("//evil.example", "/\\evil.example", "https://evil.example", "/\\\\evil.example/x"):
+        c = TestClient(server, base_url="https://eyeforge.test")
+        r = c.get("/auth/google/login", params={"next": bad}, follow_redirects=False)
+        state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+        r = c.get(f"/auth/google/callback?code=alice&state={state}", follow_redirects=False)
+        assert r.headers["location"] == "/app", bad
+
+
+def test_a_chat_and_its_photos_are_only_its_owners(server):
+    alice, bob = sign_in(server, "google", "judge"), sign_in(server, "github", "gh")
+    sid = alice.post("/api/interview").json()["session"]
+    files = [("photos", ("a.jpg", b"x", "image/jpeg"))]
+    assert alice.post(f"/api/interview/{sid}/photos", files=files, data={"more": "true"}).status_code == 200
+    assert bob.post(f"/api/interview/{sid}", json={"text": "hi"}).status_code == 404
+    assert bob.post(f"/api/interview/{sid}/photos", files=files).status_code == 404
+    spec = {**GOOD, "user_data": {"raw": str(server.home / "uploads" / sid / "training")}}
+    r = bob.post("/api/jobs", data={"spec": json.dumps(spec)})
+    assert r.status_code == 400 and "uploaded here" in r.json()["detail"]
+    assert alice.post("/api/jobs", data={"spec": json.dumps(spec)}).status_code == 200
+
+
+def test_one_dollar_does_not_start_two_runs(server):
+    c = sign_in(server, "google", "alice")
+    server.accounts.add(server.accounts.by_email("alice@gmail.com")[0].id, 1.5, "grant")
+    assert new_job(c, "cows").status_code == 200
+    assert new_job(c, "black cows").status_code == 402  # the first one still runs, not charged yet
+
+
+def test_huge_uploads_and_framing_are_refused(server, monkeypatch):
+    from sim2chip import server as server_mod
+    monkeypatch.setattr(server_mod, "MAX_PHOTO_BYTES", 10)
+    c = sign_in(server, "google", "judge")
+    sid = c.post("/api/interview").json()["session"]
+    r = c.post(f"/api/interview/{sid}/photos", files=[("photos", ("a.jpg", b"x" * 11, "image/jpeg"))])
+    assert r.status_code == 413
+    h = c.get("/api/me").headers
+    assert h["x-frame-options"] == "DENY" and h["x-content-type-options"] == "nosniff"
