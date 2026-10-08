@@ -28,6 +28,13 @@ def content_key(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
 
 
+def cache_key(value, sort_keys: bool = True) -> str:
+    """Name of a cached answer from what it depends on (JSON-able). sort_keys must stay as each cache was
+    written: another serialization is another key, and the answers already cached would be asked again."""
+    import hashlib
+    return hashlib.sha256(json.dumps(value, sort_keys=sort_keys).encode()).hexdigest()[:12]
+
+
 def default_home() -> Path:
     return Path(os.environ.get("SIM2CHIP_HOME", REPO / "data"))
 

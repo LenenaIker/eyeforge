@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from ..hardware import Hardware
 from ..hardware import get as get_hardware
@@ -32,6 +32,7 @@ class Context:
         say(msg)
 
 
+RuntimeName = Literal["cpu", "tf", "isaac", "trellis"]
 RUNTIME_TECH = {"isaac": "NVIDIA Isaac Sim", "tf": "TensorFlow", "trellis": "TRELLIS"}
 
 
@@ -45,8 +46,8 @@ class Stage:
     depends on changed. Bump `version` when the stage code changes its output.
     """
     name: ClassVar[str]
-    runtime: ClassVar[str] = "cpu"          # "cpu" | "tf" | "isaac" | "trellis"
-    gpu: ClassVar[str | None] = None        # None | "any" | "rtx"
+    runtime: ClassVar[RuntimeName] = "cpu"   # the Python it runs in (backends map each to an interpreter or image)
+    gpu: ClassVar[Literal["any", "rtx"] | None] = None
     uses: ClassVar[tuple[str, ...]] = ()
     after: ClassVar[tuple[str, ...]] = ()
     version: ClassVar[str] = "1"

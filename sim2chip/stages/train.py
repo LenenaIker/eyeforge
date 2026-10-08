@@ -125,7 +125,10 @@ class Train(Stage):
             val = (real or synth)[:20]
             ctx.log(f"only {len(real)} real photos: the threshold is picked on training photos, expect it optimistic")
         side = detector.box_side([p for _, p in real + synth])
-        items = lambda pairs: [{"path": str(f), "boxes": detector.boxes_of(p, labels, side)} for f, p in pairs]  # noqa: E731
+
+        def items(pairs):
+            return [{"path": str(f), "boxes": detector.boxes_of(p, labels, side)} for f, p in pairs]
+
         ctx.log(f"PicoDet-S at {size} px: {len(real) - held} real and {len(synth)} synthetic images to train, "
                 f"{len(val)} real to validate, {sum(len(p) for _, p in fit)} objects")
         args = {"fit": items(fit), "val": items(val), "val_photos": [str(f) for f, _ in val],
@@ -228,7 +231,10 @@ def _detector_seed(args: dict, seed: int) -> dict:
     labels, size = args["labels"], args["size"]
     d = Path(args["out"]) / f"seed_{seed}"
     work = d / "picodet"
-    log = lambda msg: Context.log(f"seed {seed}: {msg.strip()}")  # noqa: E731
+
+    def log(msg: str) -> None:
+        Context.log(f"seed {seed}: {msg.strip()}")
+
     onnx_file = detector.train(args["fit"], args["val"], labels, size, work, log)
     blob = detector.to_tflite(onnx_file, size)
     shutil.rmtree(work)  # checkpoints: about 150 MB a seed

@@ -18,13 +18,12 @@ label/teacher.json (what the teacher used and a line for review)
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
 
 from .. import counting, review, teacher
-from ..workspace import IMAGE_EXT, content_key, copy_name
+from ..workspace import IMAGE_EXT, cache_key, content_key, copy_name
 from .base import Context, Stage
 
 NO_ANSWER = "no_answer"  # the teacher failed on the photo: left out, asked again on the next run
@@ -94,7 +93,7 @@ class Label(Stage):
         """teacher.prompts, cached by the labels and their descriptions: written once, the same in every job."""
         spec = ctx.spec
         what = [spec.background_class] + [[c.id, c.description] for c in spec.classes]
-        f = ctx.cache.root / "labels" / "prompts" / f"{hashlib.sha256(json.dumps(what).encode()).hexdigest()[:12]}.json"
+        f = ctx.cache.root / "labels" / "prompts" / f"{cache_key(what, sort_keys=False)}.json"
         if f.exists():
             return json.loads(f.read_text())
         found = teacher.prompts(spec)
@@ -112,7 +111,7 @@ class Label(Stage):
         if not missing:
             return found
         f = ctx.cache.root / "labels" / "phrases" / \
-            f"{hashlib.sha256(json.dumps(missing, sort_keys=True).encode()).hexdigest()[:12]}.json"
+            f"{cache_key(missing)}.json"
         if f.exists():
             return {**found, **json.loads(f.read_text())}
         english = teacher.english_phrases(missing)
@@ -128,7 +127,7 @@ class Label(Stage):
         prompts = self._prompts(ctx)
         model = teacher.SIGLIP_MODEL.split("/")[-1]
         shared = ctx.cache.root / "labels" / "siglip" / model
-        text_id = hashlib.sha256(json.dumps(prompts, sort_keys=True).encode()).hexdigest()[:12]
+        text_id = cache_key(prompts)
         text_file = ctx.cache.root / "labels" / "siglip_text" / model / f"{text_id}.json"
         # Every photo, also when calibrating: embedding is cheap and picking varied photos needs them all.
         answer_file = {f: shared / f"{content_key(f)}.json" for f in files}
@@ -194,8 +193,7 @@ class Label(Stage):
 
     def answers_dir(self, ctx):
         """Where SAM 3's answers for this spec's phrases live, shared by every job: photo content x model x phrases."""
-        answers_id = hashlib.sha256(json.dumps([teacher.MODEL, teacher.SIDE, teacher.FLOOR, self._phrases(ctx)],
-                                               sort_keys=True).encode()).hexdigest()[:12]
+        answers_id = cache_key([teacher.MODEL, teacher.SIDE, teacher.FLOOR, self._phrases(ctx)])
         return ctx.cache.root / "labels" / answers_id / "sam3"
 
     @staticmethod
@@ -253,7 +251,7 @@ class Label(Stage):
             return any(not (shared / f"{content_key(f)}.json").exists() for f in files)
         prompts = self._prompts(ctx)
         model = teacher.SIGLIP_MODEL.split("/")[-1]
-        text_id = hashlib.sha256(json.dumps(prompts, sort_keys=True).encode()).hexdigest()[:12]
+        text_id = cache_key(prompts)
         if not (ctx.cache.root / "labels" / "siglip_text" / model / f"{text_id}.json").exists():
             return True
         return any(not self._embedding_file(ctx, f).exists() for f in files)

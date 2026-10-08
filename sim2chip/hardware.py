@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -20,7 +21,7 @@ class Hardware:
     sharpness: tuple[float, float] = (0.45, 1.0)
     # What counts: "grid", our point and density head on MobileNetV2 (the only one that fits a microcontroller),
     # or "picodet_s", a pretrained detector (detector.py) at counter_size px, for devices with room for it.
-    counter: str = "grid"
+    counter: Literal["grid", "picodet_s"] = "grid"
     counter_size: int = 0
 
     def count_input(self) -> int:

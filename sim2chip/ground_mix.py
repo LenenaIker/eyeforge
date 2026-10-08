@@ -10,10 +10,11 @@ numpy and Pillow only; runs in fetch_assets. Layouts are cached by content in th
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import random
 from pathlib import Path
+
+from .workspace import cache_key
 
 SIZE_M = 8.0          # side of one layout, meters
 PX = 2048             # its side, pixels (25 px per 10 cm: finer than any camera sees it from 1 m)
@@ -92,9 +93,9 @@ def make(base, patches, edges, dest: Path, seed: int, cover=None, patch_m=None, 
     from PIL import Image
     cover, patch_m = cover or DEFAULT_COVER, patch_m or DEFAULT_PATCH_M
     edge_share = DEFAULT_EDGE_SHARE if edge_share is None else edge_share
-    key = hashlib.sha256(json.dumps([VERSION, [[Path(p).name, m] for p, m in base],
-                                     [[Path(p).name, m] for p, m in patches], [[Path(p).name, m] for p, m in edges],
-                                     list(cover), list(patch_m), edge_share, seed, n, PX]).encode()).hexdigest()[:12]
+    key = cache_key([VERSION, [[Path(p).name, m] for p, m in base], [[Path(p).name, m] for p, m in patches],
+                     [[Path(p).name, m] for p, m in edges], list(cover), list(patch_m), edge_share, seed, n, PX],
+                    sort_keys=False)
     files = [dest / f"mix_{key}_{i:02d}.jpg" for i in range(n)]
     if all(f.exists() for f in files):
         return files
