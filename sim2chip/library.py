@@ -185,7 +185,8 @@ class Library:
         qa_ran = (job.stage_dir("qa_assets") / "assets.json").exists()
         for a in converted:
             uid = a["uid"]
-            oid = _id(owner, "object", uid)
+            # A model the job took from this library (fetch_assets uses the object's id as uid) is that object.
+            oid = uid if self.owns(owner, "object", uid) else _id(owner, "object", uid)
             if self._removed(owner, oid):
                 continue
             known = self.db.execute("SELECT kept FROM objects WHERE id = ?", (oid,)).fetchone()
@@ -321,6 +322,38 @@ class Library:
                                 (name, json.dumps(clean), now, owner, kit))
         return kit
 
+    # Into a job ------------------------------------------------------------------------------------
+
+    def materialize_dataset(self, owner: str, ds: str, dst: Path, by_label: bool) -> int:
+        """A dataset's photos as a plain folder of a job (hard links): one subfolder per label for labeled
+        photos (by_label), else flat. Photos without a label go flat even then."""
+        rows = self.db.execute("SELECT p.key, p.file, p.label FROM photos p JOIN datasets d ON d.id = p.dataset "
+                               "WHERE d.owner = ? AND d.id = ?", (owner, ds)).fetchall()
+        for key, file, label in rows:
+            sub = dst / label if by_label and label else dst
+            _store(self.files / file, sub / Path(file).name)
+        return len(rows)
+
+    def materialize_objects(self, owner: str, ids: list[str], dst: Path) -> list[str]:
+        """Objects' GLB files into a job folder, with objects.json (name, concept, license, author, page) that
+        fetch_assets reads. Returns the file names, in order; objects without a file are skipped."""
+        meta_path = dst / "objects.json"
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        names = []
+        for oid in ids:
+            row = self.db.execute("SELECT name, concept, file, info FROM objects WHERE owner = ? AND id = ?",
+                                  (owner, oid)).fetchone()
+            if not row or not row[2]:
+                continue
+            name, concept, file, info = row
+            _store(self.files / file, dst / f"{oid}.glb")
+            meta[oid] = {"name": name, "concept": concept, **{k: v for k, v in json.loads(info).items()
+                                                              if k in ("license", "author", "url")}}
+            names.append(f"{oid}.glb")
+        dst.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(json.dumps(meta, indent=1))
+        return names
+
     # Reading out -----------------------------------------------------------------------------------
 
     def _used(self, kind: str, item: str) -> list[str]:
@@ -360,6 +393,32 @@ class Library:
                                "ORDER BY updated DESC", (owner,)).fetchall()
         return [{"id": kid, "name": name, **json.loads(refs), "created": created, "updated": updated}
                 for kid, name, refs, created, updated in rows]
+
+    def for_chat(self, owner: str) -> tuple[str, set[str]]:
+        """What the interview is told of the library (interview.LIBRARY): every kit with its items, and the
+        datasets outside kits. Objects outside kits are left out (hundreds of them, kept from earlier jobs).
+        Returns the text and the ids it lists."""
+        datasets = {d["id"]: d for d in self.datasets(owner)}
+        objects = {o["id"]: o for o in self.objects(owner)}
+
+        def ds_line(d):
+            labels = f", labels {', '.join(d['labels'])}" if d["labels"] else ", no labels"
+            return f'dataset "{d["name"]}" (id {d["id"]}, {d["photos"]} photos{labels})'
+
+        def obj_line(o):
+            return f'object "{o["name"]}" (id {o["id"]}, a {o["concept"].replace("_", " ")})'
+        lines, ids, in_kits = [], set(), set()
+        for k in self.kits(owner):
+            parts = [ds_line(datasets[i]) for i in k["datasets"] if i in datasets] + \
+                    [obj_line(objects[i]) for i in k["objects"] if i in objects and objects[i]["has_file"]]
+            ids |= {i for i in k["datasets"] if i in datasets} | {i for i in k["objects"] if i in objects}
+            in_kits |= set(k["datasets"])
+            lines.append(f'- kit "{k["name"]}": ' + ("; ".join(parts) if parts else "empty"))
+        loose = [d for i, d in datasets.items() if i not in in_kits]
+        if loose:
+            lines.append("- datasets outside kits: " + "; ".join(ds_line(d) for d in loose))
+            ids |= {d["id"] for d in loose}
+        return ("\n".join(lines) if lines else "- nothing yet"), ids
 
     def photo_file(self, owner: str, key: str) -> Path | None:
         row = self.db.execute("SELECT p.file FROM photos p JOIN datasets d ON d.id = p.dataset "

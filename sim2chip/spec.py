@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
-ASSET_SOURCES = ("objaverse_lvis", "search", "photos")
+ASSET_SOURCES = ("objaverse_lvis", "search", "photos", "library")
 # roi_classification: one class per image (the object filling most of it, or none).
 # count: how many objects of each class are in the image and where (a point per object).
 TASKS = ("roi_classification", "count")
@@ -54,6 +54,9 @@ class AssetQuery:
     source "search": live text search (`queries`, e.g. ["wild boar", "boar"]) over Sketchfab, keeping
     models with an open license that the Objaverse mirror can serve; asset QA then filters them.
     source "photos": only models generated from photos (below).
+    source "library": only the user's own models from their library (`models`).
+    `models` (any source): GLB files of the user's library in the job's input folder (the server puts the
+    objects a kit or the chat chose there, with their name and license in objects.json next to them).
     `photos` (any source): a folder of photos of this object, or "user_data" for the user's own photos of the
     class, turned into 3D models with an image-to-3D model; up to `generate` models (default 4), best photos first.
     Generated models go through the same asset QA as the others.
@@ -64,6 +67,7 @@ class AssetQuery:
     count: int = 12
     photos: str | None = None
     generate: int | None = None  # None keeps fingerprints of specs written before this field existed
+    models: list[str] = field(default_factory=list)
 
     @property
     def n_generate(self) -> int:
@@ -98,13 +102,16 @@ class PropSpec:
     """Background objects placed around the targets so scenes are not empty (cones and pallets on a
     building site, rocks and logs in a forest). Found by live search like a class, checked by asset QA
     (which also drops models that look like a target class) and never labeled: the camera must ignore them.
-    `count` models are kept; each frame shows between 0 and `max_per_frame` instances of this prop."""
+    `count` models are kept; each frame shows between 0 and `max_per_frame` instances of this prop.
+    `models`: GLB files of the user's library (as AssetQuery.models), used as they are; `queries` may then
+    be empty."""
     id: str
     queries: list[str]
     size_m: SizeSpec
     description: str = ""
     count: int = 4
     max_per_frame: int = 4
+    models: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -450,6 +457,8 @@ def _validate_assets(c: ClassSpec) -> None:
         raise SpecError(f"class {c.id}: assets.source must be one of {ASSET_SOURCES}")
     if c.assets.source == "objaverse_lvis" and not c.assets.categories:
         raise SpecError(f"class {c.id}: objaverse_lvis assets need categories")
+    if c.assets.source == "library" and not c.assets.models:
+        raise SpecError(f"class {c.id}: library assets need models")
     if c.assets.source == "search" and not c.assets.queries:
         raise SpecError(f"class {c.id}: search assets need queries")
     if c.assets.count < 1:
@@ -470,8 +479,8 @@ def _validate_props(spec: Spec) -> None:
     for p in spec.props:
         if p.size_m.measure not in MEASURES or not 0 < p.size_m.range[0] <= p.size_m.range[1]:
             raise SpecError(f"prop {p.id}: size_m needs a measure in {MEASURES} and 0 < min <= max")
-        if not p.queries:
-            raise SpecError(f"prop {p.id}: queries cannot be empty")
+        if not p.queries and not p.models:
+            raise SpecError(f"prop {p.id}: needs queries to search for, or models from the library")
         if p.count < 1 or p.max_per_frame < 1:
             raise SpecError(f"prop {p.id}: count and max_per_frame must be at least 1")
 

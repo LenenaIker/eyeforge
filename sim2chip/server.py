@@ -297,6 +297,33 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             response.delete_cookie(SESSION)
             return response
 
+    def adopt_library(parsed: spec_mod.Spec, owner: str, job: Job) -> spec_mod.Spec:
+        """Library references of a spec ("library:<id>", from a kit or the chat) become files in the job's input
+        folder, so the job travels with them (to Nebius too) and keeps them if the library item is deleted."""
+        def ref(v: str | None) -> str | None:
+            if isinstance(v, str) and re.fullmatch(r"[0-9a-f]{16}", v):  # the chat wrote the bare id
+                return v
+            return v[len("library:"):] if isinstance(v, str) and v.startswith("library:") else None
+
+        data = json.loads(parsed.to_json())
+        ud = data["user_data"]
+        for k in ("raw", "labeled", "test"):
+            ds = ref(ud.get(k))
+            if ds:
+                if not lib.owns(owner, "dataset", ds):
+                    raise HTTPException(400, f"invalid spec: no dataset {ds} in your library")
+                lib.materialize_dataset(owner, ds, job.input / f"dataset_{ds}", by_label=k != "raw")
+                ud[k] = f"dataset_{ds}"
+        for item in [c["assets"] for c in data["classes"] if c.get("assets")] + data["props"]:
+            ids = [ref(m) for m in item.get("models") or []]
+            if not any(ids):
+                continue
+            missing = [i for i in ids if i and not lib.owns(owner, "object", i)]
+            if missing or not all(ids):
+                raise HTTPException(400, f"invalid spec: models must be objects of your library ({missing})")
+            item["models"] = [f"objects/{n}" for n in lib.materialize_objects(owner, ids, job.input / "objects")]
+        return spec_mod.from_dict(data)
+
     def check_paths(parsed: spec_mod.Spec, job: Job | None = None) -> None:
         """On a public server, only photos uploaded here (or, revising a job, the job's own folders): a path
         would let a spec read, and upload to the cloud, any file of the server."""
@@ -307,6 +334,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         def ok(p: str) -> bool:
             if p == "photos" or (Path(p).is_absolute() and Path(p).resolve().is_relative_to(uploads)):
                 return True
+            if re.fullmatch(r"(library:)?[0-9a-f]{16}", p):  # the owner's library, checked when adopted
+                return True
             return job is not None and not Path(p).is_absolute() and ".." not in Path(p).parts \
                 and (job.input / p).exists() and not (job.input / p).is_symlink()
         bad = [p for p in spec_paths(parsed) if not ok(p)]
@@ -314,8 +343,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             raise HTTPException(400, f"invalid spec: only photos uploaded here can be used, not {bad}")
 
     @app.post("/api/interview")
-    def interview_start(request: Request, job: str | None = None):
-        """A new interview, or (job=<name>) one that revises a trained job's spec."""
+    def interview_start(request: Request, job: str | None = None, kit: str | None = None):
+        """A new interview, or (job=<name>) one that revises a trained job's spec; kit=<id>: a new model that
+        starts from that kit of the user's library."""
         nonlocal new_session
         revising = job_of(job, request) if job else None
         pay(request, INTERVIEW_COST, "interview", revising.name if revising else None)
@@ -331,6 +361,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         sessions[sid].transcript = home / "logs" / "interviews" / f"{sid}.json"
         if hasattr(getattr(sessions[sid], "client", None), "usage_log"):
             sessions[sid].client.usage_log = interview_usage(sid)
+        if hasattr(sessions[sid], "use_library"):  # the user's kits and datasets, to start from them
+            owner = owner_of(request)
+            chosen = next((k["name"] for k in lib.kits(owner) if k["id"] == kit), None) if kit else None
+            sessions[sid].use_library(*lib.for_chat(owner), kit=chosen)
         if revising:
             turn = sessions[sid].revise(spec_mod.load(latest_spec(revising)))
             return {"session": sid, "text": turn.text, "job": revising.name}
@@ -479,6 +513,12 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if public:
             (job.root / OWNER).write_text(visitor(request))
         parsed = adopt_uploads(parsed, home / "uploads", job)
+        try:
+            parsed = adopt_library(parsed, owner_of(request), job)
+        except HTTPException:
+            import shutil
+            shutil.rmtree(job.root, ignore_errors=True)  # a refused spec leaves no empty job behind
+            raise
         req = job.root / "request.json"
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         save_photos(job.input / "photos", images)
@@ -716,6 +756,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                    if k != "name" and json.loads(old.to_json()).get(k) != v]
         if not dry:
             parsed = adopt_uploads(parsed, home / "uploads", job)
+            parsed = adopt_library(parsed, owner_of(request), job)
             credit_interview(job, session)
         todo = [p.stage.name for p in Pipeline(parsed, job, Cache(home / "cache")).plan() if p.action == "run"]
         if dry or not todo:

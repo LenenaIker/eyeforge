@@ -1,7 +1,8 @@
 """Find and download 3D models for each class, plus the sky maps of the scene.
 
 Downloads go to the shared cache; the job only keeps a manifest. Models generated from photos
-(generate_assets) are added to it.
+(generate_assets) and the user's own models from their library (spec `models`, files in the job's input) are
+added to it.
 Output: fetch_assets/manifest.json  [{uid, class, category, name, license, author, source, glb, role?}]
         (role "prop" for background props: `class` is then the prop id)
         fetch_assets/scene.json     {"skies": [...], "ground": [...], "walls": [...]}  cache-relative paths
@@ -48,14 +49,40 @@ class FetchAssets(Stage):
         """Everything found by live search, in priority order: search classes first, then props."""
         return [{"id": c.id, "queries": c.assets.queries, "count": c.assets.count} for c in spec.classes
                 if c.assets and c.assets.source == "search"] + \
-               [{"id": p.id, "queries": p.queries, "count": p.count, "role": "prop"} for p in spec.props]
+               [{"id": p.id, "queries": p.queries, "count": p.count, "role": "prop"} for p in spec.props if p.queries]
+
+    @staticmethod
+    def library(ctx: Context) -> list[dict]:
+        """The user's own models (spec `models`): copied into the cache, where convert_assets reads every model,
+        with the name, license and author the library knew (objects.json next to the files)."""
+        import shutil
+        out = []
+        wanted = [(c.id, c.assets.models, None) for c in ctx.spec.classes if c.assets and c.assets.models] + \
+                 [(p.id, p.models, "prop") for p in ctx.spec.props if p.models]
+        for cls, models, role in wanted:
+            for rel in models:
+                src = ctx.job.resolve_input(rel)
+                info = json.loads((src.parent / "objects.json").read_text()).get(src.stem, {}) \
+                    if (src.parent / "objects.json").exists() else {}
+                dst = ctx.cache.root / "library" / f"{src.stem}.glb"
+                if not dst.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(src, dst)
+                out.append({"uid": src.stem, "class": cls, "category": info.get("concept", cls),
+                            "name": info.get("name"), "license": info.get("license"), "author": info.get("author"),
+                            "source": info.get("url"), "glb": str(dst.relative_to(ctx.cache.root)),
+                            **({"role": role} if role else {})})
+        if out:
+            ctx.log(f"{len(out)} models from the user's library")
+        return out
 
     def run(self, ctx: Context) -> dict:
         root = ctx.cache.objaverse
         root.mkdir(parents=True, exist_ok=True)
         lvis = self.objaverse_lvis(ctx)
         manifest = lvis + self.live_search(ctx, taken={m["uid"] for m in lvis})
-        manifest = self.download(ctx, manifest)
+        manifest = self.download(ctx, manifest) if manifest else []
+        manifest += self.library(ctx)
         generated = ctx.job.stage_dir("generate_assets") / "manifest.json"
         if generated.exists():
             manifest += json.loads(generated.read_text())
