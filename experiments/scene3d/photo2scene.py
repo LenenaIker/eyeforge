@@ -108,9 +108,10 @@ def phase1(f, until):
     fin = obs['final']
     ground = ','.join(e['phrase'] if isinstance(e, dict) else e for e in fin['ground'])
     objects = ','.join(e['phrase'] if isinstance(e, dict) else e for e in fin['objects']) or 'car'
+    surroundings = ','.join(e['phrase'] if isinstance(e, dict) else e for e in fin['surroundings'])
     # 1.3a Movable objects erased, ground masks (one per phrase, the union is the support).
     f.run('1.3a_prepare', 'sam3', [s3 / 'bg_prepare.py', '--image', f.image, '--objects', objects, '--support', ground,
-                                   '--out', d] + (['--shadows'] if fin['weather'] == 'sunny' else []),
+                                   '--keep-inside', surroundings, '--out', d] + (['--shadows'] if fin['weather'] == 'sunny' else []),
           ['background.png', 'ground.npz'])
     prep = jload(d, 'prepare.json')
     if not f.check('1.3a_prepare', prep['support_frac'] > 0.03,
@@ -184,15 +185,19 @@ def phase2(f, until):
     d, s3 = f.d, HERE
     r = jload(d, 'route.json')
     f.run('2.1a_surfaces', 'sam3', [s3 / 'piece_surfaces.py', '--dir', d], ['surfaces.npz'])
-    f.run('2.1b_pieces', 'trellis', [s3 / 'piece_build.py', '--dir', d, '--outdoor', '--views', '0', '--depth',
+    # Streets get facades over what the photo shows; a room is closed with the walls it does not show.
+    kind = '--outdoor' if r['route'] == 'village_street_day' else '--indoor'
+    f.run('2.1b_pieces', 'trellis', [s3 / 'piece_build.py', '--dir', d, kind, '--views', '0', '--depth',
                                      'background'], ['pieces.json', 'isaac/scene.json'])
     keep = [x['index'] for x in jload(d, 'meshes.json')['meshes'] if x['keep']]
     # 2.2 Surroundings meshes into the place, then the geometric gates; a mesh that fails is dropped once.
     for attempt in range(2):
         f.run(f'2.2a_env_{attempt}', 'trellis', [s3 / 'env_add.py', '--env', d / 'meshes', '--scene', d,
-                                                 '--out', d / 'place', '--drop-covered-walls', '--fill-ground', '--photo-texture',
+                                                 '--out', d / 'place', '--fill-ground', '--photo-texture',
                                                  '--keep',
-                                                 ','.join(map(str, keep))], ['place/isaac/scene.json'])
+                                                 ','.join(map(str, keep))]
+              # A facade a house mesh stands on is replaced by it; furniture against a room wall is not.
+              + (['--drop-covered-walls'] if kind == '--outdoor' else []), ['place/isaac/scene.json'])
         f.run(f'2.2b_gates_{attempt}', 'trellis', [s3 / 'flow_gates.py', '--dir', d], ['gates.json'])
         g = jload(d, 'gates.json')
         drop = [i for i in g['drop'] if i in keep]
@@ -284,13 +289,17 @@ def phase3(f, until):
     elif t == 'straight_street':
         f.run('3.2_extend', 'trellis', [s3 / 'street_template.py', '--scene', d / 'place', '--photo-scene', d,
                                         '--out', d / 'extended', '--views', '16'], ['extended/isaac/scene.json'])
+    elif t == 'room':
+        f.run('3.2_extend', 'trellis', [s3 / 'room_template.py', '--scene', d / 'place', '--out', d / 'extended',
+                                        '--views', '16'], ['extended/isaac/scene.json'])
     else:
         return f.check('3.1_template', False, {'template': t}, f'template {t} not built yet')
     f.check('3.1_template', True, {'template': t})
     hdri = ROOT / 'data' / 'hdri' / ('urban' if r['hdri_group'] == 'urban' else '')
     f.run('3.4a_render', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'extended', '--hdri-dir', hdri],
           ['extended/sheet_isaac.jpg'])
-    f.run('3.4b_views', 'sam3', [s3 / 'flow_check_views.py', '--dir', d / 'extended'], ['extended/views.json'])
+    f.run('3.4b_views', 'sam3', [s3 / 'flow_check_views.py', '--dir', d / 'extended']
+          + (['--indoor'] if t == 'room' else []), ['extended/views.json'])
     v = jload(d, 'extended/views.json')
     return f.check('3.4b_views', v['ok'], {'kept': v['kept'], 'share': v['share'],
                                           'dropped': [(x['view'], x['why']) for x in v['views'] if not x['keep']]},

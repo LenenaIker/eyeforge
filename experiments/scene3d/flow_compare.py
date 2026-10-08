@@ -42,9 +42,24 @@ QUESTIONS = {
                  'landscape showing under it?', 'no', True),
     'missing': ('Is a large building, wall or hedge of the PHOTO missing from the RENDER?', 'no', False),
 }
-PROMPT = """Two pictures side by side, labelled PHOTO and RENDER. The PHOTO is a real street (cars and people \
-were erased from it). The RENDER is a 3D rebuild of that street from the same camera, made from the photo alone: \
-simpler textures, other light and invented backs of buildings are expected and do not matter. Judge only the \
+# Indoors (routes indoor_floor and table): a closed room, no sky; the same split of blocking and logged ones.
+QUESTIONS_INDOOR = {
+    'upright': ('In the RENDER, is the floor at the bottom and are the walls upright (not sideways or upside '
+                'down)?', 'yes', True),
+    'closed_room': ('Is the RENDER an indoor room, with walls or a ceiling where the PHOTO shows them (no open '
+                    'sky or landscape inside the room)?', 'yes', True),
+    'floor_same': ('Does the floor cover about the same part of both pictures?', 'yes', True),
+    'furniture_same': ('Is the main furniture in about the same places and of about the same size in both '
+                       'pictures?', 'yes', False),
+    'block_on_floor': ('Does the RENDER show a wall, block or large shape where the PHOTO shows open floor?', 'no',
+                       False),
+    'floating': ('In the RENDER, does any piece of furniture float above the floor, with floor showing under '
+                 'where its feet or base should be?', 'no', True),
+    'missing': ('Is a large piece of furniture of the PHOTO missing from the RENDER?', 'no', False),
+}
+PROMPT = """Two pictures side by side, labelled PHOTO and RENDER. The PHOTO is a real {place} ({erased} \
+were erased from it). The RENDER is a 3D rebuild of that {place} from the same camera, made from the photo alone: \
+simpler textures, other light and invented backs of {backs} are expected and do not matter. Judge only the \
 layout.
 
 Answer each question with "yes" or "no" only, as one JSON object, nothing else:
@@ -79,24 +94,28 @@ def main():
     side_by_side(photo, render, ('PHOTO', 'RENDER'), os.path.join(d, 'compare_ab.jpg'))
     side_by_side(render, photo, ('RENDER', 'PHOTO'), os.path.join(d, 'compare_ba.jpg'))
     client = Client(usage_log=ROOT / 'runs' / 'llm_usage.jsonl')
-    qs = '{\n' + ',\n'.join(f'  "{k}": "<yes|no>  ({q})"' for k, (q, _, _) in QUESTIONS.items()) + '\n}'
+    indoor = json.load(open(os.path.join(d, 'route.json')))['route'] in ('indoor_floor', 'table')
+    questions = QUESTIONS_INDOOR if indoor else QUESTIONS
+    words = (dict(place='room', erased='movable objects', backs='furniture') if indoor else
+             dict(place='street', erased='cars and people', backs='buildings'))
+    qs = '{\n' + ',\n'.join(f'  "{k}": "<yes|no>  ({q})"' for k, (q, _, _) in questions.items()) + '\n}'
 
     def ask(pic):
-        msg = [{'role': 'user', 'content': [{'type': 'text', 'text': PROMPT.format(questions=qs)},
+        msg = [{'role': 'user', 'content': [{'type': 'text', 'text': PROMPT.format(questions=qs, **words)},
                                             image_part(os.path.join(d, pic))]}]
-        ok = lambda v: all(yn(v.get(k, '')) in ('yes', 'no') for k in QUESTIONS)  # noqa: E731
+        ok = lambda v: all(yn(v.get(k, '')) in ('yes', 'no') for k in questions)  # noqa: E731
         a = ask_json(client, msg, args.model, purpose='scene_compare', check=ok, temperature=0.0, max_tokens=8192)
-        return {k: yn(a[k]) for k in QUESTIONS} if a else None
+        return {k: yn(a[k]) for k in questions} if a else None
 
     ab, ba = map_within(ask, ['compare_ab.jpg', 'compare_ba.jpg'], seconds=900)
     ab = ab or ask('compare_ab.jpg')  # one more try for an order that gave no usable answer
     ba = ba or ask('compare_ba.jpg')
     answers = {}
-    for k in QUESTIONS:
+    for k in questions:
         got = {x[k] for x in (ab, ba) if x}
         answers[k] = got.pop() if len(got) == 1 else 'unsure'
-    failed = [k for k, (_, want, block) in QUESTIONS.items() if block and answers[k] not in (want, 'unsure')]
-    logged = [k for k, (_, want, block) in QUESTIONS.items() if answers[k] != want]
+    failed = [k for k, (_, want, block) in questions.items() if block and answers[k] not in (want, 'unsure')]
+    logged = [k for k, (_, want, block) in questions.items() if answers[k] != want]
     out = {'answers': answers, 'raw': {'photo_left': ab, 'render_left': ba}, 'failed': failed, 'not_wanted': logged,
            'ok': not failed and (ab is not None or ba is not None), 'model': args.model}
     with open(os.path.join(d, 'compare.json'), 'w') as f:

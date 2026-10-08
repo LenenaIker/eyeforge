@@ -30,7 +30,14 @@ QUESTIONS = {
                'hedge or a house)?', 'no'),
     'floating': ('Does any building, wall or hedge float in the air above the ground?', 'no'),
 }
-PROMPT = """This is a rendered view of a 3D street rebuilt from one photo; it will be a background for training \
+QUESTIONS_INDOOR = {
+    'room_view': ('Does this look like the inside of a room seen by a person or a small robot in it?', 'yes'),
+    'floor_down': ('Is the floor at the bottom of the picture and are the walls upright?', 'yes'),
+    'inside': ('Is most of the picture one flat texture or the inside of something (the camera inside a wall or '
+               'a piece of furniture)?', 'no'),
+    'floating': ('Does any piece of furniture float in the air above the floor?', 'no'),
+}
+PROMPT = """This is a rendered view of a 3D {place} rebuilt from one photo; it will be a background for training \
 an object detector. Simple textures and plain light are expected and do not matter.
 
 Answer each question with "yes" or "no" only, as one JSON object, nothing else:
@@ -53,16 +60,20 @@ def main():
     ap.add_argument('--dir', required=True)
     ap.add_argument('--model', default=os.environ.get('SIM2CHIP_REVIEW_MODEL', MODEL))
     ap.add_argument('--min-share', type=float, default=0.6)
+    ap.add_argument('--indoor', action='store_true', help='a room (room_template.py), not a street')
     args = ap.parse_args()
     renders = sorted(glob.glob(os.path.join(args.dir, 'isaac', 'render_*.png')))[1:]
     client = Client(usage_log=ROOT / 'runs' / 'llm_usage.jsonl')
-    qs = '{\n' + ',\n'.join(f'  "{k}": "<yes|no>  ({q})"' for k, (q, _) in QUESTIONS.items()) + '\n}'
+    questions = QUESTIONS_INDOOR if args.indoor else QUESTIONS
+    place = 'room' if args.indoor else 'street'
+    qs = '{\n' + ',\n'.join(f'  "{k}": "<yes|no>  ({q})"' for k, (q, _) in questions.items()) + '\n}'
 
     def ask(path):
-        msg = [{'role': 'user', 'content': [{'type': 'text', 'text': PROMPT.format(questions=qs)}, image_part(path)]}]
-        ok = lambda v: all(yn(v.get(k, '')) in ('yes', 'no') for k in QUESTIONS)  # noqa: E731
+        msg = [{'role': 'user', 'content': [{'type': 'text', 'text': PROMPT.format(questions=qs, place=place)},
+                                            image_part(path)]}]
+        ok = lambda v: all(yn(v.get(k, '')) in ('yes', 'no') for k in questions)  # noqa: E731
         a = ask_json(client, msg, args.model, purpose='scene_view_check', check=ok, temperature=0.0, max_tokens=8192)
-        return {k: yn(a[k]) for k in QUESTIONS} if a else None
+        return {k: yn(a[k]) for k in questions} if a else None
 
     answers = map_within(ask, renders, seconds=1200, workers=6)
     views = []
@@ -71,7 +82,7 @@ def main():
         why = []
         if st['spread'] < 0.08:
             why.append('one tone (camera in a surface or flat light)')
-        why += [k for k, (_, want) in QUESTIONS.items() if a and a[k] != want] if a else ['no answer']
+        why += [k for k, (_, want) in questions.items() if a and a[k] != want] if a else ['no answer']
         views.append({'view': int(os.path.basename(path)[7:9]), 'stats': st, 'answers': a, 'keep': not why,
                       'why': why})
     kept = [v['view'] for v in views if v['keep']]

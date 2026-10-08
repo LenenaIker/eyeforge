@@ -165,8 +165,8 @@ def skirt(pts, faces, cols, up, level, min_gap=0.1):
     h = pts @ up
     base = float(np.percentile(h, 0.5))
     gap = base - level
-    if gap < min_gap:
-        return pts, faces, cols
+    if gap < min_gap:  # a few centimetres: set it down, it stays on its photo pixels (sideboard 7 cm, home_office)
+        return pts - max(gap, 0.0) * up, faces, cols
     band = h <= base + 0.1 * max(float(np.ptp(h)), 0.5)
     e1 = np.cross(up, [1.0, 0, 0]) if abs(up[0]) < 0.9 else np.cross(up, [0, 0, 1.0])
     e1 /= np.linalg.norm(e1)

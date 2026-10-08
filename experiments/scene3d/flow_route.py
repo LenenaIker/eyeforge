@@ -15,7 +15,7 @@ import sys
 STREET_PLACES = {'village_street', 'city_street', 'square', 'road_outside_town', 'garden_or_yard'}
 TEMPLATE = {'corner': 'crossroads', 'straight_street': 'straight_street', 'facade_only': 'straight_street',
             'square': 'square', 'room': 'room', 'support_only': 'none'}
-BUILT = {'crossroads'}  # templates crossroad.py etc. can build today; the others route but stop before phase 3
+BUILT = {'crossroads', 'straight_street', 'room'}  # templates crossroad.py etc. can build today; the others route but stop before phase 3
 
 
 def route(obs):

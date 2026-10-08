@@ -47,6 +47,13 @@ def reconstruct(seed, mask):
         cur = nxt
 
 
+def fill_holes(mask):
+    """The mask plus every region it encloses (not connected to the image border outside it)."""
+    border = np.zeros_like(mask)
+    border[0], border[-1], border[:, 0], border[:, -1] = True, True, True, True
+    return ~reconstruct(border, ~mask)
+
+
 def inpaint(image, mask):
     """LaMa on the whole image; sides padded to a multiple of 8."""
     lama = torch.jit.load(LAMA, map_location='cuda').eval()
@@ -71,6 +78,8 @@ def main():
     ap.add_argument('--threshold', type=float, default=0.5)
     ap.add_argument('--shadows', action='store_true', help='also erase the cast shadows touching the objects')
     ap.add_argument('--shadow-threshold', type=float, default=0.3)
+    ap.add_argument('--keep-inside', default='', help='comma-separated surroundings phrases (bookshelf, house): an '
+                    'object mostly inside one and off the support is its contents (books on a shelf) and stays')
     ap.add_argument('--grow', type=float, default=0.03, help='mask growth before erasing, fraction of long side')
     args = ap.parse_args()
 
@@ -95,8 +104,22 @@ def main():
         for _, m in segment(model, proc, photo, phrase, args.threshold):
             ground[phrase] |= m
         support |= ground[phrase]
-    objects = np.any(masks, axis=0) if masks else np.zeros_like(support)
     grow = max(2, round(args.grow * args.long_side))
+    # Contents of the surroundings: erased, they left a bookshelf as an empty blurred frame that SAM 3 no longer
+    # calls a bookshelf (home_office, 2026-10-08). Whatever stands on the support (a chair, a car) is still erased.
+    inside, kept_inside = [], []
+    if args.keep_inside.strip():
+        furniture = np.zeros_like(support)
+        for phrase in [p.strip() for p in args.keep_inside.split(',') if p.strip()]:
+            for _, m in segment(model, proc, photo, phrase, args.threshold):
+                furniture |= fill_holes(m)  # SAM 3 leaves the books out of the bookshelf
+        for i, m in enumerate(masks):
+            if (m & furniture).sum() / max(m.sum(), 1) > 0.7 and not (dilate(m, grow) & support).any():
+                inside.append(i)
+        kept_inside = [phrases[i] for i in inside]
+        masks = [m for i, m in enumerate(masks) if i not in inside]
+        phrases = [p for i, p in enumerate(phrases) if i not in inside]
+    objects = np.any(masks, axis=0) if masks else np.zeros_like(support)
     # Cast shadows of the objects: SAM 3 'shadow' regions on the support that connect to an object. Left in the
     # background they would be shadows without an owner, and they are what the light fit in Isaac compares against.
     shadows = np.zeros_like(support)
@@ -118,7 +141,8 @@ def main():
                         phrases=np.array(list(ground)))
     with open(os.path.join(args.out, 'prepare.json'), 'w') as f:
         json.dump({'image': args.image, 'size': photo.size, 'support': args.support,
-                   'instances': phrases, 'support_frac': round(float(support.mean()), 3),
+                   'instances': phrases, 'kept_inside': kept_inside,
+                   'support_frac': round(float(support.mean()), 3),
                    'shadow_frac': round(float(shadows.mean()), 3)}, f, indent=2)
     print(json.dumps({'instances': phrases, 'support_frac': round(float(support.mean()), 3),
                       'shadow_frac': round(float(shadows.mean()), 3)}))

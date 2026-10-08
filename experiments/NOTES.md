@@ -606,3 +606,17 @@ Solo el código de Mira-CCM (`tools/mira_src`, 69 MB) y sus pesos (`tools/ccm_ck
 - `hybrid` (vóxeles del CCM más los de SAM 3D detrás de lo visto, llevados al marco del CCM con su pose): las dos formas no casan y sale un amasijo; la casa grande no cabe en la GPU. Descartado.
 - `flow_refine.py --axis-scale` (también `photo2scene.py --axis-scale`): tras la similitud, escala por eje de la caja orientada de la malla (ICP) y búsqueda directa sobre el IoU (escalas por eje y desplazamiento en x, y, paso que se parte a la mitad). CCM en basque_street: IoU 0,59-0,88 en las 9 mallas (antes 0,31-0,78) y pasan las 7 que llegan a las puertas de silueta. Pero el VLM tira la casa de los balcones ("foreign"): el CCM copia también lo que su máscara arrastra (portal y seto), mientras SAM 3D lo ignora. ΔE 21,8 (sin esa casa, no comparable) y el lugar se para en 2.4 por "floating", que es la casa del fondo sobre un bloque que también tiene la versión SAM 3D (que pasó).
 - Mismo ajuste con SAM 3D: puertas de silueta 9 de 9 (antes 7), ΔE 26,3 (antes 25,4), vistas 81 % (antes 94 %). Neutro.
+
+### photo2scene en interior: home_office (2026-10-08)
+
+Foto de ejemplo de Mira (`data/scene3d_test/images/003_home_office.png`), ruta indoor_floor, plantilla room. Antes se paraba en la fase 2; ahora sale "place ready" (`data/scene3d_test/flow/home_office/extended`). Cambios:
+
+- `bg_prepare.py --keep-inside <frases de entorno>` (photo2scene pasa las del VLM): un objeto móvil que está en más de un 70 % dentro de un mueble (máscara de SAM 3 con los agujeros rellenos, porque SAM 3 deja los libros fuera de la estantería) y no toca el suelo es su contenido y no se borra. Antes LaMa vaciaba la estantería y SAM 3 ya no la encontraba; ahora se quedan 12 de 30 instancias (libros, plantas y cestas en baldas) y pasan estantería, mesa y aparador. La mesa ya no la tira el VLM.
+- `env_add.py`: un hueco bajo una malla menor de 10 cm se cierra bajándola (antes ni falda ni nada, y el filtro tira desde un 6 % de la altura; aparador a 7 cm).
+- `photo2scene.py`: `piece_build.py --indoor` fuera de la ruta de calle (habitación cerrada con techo; antes siempre `--outdoor` y salía un cielo de campo) y `--drop-covered-walls` solo en calle (los muebles pegados a la pared la quitaban).
+- `flow_compare.py` y `flow_check_views.py --indoor`: preguntas de habitación (paredes y techo, suelo, muebles flotando o ausentes) en vez de cielo y calle.
+- `room_template.py` (fase 3, plantilla room): la habitación ya está cerrada, así que solo añade cámaras dentro, a 0,4-1,8 m, a 0,5 m de paredes y muebles, mirando a un mueble (4 de cada 5) o al centro de una pared. Mirando por igual a muebles y paredes, la mitad de las vistas eran pared lisa y el VLM las aceptaba.
+
+Resultado: filtros geométricos con las 3 mallas (IoU 0,59, 0,71 y 0,82), ΔE 21,4, comparación del VLM bien en todo y 15 de 16 vistas aceptadas. Defectos a la vista: la ventana se pierde (la pared es una textura repetida de un trozo de la foto, con manchas), la estantería sale vacía y oscura por dentro y con parches de la foto borrada, y la cara vista del aparador lleva el relleno de LaMa.
+
+Control en calle (basque_street desde 1.3a con estos cambios): solo una señal pegada a una casa deja de borrarse; 7 mallas pasan los filtros igual que antes, ΔE 25,4 a 25,3, comparación bien; vistas aceptadas 94 % a 75 % (3 rechazos por "street_view", revisión de vistas ya ruidosa antes).
