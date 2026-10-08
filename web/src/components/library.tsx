@@ -155,6 +155,7 @@ function AddToKit({ kind, ids, kits, onClose, onDone }:
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const go = async () => {
+    if (target === "new" && !name.trim()) { setError("Give the new kit a name first."); return; }
     try {
       const kit = kits.find((k) => k.id === target);
       const base = kit ? { name: kit.name, datasets: kit.datasets, objects: kit.objects, scenes: kit.scenes }
@@ -185,7 +186,7 @@ function AddToKit({ kind, ids, kits, onClose, onDone }:
         </label>
       </div>
       {error && <div className="mt-4"><Notice tone="bad">{error}</Notice></div>}
-      <Button className="mt-5 w-full" onClick={go} disabled={target === "new" && !name.trim()}>Add</Button>
+      <Button className="mt-5 w-full" onClick={go}>Add</Button>
     </Dialog>
   );
 }
