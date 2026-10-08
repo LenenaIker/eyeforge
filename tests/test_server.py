@@ -529,7 +529,7 @@ def test_photos_in_the_interview_warm_up_a_gpu_and_rounds_with_answers_skip_it(t
     monkeypatch.setattr(Label, "gpu_needed", lambda self, ctx: False)  # but every answer is cached
 
     def embed(items, texts, text_out, log=print, timeline=None):
-        for path, out in items:
+        for _path, out in items:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(json.dumps({"embedding": [1.0, 0.0, 0.0]}))
         text_out.parent.mkdir(parents=True, exist_ok=True)

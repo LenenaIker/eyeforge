@@ -34,6 +34,14 @@ PARALLEL_SEEDS = int(os.environ.get("SIM2CHIP_PARALLEL_SEEDS", "3"))
 # whole network needs more than a few dozen: on 35 lawn photos it scored 56% against 80% for the last layer.
 HEAD_ONLY_BELOW = 100
 DATA_FILE = "_train_set.pkl"  # the training arrays, handed to the seed processes, removed at the end
+# Recipes whose model is a box detector (detector.py): one float16 model.tflite read as boxes, no int8 model.
+DETECTOR_RECIPES = ("picodet_s",)
+
+
+def is_detector(result: dict) -> bool:
+    """Whether a seed of train/summary.json is a box detector, from the recipe it recorded (every seed records
+    one), so export and evaluate do not guess it from other keys."""
+    return result.get("recipe") in DETECTOR_RECIPES
 
 
 class Train(Stage):

@@ -12,7 +12,6 @@ It stops after warm.IDLE_S without tasks once the keep-alive has passed, or shor
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess

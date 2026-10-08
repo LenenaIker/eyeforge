@@ -1,6 +1,7 @@
 """Count with a pretrained detector (hardware profile counter "picodet_s"): PicoDet-S from PaddleDetection
 (Apache 2.0), fine-tuned on the job's boxes. On FSC-147 it scored points F1 0.83-0.91 against 0.41-0.80 for the
 grid head (docs/hardware_makers.md, 2026-10-02); it does not fit a microcontroller, which keep the grid head.
+Adapter over PaddleDetection, which runs in its own Python (patterns: docs/architecture.md).
 
 Training runs in its own Python (detector_worker.py): SIM2CHIP_PICODET_PYTHON, a Python with PaddlePaddle, and
 SIM2CHIP_PADDLEDET, a PaddleDetection checkout (release 2.8.1). Its ONNX becomes a TFLite here (onnx2tf) that

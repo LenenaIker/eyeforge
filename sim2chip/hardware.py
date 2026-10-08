@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Hardware:
+    """A device profile. Flyweight: immutable and shared by every job (PROFILES) (patterns: docs/architecture.md)."""
     name: str
     input_size: int         # square RGB input, pixels
     backbone: str           # classification model family understood by the train stage (counting: see counter)

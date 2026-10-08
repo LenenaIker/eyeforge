@@ -390,6 +390,7 @@ def warm_script() -> str:
 
 
 class NebiusCLI:
+    """Adapter: buckets and AI jobs through the `nebius` command line (patterns: docs/architecture.md)."""
     def __init__(self, exe: str | None = None, project: str | None = None, dry_run: bool = False):
         self.exe = exe or _env("SIM2CHIP_NEBIUS_CLI") or shutil.which("nebius") or str(
             Path.home() / ".nebius/bin/nebius")
@@ -548,7 +549,6 @@ class NebiusBackend:
     def run_pipeline(self, pipe, start: str | None = None, only: str | None = None, force: bool = False,
                      log=print) -> None:
         """Worker mode: the whole run in one job. Progress lines and done markers come back while it runs."""
-        from ..pipeline import StageFailed
 
         plans = pipe.plan(start, only, force)
         todo = [p.stage for p in plans if p.action == "run"]
@@ -666,7 +666,8 @@ class NebiusBackend:
             if self.cli.job_state(w["job_id"]) in TERMINAL:
                 return None
             return w if warm.usable(self.store, f"{self.prefix}-cache", w["wid"]) else None
-        except Exception:
+        except Exception as e:  # the run starts its own GPU instead
+            print(f"  warm GPU not checked ({type(e).__name__}: {e}), starting a new job", flush=True)
             return None
 
     def _warm_task(self, w: dict, job: Job, task: dict, follow) -> tuple[str, float | None]:

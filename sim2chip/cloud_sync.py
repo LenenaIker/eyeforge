@@ -31,6 +31,8 @@ S3_ENDPOINT = f"https://storage.{REGION}.nebius.cloud"
 
 
 class S3Store:
+    """Adapter: the few object store calls we need, over boto3 and Nebius Object Storage
+    (patterns: docs/architecture.md)."""
     def __init__(self, key: str | None = None, secret: str | None = None):
         try:
             import boto3

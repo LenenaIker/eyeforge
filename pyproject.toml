@@ -34,3 +34,18 @@ sim2chip = ["web/*", "web/dist/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["experiments", "sim2chip/web", "web"]
+
+[tool.ruff.lint]
+# Conservative on purpose: real mistakes (pyflakes, bugbear) and simple style, no rewrites of working code.
+select = ["E", "F", "W", "B"]
+# E501: long lines are left to review. B905: strict zips would change behaviour. B008: FastAPI's File()/Form()
+# defaults. E741: `l` for lines is read fine here. B023: our closures in loops run within the same iteration.
+ignore = ["E501", "B905", "B008", "E741", "B023"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E731", "B017"]  # one-line fakes, and pytest.raises(Exception) where any failure is the point

@@ -15,6 +15,7 @@ import shutil
 import struct
 
 from .base import Context, Stage
+from .train import is_detector
 
 
 class Export(Stage):
@@ -32,7 +33,7 @@ class Export(Stage):
         val = "val_f1" if counting else "val_acc"
         seed = max(summary, key=lambda s: summary[s][val])
         src = ctx.job.stage_dir("train") / f"seed_{seed}"
-        boxes = summary[seed].get("counter", "grid") != "grid"
+        boxes = is_detector(summary[seed])
         out = ctx.job.stage_dir(self.name)
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
@@ -151,7 +152,7 @@ def box_output(trained: dict) -> dict:
     """How to read a count detector (detector.py), for the live test and anyone using the model."""
     from ..detector import MAX_OBJECTS, NMS_IOU
     th = trained["threshold"]
-    return {"kind": "boxes", "model": trained.get("counter"), "threshold": th, "nms_iou": NMS_IOU,
+    return {"kind": "boxes", "model": trained.get("recipe"), "threshold": th, "nms_iou": NMS_IOU,
             "max_objects": MAX_OBJECTS,
             "how_to_read": "Two outputs before NMS. Boxes: (1, anchors, 4), x0, y0, x1, y1 in input pixels. Scores: "
                            "(1, classes, anchors), labels.txt order without the background. Per class, keep the "

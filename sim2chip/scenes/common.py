@@ -151,6 +151,7 @@ class Paint:
 
 class OutdoorScene:
     """What the outdoor templates share: a sky map with a sun, trees and bystanders as distractors.
+    Template method: render drives the steps below, each template fills its own (patterns: docs/architecture.md).
 
     A template adds its ground in build() and its layout in randomize(); the interface render uses is
     build, after_load, randomize(change_sky), place_target(prim, scale) and place_distractors(eye)."""

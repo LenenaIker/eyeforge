@@ -15,6 +15,7 @@ import statistics
 
 from ..workspace import PREVIOUS
 from .base import Context, Stage
+from .train import is_detector
 
 
 def previous_model(ctx: Context, size: int | None = None):
@@ -110,7 +111,7 @@ class Evaluate(Stage):
         truth = [[tuple(q) for q in info[n]["points"]] for n in names]  # with box sizes: a hit anywhere in the core counts
         out = ctx.out(self.name)
         chosen = json.loads((ctx.job.stage_dir("train") / "summary.json").read_text())
-        boxes = any(r.get("counter", "grid") != "grid" for r in chosen.values())
+        boxes = any(is_detector(r) for r in chosen.values())
         # A detector sees the full size photos at its own size; the grid head the ingest copies at the profile's.
         size = next(iter(chosen.values())).get("input", ctx.hardware.input_size)
         grid = counting.grid_size(size)

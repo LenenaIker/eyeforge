@@ -40,3 +40,10 @@ def test_profiles_count_with_a_detector_only_where_it_fits():
     assert hardware.get("generic").counter == "picodet_s" and hardware.get("generic").count_input() == 320
     esp = hardware.get("esp32cam")
     assert esp.counter == "grid" and esp.count_input() == esp.input_size
+
+
+def test_export_and_evaluate_read_the_recipe_each_seed_recorded():
+    from sim2chip.stages.train import is_detector
+    assert is_detector({"recipe": "picodet_s", "counter": "picodet_s", "val_f1": 0.8})
+    for grid in ({"recipe": "fine_tune", "val_f1": 0.6}, {"recipe": "head", "val_acc": 0.9}, {}):
+        assert not is_detector(grid)

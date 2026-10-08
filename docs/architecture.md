@@ -127,6 +127,23 @@ Mismo patrón para todo lo que crecerá: un diccionario nombre -> implementació
 
 Añadir un entorno o un hardware nuevo es añadir un archivo, sin tocar el resto.
 
+## Patrones de diseño en uso (2026-10-08)
+
+Nombres clásicos de lo que el código ya hace, para hablar de él con el mismo vocabulario. Auditoría completa, con lo que falta y lo que se descarta, en `docs/auditoria_diseno.md`.
+
+- **Bridge**: `Stage` (qué se hace) y `Backend` (dónde corre) varían por separado; cualquier etapa corre en cualquier backend.
+- **Strategy**: `Backend` (`Protocol` en `pipeline.py`) con `LocalBackend` y `NebiusBackend`.
+- **Template Method**: `Stage` (`run`, `enabled`, `calls_llm`, `powered_by` con valores por defecto) y las escenas sobre `OutdoorScene` (`build`, `randomize`, `place_target`, `place_distractors`).
+- **Registro con factoría perezosa**: `backends.get`, `scenes.load`, `stages.BY_NAME`, `hardware.PROFILES`; importan lo pesado solo al usarlo (Isaac Sim, TensorFlow).
+- **Flyweight**: los perfiles `Hardware` son inmutables y compartidos por todos los trabajos.
+- **Prototype**: copias con `dataclasses.replace` (cliente LLM por entrevista, spec de prueba en `match.py`).
+- **Memento**: `workspace.snapshot` guarda cada modelo anterior en `versions/v<n>/`.
+- **Adapter**: `cloud_sync.S3Store` (boto3), `NebiusCLI` (CLI `nebius`), `detector.py` (PaddleDetection).
+- **Proxy de caché**: respuestas del profesor por contenido de foto (`cache/labels/`), prompts y frases traducidas.
+- **Command**: tareas de la GPU caliente como JSON en el bucket (`warm.submit`) y el `Plan` del pipeline.
+- **Observer ligero**: callbacks `log`, `progress` y `timeline` pasados como funciones.
+- **Receta por semilla**: cada semilla deja su `recipe` en `train/summary.json` (`picodet_s`, `head`, `fine_tune`); `export` y `evaluate` la leen con `train.is_detector` en vez de deducirla.
+
 ## Estructura del repo
 
 ```

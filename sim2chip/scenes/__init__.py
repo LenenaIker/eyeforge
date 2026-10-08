@@ -13,7 +13,8 @@ def template_for(scene) -> str:
 
 
 def load(name: str):
-    """Import lazily: templates need Isaac Sim modules, which exist only inside a running app."""
+    """Import lazily: templates need Isaac Sim modules, which exist only inside a running app.
+    Factory over the TEMPLATES registry (patterns: docs/architecture.md)."""
     import importlib
 
     try:

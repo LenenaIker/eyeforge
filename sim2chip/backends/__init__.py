@@ -3,6 +3,7 @@ from __future__ import annotations
 
 
 def get(name: str, verbose: bool = False, **kw):
+    """Factory: the backend by name, imported only when asked for (patterns: docs/architecture.md)."""
     if name == "local":
         from .local import LocalBackend
         return LocalBackend(verbose=verbose)

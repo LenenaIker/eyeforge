@@ -24,6 +24,8 @@ class Fake(Stage):
 
 
 class InProcess:
+    name = "local"
+
     def __init__(self, fail=()):
         self.ran, self.fail = [], set(fail)
 

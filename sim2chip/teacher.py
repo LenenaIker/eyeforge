@@ -91,7 +91,8 @@ def english_phrases(meaning: dict[str, str], client=None) -> dict[str, list[str]
         out = parse_json(client.chat([{"role": "user", "content": PHRASE_ASK + json.dumps(meaning, ensure_ascii=False)}],
                                      client.model_for("text"), purpose="teacher_phrases", temperature=0.0,
                                      max_tokens=512))
-    except Exception:
+    except Exception as e:  # the caller warns that the classes stay untranslated
+        print(f"English phrases for {NAME} failed: {type(e).__name__}: {e}", flush=True)
         return None
     if not isinstance(out, dict):
         return None

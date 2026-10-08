@@ -125,7 +125,6 @@ class Label(Stage):
         return {**found, **english}
 
     def _classify(self, ctx, files, keys, previous, sample, fixes):
-        spec = ctx.spec
         prompts = self._prompts(ctx)
         model = teacher.SIGLIP_MODEL.split("/")[-1]
         shared = ctx.cache.root / "labels" / "siglip" / model

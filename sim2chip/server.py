@@ -239,7 +239,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 stage.sample = CALIBRATION_PHOTOS
                 return not stage.gpu_needed(Context(spec_mod.load(job.root / "request.json"), job,
                                                     Cache(home / "cache")))
-            except Exception:
+            except Exception as e:  # then the round asks the teacher for them
+                print(f"calibration {job.name}: could not check the cached answers ({type(e).__name__}: {e})",
+                      flush=True)
                 return False
 
         def work():
@@ -257,6 +259,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         calibrations[job.name].start()
 
     prefetching: set[str] = set()
+    prefetch_lock = threading.Lock()  # calibration threads and requests may ask for the same job at once
 
     def prefetch(job: Job) -> None:
         """Count calibration: while the user checks the first photos, the warm GPU answers for the rest, so the
@@ -264,14 +267,17 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         from .stages import Context
         from .stages.label import Label
         spec = spec_mod.load(job.root / "request.json")
-        if spec.task != "count" or job.name in prefetching:
+        if spec.task != "count":
             return
         try:
             if not Label().gpu_needed(Context(spec, job, Cache(home / "cache"))):
                 return  # every photo answered already
-        except Exception:
-            pass
-        prefetching.add(job.name)
+        except Exception as e:  # prefetch anyway: the warm GPU skips the photos it finds answered
+            print(f"prefetch {job.name}: could not check the cached answers ({type(e).__name__}: {e})", flush=True)
+        with prefetch_lock:
+            if job.name in prefetching:
+                return
+            prefetching.add(job.name)
 
         def go():
             try:
@@ -443,9 +449,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             try:
                 return fn(*args)
             except LLMError as e:
-                raise HTTPException(502, f"model service: {e}")
+                raise HTTPException(502, f"model service: {e}") from None
             except RuntimeError as e:
-                raise HTTPException(409, str(e))
+                raise HTTPException(409, str(e)) from None
 
     def turn_out(sid: str, turn) -> dict:
         out = {"kind": turn.kind, "text": turn.text}
@@ -554,7 +560,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 data.setdefault("user_data", {})["raw"] = "photos"  # the teacher model labels them
             parsed = spec_mod.from_dict(data)
         except (json.JSONDecodeError, spec_mod.SpecError) as e:
-            raise HTTPException(400, f"invalid spec: {e}")
+            raise HTTPException(400, f"invalid spec: {e}") from None
         check_paths(parsed)
         # The same setup sent twice (a double click, "Looks good" and Train together) must not pay for two runs.
         same = json.loads(parsed.to_json())
@@ -699,7 +705,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         try:
             parsed = spec_mod.from_dict(json.loads(spec))
         except (json.JSONDecodeError, spec_mod.SpecError) as e:
-            raise HTTPException(400, f"invalid spec: {e}")
+            raise HTTPException(400, f"invalid spec: {e}") from None
         check_paths(parsed, job)
         old = spec_mod.load(latest_spec(job))
         changed = [k for k, v in json.loads(parsed.to_json()).items()

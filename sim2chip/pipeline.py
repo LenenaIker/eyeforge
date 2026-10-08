@@ -11,6 +11,10 @@ from .workspace import Cache, Job
 
 
 class Backend(Protocol):
+    """Strategy: where and how the stages run. With Stage it forms a bridge: any stage runs on any
+    backend (patterns: docs/architecture.md)."""
+    name: str  # where the stages' own processes run, as shown to the user: "local" or "nebius"
+
     def prepare(self, pipe: "Pipeline") -> "Pipeline":
         """The pipeline as this backend can run it (the cloud rewrites local paths and local-only options)."""
 
@@ -89,7 +93,7 @@ class Pipeline:
                 if only is None:
                     log(f"= {p.stage.name}: up to date")
                 continue
-            where = getattr(backend, "name", "local")
+            where = backend.name
             log(f"> {p.stage.name} ({p.stage.powered_by(self.spec, where)})")
             self.job.clear_done(p.stage.name)
             t0 = time.time()

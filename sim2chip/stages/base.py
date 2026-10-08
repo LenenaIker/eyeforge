@@ -37,6 +37,8 @@ RUNTIME_TECH = {"isaac": "NVIDIA Isaac Sim", "tf": "TensorFlow", "trellis": "TRE
 
 class Stage:
     """A pipeline step. It reads and writes only inside the job folder (and the shared cache).
+    Template method: run() is the step, the other methods are defaults a stage may override
+    (patterns: docs/architecture.md).
 
     `uses` lists the spec sections the stage depends on and `after` the upstream stages whose
     output it reads: both go into the stage fingerprint, so a stage reruns only when something it

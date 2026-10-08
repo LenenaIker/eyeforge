@@ -72,7 +72,7 @@ class ConvertAssets(Stage):
             ready.append((m, raw, ctx.cache.usd_norm / f"{m['uid']}_v{NORM_VERSION}.usd"))
         _normalize_all(ctx, [(raw, norm) for _, raw, norm in ready if not norm.with_suffix(".json").exists()])
         done = []
-        for m, raw, norm in ready:
+        for m, _raw, norm in ready:
             meta = norm.with_suffix(".json")
             if not meta.exists():
                 skipped.append(m["uid"])
@@ -101,7 +101,7 @@ def _glb2usd(ctx: Context, todo: list[tuple[Path, str]]) -> list[tuple[Path, str
     with ProcessPoolExecutor(max(1, min(os.cpu_count() or 1, len(jobs)))) as pool:
         results = list(pool.map(glb2usd._job, jobs))
     failed = []
-    for (glb, uid), (res, err) in zip(todo, results):
+    for (glb, uid), (_res, err) in zip(todo, results):
         if err:
             ctx.log(f"glb2usd could not convert {glb.name}: {err[1].strip().splitlines()[-1]}")
             failed.append((glb, uid))

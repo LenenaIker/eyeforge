@@ -98,6 +98,8 @@ def keep_alive(store, bucket: str, wid: str, seconds: float) -> None:
 
 
 def submit(store, bucket: str, wid: str, task: dict) -> None:
+    """Command: the task is a JSON file in the bucket that the warm GPU picks up and runs
+    (patterns: docs/architecture.md)."""
     put(store, bucket, key(wid, "tasks", f"{task['id']}.json"), task)
 
 
@@ -259,8 +261,8 @@ class WarmGPU:
         hb = None
         try:
             hb = heartbeat(self.backend.store, self._bucket(), w["wid"])
-        except Exception:
-            pass
+        except Exception as e:  # its cost then runs until now, an overestimate
+            self.log(f"warm GPU {w['wid']}: no last heartbeat ({type(e).__name__}: {e})")
         end = min(time.time(), hb["t"] + 60) if hb and hb.get("t") else time.time()
         hours = max(0.0, end - w["started"]) / 3600
         rec = {"t": round(time.time()), "job_id": w["job_id"], "state": state, "hours": round(hours, 4),

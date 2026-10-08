@@ -134,6 +134,7 @@ def versions(job: Job) -> list[dict]:
 
 def snapshot(job: Job, reason: str) -> dict | None:
     """Called before a rerun that will replace the job's model (new photos, corrections, a changed spec).
+    Memento: each replaced model is kept whole in versions/v<n>/ (patterns: docs/architecture.md).
 
     Keeps the current model in versions/v<n>/, copies it to input/previous/ for evaluate to score it on the
     same test photos as its successor, and records why the next version is made. Returns the kept version,
