@@ -26,6 +26,9 @@ class FakeProc:
     def poll(self):
         return None
 
+    def terminate(self):
+        pass
+
 
 @pytest.fixture(autouse=True)
 def built_app(tmp_path, monkeypatch):

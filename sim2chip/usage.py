@@ -57,6 +57,21 @@ def _records(path: Path) -> list[dict]:
         return []
 
 
+def spent(prices: dict, calls: list[Path] = (), cloud: Path | None = None) -> float:
+    """Dollars Token Factory, Tavily and Nebius charged us for these logs: model calls (usage files of the
+    Client) and cloud GPU time (cloud_usage.jsonl). A model without a known price counts nothing."""
+    usd = 0.0
+    for f in calls:
+        for r in _records(f):
+            if r.get("model") == "tavily/search":
+                usd += USD_PER_SEARCH
+            elif p := prices.get(r.get("model")):
+                usd += (r.get("prompt_tokens") or 0) * p["input"] + (r.get("completion_tokens") or 0) * p["output"]
+    if cloud is not None:
+        usd += sum(r.get("usd_estimate") or 0 for r in _records(cloud))
+    return round(usd, 6)
+
+
 def summary(job: Job, prices: dict, gpu_name: str = "L40S") -> dict:
     from .stages import BY_NAME
 

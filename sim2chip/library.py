@@ -450,14 +450,18 @@ class Library:
             return False
         return row is None or (row[0] != n and row[0] < SAMPLE)
 
-    def profile_dataset(self, owner: str, ds: str, run, model: str | None = None) -> dict | None:
+    def profile_dataset(self, owner: str, ds: str, run, model: str | None = None, fresh: bool = False) -> dict | None:
         """A dataset's profile before any goal (scene_profile.GENERAL): what objects show up, the backgrounds,
         the places and the light, from a sample of its photos. run(photos) describes photos; the descriptions
-        are kept as notes. None when no photo could be described."""
+        are kept as notes (fresh: made anew). None when no photo could be described."""
         from . import scene_profile
         rows = self.db.execute("SELECT DISTINCT p.key, p.file FROM photos p JOIN datasets d ON d.id = p.dataset "
                                "WHERE d.owner = ? AND d.id = ?", (owner, ds)).fetchall()
         files = scene_profile.sample([self.files / f for _, f in rows])
+        if fresh:  # the user asked to look again: the kept descriptions are not reused
+            with self.lock:
+                self.db.executemany("DELETE FROM notes WHERE owner = ? AND key = ? AND kind = ? AND ref = ?",
+                                    [(owner, f.stem, SCENE, scene_profile.GENERAL) for f in files])
         found = self.describe(owner, files, scene_profile.GENERAL, run, model)
         if not found:
             return None

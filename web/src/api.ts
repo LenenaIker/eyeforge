@@ -37,9 +37,9 @@ export type Me = {
   signed_in: boolean;
   contact: string | null;  // where judges write for free access, and banned accounts for help
   judging: boolean;        // the hackathon's judging is still on: judges use the app for free
-  costs: { run: number; interview: number };
+  costs: Costs;
   account?: { email: string | null; name: string | null; provider: string;
-              tier: "judge" | "normal" | "banned"; credits: number };
+              tier: "judge" | "normal" | "banned"; balance: number };
 };
 
 export type StageState = "done" | "running" | "pending" | "failed";
@@ -106,12 +106,12 @@ export type Review = {
 };
 export type Fixes = { labels: Record<string, string>; assets: Record<string, string>; points: Record<string, Point[]> };
 
-// status: the HTTP code, so the app can tell "sign in" (401) and "no credits" (402) from other errors.
+// status: the HTTP code, so the app can tell "sign in" (401) and "balance too low" (402) from other errors.
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }
 
-// Listeners of account changes (a 401 or 402 anywhere): the shell reloads who is signed in and their credits.
+// Listeners of account changes (a 401 or 402 anywhere): the shell reloads who is signed in and their balance.
 const accountListeners = new Set<() => void>();
 export const onAccountChange = (f: () => void) => { accountListeners.add(f); return () => { accountListeners.delete(f); }; };
 
@@ -262,7 +262,11 @@ export const libraryPhotoUrl = (key: string) => `/api/library/photos/${key}`;
 export const cardUrl = (kind: "object" | "scene", id: string) => `/api/library/${kind}/${id}/card`;
 
 export type CreditMove = { amount: number; reason: string; detail: string | null; t: number };
-export type Billing = { enabled: boolean; costs: { run: number; interview: number };
+// Things are charged by use: what Nebius, Token Factory and Tavily charge us times margin. start: the dollars the
+// balance must hold to start each (about its usual price).
+export type Costs = { margin: number; start: Record<"run" | "label" | "chat" | "profile", number> };
+export const usd = (n: number) => `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
+export type Billing = { enabled: boolean; costs: Costs;
                         tier?: "judge" | "normal" | "banned"; balance?: number; moves?: CreditMove[] };
 export const getBilling = () => api<Billing>("/api/billing");
 

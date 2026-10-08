@@ -24,7 +24,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from . import config, library, review, usage, warm as warm_mod
-from .accounts import INTERVIEW_COST, RUN_COST
+from .accounts import MARGIN, START
 from .job_service import CALIBRATION, LABELING, JobService, cloud_spent
 from . import spec as spec_mod
 from .pipeline import Pipeline
@@ -34,6 +34,8 @@ DOWNLOADS = {"model.tflite", "labels.txt", "model_int8.tflite", "model_data.h", 
 WEB = Path(__file__).parent / "web"
 DIST = WEB / "dist"
 OWNER = "owner"  # file in a public server's job folder: the visitor who started it
+PAYER = "payer"  # file in a job folder: the account paying what it uses (accounts mode)
+METER_S = 30     # how often the usage of running jobs is charged
 NO_BUILD = ("<p>EyeForge: the web app is not built. Run <code>cd web && npm install && npm run build</code> in the "
             "repository, then reload. The API under /api works without it.</p>")
 OPEN_API = {"/api/config", "/api/key", "/api/me"}  # API calls open to a visitor without the key or a login
@@ -174,20 +176,28 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     from concurrent.futures import ThreadPoolExecutor
     profiler = ThreadPoolExecutor(1, thread_name_prefix="profile")
 
-    def profile_soon(owner: str, ds: str) -> None:
-        """Make a dataset's profile in the background (describer: photos, classes -> descriptions)."""
+    def profile_soon(owner: str, ds: str, payer: str | None = None) -> None:
+        """Make a dataset's profile in the background (describer: photos, classes -> descriptions). The automatic
+        one is on us (user, 2026-10-09); one the user asks for (payer: their account) describes the photos anew
+        and is charged by use."""
         if describer is None or ds in profiling:
             return
         profiling.add(ds)
 
         def work():
             from .scene_profile import GENERAL
+            log = home / "logs" / "profiles" / f"{ds}_{int(time.time())}.jsonl" if payer else None
+            run = (lambda photos: describer(photos, GENERAL, usage_log=log)) if log else \
+                (lambda photos: describer(photos, GENERAL))
             try:
-                lib.profile_dataset(owner, ds, lambda photos: describer(photos, GENERAL), getattr(describer, "model", None))
+                lib.profile_dataset(owner, ds, run, getattr(describer, "model", None), fresh=log is not None)
             except Exception as e:  # a failed profile is made again on the next visit
                 print(f"profile of dataset {ds} failed: {type(e).__name__}: {e}", flush=True)
             finally:
                 profiling.discard(ds)
+                if log is not None and accounts is not None:
+                    accounts.meter(payer, f"profile:{log.stem}", "profile",
+                                   usage.spent(usage.saved_prices(home / "cache"), [log]))
         profiler.submit(work)
 
     def owner_of(request: Request) -> str:
@@ -199,16 +209,61 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             return acc.id if acc else None
         return getattr(request.state, "visitor", None) if public else None
 
-    def pay(request: Request, cost: float, reason: str, detail: str | None = None):
-        """Charge the signed-in account (free for judges); 402 without enough credits. None without accounts."""
+    def may_start(request: Request, reason: str):
+        """The signed-in account, when it may start this (accounts.START); 402 when its balance cannot cover the
+        usual price, 403 when paused. None without accounts. Nothing is charged here: usage is (meter)."""
         if accounts is None:
             return None
         acc = request.state.account
-        if not accounts.charge(acc, cost, reason, detail):
+        if not accounts.can_start(acc, reason):
             if accounts.tier(acc) == "banned":
                 raise HTTPException(403, paused_text())
-            raise HTTPException(402, f"not enough credits for this {reason} ({accounts.balance(acc.id):g} left)")
+            raise HTTPException(402, f"your balance (${accounts.balance(acc.id):.2f}) does not cover a {reason}, "
+                                     f"usually about ${START[reason]:.2f}")
         return acc
+
+    def bill_to(job: Job, acc) -> None:
+        """Who pays what this job uses (the meter reads it)."""
+        if acc is not None:
+            (job.root / PAYER).write_text(acc.id)
+
+    chat_payer: dict[str, str] = {}  # interview session -> account paying its model calls
+
+    def meter_chat(sid: str) -> None:
+        if accounts is not None and sid in chat_payer and interview_usage(sid).exists():
+            cost = usage.spent(usage.saved_prices(home / "cache"), [interview_usage(sid)])
+            accounts.meter(chat_payer[sid], f"chat:{sid}", "chat", cost)
+
+    def meter_job(job: Job, running: bool) -> None:
+        """Charge what the job has used so far; a running job whose payer is out of money stops (it can go on
+        from where it was after a top-up)."""
+        payer = job.root / PAYER
+        if accounts is None or not payer.exists():
+            return
+        cost = usage.spent(usage.saved_prices(home / "cache"), [job.logs / "llm_usage.jsonl"],
+                           job.logs / "cloud_usage.jsonl")
+        reason = "label" if (job.root / LABELING).exists() else "run"
+        left = accounts.meter(payer.read_text().strip(), f"job:{job.name}", reason, cost)
+        if running and left < 0:
+            jobs.cancel(job)
+            with open(job.logs / "pipeline.log", "a") as log:
+                log.write("FAILED: stopped, the balance ran out. Top it up and run again: done steps are kept.\n")
+
+    def meter_loop() -> None:
+        while True:
+            time.sleep(METER_S)
+            root = home / "jobs"
+            for d in root.iterdir() if root.exists() else []:
+                if (d / PAYER).exists():
+                    try:
+                        job = Job(d)
+                        meter_job(job, jobs.running(job))
+                    except Exception as e:  # one job's broken logs never stop the meter
+                        print(f"meter {d.name}: {type(e).__name__}: {e}", flush=True)
+
+    if accounts is not None:
+        usage.refresh_prices(home / "cache")
+        threading.Thread(target=meter_loop, daemon=True, name="meter").start()
 
     def mine(job: Job, request: Request) -> bool:
         if not public:
@@ -229,20 +284,17 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         """The model calls of the interview that wrote this job's spec go with the job (usage panel)."""
         if not sid or not re.fullmatch(r"[0-9a-f]{32}", sid) or not interview_usage(sid).exists():
             return
+        meter_chat(sid)  # the chat pays its calls; the job's own meter leaves them out
         job.logs.mkdir(parents=True, exist_ok=True)
         with open(job.logs / "interview_usage.jsonl", "a") as f:
             f.write(interview_usage(sid).read_text())
         interview_usage(sid).unlink()  # counted once, even if the chat goes on
 
     def start_run(job: Job, request: Path, start: str | None = None, payer: Request | None = None):
-        """payer: the HTTP request of the user who pays this run (accounts mode), refunded if it cannot start."""
-        acc = pay(payer, RUN_COST, "run", job.name) if payer is not None else None
-        try:
-            jobs.start(job, request, start)
-        except Exception:
-            if acc is not None:
-                accounts.refund(acc, RUN_COST, job.name)
-            raise
+        """payer: the HTTP request of the user who pays this run (accounts mode)."""
+        if payer is not None:
+            bill_to(job, may_start(payer, "run"))
+        jobs.start(job, request, start)
 
     def room_for_a_run() -> None:
         if jobs.busy():
@@ -275,10 +327,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         acc = getattr(request.state, "account", None)
         judging = accounts is not None and (accounts.judge_until is None or time.time() < accounts.judge_until)
         out = {"signed_in": acc is not None, "contact": contact, "judging": judging,
-               "costs": {"run": RUN_COST, "interview": INTERVIEW_COST}}
+               "costs": {"margin": MARGIN, "start": START}}
         if acc is not None:
             out["account"] = {"email": acc.email, "name": acc.name, "provider": acc.provider,
-                              "tier": accounts.tier(acc), "credits": accounts.balance(acc.id)}
+                              "tier": accounts.tier(acc), "balance": accounts.balance(acc.id)}
         return out
 
     if auth is not None:
@@ -396,7 +448,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         starts from that kit of the user's library."""
         nonlocal new_session
         revising = job_of(job, request) if job else None
-        pay(request, INTERVIEW_COST, "interview", revising.name if revising else None)
+        acc = may_start(request, "chat")
         if new_session is None:
             new_session = default_interviewer(home, backend, public)
         now = time.time()
@@ -405,6 +457,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         sid = uuid.uuid4().hex
         started[sid] = now
         sessions[sid] = new_session()
+        if acc is not None:
+            chat_payer[sid] = acc.id
         sessions[sid].uploads = home / "uploads" / sid
         sessions[sid].transcript = home / "logs" / "interviews" / f"{sid}.json"
         if hasattr(getattr(sessions[sid], "client", None), "usage_log"):
@@ -435,6 +489,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         from .llm import LLMError
         with locks.setdefault(sid, threading.Lock()):
             session = sessions.get(sid)
+            if accounts is not None and sid in chat_payer and accounts.balance(chat_payer[sid]) <= 0:
+                acc = accounts.get(chat_payer[sid])
+                if acc is not None and accounts.tier(acc) == "normal":
+                    raise HTTPException(402, "your balance ran out; top it up to go on with this chat")
             if hasattr(session, "begin"):
                 session.begin(act)
             try:
@@ -443,6 +501,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 raise HTTPException(502, f"model service: {e}") from None
             except RuntimeError as e:
                 raise HTTPException(409, str(e)) from None
+            finally:
+                meter_chat(sid)
 
     def turn_out(sid: str, turn) -> dict:
         out = {"kind": turn.kind, "text": turn.text}
@@ -560,6 +620,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             if proc.poll() is None and req.exists() and {**json.loads(req.read_text()), "name": same["name"]} == same \
                     and mine(Job(home / "jobs" / other), request):
                 return {"job": other, "photos": 0, "already_running": True}
+        may_start(request, "run")  # before anything is written
         # A new request never reuses an existing job folder: it would overwrite that job's results and pick
         # up its review corrections. Reruns of a job go through the corrections endpoint instead.
         base = name = slug(parsed.name)
@@ -585,7 +646,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if session:
             warm_mod.note(home, "job", name, session=f"session:{session}")
         if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled:
-            pay(request, RUN_COST, "run", name)  # the teacher's check is the start of the paid run
+            bill_to(job, may_start(request, "run"))  # the teacher's check is the start of the paid run
             jobs.warm_up("calibration", name)
             jobs.calibrate(job)
             return {"job": name, "photos": len(images), "calibrating": True}
@@ -680,7 +741,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         owner, _ = owned(request, "datasets", item)
         if describer is None:
             raise HTTPException(503, "no vision model on this server")
-        profile_soon(owner, item)
+        acc = may_start(request, "profile")
+        profile_soon(owner, item, acc.id if acc is not None else None)
         return {"profiling": True}
 
     @app.post("/api/library/datasets/{item}/label")
@@ -713,8 +775,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         while (home / "jobs" / name).exists():
             n += 1
             name = f"{base}_{n}"
-        pay(request, RUN_COST, "label", name)  # priced like a run for now
+        acc = may_start(request, "label")
         job = open_job(home, name)
+        bill_to(job, acc)
         if public:
             (job.root / OWNER).write_text(visitor(request))
         parsed = adopt_library(parsed, owner, job)
@@ -787,7 +850,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def billing(request: Request):
         """Credits and their moves (a server with accounts); prices of a run and an interview."""
         acc = getattr(request.state, "account", None)
-        out = {"enabled": accounts is not None, "costs": {"run": RUN_COST, "interview": INTERVIEW_COST}}
+        out = {"enabled": accounts is not None, "costs": {"margin": MARGIN, "start": START}}
         if acc is not None:
             out.update(tier=accounts.tier(acc), balance=accounts.balance(acc.id), moves=accounts.moves(acc.id))
         return out
@@ -894,6 +957,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         changed = [k for k, v in json.loads(parsed.to_json()).items()
                    if k != "name" and json.loads(old.to_json()).get(k) != v]
         if not dry:
+            may_start(request, "run")
             parsed = adopt_uploads(parsed, home / "uploads", job)
             parsed = adopt_library(parsed, owner_of(request), job)
             reuse_corrections(parsed, owner_of(request), job)
@@ -976,6 +1040,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             return FileResponse(f)
         return index()
 
+    app.meter_job = meter_job  # tests charge a job without waiting for the meter
     return app
 
 
@@ -1007,10 +1072,15 @@ def default_describer(home: Path):
     from .llm import Client
     made: dict = {}
 
-    def describe(photos: list[Path], classes: str) -> list[dict]:
+    def describe(photos: list[Path], classes: str, usage_log: Path | None = None) -> list[dict]:
+        """usage_log: where this call's model usage goes (to charge it), else the server's log."""
+        from dataclasses import replace
         if "client" not in made:
             made["client"] = Client(usage_log=home / "logs" / "llm_usage.jsonl")
         client = made["client"]
+        if usage_log is not None:
+            usage_log.parent.mkdir(parents=True, exist_ok=True)
+            client = replace(client, usage_log=usage_log)
         return scene_profile.describe(photos, classes, client, client.model_for("scene"))
     return describe
 

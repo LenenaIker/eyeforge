@@ -6,8 +6,11 @@ Tiers (docs/plan_login.md, user 2026-10-03):
   normal  everything costs credits, the interview included; a new account has none
   banned  nothing works (the owner's hand brake against abuse)
 
-Credits are a ledger: the balance is the sum of the moves, each with its reason (grant, purchase, run,
-interview, refund). Run from the server with `sim2chip accounts ...` and `sim2chip credits ...`.
+The balance is in dollars (user, 2026-10-09). Things are charged by their use, not at a flat price: what a job,
+a chat or a labeling really cost us (Token Factory tokens, Tavily searches, Nebius GPU time; usage.py) times
+MARGIN, charged as it happens. Money in is a ledger of moves (grant, purchase); usage is one line per job or
+chat that grows while it runs. Starting something only needs the balance to cover its usual price (START).
+Run from the server with `sim2chip accounts ...` and `sim2chip credits ...`.
 """
 from __future__ import annotations
 
@@ -19,8 +22,10 @@ from pathlib import Path
 
 # Sponsor, organiser and judges' companies of the Nebius x NVIDIA hackathon: the rules want them free of charge.
 JUDGE_DOMAINS = {"nvidia.com", "nebius.com", "tavily.com", "devpost.com"}
-RUN_COST = 1.0         # a run of the pipeline
-INTERVIEW_COST = 0.1   # an interview (a few cents of Token Factory, but nothing is free for normal accounts)
+MARGIN = 2.0  # price = our cost x MARGIN: failed tries, the warm GPU's idle minutes, payment fees (user, 2026-10-09)
+# Dollars the balance must hold to start each, about its usual price with the margin: a first Nebius run cost
+# 0.56 $ (2026-09-27), a labeling a few GPU minutes, a chat a few cents of tokens.
+START = {"run": 1.0, "label": 0.2, "chat": 0.05, "profile": 0.05}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -30,6 +35,9 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE TABLE IF NOT EXISTS credits (
     account TEXT NOT NULL, amount REAL NOT NULL, reason TEXT NOT NULL, detail TEXT, t REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS credits_account ON credits (account);
+CREATE TABLE IF NOT EXISTS usage (
+    account TEXT NOT NULL, key TEXT NOT NULL, reason TEXT NOT NULL, cost REAL NOT NULL, usd REAL NOT NULL,
+    t REAL NOT NULL, PRIMARY KEY (account, key));
 """
 
 
@@ -112,34 +120,37 @@ class Accounts:
                                    (value, email)).rowcount
 
     def balance(self, acc_id: str) -> float:
-        v = self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ?", (acc_id,)).fetchone()
-        return round(v[0], 4)
+        got = self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ?", (acc_id,)).fetchone()[0]
+        used = self.db.execute("SELECT COALESCE(SUM(usd), 0) FROM usage WHERE account = ?", (acc_id,)).fetchone()[0]
+        return round(got - used, 4)
 
     def moves(self, acc_id: str, limit: int = 200) -> list[dict]:
-        """The latest moves of the ledger, newest first."""
-        rows = self.db.execute("SELECT amount, reason, detail, t FROM credits WHERE account = ? ORDER BY t DESC "
-                               "LIMIT ?", (acc_id, limit)).fetchall()
+        """The latest moves, newest first: money in, and what each job or chat has used (still growing while it
+        runs)."""
+        rows = self.db.execute("SELECT amount, reason, detail, t FROM credits WHERE account = ? UNION ALL "
+                               "SELECT -usd, reason, key, t FROM usage WHERE account = ? ORDER BY 4 DESC LIMIT ?",
+                               (acc_id, acc_id, limit)).fetchall()
         return [{"amount": round(a, 4), "reason": r, "detail": d, "t": t} for a, r, d, t in rows]
 
     def add(self, acc_id: str, amount: float, reason: str, detail: str | None = None) -> None:
         with self.lock:
             self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)", (acc_id, amount, reason, detail, time.time()))
 
-    def charge(self, acc: Account, cost: float, reason: str, detail: str | None = None) -> bool:
-        """Pay `cost` for `reason`: free for a judge, refused for a banned account or a short balance."""
+    def can_start(self, acc: Account, reason: str) -> bool:
+        """May this account start a run, a labeling, a chat...: free for a judge, never when banned, else when
+        the balance covers its usual price."""
         tier = self.tier(acc)
-        if tier == "judge":
-            return True
-        if tier == "banned":
-            return False
-        with self.lock:
-            have = self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ?",
-                                   (acc.id,)).fetchone()[0]
-            if have + 1e-9 < cost:
-                return False
-            self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)", (acc.id, -cost, reason, detail, time.time()))
-            return True
+        return tier == "judge" or (tier == "normal" and self.balance(acc.id) + 1e-9 >= START[reason])
 
-    def refund(self, acc: Account, cost: float, detail: str | None = None) -> None:
-        if self.tier(acc) == "normal":
-            self.add(acc.id, cost, "refund", detail)
+    def meter(self, acc_id: str, key: str, reason: str, cost: float) -> float:
+        """What `key` (a job, a chat) has cost us so far, in dollars: its usage line becomes cost x MARGIN (free
+        for a judge, whose cost is still kept). Usage only grows. Returns the balance."""
+        acc = self.get(acc_id)
+        if acc is None:
+            return 0.0
+        usd = 0.0 if self.tier(acc) == "judge" else round(cost * MARGIN, 4)
+        with self.lock:
+            self.db.execute("INSERT INTO usage VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (account, key) DO UPDATE SET "
+                            "cost = excluded.cost, usd = MAX(usd, excluded.usd), t = excluded.t "
+                            "WHERE excluded.cost > cost", (acc_id, key, reason, round(cost, 6), usd, time.time()))
+        return self.balance(acc_id)

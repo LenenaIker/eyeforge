@@ -53,7 +53,7 @@ def server(tmp_path):
 
     app = create_app(tmp_path, backend="nebius", interviewer=interviewer, launcher=launcher, public=True,
                      max_runs=5, auth=auth, accounts=accounts, contact="judges@eyeforge.test")
-    app.accounts, app.launched = accounts, launched
+    app.accounts, app.launched, app.home = accounts, launched, tmp_path
     return app
 
 
@@ -93,21 +93,53 @@ def test_callback_needs_the_state_of_its_own_login(server):
     assert c.get("/api/me").json()["signed_in"] is False
 
 
-def test_normal_account_pays_for_everything(server):
+def used(app, name, cloud_usd=0.0, tokens=0):
+    """The job used this much Nebius GPU time and Token Factory tokens; the meter charges it."""
+    from sim2chip.workspace import Job
+    job = Job(app.home / "jobs" / name)
+    job.logs.mkdir(parents=True, exist_ok=True)
+    (job.logs / "cloud_usage.jsonl").write_text(json.dumps({"hours": 0.2, "usd_estimate": cloud_usd}) + "\n")
+    (job.logs / "llm_usage.jsonl").write_text(json.dumps({"model": "m", "purpose": "label", "prompt_tokens": tokens,
+                                                          "completion_tokens": 0}) + "\n")
+    (app.home / "cache").mkdir(exist_ok=True)
+    (app.home / "cache" / "token_prices.json").write_text(json.dumps({"t": time.time(), "prices": {
+        "m": {"input": 1e-6, "output": 2e-6}}}))
+    app.meter_job(job, running=True)
+    return job
+
+
+def test_normal_account_pays_for_what_it_uses(server):
     c = sign_in(server, "google", "alice")
     me = c.get("/api/me").json()
-    assert me["account"]["tier"] == "normal" and me["account"]["credits"] == 0
+    assert me["account"]["tier"] == "normal" and me["account"]["balance"] == 0
     assert c.post("/api/interview").status_code == 402
     assert new_job(c).status_code == 402
     assert server.launched == []
     acc = server.accounts.by_email("alice@gmail.com")[0]
     server.accounts.add(acc.id, 1.1, "grant")
     assert c.post("/api/interview").status_code == 200
-    assert new_job(c).status_code == 200 and len(server.launched) == 1
-    assert c.get("/api/me").json()["account"]["credits"] == 0
-    again = new_job(c)  # the same setup twice (a double click) is the running job, not a second charge
+    name = new_job(c).json()["job"]
+    assert len(server.launched) == 1
+    assert c.get("/api/me").json()["account"]["balance"] == 1.1  # nothing charged before it uses anything
+    used(server, name, cloud_usd=0.2, tokens=50_000)  # 0.25 $ of cost, twice that charged
+    assert c.get("/api/me").json()["account"]["balance"] == 0.6
+    used(server, name, cloud_usd=0.2, tokens=50_000)  # the same usage read again is not charged twice
+    assert c.get("/api/me").json()["account"]["balance"] == 0.6
+    moves = c.get("/api/billing").json()["moves"]
+    assert moves[0] == {**moves[0], "amount": -0.5, "reason": "run", "detail": f"job:{name}"}
+    again = new_job(c)  # the same setup twice (a double click) is the running job
     assert again.status_code == 200 and again.json().get("already_running") and len(server.launched) == 1
-    assert new_job(c, "black cows").status_code == 402
+    assert new_job(c, "black cows").status_code == 402  # 0.6 $ does not cover a usual run
+
+
+def test_a_job_stops_when_the_balance_runs_out(server):
+    c = sign_in(server, "google", "alice")
+    acc = server.accounts.by_email("alice@gmail.com")[0]
+    server.accounts.add(acc.id, 1.0, "grant")
+    name = new_job(c).json()["job"]
+    job = used(server, name, cloud_usd=0.6)
+    assert server.accounts.balance(acc.id) == -0.2
+    assert "the balance ran out" in (job.logs / "pipeline.log").read_text()
 
 
 def test_verified_judge_domain_is_free_unverified_is_not(server):
@@ -116,7 +148,9 @@ def test_verified_judge_domain_is_free_unverified_is_not(server):
     for i in range(3):
         assert new_job(judge, f"cam {i}").status_code == 200
     assert len(server.launched) == 3
-    assert judge.get("/api/me").json()["account"]["credits"] == 0  # nothing charged
+    name = judge.get("/api/jobs").json()["jobs"][0]
+    used(server, name, cloud_usd=0.5)
+    assert judge.get("/api/me").json()["account"]["balance"] == 0  # nothing charged
     fake = sign_in(server, "google", "fake")  # a nebius.com address Google did not verify
     assert fake.get("/api/me").json()["account"]["tier"] == "normal"
     gh = sign_in(server, "github", "gh")  # a verified secondary email of a judge domain counts
@@ -148,7 +182,7 @@ def test_jobs_follow_the_account_to_another_device(server):
     assert other.get(f"/api/jobs/{name}").status_code == 404
 
 
-def test_a_run_that_cannot_start_is_refunded(tmp_path):
+def test_a_run_that_cannot_start_costs_nothing(tmp_path):
     auth = Auth("https://eyeforge.test", "x" * 32, {"google": ("gid", "gsec")}, http=fake_http)
     accounts = Accounts(tmp_path / "accounts.db")
 

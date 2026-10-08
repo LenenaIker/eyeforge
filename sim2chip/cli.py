@@ -170,7 +170,7 @@ def cmd_accounts(args) -> int:
     if args.action == "list":
         for a in accs.all():
             flags = " ".join(f for f, on in (("judge:" + str(a.judge), a.judge), ("banned", a.banned)) if on)
-            print(f"{a.email or '-':40} {a.provider:7} {accs.balance(a.id):8g} credits  {flags}")
+            print(f"{a.email or '-':40} {a.provider:7} ${accs.balance(a.id):8.2f}  {flags}")
         return 0
     if not args.email:
         raise SystemExit(f"accounts {args.action} needs an email")
@@ -187,7 +187,7 @@ def cmd_credits(args) -> int:
         raise SystemExit(f"no account with {args.email}: it must sign in once first")
     for a in found:
         accs.add(a.id, args.amount, "grant", args.note)
-        print(f"{a.email} ({a.provider}): {accs.balance(a.id):g} credits")
+        print(f"{a.email} ({a.provider}): ${accs.balance(a.id):.2f}")
     return 0
 
 
@@ -254,10 +254,10 @@ def main(argv: list[str] | None = None) -> int:
     ac.add_argument("email", nargs="?", help="the account's email (every account with it)")
     ac.set_defaults(func=cmd_accounts)
 
-    cr = sub.add_parser("credits", help="give credits to an account of the public server")
+    cr = sub.add_parser("credits", help="add dollars to the balance of an account of the public server")
     cr.add_argument("action", choices=["grant"])
     cr.add_argument("email")
-    cr.add_argument("amount", type=float, help="credits (a run costs 1)")
+    cr.add_argument("amount", type=float, help="dollars (things are charged by use, about 1 $ a run)")
     cr.add_argument("--note", default=None)
     cr.set_defaults(func=cmd_credits)
 

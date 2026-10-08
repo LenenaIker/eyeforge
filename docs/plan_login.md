@@ -48,9 +48,10 @@ Decisiones del usuario (2026-10-03):
 - **Cuentas y créditos:** SQLite en `SIM2CHIP_HOME/accounts.db`.
   - Tabla `accounts` (id, proveedor, id del proveedor, correo, correo verificado, creada).
   - Columnas de nivel en `accounts`: `judge` (dominio o a mano) y `banned`.
-  - Tabla `credits` (movimientos con motivo: `grant`, `purchase`, `run`, `interview`, `refund`).
-  - El saldo es la suma de movimientos.
-  - Una ejecución descuenta al lanzarse y devuelve el crédito si falla antes de usar la GPU.
+  - Saldo en dólares y cobro por uso (usuario, 2026-10-09): lo que cuesta a nosotros (tokens de Token Factory, búsquedas de Tavily, horas de GPU en Nebius) ×2, cobrado mientras se usa.
+  - Tabla `credits`: entradas de dinero (`grant`, `purchase`). Tabla `usage`: una línea por trabajo, chat o ficha pedida (`job:<nombre>`, `chat:<sesión>`, `profile:<dataset>`) que crece mientras corre. Saldo = entradas menos uso.
+  - Para empezar algo basta con que el saldo cubra su precio habitual (`accounts.START`: modelo 1 $, etiquetado 0,2 $, chat 0,05 $). Un trabajo que deja el saldo en negativo se para y se puede reanudar al recargar (las etapas hechas se guardan); un chat sin saldo no sigue.
+  - La ficha automática de un dataset es gratis; "Look again" se cobra. Los jueces no pagan, pero su coste se guarda.
 - **Propietario de trabajos:** el fichero `owner` guarda el id de cuenta en vez del visitante. Los trabajos de visitantes anteriores ya no se verán, lo cual da igual porque aún no hay demo pública.
 - **API:**
   - `/api/me`: cuenta, saldo y si es jurado.

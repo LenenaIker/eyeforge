@@ -2,7 +2,7 @@ import { Box, CircleUser, CreditCard, Cpu, Images, KeyRound, LogOut, Menu, Messa
          Shapes, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate, useOutletContext } from "react-router-dom";
-import { getConfig, getMe, loginUrl, logout, onAccountChange, unlock, type Config, type Me } from "../api";
+import { getConfig, getMe, loginUrl, logout, onAccountChange, unlock, usd, type Config, type Me } from "../api";
 import InstallButton from "../components/InstallButton";
 import { Badge, Button, Card, Logo, Notice, cx } from "../components/ui";
 
@@ -29,7 +29,7 @@ export default function AppShell() {
     }).catch((e) => setError(e.message));
   };
   useEffect(load, []);
-  useEffect(() => onAccountChange(loadMe), []);  // a 401, 402 or 403 anywhere: the session or the credits changed
+  useEffect(() => onAccountChange(loadMe), []);  // a 401, 402 or 403 anywhere: the session or the balance changed
 
   const account = me?.account;
   const gate = config?.locked ? "key"
@@ -82,7 +82,7 @@ export default function AppShell() {
           {gate === "key" && <KeyGate onOpen={load} />}
           {gate === "login" && <SignIn me={me!} providers={config!.login!} />}
           {gate === "paused" && <Paused contact={me!.contact} />}
-          {!gate && me?.signed_in && account?.tier === "normal" && account.credits < me.costs.run && <CreditsNotice me={me} />}
+          {!gate && me?.signed_in && account?.tier === "normal" && account.balance < me.costs.start.run && <CreditsNotice me={me} />}
           {!gate && <Outlet context={{ config, me, refreshJobs, stamp } satisfies AppContext} />}
         </main>
       </div>
@@ -228,12 +228,12 @@ function Paused({ contact }: { contact: string | null }) {
 }
 
 function CreditsNotice({ me }: { me: Me }) {
-  const credits = me.account!.credits;
+  const balance = me.account!.balance;
   return (
     <div className="pt-4">
       <Notice>
-        {credits > 0 ? `You have ${credits} credits. ` : "Your account has no credits yet. "}
-        A model costs {me.costs.run} credit and the interview {me.costs.interview}. Buying credits is coming soon.
+        {balance > 0 ? `Your balance is ${usd(balance)}. ` : "Your balance is empty. "}
+        You pay what you use: a model is usually about {usd(me.costs.start.run)}, a chat a few cents. Topping up is coming soon.
         {me.judging && me.contact && <> <JudgeLine contact={me.contact} /></>}
       </Notice>
     </div>
@@ -255,7 +255,7 @@ function AccountMenu({ me }: { me: Me }) {
               className="flex h-9 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-muted hover:bg-gray-100 hover:text-ink">
         <CircleUser className="h-5 w-5" strokeWidth={1.75} />
         {acc.tier === "judge" ? <Badge tone="brand">Judge</Badge>
-          : acc.tier === "normal" ? <Badge tone={acc.credits > 0 ? "neutral" : "ember"}>{acc.credits} credits</Badge> : null}
+          : acc.tier === "normal" ? <Badge tone={acc.balance > 0 ? "neutral" : "ember"}>{usd(acc.balance)}</Badge> : null}
       </button>
       {open && (
         <div className="absolute right-0 mt-2 w-64 overflow-hidden rounded-[var(--radius-card)] border border-line bg-white py-1 shadow-lg">
@@ -263,7 +263,7 @@ function AccountMenu({ me }: { me: Me }) {
             <div className="truncate font-medium">{acc.name || acc.email}</div>
             {acc.name && <div className="truncate text-muted">{acc.email}</div>}
             <div className="mt-1 text-xs text-muted">
-              {acc.tier === "judge" ? "Judge access: free while the judging lasts." : `${acc.credits} credits`}
+              {acc.tier === "judge" ? "Judge access: free while the judging lasts." : `Balance ${usd(acc.balance)}`}
             </div>
           </div>
           <div className="border-t border-line px-2 py-1"><SignOutButton /></div>
