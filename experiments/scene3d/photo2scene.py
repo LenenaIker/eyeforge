@@ -27,8 +27,10 @@ PY = {
     'trellis': HOME / 'miniforge3/envs/trellis2/bin/python',
     'mesh': Path('/media/lenena-iker/Crucial/envs/eyeforge-sam3d/bin/python'),
     'isaac': Path('/opt/isaacsim/isaac-sim-5.1.0-20260318-clean/python.sh'),
+    'qwen': Path('/media/lenena-iker/Crucial/envs/eyeforge-qwenedit/bin/python'),
 }
-ENV = {'PYOPENGL_PLATFORM': 'egl', 'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True'}
+ENV = {'PYOPENGL_PLATFORM': 'egl', 'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True',
+       'HF_HOME': os.environ.get('HF_HOME', '/media/lenena-iker/Crucial/hf_cache')}
 
 
 def gpu_temp():
@@ -64,7 +66,7 @@ class Flow:
         rec = self.log['steps'].setdefault(step, {})
         if outputs and all((self.d / o).exists() for o in outputs) and rec.get('status') in ('ok', 'stop'):
             return rec.get('code', 0)
-        if env in ('mesh', 'sam3', 'isaac', 'trellis'):
+        if env in ('mesh', 'sam3', 'isaac', 'trellis', 'qwen'):
             gpu_temp()
         t0 = time.time()
         logf = self.d / 'logs' / f'{step}.log'
@@ -113,6 +115,10 @@ def phase1(f, until):
     f.run('1.3a_prepare', 'sam3', [s3 / 'bg_prepare.py', '--image', f.image, '--objects', objects, '--support', ground,
                                    '--keep-inside', surroundings, '--out', d] + (['--shadows'] if fin['weather'] == 'sunny' else []),
           ['background.png', 'ground.npz'])
+    # 1.3a_erase: Qwen-Image-Edit redraws what stood behind the objects inside LaMa's mask; LaMa only blurred it
+    # (experiments/NOTES.md, 2026-10-08). background.png becomes Qwen's, LaMa's stays as background_lama.png.
+    if f.eraser == 'qwen':
+        f.run('1.3a_erase', 'qwen', [s3 / 'erase_qwen.py', '--dir', d, '--replace'], ['background_qwen.png'])
     prep = jload(d, 'prepare.json')
     if not f.check('1.3a_prepare', prep['support_frac'] > 0.03,
                    {'instances': len(prep['instances']), 'support_frac': prep['support_frac']},
@@ -314,11 +320,14 @@ def main():
     ap.add_argument('--redo', default='', help='a step number (1.3c) to run again with all the steps after it')
     ap.add_argument('--voxels', choices=['sam3d', 'ccm', 'hybrid'], default='sam3d',
                     help="SAM 3D stage-2 voxels (flow_sam3d.py --voxels)")
+    ap.add_argument('--eraser', choices=['qwen', 'lama'], default='qwen',
+                    help='object removal: Qwen-Image-Edit (about 5 min a photo on the 3090) or LaMa alone')
     ap.add_argument('--axis-scale', action='store_true', help='flow_refine.py --axis-scale')
     args = ap.parse_args()
     f = Flow(args.image, args.dir)
     f.voxels = args.voxels
     f.axis_scale = args.axis_scale
+    f.eraser = args.eraser
     if args.redo:
         # The step and every step after it in the flow's order: later outputs depend on earlier ones.
         order = ['1.1', '1.2', '1.3a', '1.4', '1.3b', '1.3c', '1.5a', '1.5b', '1.5c', '2', '3']
