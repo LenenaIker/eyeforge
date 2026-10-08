@@ -381,9 +381,20 @@ def phase3(f, until):
     f.run('3.4b_views', 'sam3', [s3 / 'flow_check_views.py', '--dir', d / 'extended']
           + (['--indoor'] if t == 'room' else []), ['extended/views.json'])
     v = jload(d, 'extended/views.json')
-    return f.check('3.4b_views', v['ok'], {'kept': v['kept'], 'share': v['share'],
-                                          'dropped': [(x['view'], x['why']) for x in v['views'] if not x['keep']]},
-                   f"only {v['share']:.0%} of the views pass")
+    if not f.check('3.4b_views', v['ok'], {'kept': v['kept'], 'share': v['share'],
+                                         'dropped': [(x['view'], x['why']) for x in v['views'] if not x['keep']]},
+                   f"only {v['share']:.0%} of the views pass"):
+        return False
+    # 3.5 The erased things come back at random in every kept view (a new draw per view), rendered and labelled:
+    # boxes for the targets and the distractors, none for the place's own furniture.
+    f.run('3.5_populate', 'trellis', [s3 / 'flow_populate.py', '--dir', d], ['populated/isaac/scene.json'])
+    f.run('3.5_render', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'populated', '--hdri-dir', hdri],
+          ['populated/sheet_isaac.jpg'])
+    f.run('3.5_labels', 'trellis', [s3 / 'view_labels.py', '--dir', d / 'populated'], ['populated/isaac/labels.json'])
+    p = jload(d, 'populated/populate.json')
+    return f.check('3.5_populate', sum(p['placed_per_view']) > 0,
+                   {'assets': p['assets'], 'placed_per_view': p['placed_per_view'], 'never_placed': p['never_placed']},
+                   'no asset found a place in any view')
 
 
 def main():
@@ -435,7 +446,7 @@ def main():
     if not phase3(f, args.until):
         print('stopped in phase 3')
         return
-    print('place ready:', f.d / 'extended')
+    print('place ready:', f.d / 'extended', '| views with assets and labels:', f.d / 'populated')
 
 
 if __name__ == '__main__':

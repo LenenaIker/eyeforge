@@ -5,7 +5,9 @@ background mesh and by each other) and one box per visible object, like BOP's ma
     PYOPENGL_PLATFORM=egl python view_labels.py --dir data/scene3d_test/ours/hope_val_000001 [--min-pixels 30]
 
 Reads <dir>/isaac/{scene.json,meshes.npz}; writes <dir>/isaac/labels.json
-({"render_NN.png": [[x0, y0, x1, y1], ...]}, pixels) and inst_NN.png (instance id + 1, 0 = none).
+({"render_NN.png": [[x0, y0, x1, y1], ...]}, pixels) and inst_NN.png (instance id + 1, 0 = none). For a scene
+with "roles" (flow_populate.py) each label is {"box", "name", "role"} and the place's own objects get none: the
+student trains on the targets, the distractors' boxes are kept to count how often they show.
 """
 import argparse
 import json
@@ -28,8 +30,14 @@ def main():
     d = os.path.join(args.dir, 'isaac')
     scene_def = json.load(open(os.path.join(d, 'scene.json')))
     arrays = np.load(os.path.join(d, 'meshes.npz'))
+    roles = scene_def.get('roles')  # flow_populate.py: name and role (target, distractor, scene) per object
     w, h = scene_def['size']
-    bg = trimesh.Trimesh(arrays['bg_points'], arrays['bg_faces'], process=False)
+    if 'bg_points' in arrays.files:
+        bg = trimesh.Trimesh(arrays['bg_points'], arrays['bg_faces'], process=False)
+    else:  # a place built in pieces (piece_build.py): its quads hide what stands behind them
+        quads = [np.asarray(p['points'], float) for p in scene_def['pieces']]
+        bg = trimesh.Trimesh(np.concatenate(quads), np.concatenate(
+            [np.array([[0, 1, 2], [0, 2, 3], [0, 2, 1], [0, 3, 2]]) + 4 * i for i in range(len(quads))]), process=False)
     objs = [trimesh.Trimesh(arrays[f'obj{i}_points'], arrays[f'obj{i}_faces'], process=False)
             for i in range(scene_def['objects'])]
     cam = pyrender.IntrinsicsCamera(scene_def['fx'], scene_def['fy'], scene_def['cx'], scene_def['cy'],
@@ -59,7 +67,11 @@ def main():
             keep = np.isin(parts, 1 + np.nonzero(sizes >= sizes.max() / 5)[0])
             ys, xs = np.nonzero(keep)
             if len(xs) >= args.min_pixels:
-                boxes.append([int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1])
+                box = [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+                if roles is None:
+                    boxes.append(box)
+                elif roles[ids[j - 1]]['role'] != 'scene':  # the place's own furniture is background
+                    boxes.append({'box': box, **roles[ids[j - 1]]})
         labels[f'render_{k:02d}.png'] = boxes
         Image.fromarray(inst).save(os.path.join(d, f'inst_{k:02d}.png'))
     renderer.delete()

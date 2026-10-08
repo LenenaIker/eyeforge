@@ -106,6 +106,16 @@ def main():
         answers = map_within(ask, list(range(len(boxes))), seconds=600)
         gone = [(bx, ans['name'].strip() or 'object') for bx, ans in zip(boxes, answers)
                 if ans and ans['gone'] and isinstance(ans.get('name'), str)]
+        # A region next to an asked instance and named like it is a piece of that same thing the mask missed (an
+        # edge or a shadow of the car on facade_car, 2026-10-08: two flat "blue car" slabs), not a new asset.
+        near = [np.asarray(Image.fromarray(m.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(41))) > 0
+                for m in masks]
+
+        def same_thing(bx, name):
+            words = set(name.lower().split())
+            return any(words & set(names[k].lower().split()) and near[k][bx[1]:bx[3], bx[0]:bx[2]].any()
+                       for k in range(asked))
+        gone = [(bx, name) for bx, name in gone if not same_thing(bx, name)]
         if gone:
             model = Sam3TrackerModel.from_pretrained('facebook/sam3').cuda().eval()
             proc = Sam3TrackerProcessor.from_pretrained('facebook/sam3')
