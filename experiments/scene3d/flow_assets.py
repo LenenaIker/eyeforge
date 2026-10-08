@@ -102,7 +102,7 @@ def main():
             pair(photo, background, boxes[k], path)
             msg = [{'role': 'user', 'content': [{'type': 'text', 'text': PROMPT}, image_part(path)]}]
             return ask_json(client, msg, args.model, purpose='scene_assets',
-                            check=lambda v: isinstance(v.get('gone'), bool), temperature=0.0, max_tokens=4096)
+                            check=lambda v: isinstance(v.get('gone'), bool), temperature=0.0, max_tokens=16384)
         answers = map_within(ask, list(range(len(boxes))), seconds=600)
         gone = [(bx, ans['name'].strip() or 'object') for bx, ans in zip(boxes, answers)
                 if ans and ans['gone'] and isinstance(ans.get('name'), str)]

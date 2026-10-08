@@ -190,7 +190,7 @@ class QAAssets(Stage):
     def judge(self, ctx: Context, assets: list[dict]) -> dict:
         from PIL import Image
 
-        from ..llm import WORKERS, Client, LLMError, ask_json, image_part
+        from ..llm import REASONING_TOKENS, WORKERS, Client, LLMError, ask_json, image_part
 
         prev = ctx.job.stage_dir("preview_assets")
         views = json.loads((prev / "views.json").read_text())
@@ -229,7 +229,7 @@ class QAAssets(Stage):
             return path
 
         def ask(msg, mdl, purpose, check):
-            return ask_json(client, msg, mdl, purpose, check, temperature=0.0, max_tokens=4096)
+            return ask_json(client, msg, mdl, purpose, check, temperature=0.0, max_tokens=REASONING_TOKENS)
 
         errors = []
 

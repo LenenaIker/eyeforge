@@ -265,7 +265,7 @@ def photo_ranker(client, model: str, limit: int = 80, workers: int | None = None
 
     from PIL import Image, ImageOps
 
-    from .llm import PHOTO_CALL, image_part, map_within, parse_json
+    from .llm import PHOTO_CALL, REASONING_TOKENS, image_part, map_within, parse_json
     from .workspace import IMAGE_EXT
 
     def rank(folder: str, query: str, progress=None) -> list[dict]:
@@ -282,8 +282,8 @@ def photo_ranker(client, model: str, limit: int = 80, workers: int | None = None
                     im.save(small, quality=85)
                 msg = [{"role": "user", "content": [{"type": "text", "text": prompt}, image_part(small)]}]
                 try:
-                    # 4096: Kimi-K2.6 reasons first and returned nothing within 1024 (2026-10-01)
-                    v = parse_json(client.chat(msg, model, purpose="pick_photos", temperature=0.0, max_tokens=4096,
+                    # Kimi-K2.6 reasons first: nothing within 1024 (2026-10-01), often cut at 4096
+                    v = parse_json(client.chat(msg, model, purpose="pick_photos", temperature=0.0, max_tokens=REASONING_TOKENS,
                                                **PHOTO_CALL))
                     ok = v.get("shows") and v.get("whole")
                     return {"file": str(f.resolve()), "score": float(v.get("score", 0)) if ok else 0.0,

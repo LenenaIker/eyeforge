@@ -60,7 +60,7 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
     is called as photos finish."""
     from PIL import Image, ImageOps
 
-    from .llm import PHOTO_CALL, ask_json, image_part, map_within
+    from .llm import PHOTO_CALL, REASONING_TOKENS, ask_json, image_part, map_within
 
     sample = sorted(photos)
     random.Random(seed).shuffle(sample)
@@ -77,7 +77,7 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
         msg = [{"role": "user", "content": [{"type": "text", "text": PROMPT.format(classes=classes)},
                                             image_part(small)]}]
         v = ask_json(client, msg, model, "scene_profile", lambda v: v.get("context") in CONTEXTS,
-                     tries=1, temperature=0.0, max_tokens=4096, **PHOTO_CALL)
+                     tries=1, temperature=0.0, max_tokens=REASONING_TOKENS, **PHOTO_CALL)
         return {**v, "photo": f.name} if v else None
 
     try:

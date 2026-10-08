@@ -56,6 +56,10 @@ WORKERS = int(os.environ.get("SIM2CHIP_LLM_WORKERS", "8"))
 # Seen 2026-09-30: GLM-5.3-Flash took 75 to 571 s per photo and the default 120 s x 5 attempts, twice, kept
 # the user 20 minutes on "Looking at your photos".
 PHOTO_CALL = {"timeout": 45.0, "retries": 1}
+# Answer budget of a reasoning model that looks at a photo: at 4096 tokens Kimi K2.6 often spent them all on its
+# reasoning and never answered (25 of 32 scene descriptions, so every chat fell back to the default scene;
+# 2026-10-09). At 16384 the same photo got its answer in 18 s.
+REASONING_TOKENS = 16384
 
 
 def map_within(fn, items: list, seconds: float, workers: int | None = None, progress=None) -> list:
