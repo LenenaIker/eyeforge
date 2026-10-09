@@ -565,3 +565,19 @@ def test_a_failed_job_can_be_tried_again(app, tmp_path):
     r = app.post("/api/jobs/barn_cam/retry")
     assert r.status_code == 200 and app.launched[-1][0] == "barn_cam"
     assert app.post("/api/jobs/barn_cam/retry").status_code == 409  # running again
+
+
+def test_a_chat_goes_on_after_the_server_restarts(tmp_path):
+    """A deploy restarts the server: the chat comes back from its transcript, its proposal still waiting."""
+    def interviewer():
+        cats = interview.CategoryIndex(counts={"cow": 62})
+        return interview.Session(Scripted([{"say": "Where is the camera?"}, {"spec": GOOD}]), "m", cats)
+
+    before = TestClient(create_app(tmp_path, backend="nebius", interviewer=interviewer))
+    sid = before.post("/api/interview").json()["session"]
+    before.post(f"/api/interview/{sid}", json={"text": "cows"})
+    assert before.post(f"/api/interview/{sid}", json={"text": "on a post"}).json()["kind"] == "confirm"
+    after = TestClient(create_app(tmp_path, backend="nebius", interviewer=interviewer))  # a new server process
+    t = after.post(f"/api/interview/{sid}", json={"text": "yes"}).json()
+    assert t["kind"] == "done" and t["spec"]["name"] == "Barn Cam"
+    assert after.post("/api/interview/0123456789abcdef0123456789abcdef", json={"text": "x"}).status_code == 404

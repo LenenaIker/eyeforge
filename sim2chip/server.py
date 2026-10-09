@@ -487,19 +487,27 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def interview_start(request: Request, job: str | None = None, kit: str | None = None):
         """A new interview, or (job=<name>) one that revises a trained job's spec; kit=<id>: a new model that
         starts from that kit of the user's library."""
-        nonlocal new_session
         revising = job_of(job, request) if job else None
         acc = may_start(request, "chat")
-        if new_session is None:
-            new_session = default_interviewer(home, backend, public)
         now = time.time()
         for old in [k for k, t in started.items() if now - t > SESSION_HOURS * 3600]:  # abandoned chats
             sessions.pop(old, None), started.pop(old, None), locks.pop(old, None)
         sid = uuid.uuid4().hex
-        started[sid] = now
-        sessions[sid] = new_session()
         (home / "uploads" / sid).mkdir(parents=True, exist_ok=True)
         (home / "uploads" / sid / SESSION_OWNER).write_text(owner_of(request))
+        open_session(sid, request, acc, kit)
+        if revising:
+            turn = sessions[sid].revise(spec_mod.load(latest_spec(revising)))
+            return {"session": sid, "text": turn.text, "job": revising.name}
+        return {"session": sid, "text": FIRST_QUESTION}
+
+    def open_session(sid: str, request: Request, acc, kit: str | None = None) -> None:
+        """The interview object of a chat, with its uploads folder, transcript, payer and library."""
+        nonlocal new_session
+        if new_session is None:
+            new_session = default_interviewer(home, backend, public)
+        started[sid] = time.time()
+        sessions[sid] = new_session()
         if acc is not None:
             chat_payer[sid] = acc.id
         sessions[sid].uploads = home / "uploads" / sid
@@ -518,19 +526,29 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 return folders / f"library_{ds}"
             sessions[sid].use_library(*lib.for_chat(owner), kit=chosen,
                                       notes=functools.partial(lib.describe, owner), open_dataset=open_dataset)
-        if revising:
-            turn = sessions[sid].revise(spec_mod.load(latest_spec(revising)))
-            return {"session": sid, "text": turn.text, "job": revising.name}
-        return {"session": sid, "text": FIRST_QUESTION}
 
     locks: dict[str, threading.Lock] = {}
 
     def chat_of(sid: str, request: Request):
         """The interview session, only for who started it (its id alone is not enough)."""
+        if not owns_upload(sid, request):
+            raise HTTPException(404, "unknown interview session")
         session = sessions.get(sid)
-        if session is None or not owns_upload(sid, request):
+        saved = home / "logs" / "interviews" / f"{sid}.json"
+        if session is None and saved.exists() and not ended(sid).exists():
+            # The server restarted (a deploy) while this chat was open: it goes on from its transcript.
+            open_session(sid, request, getattr(request.state, "account", None))
+            if hasattr(sessions[sid], "restore"):
+                sessions[sid].restore(json.loads(saved.read_text()))
+                session = sessions[sid]
+            else:
+                sessions.pop(sid, None)
+        if session is None:
             raise HTTPException(404, "unknown interview session")
         return session
+
+    def ended(sid: str) -> Path:
+        return home / "uploads" / sid / ".ended"
 
     def owns_upload(sid: str, request: Request) -> bool:
         """Is uploads/<sid> (a chat's photos) the requester's? Kept on disk, so it holds after a restart."""
@@ -574,6 +592,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if turn.kind in ("done", "failed"):
             sessions.pop(sid, None)
             locks.pop(sid, None)
+            ended(sid).touch()  # over: never brought back from its transcript
         return out
 
     @app.post("/api/interview/{sid}")

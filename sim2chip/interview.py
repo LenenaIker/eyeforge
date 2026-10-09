@@ -603,6 +603,28 @@ class Session:
         if kit:
             self._note(f"The user starts this model from their kit \"{kit}\": use its datasets and objects.")
 
+    def restore(self, saved: list[dict]) -> None:
+        """Go on with a conversation from its transcript (_save), after the server restarted (a deploy cut a
+        user's chat, 2026-10-09): the model sees it as it was, the folders already analysed are not analysed
+        again, and a proposal still waiting for the user's yes is waiting again."""
+        from .llm import parse_json
+        self.messages = [m for m in saved if m.get("role") in ("system", "user", "assistant", "tool")]
+        notes = [m["content"] for m in self.messages if m["role"] == "user" and isinstance(m.get("content"), str)]
+        self.goal = next((n[:400] for n in notes if not n.startswith("[")), "")
+        for n in notes:
+            for folder in re.findall(r"^\[(?:Folder layout[^\]]*|Photo analysis of [^\]]*)\] (/[^\s:]+)", n):
+                self.analysed.add(folder.rstrip(":"))
+            for folder in re.findall(r"^\[Photo analysis of [^\]]* in (/[^\]\s]+)\]", n):
+                self.analysed.add(folder)
+        last = self.messages[-1] if self.messages else {}
+        if last.get("role") == "assistant":
+            try:
+                action = parse_json(last["content"])
+                if isinstance(action, dict) and isinstance(action.get("spec"), dict):
+                    self.proposed = spec_mod.from_dict(action["spec"])
+            except (ValueError, spec_mod.SpecError, TypeError):
+                pass
+
     def begin(self, activity_id: str | None = None) -> None:
         """Start a new turn's activity list; call before reply, add_photos or choose."""
         self.activity, self.activity_id = [], activity_id
