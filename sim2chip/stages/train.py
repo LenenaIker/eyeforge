@@ -39,7 +39,7 @@ DATA_FILE = "_train_set.pkl"  # the training arrays, handed to the seed processe
 
 class Train(Stage):
     name = "train"
-    version = "10"  # 3: blur from the hardware profile; 4: turns and tilts, last layer only with few photos; 5: same for count; 6: one steady count threshold; 7: count density output; 8: EfficientNetV2-B0 on generic; 9: PicoDet-S for count on generic; 10: PicoDet 600 steps in long epochs, seeds in parallel
+    version = "11"  # 11: real photos repeated for PicoDet too, more when the synthetic set misses classes; 3: blur from the hardware profile; 4: turns and tilts, last layer only with few photos; 5: same for count; 6: one steady count threshold; 7: count density output; 8: EfficientNetV2-B0 on generic; 9: PicoDet-S for count on generic; 10: PicoDet 600 steps in long epochs, seeds in parallel
     runtime = "tf"
     gpu = "any"
     max_hours = 2
@@ -114,7 +114,8 @@ class Train(Stage):
             raise ValueError("nothing to train on: no synthetic frames and no marked photos")
         random.Random(0).shuffle(real)
         held = max(1, round(len(real) * 0.2)) if len(real) >= 5 else 0
-        val, fit = real[:held], real[held:] + synth
+        rep = real_repeats(ctx, len(real) - held, len(synth), {q[2] for _, p in synth for q in p})
+        val, fit = real[:held], real[held:] * rep + synth
         if not val:
             val = (real or synth)[:20]
             ctx.log(f"only {len(real)} real photos: the threshold is picked on training photos, expect it optimistic")
@@ -123,7 +124,7 @@ class Train(Stage):
         def items(pairs):
             return [{"path": str(f), "boxes": detector.boxes_of(p, labels, side)} for f, p in pairs]
 
-        ctx.log(f"PicoDet-S at {size} px: {len(real) - held} real and {len(synth)} synthetic images to train, "
+        ctx.log(f"PicoDet-S at {size} px: {len(real) - held} real (each {rep} times) and {len(synth)} synthetic images to train, "
                 f"{len(val)} real to validate, {sum(len(p) for _, p in fit)} objects")
         args = {"fit": items(fit), "val": items(val), "val_photos": [str(f) for f, _ in val],
                 "truth": [[tuple(q) for q in p] for _, p in val], "labels": labels, "size": size, "out": str(out)}
@@ -158,8 +159,8 @@ class Train(Stage):
             n_synth = len(x)
         if real_dir.exists():
             xr, yr = tu.load_dir(real_dir, labels, size)
-            # Repeat the few real photos so they weigh about 1/real_weight of the synthetic set.
-            rep = max(1, n_synth // (max(len(xr), 1) * ctx.spec.training.real_weight))
+            shown = [labels[i] for i in set(ys[0].tolist())] if n_synth else []
+            rep = real_repeats(ctx, len(xr), n_synth, shown)
             xs += [xr] * rep
             ys += [yr] * rep
         if not xs:
@@ -194,8 +195,23 @@ class Train(Stage):
         # Cross-validation needs at least two real photos.
         if 2 <= len(xr) < HEAD_ONLY_BELOW * max(1, len(labels) - 1):
             return (xs, ms, xr, mr, pr), True
-        rep = max(1, len(ps) // (max(len(xr), 1) * ctx.spec.training.real_weight))
+        rep = real_repeats(ctx, len(xr), len(ps), {q[2] for p in ps for q in p})
         return (np.concatenate([xs] + [xr] * rep), np.concatenate([ms] + [mr] * rep), ps + pr * rep), False
+
+
+def real_repeats(ctx: Context, n_real: int, n_synth: int, shown) -> int:
+    """How many times the few real photos go into the mix: so they weigh about 1/real_weight of the synthetic set,
+    and more when the synthetic set lacks some classes (`shown`: the classes it has), which only the real photos
+    teach. A street-bin job whose bins had no 3D model trained on 15 real photos against 1984 synthetic ones that
+    showed only boxes and bags, and scored 1% (2026-10-09)."""
+    ids = [c.id for c in ctx.spec.classes]
+    covered = len(set(shown) & set(ids)) / max(1, len(ids))
+    weight = max(1, round(ctx.spec.training.real_weight * covered))
+    rep = max(1, n_synth // (max(n_real, 1) * weight))
+    if covered < 1 and n_synth:
+        ctx.log(f"the synthetic images show {covered:.0%} of the classes: the real photos weigh about 1/{weight} "
+                f"of them (repeated {rep} times)")
+    return rep
 
 
 def common_threshold(ctx: Context, summary: dict) -> None:

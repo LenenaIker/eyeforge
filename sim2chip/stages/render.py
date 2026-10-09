@@ -49,7 +49,7 @@ def expose(path) -> bool:
 
 class Render(Stage):
     name = "render"
-    version = "4"  # v2: paint, empty-frame distance and camera aim from the spec; v3: masonry parapets;
+    version = "5"  # v5: fewer frames when some classes have no 3D model; v2: paint, empty-frame distance and camera aim from the spec; v3: masonry parapets;
     # v4: sun behind the camera in most frames, room lamp, auto exposure and nearly black frames dropped
     runtime = "isaac"
     uses_cache = True
@@ -97,7 +97,11 @@ class Render(Stage):
         shots = _Shots(spec, rng, scene, props, paint, cam, scatter, targets)
         places = bool(spec.scene.contexts)
         visible, labels = [], []
-        for f in range(gen.frames):
+        frames = synthetic_frames(gen.frames, [c.id for c in spec.classes], targets)
+        if frames < gen.frames:
+            ctx.log(f"only {len(shots.classes)} of {len(spec.classes)} classes have 3D models: {frames} frames "
+                    f"instead of {gen.frames}, so the real photos of the others are not drowned")
+        for f in range(frames):
             scene.randomize(change_sky=f % 20 == 0)
             kind = "ground"
             if places:  # a new building and room every 20 frames, a context per frame by its share
@@ -120,7 +124,7 @@ class Render(Stage):
                            "cam_dist": round(shot.dist, 2), "cam_h": round(shot.height, 2), "painted": shot.painted,
                            "props": len(shot.props), "hidden": round(shot.hidden, 2)})
             if f % 200 == 0:
-                ctx.log(f"[{f}/{gen.frames}] {cls}")
+                ctx.log(f"[{f}/{frames}] {cls}")
         rep.orchestrator.wait_until_complete()
         kept = [lab for lab in labels if expose(out / f"rgb_{lab['frame']:04d}.png")]
         if len(kept) < len(labels):
@@ -181,6 +185,13 @@ def _camera(stage, cam_spec):
     cam.CreateClippingRangeAttr(Gf.Vec2f(0.1, 1000))
     cam.CreateFocalLengthAttr(aperture / 2 / math.tan(math.radians(cam_spec.hfov_deg) / 2))
     return cam
+
+
+def synthetic_frames(frames: int, classes: list[str], targets) -> int:
+    """The frames to render: the spec's, shrunk by the share of classes that have 3D models. Frames that show only
+    some classes outweigh the real photos of the others, which nothing else teaches."""
+    covered = len(set(targets) & set(classes)) / max(1, len(classes))
+    return max(1, round(frames * covered)) if covered else frames
 
 
 def _load_models(ctx: Context, props):

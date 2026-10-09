@@ -294,3 +294,14 @@ def test_ingest_recovers_the_split_of_a_job_made_before_split_json(tmp_path):
     after = {s: sorted(f.name for f in (out / s / "cow").glob("*")) for s in ("test", "train")}
     assert set(before["test"]) <= set(after["test"]) and set(before["train"]) <= set(after["train"])
     assert info["counts"]["cow"] == {"test": 6, "train": 4}  # the 2 unused old photos stay out
+
+
+def test_classes_without_synthetic_images_shift_the_weight_to_real_photos(tmp_path):
+    from sim2chip.stages.render import synthetic_frames
+    from sim2chip.stages.train import real_repeats
+    ctx = ctx_for(tmp_path)  # cow and dog
+    assert real_repeats(ctx, 10, 2000, {"cow", "dog"}) == 50  # 1/4 of the synthetic set
+    assert real_repeats(ctx, 10, 2000, {"cow"}) == 100  # only cows rendered: the real photos weigh 1/2
+    assert real_repeats(ctx, 10, 0, set()) == 1
+    assert synthetic_frames(2000, ["cow", "dog"], {"cow": []}) == 1000
+    assert synthetic_frames(2000, ["cow", "dog"], {"cow": [], "dog": []}) == 2000
