@@ -137,11 +137,14 @@ def test_qa_manual(tmp_path):
     assert info["kept"] == {"dog": 2, "cow": 1}
     kept = json.loads((ctx.job.stage_dir("qa_assets") / "assets.json").read_text())
     assert [a["no_color"] for a in kept if a["uid"] == "c"] == [True]
-    # every class must keep at least one model
+    # a class left without models learns from the user's photos; with no models at all there is nothing to render
     ctx2 = ctx_for(tmp_path / "2")
     (ctx2.out("convert_assets") / "assets.json").write_text(json.dumps(assets[:1]))
+    assert QAAssets().run(ctx2)["kept"] == {"cow": 1}
+    ctx3 = ctx_for(tmp_path / "3")
+    (ctx3.out("convert_assets") / "assets.json").write_text("[]")
     with pytest.raises(ValueError, match="dog"):
-        QAAssets().run(ctx2)
+        QAAssets().run(ctx3)
 
 
 def test_crops_from_fake_render(tmp_path):

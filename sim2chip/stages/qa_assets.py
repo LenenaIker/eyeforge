@@ -141,9 +141,16 @@ class QAAssets(Stage):
                 per_class[a["class"]] = per_class.get(a["class"], 0) + 1
                 capped.append(a)
         kept = capped
-        empty = [c.id for c in ctx.spec.classes if c.assets and not per_class.get(c.id)]
-        if empty:
+        # A class without a usable model learns from the user's photos only (the hybrid mode): the internet has
+        # no 3D model of everything (none of a yellow or a brown recycling bin, 2026-10-09). Only a job where no
+        # class kept a model has nothing to render.
+        wanted = [c.id for c in ctx.spec.classes if c.assets]
+        empty = [c for c in wanted if not per_class.get(c)]
+        if empty and len(empty) == len(wanted):
             raise ValueError(f"no usable 3D models left for classes {empty}")
+        if empty:
+            ctx.log(f"WARNING: no usable 3D models for {empty}: they learn from your photos only, "
+                    f"the synthetic images show the other classes")
         no_props = [p.id for p in ctx.spec.props if not per_class.get(p.id)]
         if no_props:
             ctx.log(f"WARNING: no usable models for props {no_props}, scenes will lack them")
