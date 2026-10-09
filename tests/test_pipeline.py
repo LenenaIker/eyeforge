@@ -13,8 +13,9 @@ SPEC = {"name": "t", "classes": [{"id": "cow", "size_m": {"measure": "length", "
 
 
 class Fake(Stage):
-    def __init__(self, name, uses=(), after=(), enabled=True):
+    def __init__(self, name, uses=(), after=(), enabled=True, skippable=None):
         self.name, self.uses, self.after, self._enabled = name, uses, after, enabled
+        self.skippable = skippable
 
     def enabled(self, spec):
         return self._enabled
@@ -169,3 +170,21 @@ def test_from_reruns_dependents_only(tmp_path):
     be = InProcess()
     make(tmp_path, stages=real_shape()).run(be, force=True, log=lambda m: None)
     assert len(be.ran) == 8
+
+
+def test_a_step_the_model_can_do_without_is_left_out(tmp_path):
+    """The synthetic branch fails: with the user's photos the run goes on without it and what hangs from it,
+    says why, and the same spec does not try it again. Without photos it stops the run."""
+    stages = lambda: [Fake("render", skippable="with photos"), Fake("crops", after=("render",), skippable="with photos"),
+                      Fake("train", after=("crops",))]
+    photos = {**SPEC, "user_data": {"raw": "photos"}}
+    be, said = InProcess(fail={"render"}), []
+    make(tmp_path, photos, stages()).run(be, log=said.append)
+    job = open_job(tmp_path, "job")
+    assert be.ran == ["render", "train"] and job.dropped("render") and "render was left out" in job.dropped("crops")
+    assert any(m.startswith("WARNING: render left out") for m in said)
+    be = InProcess()
+    make(tmp_path, photos, stages()).run(be, log=lambda m: None)
+    assert be.ran == []
+    with pytest.raises(StageFailed):
+        make(tmp_path / "other", SPEC, stages()).run(InProcess(fail={"render"}), log=lambda m: None)

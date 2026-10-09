@@ -39,6 +39,7 @@ class ConvertAssets(Stage):
     runtime = "cpu"
     uses_cache = True
     after = ("fetch_assets",)
+    skippable = "with photos"
     version = str(NORM_VERSION)
 
     def enabled(self, spec) -> bool:

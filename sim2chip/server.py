@@ -1551,10 +1551,14 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     stages = []
     for p in Pipeline(spec, job, Cache(home / "cache")).plan():
         state = "done" if p.action == "skip" else "pending"
+        why = job.dropped(p.stage.name) if state == "done" else None
+        if why:
+            state = "skipped"
         if state == "pending" and p.stage.name == current:
             state = "running" if running else ("failed" if failed else "pending")
         stages.append({"name": p.stage.name, "runtime": p.stage.runtime, "state": state,
-                       "powered_by": p.stage.powered_by(spec, backend, models.get(p.stage.name))})
+                       "powered_by": p.stage.powered_by(spec, backend, models.get(p.stage.name)),
+                       **({"reason": why} if why else {})})
     cloud_log = job.logs / "cloud_usage.jsonl"
     cost = sum(json.loads(l)["usd_estimate"] for l in cloud_log.read_text().splitlines()) if cloud_log.exists() else 0.0
     report = job.stage_dir("export") / "report.json"

@@ -57,6 +57,7 @@ class Render(Stage):
     max_hours = 2
     uses = ("scene", "camera", "generation", "classes", "props", "background_class", "task")
     after = ("qa_assets", "fetch_assets")  # fetch_assets: scene.json with skies and ground textures
+    skippable = "with photos"
 
     def enabled(self, spec) -> bool:
         return spec.synthetic
@@ -205,6 +206,8 @@ def _load_models(ctx: Context, props):
         models = []
         for a in (a for a in assets if a.get("role") == "prop" and a["class"] == p.id):
             dim = a["dims"][MEASURES.index(p.size_m.measure)]
+            if dim <= 0:  # flat: no size to scale by
+                continue
             models.append((str(ctx.cache.root / a["usd"]), (math.hypot(*a["dims"][:2]) / 2, a["dims"][2]),
                            (p.size_m.range[0] / dim, p.size_m.range[1] / dim)))
         if models:
@@ -212,7 +215,8 @@ def _load_models(ctx: Context, props):
     if spec.props:
         ctx.log(f"{len(scatter.kinds)} kinds of props, {len(scatter.prims)} instances")
     targets: dict[str, list] = {}
-    for i, a in enumerate(a for a in assets if a.get("role") != "prop"):
+    for i, a in enumerate(a for a in assets if a.get("role") != "prop"
+                          and a["dims"][MEASURES.index(spec.cls(a["class"]).size_m.measure)] > 0):
         c = spec.cls(a["class"])
         prim = props.add(f"/World/Targets/t{i:03d}", str(ctx.cache.root / a["usd"]), label=a["class"])
         # Real-world scale from the spec, drawn once per asset (stable across runs and jobs).

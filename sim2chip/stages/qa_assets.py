@@ -86,6 +86,7 @@ class QAAssets(Stage):
     uses_db = True
     uses = ("qa", "classes", "props")
     after = ("convert_assets", "preview_assets")
+    skippable = "with photos"
 
     def enabled(self, spec) -> bool:
         return spec.synthetic

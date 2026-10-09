@@ -45,6 +45,7 @@ class GenerateAssets(Stage):
     uses_cache = True
     uses = ("classes", "user_data")
     after = ("label",)
+    skippable = "with photos"
     # New or corrected photos (--from label) must not remake the 3D models, and with them the whole synthetic
     # branch: the models are cached by photo content and later versions of a job compare on the same data.
     follows_upstream = False

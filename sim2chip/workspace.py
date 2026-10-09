@@ -111,6 +111,10 @@ class Job:
         d.mkdir(parents=True, exist_ok=True)
         (d / DONE).write_text(json.dumps({"fingerprint": fingerprint, **(info or {})}, indent=2))
 
+    def dropped(self, stage: str) -> str | None:
+        """Why the run went on without this stage (Pipeline._drop), or None."""
+        return (self.done(stage) or {}).get("dropped")
+
     def clear_done(self, stage: str) -> None:
         (self.stage_dir(stage) / DONE).unlink(missing_ok=True)
 

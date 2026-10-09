@@ -33,6 +33,7 @@ Desarrollo en la RTX 3090 local; el producto final lanza los trabajos en **Nebiu
 ## Decisiones y restricciones
 
 - **GPU en la nube: L40S, no H100/H200.** Isaac Sim necesita GPUs RTX (con RT cores) para renderizar; H100/H200 no los tienen.
+- **El pipeline no depende de que todo salga bien** (usuario, 2026-10-09): lo no esencial que falla se deja fuera con aviso y la ejecución sigue (`Stage.skippable`: la rama sintética cuando hay fotos del usuario, la evaluación siempre; un objeto 3D roto se salta solo él). El informe y la web dicen qué se dejó fuera.
 - **Assets 3D son el riesgo principal.** "Detecta cualquier cosa" requiere modelos 3D de cualquier cosa. Alcance del hackathon: catálogo cerrado de 10-20 clases con assets existentes (NVIDIA SimReady, Objaverse) + modo híbrido con fotos reales para lo demás. No prometer "cualquier objeto".
 - **La granularidad depende del hardware de cada usuario, no del pipeline.** En ESP32-CAM: pocas clases, baja resolución (p. ej. vehículo grande vs pequeño, no marcas). Con mejor cámara y cómputo (Jetson, GPU), distinciones finas. Se presenta como decisión de diseño por perfil, no se esconde.
 - **Modelos abiertos primero** (usuario, 2026-09-27): por defecto, modelos abiertos en Nebius (Token Factory, NVIDIA). Los cerrados o de pago (Claude Opus/Fable por API, Hunyuan, Meshy, Rodin) solo para lo que con abiertos es imposible o de pésima calidad, medido antes y como opción, no por defecto.

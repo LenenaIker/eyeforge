@@ -47,6 +47,7 @@ class Evaluate(Stage):
     runtime = "tf"
     uses = ("task",)
     after = ("train", "ingest")
+    skippable = "always"
     reads_input = True  # the previous model, to compare
 
     def enabled(self, spec) -> bool:

@@ -37,6 +37,7 @@ class FetchAssets(Stage):
     uses_db = True
     uses = ("classes", "props", "scene")
     after = ("generate_assets",)
+    skippable = "with photos"
     # v2: glb paths relative to cache root; v3: search oversamples; v4: scene.json; v5: asset DB.
     # Generated models need no bump: generate_assets only enters the fingerprint when it is enabled.
     version = "5"

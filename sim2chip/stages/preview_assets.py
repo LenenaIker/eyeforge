@@ -25,6 +25,7 @@ class PreviewAssets(Stage):
     gpu = "rtx"
     uses = ("classes", "props")  # qa only decides whether the stage runs, not what it renders
     after = ("convert_assets",)
+    skippable = "with photos"
 
     def enabled(self, spec) -> bool:
         return spec.qa.mode == "auto" and spec.synthetic
@@ -83,6 +84,10 @@ class PreviewAssets(Stage):
             return {"assets": 0}
         props = Props(stage, app)
         items = []
+        flat = [a for a in assets if a["dims"][MEASURES.index(ctx.spec.size_of(a["class"]).measure)] <= 0]
+        if flat:  # converted before convert_assets skipped them: no size to scale by, no preview
+            ctx.log(f"skipping {len(flat)} flat models: {[a['uid'] for a in flat]}")
+            assets = [a for a in assets if a not in flat]
         for i, a in enumerate(assets):
             size = ctx.spec.size_of(a["class"])
             dim = a["dims"][MEASURES.index(size.measure)]

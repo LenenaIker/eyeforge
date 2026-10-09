@@ -25,6 +25,7 @@ class Points(Stage):
     runtime = "cpu"
     uses = ("hardware", "classes", "task", "look")
     after = ("render",)
+    skippable = "with photos"
 
     def enabled(self, spec) -> bool:
         return spec.task == "count" and spec.synthetic

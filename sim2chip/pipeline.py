@@ -94,23 +94,52 @@ class Pipeline:
                     log(f"= {p.stage.name}: up to date")
                 continue
             where = backend.name
+            left_out = [a for a in p.stage.after if self.job.dropped(a)]
+            if left_out and p.stage.can_skip(self.spec) and only is None:
+                self._drop(p, f"{left_out[0]} was left out", log)
+                continue
             log(f"> {p.stage.name} ({p.stage.powered_by(self.spec, where)})")
             self.job.clear_done(p.stage.name)
             t0 = time.time()
             try:
                 backend.run_stage(p.stage, self.job, self.cache, p.fingerprint)
-            except StageFailed:
-                raise
-            except (RuntimeError, NotImplementedError, OSError) as e:  # could not run it at all (cloud, interpreter)
+            except (StageFailed, RuntimeError, NotImplementedError, OSError) as e:  # could not run it at all
                 self.job.timeline(p.stage.name, time.time() - t0, where, failed=True)
+                if p.stage.can_skip(self.spec) and only is None:
+                    self._drop(p, str(e), log)
+                    continue
+                if isinstance(e, StageFailed):
+                    raise
                 raise StageFailed(f"stage {p.stage.name} could not run: {e}") from e
             seconds = time.time() - t0
             done = self.job.done(p.stage.name)
             if not done or done.get("fingerprint") != p.fingerprint:
                 self.job.timeline(p.stage.name, seconds, where, failed=True)
+                if p.stage.can_skip(self.spec) and only is None:
+                    self._drop(p, _last_error(self.job.logs / f"{p.stage.name}.log"), log)
+                    continue
                 raise StageFailed(f"stage {p.stage.name} did not finish, see {self.job.logs / (p.stage.name + '.log')}")
             self.job.timeline(p.stage.name, seconds, where)
             log(f"  {p.stage.name}: done in {seconds:.0f} s")
+
+    def _drop(self, p: Plan, reason: str, log) -> None:
+        """Go on without a stage the model can do without (Stage.skippable): its partial output goes, and its
+        done marker says why, so what reads it (train, export, the web) knows it was left out. A changed spec
+        runs it again; the same spec does not (its fingerprint is kept)."""
+        import shutil
+        shutil.rmtree(self.job.stage_dir(p.stage.name), ignore_errors=True)
+        self.job.mark_done(p.stage.name, p.fingerprint, {"dropped": reason[:300]})
+        log(f"WARNING: {p.stage.name} left out ({reason[:300]}); the run goes on without it")
+
+
+def _last_error(log_file) -> str:
+    """The error a stage's log ends with, for the user: the last line naming an error, else where to look."""
+    try:
+        lines = log_file.read_text(errors="replace").splitlines()
+    except OSError:
+        return f"see {log_file}"
+    return next((ln.split("[py stderr]:")[-1].strip() for ln in reversed(lines)
+                 if "Error" in ln or "error" in ln), f"see {log_file}")
 
 
 def _dependents(stages: list[Stage], name: str) -> set[str]:

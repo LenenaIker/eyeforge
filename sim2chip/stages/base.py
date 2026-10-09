@@ -64,9 +64,18 @@ class Stage:
     # stage whose output is cached by content and must stay put across versions (models made from photos): it
     # still reruns when its own fingerprint changes or when it is named.
     follows_upstream: ClassVar[bool] = True
+    # What the run can do without when the stage fails (user, 2026-10-09: the pipeline must not depend on every
+    # step going right): "with photos", the synthetic branch, when the user's photos train the model anyway;
+    # "always", a step the model does not need (the test on real photos). The run goes on, says why, and the
+    # report lists what was left out.
+    skippable: ClassVar[Literal["with photos", "always"] | None] = None
 
     def enabled(self, spec: Spec) -> bool:
         return True
+
+    def can_skip(self, spec: Spec) -> bool:
+        ud = spec.user_data
+        return self.skippable == "always" or (self.skippable == "with photos" and bool(ud.labeled or ud.raw))
 
     def calls_llm(self, spec: Spec) -> bool:
         """Whether this run of the stage calls Token Factory (some stages only do in some modes)."""

@@ -126,7 +126,7 @@ function Skeleton() {
 const minutes = (sec: number) => sec < 60 ? "under a minute" : `${Math.round(sec / 60)} min`;
 
 function Progress({ s, failed, onRerun }: { s: Status; failed: boolean; onRerun: (news?: string) => void }) {
-  const done = s.stages.filter((x) => x.state === "done").length;
+  const done = s.stages.filter((x) => x.state === "done" || x.state === "skipped").length;
   const pct = s.stages.length ? Math.round((done / s.stages.length) * 100) : 0;
   const [stopping, setStopping] = useState(false);
   const [asking, setAsking] = useState(false);  // the Stop button asks once, in place
@@ -190,14 +190,15 @@ function StageRow({ st }: { st: Stage }) {
     <li className="flex items-center gap-3 py-2">
       <span className={cx("grid h-6 w-6 shrink-0 place-items-center rounded-full",
         st.state === "done" && "bg-green-500 text-white", st.state === "running" && "bg-ember-500 text-white animate-beat",
-        st.state === "pending" && "border-2 border-line", st.state === "failed" && "bg-red-500 text-white")}>
+        st.state === "pending" && "border-2 border-line", st.state === "failed" && "bg-red-500 text-white",
+        st.state === "skipped" && "bg-amber-400 text-white")}>
         {st.state === "done" && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
         {st.state === "running" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-        {st.state === "failed" && <AlertTriangle className="h-3.5 w-3.5" />}
+        {(st.state === "failed" || st.state === "skipped") && <AlertTriangle className="h-3.5 w-3.5" />}
       </span>
       <div className="min-w-0 flex-1">
         <p className={cx("text-sm font-medium", st.state === "pending" && "text-muted")}>{FRIENDLY[st.name] ?? st.name}</p>
-        <p className="truncate text-xs text-gray-400">{st.powered_by}</p>
+        <p className="truncate text-xs text-gray-400">{st.state === "skipped" ? `Left out: ${st.reason}` : st.powered_by}</p>
       </div>
       {st.seconds != null && <span className="text-xs text-muted tabular-nums">{st.seconds < 60 ? `${Math.round(st.seconds)} s` : `${(st.seconds / 60).toFixed(1)} min`}</span>}
     </li>
@@ -247,6 +248,13 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
             {spread && <p className="mt-1 text-xs text-muted">{spread}</p>}
             {r.previous && <Compare p={r.previous} counting={counting} />}
             {r.advice?.map((a) => <p key={a} className="mt-3 max-w-md rounded-lg bg-ember-50 px-3 py-2 text-sm text-ember-700">{a}</p>)}
+            {r.left_out?.length ? (
+              <p className="mt-3 max-w-md rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                Some steps failed and this model was trained without them: {r.left_out.map((x) => FRIENDLY[x.stage] ?? x.stage).join(", ")}.
+                {r.left_out.some((x) => ["render", "crops", "points", "qa_assets", "fetch_assets", "convert_assets", "preview_assets"].includes(x.stage))
+                  ? " It learned from your photos only, with no synthetic images." : ""}
+              </p>
+            ) : null}
           </div>
           <div className="grid grid-cols-2 gap-3 sm:w-72">
             {counting && countMae != null && <Mini label="count error per photo" value={countMae.toFixed(1)} />}

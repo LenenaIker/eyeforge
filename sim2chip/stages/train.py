@@ -153,7 +153,7 @@ class Train(Stage):
         synth_dir = ctx.job.stage_dir("crops")
         real_dir = ctx.job.stage_dir("ingest") / "train"
         xs, ys, n_synth = [], [], 0
-        if synth_dir.exists():
+        if synth_dir.exists() and not ctx.job.dropped("crops"):
             x, y = tu.load_dir(synth_dir, labels, size)
             xs.append(x), ys.append(y)
             n_synth = len(x)

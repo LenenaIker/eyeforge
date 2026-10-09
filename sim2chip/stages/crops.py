@@ -24,6 +24,7 @@ class Crops(Stage):
     runtime = "cpu"
     uses = ("hardware", "background_class", "generation", "look")
     after = ("render",)
+    skippable = "with photos"
 
     def enabled(self, spec) -> bool:
         return spec.task == "roi_classification" and spec.synthetic

@@ -44,8 +44,9 @@ export type Me = {
               tier: "judge" | "normal" | "banned"; balance: number };
 };
 
-export type StageState = "done" | "running" | "pending" | "failed";
-export type Stage = { name: string; runtime: string; state: StageState; powered_by: string; seconds: number | null };
+export type StageState = "done" | "running" | "pending" | "failed" | "skipped";
+export type Stage = { name: string; runtime: string; state: StageState; powered_by: string; seconds: number | null;
+  reason?: string };  // reason: why a skipped step was left out
 
 export type RealTest = { metric: string; mean: number; std: number; count_mae?: number; exact?: number;
                          test_size?: number; objects?: number; per_seed?: Record<string, number> };
@@ -58,6 +59,7 @@ export type Report = {
   // The shipped model's own score on the real test photos (the headline); real_test is the mean of the seeds.
   shipped_test?: { score: number; count_mae?: number } | null;
   advice?: string[];  // what most likely held the score back, in plain words
+  left_out?: { stage: string; reason: string }[];  // steps that failed and the run went on without
   // The model this one replaced, scored on the same test photos (or why it could not be).
   // then: its score when it was trained, which differs when the test photos or their labels changed since.
   previous?: { version: number; score?: number; now?: number; count_mae?: number; now_count_mae?: number;

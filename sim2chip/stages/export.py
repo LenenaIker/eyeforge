@@ -80,6 +80,10 @@ class Export(Stage):
         advice = [taught[k]["note"] for k in ("small_objects", "crowded") if taught.get(k)]
         if advice:
             report["advice"] = advice
+        from . import STAGES
+        left_out = [{"stage": st.name, "reason": why} for st in STAGES if (why := ctx.job.dropped(st.name))]
+        if left_out:  # steps the run went on without (Pipeline._drop)
+            report["left_out"] = left_out
         (out / "report.json").write_text(json.dumps(report, indent=2))
         ctx.log(f"exported seed {seed}: {kb} KB, labels {ctx.spec.labels}")
         return {"seed": int(seed), "model_kb": kb}
