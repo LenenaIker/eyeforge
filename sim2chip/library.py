@@ -575,18 +575,29 @@ class Library:
 
     def labelings(self, ds: str) -> list[dict]:
         """How earlier jobs had the teacher label this dataset, newest first: {job, task, classes (ids),
-        background, checked (photos the user corrected)}. A job with the same task and classes gets the same
-        labels again without a check (server.follow_labeling)."""
+        background, checked (photos the user corrected), models}. Only jobs that went past the teacher's check
+        (a check left open is no labeling the user accepted). A job with the same task and classes gets the
+        same labels again without a check (server.follow_labeling). models: per class or prop of the job, its
+        3D model search queries and the models kept for it, so a new job can find them again."""
         out = []
         for job in self._used("dataset", ds):
-            spec = _load(self.root.parent / "jobs" / job / "request.json")
-            if not spec or not (spec.get("user_data") or {}).get("raw"):
+            root = self.root.parent / "jobs" / job
+            spec = _load(root / "request.json")
+            if not spec or not (spec.get("user_data") or {}).get("raw") or (root / "calibration.json").exists() \
+                    or not (root / "label" / "verdicts.json").exists():
                 continue
-            fixes = _load(self.root.parent / "jobs" / job / "input" / "corrections.json") or {}
+            fixes = _load(root / "input" / "corrections.json") or {}
+            kept = dict(self.db.execute("SELECT o.concept, SUM(o.kept) FROM uses u JOIN objects o ON o.id = u.item "
+                                        "WHERE u.job = ? AND u.kind = 'object' GROUP BY o.concept", (job,)).fetchall())
+            models = {}
+            for c in [*spec.get("classes", []), *spec.get("props", [])]:
+                queries = (c.get("assets") or {}).get("queries") if "assets" in c else c.get("queries")
+                if queries:
+                    models[c["id"]] = {"queries": queries, "kept": int(kept.get(c["id"]) or 0)}
             out.append({"job": job, "task": spec.get("task"), "classes": [c["id"] for c in spec.get("classes", [])],
                         "background": spec.get("background_class"),
                         "checked": len(set(fixes.get("labels") or {}) | set(fixes.get("points") or {})),
-                        "t": (self.root.parent / "jobs" / job / "request.json").stat().st_mtime})
+                        "models": models, "t": (root / "request.json").stat().st_mtime})
         return sorted(out, key=lambda d: -d["t"])
 
     def known_labels(self, owner: str, folder: Path, phrases: list[str], labels: list[str]) -> int:
@@ -642,9 +653,12 @@ class Library:
         def ds_line(d):
             labels = f", labels {', '.join(d['labels'])}" if d["labels"] else ", no labels"
             seen = f". {d['profile']['summary']}" if d["profile"] else ""
-            done = "".join(f'. Labeled before by the teacher for model "{l["job"]}" ({TASK_NAME.get(l["task"], l["task"])}, '
-                           f'classes {", ".join(l["classes"])}{", background " + l["background"] if l["background"] else ""}; '
-                           f'{l["checked"]} photos checked by the user)' for l in self.labelings(d["id"])[:2])
+            done = "".join(f'. The teacher labeled it before for model "{l["job"]}" (still "raw" for a new model: '
+                           f'{TASK_NAME.get(l["task"], l["task"])}, classes {", ".join(l["classes"])}'
+                           f'{", background " + l["background"] if l["background"] else ""}; {l["checked"]} photos '
+                           f'checked by the user; 3D models kept: ' + (", ".join(
+                               f'{k} {m["kept"]} (search {m["queries"]})' for k, m in l["models"].items()) or "none")
+                           + ")" for l in self.labelings(d["id"])[:2])
             return f'dataset "{d["name"]}" (id {d["id"]}, {d["photos"]} photos{labels}{done}{seen})'
 
         def obj_line(o):

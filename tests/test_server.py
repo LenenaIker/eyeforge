@@ -637,7 +637,12 @@ def test_a_dataset_labeled_before_for_the_same_classes_needs_no_check(app, tmp_p
     (before / "input").mkdir(parents=True)
     (before / "request.json").write_text(spec_mod.from_dict({**count, "user_data": {"raw": f"dataset_{ds}"}}).to_json())
     lib.db.execute("INSERT INTO uses VALUES ('first', 'dataset', ?)", (ds,))
-    assert "Labeled before" in lib.for_chat("local")[0]
+    (before / "calibration.json").write_text("{}")  # a check left open is no labeling
+    assert "labeled it before" not in lib.for_chat("local")[0]
+    (before / "calibration.json").unlink()
+    (before / "label").mkdir()
+    (before / "label" / "verdicts.json").write_text("{}")
+    assert "labeled it before" in lib.for_chat("local")[0]
     # The chat wrote other names for the same class: the job takes the earlier ones and skips the check.
     spec = {**count, "classes": [{**count["classes"][0], "names": ["cattle"]}], "user_data": {"raw": f"library:{ds}"}}
     r = app.post("/api/jobs", data={"spec": json.dumps(spec), "calibrate": "true"}).json()
@@ -646,3 +651,8 @@ def test_a_dataset_labeled_before_for_the_same_classes_needs_no_check(app, tmp_p
     # Other classes: labeled anew, with a check.
     other = {**spec, "classes": [{**spec["classes"][0], "id": "horse", "description": "horses"}]}
     assert app.post("/api/jobs", data={"spec": json.dumps(other), "calibrate": "true"}).json()["calibrating"]
+    # The chat gave the dataset as "labeled" though it has no labels of its own: it is raw photos.
+    wrong = {**GOOD, "user_data": {"labeled": f"library:{ds}", "class_map": {"cow": ["cow"]}}}
+    r = app.post("/api/jobs", data={"spec": json.dumps(wrong), "calibrate": "true"}).json()
+    ud = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["user_data"]
+    assert r["calibrating"] and ud["labeled"] is None and ud["raw"] == f"dataset_{ds}"

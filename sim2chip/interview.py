@@ -437,10 +437,13 @@ Each dataset comes with what was seen in it (objects, backgrounds, places). Befo
 a dataset, measure it for this goal: {{"describe_scene": {{"folder": "library:<id>", "classes": "<what to find>"}}}}
 (sizes, camera, scene fields). Photos the user attaches in this chat count too: when a dataset is also used,
 "raw" lists both, ["library:<id>", "<attached folder>"].
-A dataset labeled before by the teacher keeps those labels: when what the user wants now fits, use the same
-task and exactly the same class ids (and background class); the job then reuses the labels and the user is not
-asked to check the photos again. Other classes or another task mean the teacher labels every photo anew and the
-user checks them: say so before proposing them, and propose the earlier classes as the faster option.
+A dataset the teacher labeled before is still used as "raw" (only a dataset listed with labels of its own is
+"labeled"), and it keeps the teacher's labels: when what the user wants now fits, use the same task and exactly
+the same class ids (and background class); the job then reuses the labels and the user is not asked to check the
+photos again. Other classes or another task mean the teacher labels every photo anew and the user checks them:
+say so before proposing them, and propose the earlier classes as the faster option. The 3D models kept for a
+class are found again by the same search queries: reuse them for the same kind of object (a class or a prop with
+0 kept had no usable model; try other queries). When the user names a dataset, never ask for photos again.
 Decide for each object whether it is a class or a prop from what the user wants now: the same object can be the
 target of one model and a distractor of another. Every class or prop with 3D models still needs size_m. Use only
 the ids listed here.
@@ -539,6 +542,14 @@ def _library_refs(session, s: spec_mod.Spec) -> str | None:
     return f"these library ids are not in the user's library: {unknown}; use only the listed ones" if unknown else None
 
 
+def _unlabeled_dataset(session, s: spec_mod.Spec) -> str | None:
+    ds = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(s.user_data.labeled or ""))
+    if not ds or ds.group(1) in getattr(session, "labeled_ids", set()):
+        return None
+    return (f"dataset {ds.group(1)} has no labels of its own (the teacher's earlier labels are not that): give it as "
+            f'user_data "raw": "library:{ds.group(1)}", with "labeled": null and no class_map')
+
+
 def _scene_problem(session, s: spec_mod.Spec) -> str | None:
     return session.scene_check(s.scene) if session.scene_check else None
 
@@ -550,7 +561,7 @@ def _photo_models_problem(session, s: spec_mod.Spec) -> str | None:
 
 
 # What a proposed spec must pass beyond spec.validate, in order: the first problem goes back to the model.
-SPEC_CHECKS = (_unknown_categories, _foreign_folders, _library_refs, _scene_problem, lambda _, s: check_photos(s),
+SPEC_CHECKS = (_unknown_categories, _foreign_folders, _library_refs, _unlabeled_dataset, _scene_problem, lambda _, s: check_photos(s),
                lambda _, s: sam3_names_problem(s), _photo_models_problem)
 
 
@@ -600,11 +611,14 @@ class Session:
         self.photo_notes = None  # (photos, classes, run) -> descriptions, the kept ones reused (library)
         self.open_dataset = None  # library dataset id -> a folder of its photos this session may read
 
-    def use_library(self, items: str, ids: set[str], kit: str | None = None, notes=None, open_dataset=None) -> None:
+    def use_library(self, items: str, ids: set[str], kit: str | None = None, notes=None, open_dataset=None,
+                    labeled: set[str] | None = None) -> None:
         """Tell the model what the user's library holds (kits and datasets, see LIBRARY); kit: the name of the kit
         the user chose to start from. notes: keeps and reuses photo descriptions (Library.describe);
-        open_dataset(id): a folder with a dataset's photos, so describe_scene can measure it for this goal."""
+        open_dataset(id): a folder with a dataset's photos, so describe_scene can measure it for this goal;
+        labeled: the datasets with labels of their own, the only ones a spec may give as "labeled"."""
         self.library_ids = set(ids)
+        self.labeled_ids = set(labeled or ())
         self.photo_notes, self.open_dataset = notes, open_dataset
         self.messages[0]["content"] += LIBRARY.format(items=items)
         if kit:

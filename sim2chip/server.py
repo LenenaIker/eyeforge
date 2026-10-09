@@ -462,6 +462,20 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if found:
             f.write_text(json.dumps({"labels": {}, "assets": {}, "points": {}, **found}, indent=1))
 
+    def unlabeled_as_raw(parsed: spec_mod.Spec, owner: str) -> spec_mod.Spec:
+        """A library dataset without labels of its own given as "labeled" (the chat mixed it up with the
+        teacher's labels, 2026-10-09: the job trained on 0 real photos) is raw photos for the teacher."""
+        ud = parsed.user_data
+        ds = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(ud.labeled or ""))
+        if not ds or not lib.owns(owner, "dataset", ds.group(1)):
+            return parsed
+        if next((d["labels"] for d in lib.datasets(owner) if d["id"] == ds.group(1)), None):
+            return parsed
+        data = json.loads(parsed.to_json())
+        raw = interview_sources(data["user_data"].get("raw"))
+        data["user_data"].update(labeled=None, class_map={}, raw=[ud.labeled, *raw] if raw else ud.labeled)
+        return spec_mod.from_dict(data)
+
     def follow_labeling(parsed: spec_mod.Spec, owner: str) -> spec_mod.Spec:
         """A library dataset labeled before for the same task and class ids (library.labelings): the classes take
         that job's names and descriptions, so the teacher looks for the very same things and its kept answers
@@ -579,7 +593,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 lib.materialize_dataset(owner, ds, folders / f"library_{ds}", by_label=False)
                 return folders / f"library_{ds}"
             sessions[sid].use_library(*lib.for_chat(owner), kit=chosen,
-                                      notes=functools.partial(lib.describe, owner), open_dataset=open_dataset)
+                                      notes=functools.partial(lib.describe, owner), open_dataset=open_dataset,
+                                      labeled={d["id"] for d in lib.datasets(owner) if d["labels"]})
 
     locks: dict[str, threading.Lock] = {}
 
@@ -755,7 +770,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         parsed = adopt_uploads(parsed, home / "uploads", job)
         save_photos(job.input / "photos", images)  # before the library: raw may merge them with a dataset
         try:
-            parsed = adopt_library(follow_labeling(parsed, owner_of(request)), owner_of(request), job)
+            parsed = adopt_library(follow_labeling(unlabeled_as_raw(parsed, owner_of(request)), owner_of(request)),
+                                   owner_of(request), job)
         except HTTPException:
             shutil.rmtree(job.root, ignore_errors=True)  # a refused spec leaves no empty job behind
             raise
@@ -1194,7 +1210,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if not dry:
             may_start(request, "run")
             parsed = adopt_uploads(parsed, home / "uploads", job)
-            parsed = adopt_library(follow_labeling(parsed, owner_of(request)), owner_of(request), job)
+            parsed = adopt_library(follow_labeling(unlabeled_as_raw(parsed, owner_of(request)), owner_of(request)),
+                                   owner_of(request), job)
             reuse_corrections(parsed, owner_of(request), job)
             credit_interview(job, session, request)
         todo = [p.stage.name for p in Pipeline(parsed, job, Cache(home / "cache")).plan() if p.action == "run"]

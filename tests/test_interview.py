@@ -331,3 +331,16 @@ def test_no_synthetic_images_means_no_3d_stages():
     assert not {"fetch_assets", "generate_assets", "render", "points"} & set(only_photos)
     assert {"label", "ingest", "train", "export"} <= set(only_photos)
     assert "synthetic images: none" in interview.summary(from_dict({**spec, "generation": {"frames": 0}}))
+
+
+def test_a_dataset_without_labels_is_never_given_as_labeled():
+    """The teacher's earlier labels of a dataset are not labels of its own: such a dataset goes in raw."""
+    from sim2chip.interview import _unlabeled_dataset
+    from sim2chip import spec as spec_mod
+
+    class S:
+        labeled_ids = {"aaaaaaaaaaaaaaaa"}
+    base = {"name": "x", "classes": [{"id": "cow", "description": "cows"}]}
+    wrong = spec_mod.from_dict({**base, "user_data": {"labeled": "library:bbbbbbbbbbbbbbbb", "class_map": {"cow": ["cow"]}}})
+    right = spec_mod.from_dict({**base, "user_data": {"labeled": "library:aaaaaaaaaaaaaaaa", "class_map": {"cow": ["cow"]}}})
+    assert "raw" in _unlabeled_dataset(S(), wrong) and _unlabeled_dataset(S(), right) is None

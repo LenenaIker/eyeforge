@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 
+from ..spec import MEASURES
 from .base import Context, Stage
 
 NORM_VERSION = 3  # bump when normalize() or the converter changes
@@ -78,6 +79,13 @@ class ConvertAssets(Stage):
                 skipped.append(m["uid"])
                 continue
             dims = json.loads(meta.read_text())["dims"]
+            measure = ctx.spec.size_of(m["class"]).measure
+            if dims[MEASURES.index(measure)] <= 1e-6 * max(max(dims), 1e-9):
+                # A flat model (a road or wall as a plane) has no such size to scale by (2026-10-09: the
+                # preview divided by 0 and the job failed).
+                ctx.log(f"{m['uid']} ({m['class']}) is flat in its {measure}: skipped")
+                skipped.append(m["uid"])
+                continue
             done.append({**m, "usd": str(norm.relative_to(ctx.cache.root)), "dims": dims})
         if not done:
             raise RuntimeError(f"no asset could be converted ({len(skipped)} failed), see the log above")
