@@ -38,6 +38,7 @@ export type Me = {
   contact: string | null;  // where judges write for free access, and banned accounts for help
   judging: boolean;        // the hackathon's judging is still on: judges use the app for free
   costs: Costs;
+  topup: boolean;          // this server takes card payments (Stripe)
   account?: { email: string | null; name: string | null; provider: string;
               tier: "judge" | "normal" | "banned"; balance: number };
 };

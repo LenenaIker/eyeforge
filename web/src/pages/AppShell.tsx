@@ -233,7 +233,8 @@ function CreditsNotice({ me }: { me: Me }) {
     <div className="pt-4">
       <Notice>
         {balance > 0 ? `Your balance is ${usd(balance)}. ` : "Your balance is empty. "}
-        You pay what you use: a model is usually about {usd(me.costs.start.run)}, a chat a few cents. Topping up is coming soon.
+        You pay what you use: a model is usually about {usd(me.costs.start.run)}, a chat a few cents.{" "}
+        {me.topup ? <NavLink className="text-brand-600 underline" to="/app/billing">Top up in Billing.</NavLink> : "Topping up is coming soon."}
         {me.judging && me.contact && <> <JudgeLine contact={me.contact} /></>}
       </Notice>
     </div>

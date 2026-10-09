@@ -10,6 +10,8 @@ Without the first two there are no top-ups. Setup steps in docs/pagos.md.
   saved for later (setup_future_usage), so an auto top-up can charge it while the user is away.
 - Money reaches the balance only through payments Stripe confirms: the signed webhook (checkout.session.completed,
   payment_intent.succeeded) or the answer to an auto top-up. Each payment counts once (its id is the move's detail).
+- A refund made on the Stripe dashboard (charge.refunded) takes that money back from the balance, which may go
+  below zero when it was already used.
 - Auto top-up: when the balance falls below the account's threshold, its amount is charged to the saved card,
   at most once every AUTO_GAP_S. A refused card switches auto top-up off and says why. With Stripe Tax on it is
   not offered: a payment made without the checkout page would skip the VAT.
@@ -175,7 +177,25 @@ class Payments:
             return done
         if event.get("type") == "payment_intent.succeeded" and (obj.get("metadata") or {}).get("kind") == "auto":
             return self._credit(obj["metadata"], obj["id"])
+        if event.get("type") == "charge.refunded" and obj.get("payment_intent"):
+            return self._refund(obj["payment_intent"], obj.get("amount_refunded") or 0)
         return "ignored"
+
+    def _refund(self, payment: str, cents_refunded: int) -> str:
+        """Take back what was refunded of `payment`. Stripe sends the total refunded so far, so a second partial
+        refund (or the same event twice) only takes back the difference."""
+        detail = f"refund {payment}"
+        with self.accounts.lock:
+            row = self.db.execute("SELECT account FROM credits WHERE detail = ? AND amount > 0", (payment,)).fetchone()
+            if row is None:
+                return "refund of an unknown payment"
+            taken = -self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ? AND detail = ?",
+                                     (row[0], detail)).fetchone()[0]
+            more = round(cents_refunded / 100 - taken, 2)
+            if more <= 0:
+                return "already refunded"
+            self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)", (row[0], -more, "refund", detail, time.time()))
+        return f"refunded {more:.2f}"
 
     def _credit(self, meta: dict, payment: str) -> str:
         acc_id, usd = meta.get("account"), float(meta.get("usd") or 0)

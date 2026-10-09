@@ -361,7 +361,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         acc = getattr(request.state, "account", None)
         judging = accounts is not None and (accounts.judge_until is None or time.time() < accounts.judge_until)
         out = {"signed_in": acc is not None, "contact": contact, "judging": judging,
-               "costs": {"margin": MARGIN, "start": START}}
+               "costs": {"margin": MARGIN, "start": START}, "topup": payments is not None}
         if acc is not None:
             out["account"] = {"email": acc.email, "name": acc.name, "provider": acc.provider,
                               "tier": accounts.tier(acc), "balance": accounts.balance(acc.id)}

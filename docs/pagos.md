@@ -10,12 +10,13 @@ Recargas del saldo (en dólares) desde Billing y recarga automática. Código en
 - **Recarga automática:** "si el saldo baja de X $, añade Y $", con la tarjeta guardada.
   - Como mucho una cada 10 minutos.
   - Si la tarjeta falla o pide 3-D Secure, se apaga sola y Billing dice por qué.
+- **Devoluciones:** al devolver un pago desde el panel de Stripe, el saldo baja lo devuelto (aunque quede en negativo si ya se gastó).
 
 ## Alta (lo hace el usuario)
 
 1. Crear la cuenta en https://dashboard.stripe.com. Para cobrar de verdad, Stripe pide los datos fiscales: autónomo o empresa, y una cuenta bancaria.
 2. Modo de pruebas: en Developers > API keys, copiar la `sk_test_...` a `.env` como `STRIPE_SECRET_KEY`.
-3. Webhook: en Developers > Webhooks, añadir el endpoint `https://eyeforge.app/api/stripe/webhook` con los eventos `checkout.session.completed` y `payment_intent.succeeded`. Copiar su `whsec_...` a `.env` como `STRIPE_WEBHOOK_SECRET`.
+3. Webhook: en Developers > Webhooks, añadir el endpoint `https://eyeforge.app/api/stripe/webhook` con los eventos `checkout.session.completed`, `payment_intent.succeeded` y `charge.refunded`. Copiar su `whsec_...` a `.env` como `STRIPE_WEBHOOK_SECRET`.
 4. Reiniciar el servidor: Billing ya enseña las recargas.
 5. Probar con la tarjeta `4242 4242 4242 4242` (cualquier fecha futura y CVC). Con `4000 0000 0000 9995` se rechaza.
 6. Para producción, repetir los pasos 2 y 3 con las claves `sk_live_` en modo live.

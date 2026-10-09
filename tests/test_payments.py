@@ -123,3 +123,19 @@ def test_server_top_up_and_webhook(tmp_path):
     assert anyone.post("/api/stripe/webhook", content=body, headers={"stripe-signature": "t=1,v1=x"}).status_code == 400
     assert anyone.post("/api/stripe/webhook", content=body, headers={"stripe-signature": sig}).status_code == 200
     assert c.get("/api/me").json()["account"]["balance"] == 25
+
+
+def refunded(pi="pi_1", cents=1000):
+    return {"id": "evt_r", "type": "charge.refunded", "data": {"object": {
+        "id": "ch_1", "payment_intent": pi, "amount_refunded": cents}}}
+
+
+def test_refund_takes_the_money_back_once(pay):
+    p, accs, acc, _ = pay
+    p.handle(paid(acc.id))
+    assert p.handle(refunded(cents=400)) == "refunded 4.00"   # partial
+    assert accs.balance(acc.id) == pytest.approx(6)
+    assert p.handle(refunded(cents=400)) == "already refunded"  # told twice
+    assert p.handle(refunded(cents=1000)) == "refunded 6.00"   # the rest: Stripe sends the running total
+    assert accs.balance(acc.id) == pytest.approx(0)
+    assert p.handle(refunded(pi="pi_other")) == "refund of an unknown payment"
