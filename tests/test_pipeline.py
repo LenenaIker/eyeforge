@@ -174,7 +174,8 @@ def test_from_reruns_dependents_only(tmp_path):
 
 def test_a_step_the_model_can_do_without_is_left_out(tmp_path):
     """The synthetic branch fails: with the user's photos the run goes on without it and what hangs from it,
-    says why, and the same spec does not try it again. Without photos it stops the run."""
+    says why. A run from a later step keeps it out; a whole run ("Try again") tries it again, and what read its
+    absence. Without photos it stops the run."""
     stages = lambda: [Fake("render", skippable="with photos"), Fake("crops", after=("render",), skippable="with photos"),
                       Fake("train", after=("crops",))]
     photos = {**SPEC, "user_data": {"raw": "photos"}}
@@ -187,7 +188,10 @@ def test_a_step_the_model_can_do_without_is_left_out(tmp_path):
     assert be.ran == ["render", "crops", "train"] and "render was left out" in job.dropped("crops")
     assert any(m.startswith("WARNING: render left out") for m in said)
     be = InProcess()
+    make(tmp_path, photos, stages()).run(be, start="train", log=lambda m: None)
+    assert be.ran == ["train"] and job.dropped("render")
+    be = InProcess()
     make(tmp_path, photos, stages()).run(be, log=lambda m: None)
-    assert be.ran == []
+    assert be.ran == ["render", "crops", "train"] and not job.dropped("render") and not job.dropped("crops")
     with pytest.raises(StageFailed):
         make(tmp_path / "other", SPEC, stages()).run(InProcess(fail={"render"}), log=lambda m: None)

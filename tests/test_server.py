@@ -656,3 +656,9 @@ def test_a_dataset_labeled_before_for_the_same_classes_needs_no_check(app, tmp_p
     r = app.post("/api/jobs", data={"spec": json.dumps(wrong), "calibrate": "true"}).json()
     ud = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["user_data"]
     assert r["calibrating"] and ud["labeled"] is None and ud["raw"] == f"dataset_{ds}"
+    # The chat gave the dataset's id as the class's 3D models: the job searches for models instead of failing.
+    as_model = {**spec, "classes": [{**spec["classes"][0], "assets": {"source": "library", "models": [f"library:{ds}"]},
+                                     "size_m": {"measure": "length", "range": [1.0, 2.0]}}]}
+    r = app.post("/api/jobs", data={"spec": json.dumps(as_model)})
+    assets = json.loads((tmp_path / "jobs" / r.json()["job"] / "request.json").read_text())["classes"][0]["assets"]
+    assert r.status_code == 200 and assets["source"] == "search" and assets["queries"] == ["cow"] and not assets["models"]

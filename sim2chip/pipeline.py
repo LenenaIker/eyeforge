@@ -62,7 +62,10 @@ class Pipeline:
                                       {a: fps[a] for a in s.after if a in fps})
         return fps
 
-    def plan(self, start: str | None = None, only: str | None = None, force: bool = False) -> list[Plan]:
+    def plan(self, start: str | None = None, only: str | None = None, force: bool = False,
+             retry: bool = False) -> list[Plan]:
+        """retry: a run about to start tries again what an earlier run left out (see retries); without it, the
+        plan says what is done, as the web shows it."""
         names = [s.name for s in self.stages]
         for n in (start, only):
             if n is not None and n not in names:
@@ -71,6 +74,11 @@ class Pipeline:
         # --from reruns the stage and what depends on it, not every stage listed after it: new user photos
         # must not re-render the synthetic data.
         forced = set(names) if force else {start} | _dependents(self.stages, start) if start else set()
+        if retry and retries(start, only):
+            # A whole run ("Try again") tries again what an earlier run left out, and what read its absence.
+            for s in self.stages:
+                if self.job.dropped(s.name):
+                    forced |= {s.name} | _dependents(self.stages, s.name)
         plans = []
         for s in self.stages:
             done = self.job.done(s.name)
@@ -88,7 +96,7 @@ class Pipeline:
     def run(self, backend: Backend, start: str | None = None, only: str | None = None, force: bool = False,
             log=print) -> None:
         self.job.spec_path.write_text(self.spec.to_json())
-        for p in self.plan(start, only, force):
+        for p in self.plan(start, only, force, retry=True):
             if p.action == "skip":
                 if only is None:
                     log(f"= {p.stage.name}: up to date")
@@ -130,6 +138,12 @@ class Pipeline:
         shutil.rmtree(self.job.stage_dir(p.stage.name), ignore_errors=True)
         self.job.mark_done(p.stage.name, p.fingerprint, {"left_out": reason[:300]})
         log(f"WARNING: {p.stage.name} left out ({reason[:300]}); the run goes on without it")
+
+
+def retries(start: str | None, only: str | None) -> bool:
+    """Whether a run tries again the stages an earlier one left out: a whole run does; one from a later step (new
+    photos, corrections) keeps them out, so it does not pay again for what failed."""
+    return start is None and only is None
 
 
 def _last_error(log_file) -> str:

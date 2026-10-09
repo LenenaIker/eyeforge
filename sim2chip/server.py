@@ -432,14 +432,22 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             ud[k] = dataset(ud.get(k), True)
         raw = [dataset(v, False) for v in interview_sources(ud.get("raw"))]
         ud["raw"] = merge_sources(job, raw) if len(raw) > 1 else (raw[0] if raw else None)
-        for item in [c["assets"] for c in data["classes"] if c.get("assets")] + data["props"]:
+        names = {c["id"]: c.get("names") or [] for c in data["classes"]}
+        for cid, item in [(c["id"], c["assets"]) for c in data["classes"] if c.get("assets")] + \
+                [(p["id"], p) for p in data["props"]]:
             ids = [ref(m) for m in item.get("models") or []]
             if not any(ids):
                 continue
-            missing = [i for i in ids if i and not lib.owns(owner, "object", i)]
-            if missing or not all(ids):
-                raise HTTPException(400, f"invalid spec: models must be objects of your library ({missing})")
-            item["models"] = [f"objects/{n}" for n in lib.materialize_objects(owner, ids, job.input / "objects")]
+            if not all(ids):
+                raise HTTPException(400, f"invalid spec: models must be objects of your library ({item['models']})")
+            # Not an object of the owner's (the chat gave a dataset's id, 2026-10-09): the run searches for models
+            # instead of refusing the whole spec.
+            ids = [i for i in ids if lib.owns(owner, "object", i)]
+            item["models"] = [f"objects/{n}" for n in lib.materialize_objects(owner, ids, job.input / "objects")] \
+                if ids else []
+            if not item["models"] and item.get("source") == "library":
+                item["source"] = "search"
+                item["queries"] = item.get("queries") or names.get(cid) or [cid.replace("_", " ")]
         return spec_mod.from_dict(data)
 
     def reuse_corrections(parsed: spec_mod.Spec, owner: str, job: Job) -> None:
@@ -594,7 +602,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 return folders / f"library_{ds}"
             sessions[sid].use_library(*lib.for_chat(owner), kit=chosen,
                                       notes=functools.partial(lib.describe, owner), open_dataset=open_dataset,
-                                      labeled={d["id"] for d in lib.datasets(owner) if d["labels"]})
+                                      labeled={d["id"] for d in lib.datasets(owner) if d["labels"]},
+                                      datasets={d["id"] for d in lib.datasets(owner)})
 
     locks: dict[str, threading.Lock] = {}
 

@@ -87,7 +87,7 @@ def main() -> int:
     listing = store.listing(job_bucket)
     store.pull(job_bucket, [k for k in listing if k == "spec.json" or k.endswith("/" + DONE)], job.root)
     pipe = Pipeline(spec_mod.load(job.spec_path), job, cache)
-    todo = [pl.stage for pl in pipe.plan(args.start, args.only, args.force) if pl.action == "run"]
+    todo = [pl.stage for pl in pipe.plan(args.start, args.only, args.force, retry=True) if pl.action == "run"]
     n = store.pull(job_bucket, [k for k in listing if wanted(k, todo)], job.root)
     m = store.pull(cache_bucket, [k for k in store.listing(cache_bucket) if k.startswith(SHARED)], cache.root)
     g = 0

@@ -344,3 +344,18 @@ def test_a_dataset_without_labels_is_never_given_as_labeled():
     wrong = spec_mod.from_dict({**base, "user_data": {"labeled": "library:bbbbbbbbbbbbbbbb", "class_map": {"cow": ["cow"]}}})
     right = spec_mod.from_dict({**base, "user_data": {"labeled": "library:aaaaaaaaaaaaaaaa", "class_map": {"cow": ["cow"]}}})
     assert "raw" in _unlabeled_dataset(S(), wrong) and _unlabeled_dataset(S(), right) is None
+
+
+def test_a_dataset_id_is_never_a_3d_model():
+    """The chat read "3D models kept" in a dataset's line and gave the dataset's id as the models."""
+    from sim2chip.interview import _dataset_as_model
+    from sim2chip import spec as spec_mod
+
+    class S:
+        dataset_ids = {"aaaaaaaaaaaaaaaa"}
+    cls = {"id": "cow", "description": "cows", "size_m": {"measure": "length", "range": [1.0, 2.0]}}
+    wrong = spec_mod.from_dict({"name": "x", "classes": [{**cls, "assets": {"source": "library",
+                                                                             "models": ["library:aaaaaaaaaaaaaaaa"]}}]})
+    right = spec_mod.from_dict({"name": "x", "classes": [{**cls, "assets": {"source": "library",
+                                                                             "models": ["library:bbbbbbbbbbbbbbbb"]}}]})
+    assert "search" in _dataset_as_model(S(), wrong) and _dataset_as_model(S(), right) is None

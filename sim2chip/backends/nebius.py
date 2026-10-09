@@ -575,7 +575,7 @@ class NebiusBackend:
                      log=print) -> None:
         """Worker mode: the whole run in one job. Progress lines and done markers come back while it runs."""
 
-        plans = pipe.plan(start, only, force)
+        plans = pipe.plan(start, only, force, retry=True)
         todo = [p.stage for p in plans if p.action == "run"]
         for p in plans:
             if p.action == "skip" and only is None:
