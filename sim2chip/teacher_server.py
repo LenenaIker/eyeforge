@@ -27,13 +27,17 @@ DONE = "\x00done "
 WORKERS = {"sam3": "sim2chip.sam3_worker", "siglip": "sim2chip.siglip_worker"}
 
 _loaded: dict[tuple[str, str], object] = {}
-_loading: dict[str, threading.Lock] = {t: threading.Lock() for t in WORKERS}  # one load per teacher at a time
+# One load at a time, of any teacher: two at once import transformers from two threads, and its lazy imports are
+# not thread-safe ("cannot import name 'Sam3Model'" on the warm GPU, 2026-10-09).
+_loading = threading.Lock()
 _gpu = threading.Lock()  # one request at a time; loading takes no turn, so SigLIP answers while SAM 3 loads
 
 
 def loaded(teacher: str, model: str):
     key = (teacher, model)
-    with _loading[teacher]:
+    if key in _loaded:
+        return _loaded[key]
+    with _loading:
         if key not in _loaded:
             _loaded[key] = importlib.import_module(WORKERS[teacher]).load(model)
     return _loaded[key]
