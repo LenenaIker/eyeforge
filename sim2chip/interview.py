@@ -51,7 +51,10 @@ What the spec must settle (decide it; ask only as said above):
   and finer classes.
 - The task. "roi_classification" (default) says which class the picture shows, or none. "task": "count"
   says how many objects of each class are in the picture and where: use it when the user wants to count, or
-  when several objects appear at once (a balcony with pots, a flock). For counting, photos always go in
+  when several objects appear at once (a balcony with pots, a flock), even if they never say "count": to find,
+  spot or tell apart objects that share the picture with others (bins and litter on a street), one label per
+  picture names only one of them, so use count. Never tell objects apart by their size in the picture: the
+  distance changes it; use color, shape or what they are. For counting, photos always go in
   user_data.raw: the teacher marks every object and the user fixes the marks in review. The teacher (SAM 3)
   understands only English: give every counted class "names", 1 to 3 short English noun phrases, most common
   first ("names": ["flower pot", "plant pot"]), whatever language the user speaks. Counting small or far
@@ -434,6 +437,10 @@ Each dataset comes with what was seen in it (objects, backgrounds, places). Befo
 a dataset, measure it for this goal: {{"describe_scene": {{"folder": "library:<id>", "classes": "<what to find>"}}}}
 (sizes, camera, scene fields). Photos the user attaches in this chat count too: when a dataset is also used,
 "raw" lists both, ["library:<id>", "<attached folder>"].
+A dataset labeled before by the teacher keeps those labels: when what the user wants now fits, use the same
+task and exactly the same class ids (and background class); the job then reuses the labels and the user is not
+asked to check the photos again. Other classes or another task mean the teacher labels every photo anew and the
+user checks them: say so before proposing them, and propose the earlier classes as the faster option.
 Decide for each object whether it is a class or a prop from what the user wants now: the same object can be the
 target of one model and a distractor of another. Every class or prop with 3D models still needs size_m. Use only
 the ids listed here.

@@ -462,23 +462,57 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if found:
             f.write_text(json.dumps({"labels": {}, "assets": {}, "points": {}, **found}, indent=1))
 
-    def checked_before(parsed: spec_mod.Spec, job: Job) -> bool:
-        """Did the user already check most of these photos (reuse_corrections)? Then the few new ones need no
-        check of their own (user, 2026-10-09): the teacher learns from the earlier corrections and marks them in
-        the run, and the user can still fix them after it. At least a check round's worth of corrected photos,
-        and the new ones at most NEW_SHARE of the folder."""
+    def follow_labeling(parsed: spec_mod.Spec, owner: str) -> spec_mod.Spec:
+        """A library dataset labeled before for the same task and class ids (library.labelings): the classes take
+        that job's names and descriptions, so the teacher looks for the very same things and its kept answers
+        and labels apply (user, 2026-10-09: a dataset's labels are not asked for again)."""
+        ids = {c.id for c in parsed.classes}
+        for src in interview_sources(parsed.user_data.raw):
+            ds = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(src))
+            if not ds or not lib.owns(owner, "dataset", ds.group(1)):
+                continue
+            for done in lib.labelings(ds.group(1)):
+                if done["task"] != parsed.task or set(done["classes"]) != ids \
+                        or done["background"] != parsed.background_class:
+                    continue
+                before = {c["id"]: c for c in json.loads((home / "jobs" / done["job"] / "request.json").read_text())
+                          ["classes"]}
+                data = json.loads(parsed.to_json())
+                for c in data["classes"]:
+                    c["description"] = before[c["id"]].get("description") or c["description"]
+                    c["names"] = before[c["id"]].get("names") or c.get("names")
+                    if c.get("assets") and before[c["id"]].get("assets"):  # names come from the queries too
+                        c["assets"]["queries"] = before[c["id"]]["assets"].get("queries") or c["assets"].get("queries")
+                        c["assets"]["categories"] = before[c["id"]]["assets"].get("categories") or \
+                            c["assets"].get("categories")
+                return spec_mod.from_dict(data)
+        return parsed
+
+    def checked_before(parsed: spec_mod.Spec, owner: str, job: Job) -> bool:
+        """Are most of these photos labeled already, so the few new ones need no check of their own (user,
+        2026-10-09)? Either the user corrected at least a check round's worth (reuse_corrections), or an earlier
+        job's teacher labeled them for these same classes and the user went on to train with those labels. The
+        new ones, at most NEW_SHARE of the folder, are marked in the run, the teacher learning from the earlier
+        corrections, and the user can still fix them after it."""
+        from . import teacher
         raw = parsed.user_data.raw
-        f = job.input / review.CORRECTIONS
-        if not isinstance(raw, str) or not f.exists():
+        if not isinstance(raw, str):
             return False
         try:
             folder = job.resolve_input(raw)
         except ValueError:
             return False
-        fixes = json.loads(f.read_text())
-        known = set(fixes.get("labels") or {}) | set(fixes.get("points") or {})
+        if not folder.is_dir():
+            return False
         total = sum(1 for p in folder.rglob("*") if p.suffix.lower() in IMAGE_EXT and not p.name.startswith("."))
-        return len(known) >= CALIBRATION_PHOTOS and total - len(known) <= NEW_SHARE * total
+        f = job.input / review.CORRECTIONS
+        fixes = json.loads(f.read_text()) if f.exists() else {}
+        corrected = len(set(fixes.get("labels") or {}) | set(fixes.get("points") or {}))
+        if corrected >= CALIBRATION_PHOTOS and total - corrected <= NEW_SHARE * total:
+            return True
+        phrases = [p[0] for p in teacher.phrases(parsed).values()] if parsed.task == "count" else []
+        known = lib.known_labels(owner, folder, phrases, parsed.labels if parsed.task != "count" else [])
+        return known > 0 and total - known <= NEW_SHARE * total
 
     def check_paths(parsed: spec_mod.Spec, request: Request, job: Job | None = None) -> None:
         """On a public server, only photos the requester uploaded in their chats (or, revising a job, the job's
@@ -541,6 +575,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             def open_dataset(ds: str, owner=owner, folders=folders) -> Path | None:
                 if not lib.owns(owner, "dataset", ds):
                     return None
+                jobs.warm_up("library photos", f"session:{sid}")  # as an upload: the GPU starts while the chat goes on
                 lib.materialize_dataset(owner, ds, folders / f"library_{ds}", by_label=False)
                 return folders / f"library_{ds}"
             sessions[sid].use_library(*lib.for_chat(owner), kit=chosen,
@@ -720,7 +755,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         parsed = adopt_uploads(parsed, home / "uploads", job)
         save_photos(job.input / "photos", images)  # before the library: raw may merge them with a dataset
         try:
-            parsed = adopt_library(parsed, owner_of(request), job)
+            parsed = adopt_library(follow_labeling(parsed, owner_of(request)), owner_of(request), job)
         except HTTPException:
             shutil.rmtree(job.root, ignore_errors=True)  # a refused spec leaves no empty job behind
             raise
@@ -731,7 +766,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if session:
             warm_mod.note(home, "job", name, session=f"session:{session}")
         if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled \
-                and not checked_before(parsed, job):
+                and not checked_before(parsed, owner_of(request), job):
             bill_to(job, may_start(request, "run"))  # the teacher's check is the start of the paid run
             jobs.warm_up("calibration", name)
             jobs.calibrate(job)
@@ -870,12 +905,12 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         bill_to(job, acc)
         if public:
             (job.root / OWNER).write_text(visitor(request))
-        parsed = adopt_library(parsed, owner, job)
+        parsed = adopt_library(follow_labeling(parsed, owner), owner, job)
         reuse_corrections(parsed, owner, job)
         (job.root / "request.json").write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         (job.root / LABELING).write_text(json.dumps({"dataset": item, "state": "checking"}))
         jobs.warm_up("calibration", name)
-        if checked_before(parsed, job):
+        if checked_before(parsed, owner, job):
             jobs.label_all(job)
         else:
             jobs.calibrate(job)
@@ -1159,7 +1194,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if not dry:
             may_start(request, "run")
             parsed = adopt_uploads(parsed, home / "uploads", job)
-            parsed = adopt_library(parsed, owner_of(request), job)
+            parsed = adopt_library(follow_labeling(parsed, owner_of(request)), owner_of(request), job)
             reuse_corrections(parsed, owner_of(request), job)
             credit_interview(job, session, request)
         todo = [p.stage.name for p in Pipeline(parsed, job, Cache(home / "cache")).plan() if p.action == "run"]

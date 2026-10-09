@@ -100,7 +100,8 @@ def main() -> int:
     beat("setup")
     from . import teacher
     preload = []
-    for name, repo in (("sam3", teacher.MODEL), ("siglip", teacher.SIGLIP_MODEL)):
+    # SigLIP first: it loads in seconds and a classify round needs nothing else.
+    for name, repo in (("siglip", teacher.SIGLIP_MODEL), ("sam3", teacher.MODEL)):
         try:
             preload.append(f"{name}={teacher.weights(repo, log=say)}")
         except Exception as e:  # the task that needs them tries again and says why

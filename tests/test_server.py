@@ -611,3 +611,38 @@ def test_photos_checked_before_skip_the_check(app, tmp_path):
                  {"label": "cow"}, source="user")
     r = app.post("/api/jobs", data={"spec": json.dumps(GOOD), "calibrate": "true"}, files=photos).json()
     assert not r.get("calibrating") and app.launched  # 5 new of 20: straight to the run
+
+
+def test_a_dataset_labeled_before_for_the_same_classes_needs_no_check(app, tmp_path):
+    """The teacher's labels of a library dataset, kept from an earlier job with the same task and classes: the
+    new job takes that job's class names (same phrases for the teacher) and starts without a check."""
+    import io
+
+    from PIL import Image
+
+    from sim2chip import library, spec as spec_mod
+
+    count = {**GOOD, "task": "count", "classes": [{**GOOD["classes"][0], "names": ["cow"]}]}
+    lib = library.Library(tmp_path, tmp_path / "cache")
+    files = []
+    for i in range(8):
+        f = tmp_path / "scratch" / f"p{i}.jpg"
+        f.parent.mkdir(exist_ok=True)
+        Image.new("RGB", (64, 64), (i * 20, 0, 0)).save(f, "JPEG")
+        files.append(f)
+    ds = lib.new_dataset("local", "street", files)
+    for f in files:
+        lib.note("local", library.content_key(f), library.BOXES, "cow", {"boxes": []})
+    before = tmp_path / "jobs" / "first"
+    (before / "input").mkdir(parents=True)
+    (before / "request.json").write_text(spec_mod.from_dict({**count, "user_data": {"raw": f"dataset_{ds}"}}).to_json())
+    lib.db.execute("INSERT INTO uses VALUES ('first', 'dataset', ?)", (ds,))
+    assert "Labeled before" in lib.for_chat("local")[0]
+    # The chat wrote other names for the same class: the job takes the earlier ones and skips the check.
+    spec = {**count, "classes": [{**count["classes"][0], "names": ["cattle"]}], "user_data": {"raw": f"library:{ds}"}}
+    r = app.post("/api/jobs", data={"spec": json.dumps(spec), "calibrate": "true"}).json()
+    assert not r.get("calibrating") and app.launched
+    assert json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["classes"][0]["names"] == ["cow"]
+    # Other classes: labeled anew, with a check.
+    other = {**spec, "classes": [{**spec["classes"][0], "id": "horse", "description": "horses"}]}
+    assert app.post("/api/jobs", data={"spec": json.dumps(other), "calibrate": "true"}).json()["calibrating"]

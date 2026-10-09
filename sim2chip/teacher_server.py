@@ -18,6 +18,7 @@ import json
 import socketserver
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -26,13 +27,15 @@ DONE = "\x00done "
 WORKERS = {"sam3": "sim2chip.sam3_worker", "siglip": "sim2chip.siglip_worker"}
 
 _loaded: dict[tuple[str, str], object] = {}
-_gpu = threading.Lock()
+_loading: dict[str, threading.Lock] = {t: threading.Lock() for t in WORKERS}  # one load per teacher at a time
+_gpu = threading.Lock()  # one request at a time; loading takes no turn, so SigLIP answers while SAM 3 loads
 
 
 def loaded(teacher: str, model: str):
     key = (teacher, model)
-    if key not in _loaded:
-        _loaded[key] = importlib.import_module(WORKERS[teacher]).load(model)
+    with _loading[teacher]:
+        if key not in _loaded:
+            _loaded[key] = importlib.import_module(WORKERS[teacher]).load(model)
     return _loaded[key]
 
 
@@ -46,9 +49,10 @@ class Handler(socketserver.StreamRequestHandler):
             ask = json.loads(self.rfile.readline())
             if ask.get("v") != VERSION or ask.get("teacher") not in WORKERS:
                 raise ValueError(f"unknown request (version {ask.get('v')}, teacher {ask.get('teacher')})")
+            req = ask["req"]
+            model = loaded(ask["teacher"], req["model"])
             with _gpu:
-                req = ask["req"]
-                importlib.import_module(WORKERS[ask["teacher"]]).run(req, loaded(ask["teacher"], req["model"]), say)
+                importlib.import_module(WORKERS[ask["teacher"]]).run(req, model, say)
             say(DONE + "0")
         except Exception as e:
             traceback.print_exc()
@@ -70,12 +74,12 @@ def main() -> int:
     def preload() -> None:
         for item in args.preload:
             teacher, model = item.split("=", 1)
-            with _gpu:
-                try:
-                    loaded(teacher, model)
-                    print(f"teacher server: {teacher} loaded", flush=True)
-                except Exception as e:  # a request loads it again and says why
-                    print(f"teacher server: {teacher} not loaded: {e}", flush=True)
+            t0 = time.time()
+            try:
+                loaded(teacher, model)
+                print(f"teacher server: {teacher} loaded in {time.time() - t0:.0f} s", flush=True)
+            except Exception as e:  # a request loads it again and says why
+                print(f"teacher server: {teacher} not loaded: {e}", flush=True)
 
     threading.Thread(target=preload, daemon=True).start()
     print(f"teacher server on {sock}", flush=True)

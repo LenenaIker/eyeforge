@@ -69,6 +69,7 @@ SCENE = "scene"    # a vision model's description of the photo (scene_profile.PR
 BOXES = "boxes"    # objects found: [{"box": [x0, y0, x1, y1], "score"}] in 0..1 of the upright photo
 POINTS = "points"  # objects marked: [[x, y], ...], the user's corrections of a count
 CLASS = "class"    # the photo's label among the labels in ref
+TASK_NAME = {"count": "counts objects", "roi_classification": "one label per photo"}
 
 
 def _id(*parts: str) -> str:
@@ -572,6 +573,31 @@ class Library:
         return [j for (j,) in self.db.execute("SELECT job FROM uses WHERE kind = ? AND item = ? ORDER BY job",
                                               (kind, item)).fetchall()]
 
+    def labelings(self, ds: str) -> list[dict]:
+        """How earlier jobs had the teacher label this dataset, newest first: {job, task, classes (ids),
+        background, checked (photos the user corrected)}. A job with the same task and classes gets the same
+        labels again without a check (server.follow_labeling)."""
+        out = []
+        for job in self._used("dataset", ds):
+            spec = _load(self.root.parent / "jobs" / job / "request.json")
+            if not spec or not (spec.get("user_data") or {}).get("raw"):
+                continue
+            fixes = _load(self.root.parent / "jobs" / job / "input" / "corrections.json") or {}
+            out.append({"job": job, "task": spec.get("task"), "classes": [c["id"] for c in spec.get("classes", [])],
+                        "background": spec.get("background_class"),
+                        "checked": len(set(fixes.get("labels") or {}) | set(fixes.get("points") or {})),
+                        "t": (self.root.parent / "jobs" / job / "request.json").stat().st_mtime})
+        return sorted(out, key=lambda d: -d["t"])
+
+    def known_labels(self, owner: str, folder: Path, phrases: list[str], labels: list[str]) -> int:
+        """Photos of the folder the teacher (or the user) already labeled for these classes: a count's boxes
+        for every phrase, else a label among these very labels."""
+        keys = [content_key(f) for f in _images(folder)]
+        if phrases:
+            marked = [set(self.notes(owner, keys, BOXES, p)) | set(self.notes(owner, keys, POINTS, p)) for p in phrases]
+            return sum(all(k in m for m in marked) for k in keys)
+        return len(self.notes(owner, keys, CLASS, json.dumps(sorted(labels))))
+
     def datasets(self, owner: str) -> list[dict]:
         out = []
         for ds, name, created, labeled in self.db.execute(
@@ -616,7 +642,10 @@ class Library:
         def ds_line(d):
             labels = f", labels {', '.join(d['labels'])}" if d["labels"] else ", no labels"
             seen = f". {d['profile']['summary']}" if d["profile"] else ""
-            return f'dataset "{d["name"]}" (id {d["id"]}, {d["photos"]} photos{labels}{seen})'
+            done = "".join(f'. Labeled before by the teacher for model "{l["job"]}" ({TASK_NAME.get(l["task"], l["task"])}, '
+                           f'classes {", ".join(l["classes"])}{", background " + l["background"] if l["background"] else ""}; '
+                           f'{l["checked"]} photos checked by the user)' for l in self.labelings(d["id"])[:2])
+            return f'dataset "{d["name"]}" (id {d["id"]}, {d["photos"]} photos{labels}{done}{seen})'
 
         def obj_line(o):
             return f'object "{o["name"]}" (id {o["id"]}, a {o["concept"].replace("_", " ")})'
