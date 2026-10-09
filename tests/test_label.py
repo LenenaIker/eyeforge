@@ -149,3 +149,52 @@ def test_count_calibration_prefetch_and_rounds_without_a_gpu(tmp_path, monkeypat
     assert not stage.gpu_needed(ctx) and not Label().gpu_needed(ctx)
     Label().run(ctx)  # the whole folder, every answer cached
     assert not asked
+
+
+def test_one_object_found_under_two_classes_gets_one(tmp_path, monkeypatch):
+    """SAM 3 finds the same object as a cow and as a dog (one box, two phrases): SigLIP 2 looks at the crop and
+    keeps one, even against SAM 3's scores; a separate object is left as it is."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    im = Image.new("RGB", (100, 100), (90, 90, 90))
+    im.paste((230, 20, 20), (10, 10, 50, 50))  # the shared object: red, like the dog's description
+    im.save(raw / "a.jpg")
+    shared = [0.1, 0.1, 0.5, 0.5]
+    fake_sam3(monkeypatch, lambda name: [{"class": "cow", "box": shared, "score": 0.9},
+                                         {"class": "dog", "box": shared, "score": 0.8},
+                                         {"class": "dog", "box": [0.6, 0.6, 0.9, 0.9], "score": 0.7}])
+    crops = []
+
+    def embed(items, texts, text_out, log=print, timeline=None):
+        for path, out in items:
+            r, g, b = Image.open(path).convert("RGB").resize((1, 1)).getpixel((0, 0))
+            crops.append(path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps({"embedding": teacher._unit([0.01, g / 255, r / 255])}))
+        text_out.parent.mkdir(parents=True, exist_ok=True)
+        text_out.write_text(json.dumps({"embeddings": [TEXT[t.removeprefix("a photo of ")] for t in texts]}))
+    monkeypatch.setattr(teacher, "embed", embed)
+    monkeypatch.setattr(teacher, "prompts", lambda spec, client=None: {k: f"a photo of {k}" for k in spec.labels})
+    spec = from_dict({**SPEC, "task": "count", "user_data": {"raw": "raw"}})
+    ctx = Context(spec, open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
+    link_input(ctx.job, "raw", raw)
+    Label().run(ctx)
+    objs = json.loads((ctx.job.stage_dir("label") / "verdicts.json").read_text())["a.jpg"]["objects"]
+    assert sorted(o["class"] for o in objs) == ["dog", "dog"] and len(crops) == 1
+    Label().run(ctx)
+    assert len(crops) == 1  # the crop's answer is cached
+
+    def broken(*a, **k):
+        raise teacher.TeacherError("no GPU")
+    monkeypatch.setattr(teacher, "embed", broken)
+    ctx2 = Context(spec, open_job(tmp_path, "job2"), Cache(tmp_path / "cache2"))
+    link_input(ctx2.job, "raw", raw)
+    Label().run(ctx2)  # without SigLIP 2: the class SAM 3 was surest of, still one per object
+    objs = json.loads((ctx2.job.stage_dir("label") / "verdicts.json").read_text())["a.jpg"]["objects"]
+    assert sorted(o["class"] for o in objs) == ["cow", "dog"]
+
+
+def test_same_objects_groups_only_different_classes():
+    d = [{"class": "a", "box": [0, 0, 1, 1]}, {"class": "b", "box": [0, 0, 1, 0.95]},
+         {"class": "a", "box": [0, 0, 1, 0.9]}, {"class": "c", "box": [0, 0, 0.2, 0.2]}]
+    assert [sorted(g) for g in teacher.same_objects(d)] == [[0, 1, 2]]

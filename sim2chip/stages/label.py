@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
+from pathlib import Path
 
 from .. import counting, review, teacher
 from ..tasks import task_of
@@ -32,7 +34,8 @@ NO_ANSWER = "no_answer"  # the teacher failed on the photo: left out, asked agai
 
 class Label(Stage):
     name = "label"
-    version = "3"  # 2: SAM 3 instead of a vision model on Token Factory; 3: SigLIP 2 for classification
+    version = "4"  # 2: SAM 3 instead of a vision model on Token Factory; 3: SigLIP 2 for classification;
+    # 4: count, one class per object (SigLIP 2 tells apart classes SAM 3 found on the same object)
     runtime = "cpu"  # the teachers run in their own Python (teacher.py); this process plans and writes
     gpu = "any"
     reads_input = True
@@ -176,6 +179,79 @@ class Label(Stage):
                    "note": teacher.explain_examples(n, used)}
         return verdicts, learned, {"examples": n}
 
+    def _tell_apart(self, ctx, photo: dict, dets: dict[str, list[dict]], fix_points: dict) -> dict[str, list[dict]]:
+        """One class per object. Where SAM 3 found one object under several classes (teacher.same_objects), SigLIP
+        2 looks at its crop and picks the class whose description fits best, learning from the user's marks on
+        such objects when every class has some (as classification does). Without SigLIP 2, the class SAM 3 was
+        surest of. photo: key -> file."""
+        groups = {k: g for k, d in dets.items() if (g := teacher.same_objects(d))}
+        if not groups:
+            return dets
+        from PIL import Image, ImageOps
+        model = teacher.SIGLIP_MODEL.split("/")[-1]
+        shared = ctx.cache.root / "labels" / "siglip_crops" / model
+        prompts = {k: v for k, v in self._prompts(ctx).items() if k != ctx.spec.background_class}
+        text_file = ctx.cache.root / "labels" / "siglip_text" / model / f"{cache_key(self._prompts(ctx))}.json"
+        crops = {}  # (key, group index) -> embedding file; by photo content and box, the same in every job
+        with tempfile.TemporaryDirectory() as tmp:
+            todo = []
+            for key, gs in groups.items():
+                im = None
+                for n, g in enumerate(gs):
+                    box = teacher.crop_box(max((dets[key][i] for i in g), key=lambda d: d["score"])["box"])
+                    out = shared / f"{cache_key([content_key(photo[key]), [round(c, 4) for c in box]])}.json"
+                    crops[key, n] = out
+                    if out.exists():
+                        continue
+                    if im is None:
+                        with Image.open(photo[key]) as raw:
+                            im = ImageOps.exif_transpose(raw).convert("RGB")
+                    W, H = im.size
+                    f = Path(tmp) / f"{len(todo)}.jpg"
+                    im.crop((box[0] * W, box[1] * H, box[2] * W, box[3] * H)).save(f, quality=95)
+                    todo.append((f, out))
+            ctx.log(f"{sum(len(g) for g in groups.values())} objects found under several classes in {len(groups)} "
+                    f"photos: {teacher.SIGLIP_NAME} picks one class for each ({len(todo)} new crops)")
+            try:
+                if todo or not text_file.exists():
+                    teacher.embed(todo, list(self._prompts(ctx).values()), text_file, log=ctx.log,
+                                  timeline=self._timeline(ctx))
+                text = dict(zip(self._prompts(ctx), json.loads(text_file.read_text())["embeddings"]))
+            except (teacher.TeacherError, OSError, ValueError) as e:
+                ctx.log(f"WARNING: {teacher.SIGLIP_NAME} could not tell them apart, keeping the class {teacher.NAME} "
+                        f"was surest of: {e}")
+                text = None
+        emb = {}
+        for kn, f in crops.items():
+            a = json.loads(f.read_text()) if f.exists() else {}
+            if "embedding" in a:
+                emb[kn] = a["embedding"]
+            else:
+                f.unlink(missing_ok=True)
+        # The user's marks inside a shared box say what that object is: examples for its class.
+        examples: dict[str, list] = {c: [] for c in prompts}
+        for (key, n), e in emb.items():
+            g = groups[key][n]
+            box = max((dets[key][i] for i in g), key=lambda d: d["score"])["box"]
+            for x, y, c, *_ in fix_points.get(key, []):
+                if c in examples and box[0] <= x <= box[2] and box[1] <= y <= box[3]:
+                    examples[c].append(e)
+        centre = teacher.centres({k: text[k] for k in prompts}, examples) if text else {}
+        out = {}
+        for key, d in dets.items():
+            drop, keep = set(), []
+            for n, g in enumerate(groups.get(key, [])):
+                found = [d[i] for i in g]
+                best = max(found, key=lambda x: x["score"])
+                classes = {x["class"] for x in found}
+                cls = best["class"]
+                if centre and (key, n) in emb:
+                    cls, _ = teacher.nearest(emb[key, n], {c: centre[c] for c in classes if c in centre})
+                keep.append({**best, "class": cls, "found_as": sorted(classes)})
+                drop |= set(g)
+            out[key] = [x for i, x in enumerate(d) if i not in drop] + keep
+        return out
+
     def _files(self, ctx):
         """The user's raw photos and their keys (path in the raw folder)."""
         src = ctx.job.resolve_input(ctx.spec.user_data.raw)
@@ -303,6 +379,7 @@ class Label(Stage):
             raise RuntimeError(f"the teacher failed on all {len(files)} photos, see the lines above")
 
         fix_points = corrections.get("points", {})
+        dets = self._tell_apart(ctx, {keys[f]: f for f in files}, dets, fix_points)
         truth = {k: [p for p in v if p[2] in ids] for k, v in fix_points.items()}
         chosen = teacher.choose(spec.errors or "balanced", dets, truth)
         th = chosen["threshold"]

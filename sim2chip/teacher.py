@@ -262,6 +262,46 @@ def objects(dets: list[dict], threshold: float) -> list[dict]:
             for d in dets if d["score"] >= threshold]
 
 
+OVERLAP = 0.7  # boxes of two classes overlapping this much (IoU) are one object found under both names
+
+
+def iou(a: list[float], b: list[float]) -> float:
+    w = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    h = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = w * h
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def same_objects(dets: list[dict]) -> list[list[int]]:
+    """Detections that are one object found under several classes: SAM 3 looks for each phrase on its own, so
+    classes that are the same thing told apart by an attribute (a blue and a yellow recycling bin) get the same
+    box once per class. Groups of indices into `dets`, only those holding two classes or more."""
+    parent = list(range(len(dets)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(dets)):
+        for j in range(i + 1, len(dets)):
+            if dets[i]["class"] != dets[j]["class"] and iou(dets[i]["box"], dets[j]["box"]) >= OVERLAP:
+                parent[root(i)] = root(j)
+    groups: dict[int, list[int]] = {}
+    for i in range(len(dets)):
+        groups.setdefault(root(i), []).append(i)
+    return [g for g in groups.values() if len({dets[i]["class"] for i in g}) > 1]
+
+
+def crop_box(box: list[float], margin: float = 0.1) -> list[float]:
+    """The box with a margin around it, inside the photo: SigLIP sees the object and a little of its place."""
+    w, h = box[2] - box[0], box[3] - box[1]
+    return [max(0.0, box[0] - margin * w), max(0.0, box[1] - margin * h),
+            min(1.0, box[2] + margin * w), min(1.0, box[3] + margin * h)]
+
+
 def match(boxes: list[dict], points: list) -> int:
     """True positives: user points inside a teacher box of the same class, one to one, nearest centre first."""
     used, tp = set(), 0
