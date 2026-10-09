@@ -33,16 +33,20 @@ def nms(dets: list[dict], iou: float = 0.5) -> list[dict]:
     return keep
 
 
-def main() -> int:
+def load(model_path: str):
+    """SAM 3 on the GPU (or the CPU): what run() needs. The warm GPU keeps it loaded (teacher_server.py)."""
+    import torch
+    from transformers import Sam3Model, Sam3Processor
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = Sam3Model.from_pretrained(model_path).to(device).eval()
+    return model, Sam3Processor.from_pretrained(model_path), device
+
+
+def run(req: dict, loaded, say=print) -> None:
     import torch
     from PIL import Image, ImageOps
-    from transformers import Sam3Model, Sam3Processor
-
-    req = json.load(sys.stdin)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = Sam3Model.from_pretrained(req["model"]).to(device).eval()
-    proc = Sam3Processor.from_pretrained(req["model"])
-    print(f"SAM 3 on {torch.cuda.get_device_name() if device == 'cuda' else 'CPU'}", flush=True)
+    model, proc, device = loaded
+    say(f"SAM 3 on {torch.cuda.get_device_name() if device == 'cuda' else 'CPU'}")
     for i, item in enumerate(req["items"]):
         out = Path(item["out"])
         try:
@@ -51,14 +55,20 @@ def main() -> int:
                 im.thumbnail((req["side"], req["side"]))
             w, h = im.size
             dets = []
+            # The photo through the vision encoder once, then every phrase on it: the encoder is most of the work,
+            # and a job with 8 classes of 2 phrases ran it 16 times per photo (44 s for 6 photos, 2026-10-09).
+            pix = proc(images=im, return_tensors="pt").to(device)
+            with torch.no_grad():
+                vision = model.get_vision_features(pixel_values=pix["pixel_values"])
             for cls, phrases in req["phrases"].items():
                 for phrase in phrases:
-                    inp = proc(images=im, text=phrase, return_tensors="pt").to(device)
+                    text = proc(text=phrase, return_tensors="pt").to(device)
                     with torch.no_grad():
-                        res = model(**inp)
+                        res = model(vision_embeds=vision, input_ids=text["input_ids"],
+                                    attention_mask=text["attention_mask"])
                     r = proc.post_process_instance_segmentation(
                         res, threshold=req["floor"], mask_threshold=0.5,
-                        target_sizes=inp.get("original_sizes").tolist())[0]
+                        target_sizes=pix.get("original_sizes").tolist())[0]
                     for b, s in zip(r["boxes"].tolist(), r["scores"].tolist()):
                         x0, x1 = sorted((min(max(b[0], 0), w), min(max(b[2], 0), w)))
                         y0, y1 = sorted((min(max(b[1], 0), h), min(max(b[3], 0), h)))
@@ -70,8 +80,12 @@ def main() -> int:
             answer = {"error": f"{type(e).__name__}: {e}"[:300]}
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(answer))
-        print(f"{i + 1}/{len(req['items'])} {Path(item['path']).name}: "
-              f"{answer.get('error') or len(answer['detections'])}", flush=True)
+        say(f"{i + 1}/{len(req['items'])} {Path(item['path']).name}: {answer.get('error') or len(answer['detections'])}")
+
+
+def main() -> int:
+    req = json.load(sys.stdin)
+    run(req, load(req["model"]), say=lambda line: print(line, flush=True))
     return 0
 
 

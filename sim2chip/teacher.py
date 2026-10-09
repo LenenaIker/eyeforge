@@ -100,8 +100,41 @@ def english_phrases(meaning: dict[str, str], client=None) -> dict[str, list[str]
     return found if all(found.get(k) for k in meaning) else None
 
 
+def _served(module: str, name: str, req: dict, show) -> bool:
+    """The request to the teachers kept loaded on the warm GPU (teacher_server.py), when there is one. False when
+    it cannot be reached or does not know the request: the caller runs the worker itself."""
+    import socket
+    from .teacher_server import DONE, VERSION, WORKERS
+    path = os.environ.get("SIM2CHIP_TEACHER_SOCKET")
+    teacher = next((k for k, m in WORKERS.items() if m == module), None)
+    if not path or teacher is None or not Path(path).exists():
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX) as s:
+            s.connect(path)
+            s.sendall((json.dumps({"v": VERSION, "teacher": teacher, "req": req}) + "\n").encode())
+            for line in s.makefile("r", encoding="utf-8"):
+                if line.startswith(DONE):
+                    code, _, why = line[len(DONE):].strip().partition(" ")
+                    if code != "0":
+                        raise TeacherError(f"{name} failed on the warm GPU: {why}")
+                    return True
+                show(line)
+    except OSError:
+        return False
+    return False  # the server went away mid-answer: run it here
+
+
 def _worker(module: str, name: str, req: dict, log=print) -> None:
-    """Runs a teacher worker in the teacher's Python, the request on stdin, its progress lines to `log`."""
+    """Runs a teacher worker in the teacher's Python, the request on stdin, its progress lines to `log`. On the warm
+    GPU the teachers stay loaded in teacher_server.py, which answers instead."""
+
+    def show(line: str) -> None:
+        if line.startswith((f"{name} on", "  ")) or "/" in line.split(" ", 1)[0]:
+            log(f"  {line.rstrip()}")
+
+    if _served(module, name, req, show):
+        return
     exe = python()
     if exe is None:
         raise TeacherError(f"the teacher ({name}) needs a GPU Python with torch and transformers: set "
@@ -109,11 +142,6 @@ def _worker(module: str, name: str, req: dict, log=print) -> None:
     from .config import env
     from .subproc import python_env, run_module
     extra = {k: v for k in ("HF_HUB_CACHE", "HF_TOKEN", "TORCH_HOME") if (v := env(k))}
-
-    def show(line: str) -> None:
-        if line.startswith((f"{name} on", "  ")) or "/" in line.split(" ", 1)[0]:
-            log(f"  {line.rstrip()}")
-
     code, tail = run_module(exe, module, request=req, on_line=show, env=python_env(extra))
     if code != 0:
         raise TeacherError(f"{name} failed (exit {code}):\n" + "\n".join(tail[-10:]))

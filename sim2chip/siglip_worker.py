@@ -20,17 +20,21 @@ def features(out):
     return out.pooler_output if hasattr(out, "pooler_output") else out
 
 
-def main() -> int:
+def load(model_path: str):
+    """SigLIP 2 on the GPU (or the CPU): what run() needs. The warm GPU keeps it loaded (teacher_server.py)."""
+    import torch
+    from transformers import AutoModel, AutoProcessor
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = AutoModel.from_pretrained(model_path).to(device).eval()
+    return model, AutoProcessor.from_pretrained(model_path), device
+
+
+def run(req: dict, loaded, say=print) -> None:
     import torch
     from PIL import Image, ImageOps
-    from transformers import AutoModel, AutoProcessor
-
-    req = json.load(sys.stdin)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = AutoModel.from_pretrained(req["model"]).to(device).eval()
-    proc = AutoProcessor.from_pretrained(req["model"])
+    model, proc, device = loaded
     unit = lambda e: torch.nn.functional.normalize(e.float(), dim=-1)  # noqa: E731
-    print(f"SigLIP 2 on {torch.cuda.get_device_name() if device == 'cuda' else 'CPU'}", flush=True)
+    say(f"SigLIP 2 on {torch.cuda.get_device_name() if device == 'cuda' else 'CPU'}")
     if req.get("texts"):
         x = proc(text=req["texts"], padding="max_length", max_length=64, truncation=True,
                  return_tensors="pt").to(device)
@@ -51,7 +55,12 @@ def main() -> int:
             answer = {"error": f"{type(e).__name__}: {e}"[:300]}
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(answer))
-        print(f"{i + 1}/{len(req['items'])} {Path(item['path']).name}: {answer.get('error') or 'ok'}", flush=True)
+        say(f"{i + 1}/{len(req['items'])} {Path(item['path']).name}: {answer.get('error') or 'ok'}")
+
+
+def main() -> int:
+    req = json.load(sys.stdin)
+    run(req, load(req["model"]), say=lambda line: print(line, flush=True))
     return 0
 
 

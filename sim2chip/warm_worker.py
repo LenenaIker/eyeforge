@@ -2,7 +2,8 @@
 
     python -m sim2chip.warm_worker --id <warm id>
 
-First the teachers' weights (SAM 3, SigLIP 2) come from the cache bucket, so no task waits for them. Then it
+First the teachers' weights (SAM 3, SigLIP 2) come from the cache bucket and teacher_server.py loads them on
+the GPU, where they stay: tasks ask it instead of loading the weights each time. Then it
 looks for tasks every POLL_S seconds and runs up to PARALLEL at once, each as `cloud_worker` in its own folder
 with the code its run uploaded (a server deployed meanwhile sends the new code) and the shared cache, which keeps
 the teachers' answers, the weights and the asset files between tasks. A task that trains PicoDet waits for that
@@ -28,6 +29,7 @@ from .workspace import say
 
 ROOT = Path("/tmp/s2c")
 CACHE = ROOT / "home" / "cache"  # the cache every task shares (cloud_worker's --home is per task)
+SOCKET = ROOT / "teacher.sock"  # teacher_server.py: the teachers kept loaded
 
 
 class Task:
@@ -54,7 +56,7 @@ class Task:
                 while not Path(warm.LATE_READY).exists() and not self.cancelled:
                     time.sleep(1)
             env = {**os.environ, **(self.spec.get("env") or {}), "S2C_JOB_BUCKET": self.spec["bucket"],
-                   "PYTHONPATH": str(d / "code"), "S2C_WARM": "1"}
+                   "PYTHONPATH": str(d / "code"), "S2C_WARM": "1", "SIM2CHIP_TEACHER_SOCKET": str(SOCKET)}
             env.pop("S2C_SETUP_S", None)  # the start-up was paid once, not by this run
             cmd = [os.environ.get("SIM2CHIP_PYTHON", sys.executable), "-m", "sim2chip.cloud_worker",
                    "--home", str(d / "home"), "--job", self.spec["job"], *self.spec.get("args", [])]
@@ -97,11 +99,13 @@ def main() -> int:
 
     beat("setup")
     from . import teacher
-    for repo in (teacher.MODEL, teacher.SIGLIP_MODEL):
+    preload = []
+    for name, repo in (("sam3", teacher.MODEL), ("siglip", teacher.SIGLIP_MODEL)):
         try:
-            teacher.weights(repo, log=say)
+            preload.append(f"{name}={teacher.weights(repo, log=say)}")
         except Exception as e:  # the task that needs them tries again and says why
             say(f"weights for {repo}: {e}")
+    server = start_teachers(preload)
     say(f"warm GPU ready after {time.time() - t0:.0f} s")
     last_busy = time.time()
     stopping = False
@@ -152,8 +156,27 @@ def main() -> int:
             beat("ready")
         time.sleep(warm.POLL_S)
     beat("stopped")
+    if server is not None:
+        server.terminate()
     say(f"warm GPU stopping after {(time.time() - t0) / 60:.1f} min")
     return 0
+
+
+def start_teachers(preload: list[str]) -> subprocess.Popen | None:
+    """teacher_server.py in the teachers' Python, loading `preload` (teacher=weights) in the background. None when
+    there is no such Python: tasks then run the teachers as separate processes, as anywhere else."""
+    exe = os.environ.get("SIM2CHIP_SAM3_PYTHON")
+    if not exe or not Path(exe).exists():
+        return None
+    log = open(ROOT / "teacher_server.log", "w")
+    proc = subprocess.Popen([exe, "-m", "sim2chip.teacher_server", "--socket", str(SOCKET), "--preload", *preload],
+                            stdout=log, stderr=subprocess.STDOUT)
+    for _ in range(60):  # the socket appears before the weights load; tasks wait on the GPU lock meanwhile
+        if SOCKET.exists() or proc.poll() is not None:
+            break
+        time.sleep(0.5)
+    say(f"teacher server {'up' if SOCKET.exists() else 'not up, tasks load the teachers themselves'}")
+    return proc
 
 
 if __name__ == "__main__":
