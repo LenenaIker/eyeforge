@@ -388,6 +388,19 @@ class Library:
                     n += 1
             return n
 
+    def forget(self, owner: str, jobs: list[str]) -> None:
+        """Everything of an owner whose account is closed: datasets (and photo files no one else holds), objects,
+        scenes, kits and notes; `jobs`: the names of its jobs, whose records here go too."""
+        for kind, table in (("dataset", "datasets"), ("object", "objects"), ("scene", "scenes"), ("kit", "kits")):
+            for (item,) in self.db.execute(f"SELECT id FROM {table} WHERE owner = ?", (owner,)).fetchall():
+                self.delete(owner, kind, item)
+        with self.lock:
+            self.db.execute("DELETE FROM notes WHERE owner = ?", (owner,))
+            self.db.execute("DELETE FROM removed WHERE owner = ?", (owner,))
+            for job in jobs:
+                self.db.execute("DELETE FROM uses WHERE job = ?", (job,))
+                self.db.execute("DELETE FROM synced WHERE job = ?", (job,))
+
     def save_kit(self, owner: str, kit: str | None, name: str, refs: dict[str, list[str]]) -> str:
         """Create (kit None) or replace a kit. Only references the owner holds are kept."""
         clean = {f"{k}s": [i for i in dict.fromkeys(refs.get(f"{k}s", [])) if self.owns(owner, k, i)]

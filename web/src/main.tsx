@@ -15,6 +15,7 @@ import JobPage from "./pages/Job";
 import { Datasets, Kits, Models, Objects, Scenes } from "./pages/Library";
 import { Dataset } from "./pages/Dataset";
 import Billing from "./pages/Billing";
+import { Privacy, Support, Terms } from "./pages/Legal";
 // The live test pulls in the model runtime: loaded only when someone opens it.
 const Live = lazy(() => import("./pages/Live"));
 
@@ -35,6 +36,9 @@ createRoot(document.getElementById("root")!).render(
           <Route path="billing" element={<Billing />} />
         </Route>
         <Route path="/app/job/:name/live" element={<Suspense><Live /></Suspense>} />
+        <Route path="/privacy" element={<Privacy />} />
+        <Route path="/terms" element={<Terms />} />
+        <Route path="/support" element={<Support />} />
         <Route path="*" element={<Landing />} />
       </Routes>
     </BrowserRouter>

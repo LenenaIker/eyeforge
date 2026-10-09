@@ -163,3 +163,6 @@
 @media (prefers-reduced-motion: reduce) {
 .lp, .lp * {animation: none !important; transition: none !important; }
 }
+.lp footer .legal {display: flex; gap: 16px; }
+.lp footer .legal a {color: #b8c3cc; }
+.lp footer .legal a:hover {color: #fff; }

@@ -11,6 +11,8 @@ Recargas del saldo (en dólares) desde Billing y recarga automática. Código en
   - Como mucho una cada 10 minutos.
   - Si la tarjeta falla o pide 3-D Secure, se apaga sola y Billing dice por qué.
 - **Devoluciones:** al devolver un pago desde el panel de Stripe, el saldo baja lo devuelto (aunque quede en negativo si ya se gastó).
+- **Borrar la cuenta** (Billing > Delete account): devuelve a la tarjeta lo que queda del saldo pagado (de los pagos más recientes hacia atrás), borra el cliente de Stripe con su tarjeta, los trabajos y sus buckets de Nebius, chats y biblioteca. Los movimientos de dinero se quedan con un id anónimo (registros fiscales).
+- **Clave restringida:** escritura en Checkout Sessions, Customers, PaymentIntents y Refunds; lectura en PaymentMethods.
 
 ## Alta (lo hace el usuario)
 

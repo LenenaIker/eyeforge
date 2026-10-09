@@ -421,6 +421,15 @@ class NebiusCLI:
                 if "BucketAlreadyOwnedByYou" not in str(e):
                     raise
 
+    def bucket_id(self, name: str) -> str | None:
+        out = self("storage", "bucket", "get-by-name", "--name", name, *self._parent(), "--format", "json",
+                   check=False).strip()
+        return json.loads(out)["metadata"]["id"] if out else None
+
+    def delete_bucket(self, bucket_id: str) -> None:
+        """Delete an empty bucket."""
+        self("storage", "bucket", "delete", "--id", bucket_id)
+
     def create_job(self, name: str, runtime: Runtime, env: dict[str, str], script: Path, timeout_h: int,
                    env_secrets: list[str]) -> str:
         args = ["ai", "job", "create", "--name", name, "--image", runtime.image, "--platform", PLATFORM,
@@ -483,6 +492,20 @@ class NebiusBackend:
         suffix = f"-{cloud_id}" if cloud_id else ""
         base = f"{self.prefix}-{job.name}".lower().replace("_", "-")[:63 - len(suffix)]
         return base + suffix, f"{self.prefix}-cache"
+
+    def delete_storage(self, job: Job) -> bool:
+        """Delete the job's bucket and everything in it (the user's photos travel there). False when the job
+        never ran in the cloud."""
+        if not (job.root / "cloud_id").exists() and not (job.logs / "cloud_usage.jsonl").exists():
+            return False
+        bucket, _ = self.buckets(job)
+        bucket_id = self.cli.bucket_id(bucket)
+        if bucket_id is None:
+            return False
+        for key in self.store.listing(bucket):
+            self.store.delete(bucket, key)
+        self.cli.delete_bucket(bucket_id)
+        return True
 
     def _kit_urls(self, cache_bucket: str, teacher: bool, picodet: bool = False) -> str:
         """Presigned URLs of the run's kits, checked before a GPU is paid for."""

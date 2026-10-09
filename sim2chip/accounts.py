@@ -14,6 +14,7 @@ Run from the server with `sim2chip accounts ...` and `sim2chip credits ...`.
 """
 from __future__ import annotations
 
+import secrets
 import sqlite3
 import threading
 import time
@@ -123,6 +124,17 @@ class Accounts:
         got = self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ?", (acc_id,)).fetchone()[0]
         used = self.db.execute("SELECT COALESCE(SUM(usd), 0) FROM usage WHERE account = ?", (acc_id,)).fetchone()[0]
         return round(got - used, 4)
+
+    def forget(self, acc_id: str) -> str:
+        """Close an account: its name, email and login id go, so the same login makes a new account. Its money
+        moves stay (tax records) under a new id that says nothing about the person. Returns that id."""
+        anon = f"deleted:{secrets.token_hex(8)}"
+        with self.lock:
+            self.db.execute("UPDATE accounts SET id = ?, provider = 'deleted', subject = ?, email = NULL, name = NULL, "
+                            "judge = NULL WHERE id = ?", (anon, anon, acc_id))
+            self.db.execute("UPDATE credits SET account = ? WHERE account = ?", (anon, acc_id))
+            self.db.execute("UPDATE usage SET account = ? WHERE account = ?", (anon, acc_id))
+        return anon
 
     def moves(self, acc_id: str, limit: int = 200) -> list[dict]:
         """The latest moves, newest first: money in, and what each job or chat has used (still growing while it

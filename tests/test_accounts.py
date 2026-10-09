@@ -244,3 +244,23 @@ def test_huge_uploads_and_framing_are_refused(server, monkeypatch):
     assert r.status_code == 413
     h = c.get("/api/me").headers
     assert h["x-frame-options"] == "DENY" and h["x-content-type-options"] == "nosniff"
+
+
+def test_deleting_an_account_removes_its_data_and_identity(server, monkeypatch):
+    c = sign_in(server, "google", "alice")
+    acc = server.accounts.by_email("alice@gmail.com")[0]
+    server.accounts.add(acc.id, 5, "grant")
+    name = new_job(c).json()["job"]
+    other = sign_in(server, "google", "judge")
+    kept = new_job(other).json()["job"]
+    assert c.post("/api/account/delete", json={"confirm": "yes"}).status_code == 400
+    assert c.post("/api/account/delete", json={"confirm": "delete"}).status_code == 409  # still training
+    monkeypatch.setattr(FakeProc, "poll", lambda self: 0)  # the runs end
+    r = c.post("/api/account/delete", json={"confirm": "delete"})
+    assert r.status_code == 200 and r.json()["refunded"] == 0
+    assert not (server.home / "jobs" / name).exists() and (server.home / "jobs" / kept).exists()
+    assert server.accounts.by_email("alice@gmail.com") == []
+    assert c.get("/api/me").json()["signed_in"] is False
+    again = sign_in(server, "google", "alice")  # the same login makes a new, empty account
+    assert again.get("/api/me").json()["account"]["balance"] == 0
+    assert name not in again.get("/api/jobs").json()["jobs"]

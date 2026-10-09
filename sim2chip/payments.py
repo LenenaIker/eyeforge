@@ -220,6 +220,46 @@ class Payments:
             self.db.execute("UPDATE stripe SET payment_method = ?, card = ?, auto_error = NULL WHERE account = ?",
                             (pm["id"], f"{card.get('brand', 'card')} {card.get('last4', '')}".strip(), acc_id))
 
+    # Closing an account -----------------------------------------------------------------------------------
+
+    def close(self, acc_id: str) -> float:
+        """Before an account is deleted: refund what is left of its paid balance to the cards it came from (newest
+        payments first; balance given for free is not money to return) and delete its Stripe customer, which
+        drops the saved card. Returns the dollars refunded. Raises PaymentError before deleting anything when
+        Stripe refuses a refund."""
+        refunded = 0.0
+        # The accounts' lock while refunding: the charge.refunded webhook of these refunds waits until they are
+        # written down, then finds nothing more to take back.
+        with self.accounts.lock:
+            left = self.accounts.balance(acc_id)
+            paid = self.db.execute("SELECT amount, detail FROM credits WHERE account = ? AND amount > 0 AND "
+                                   "reason IN ('purchase', 'auto top-up') AND detail LIKE 'pi_%' ORDER BY t DESC",
+                                   (acc_id,)).fetchall()
+            for amount, payment in paid:
+                if left < 0.01:
+                    break
+                detail = f"refund {payment}"
+                taken = -self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ? AND "
+                                         "detail = ?", (acc_id, detail)).fetchone()[0]
+                cents = int(round(min(amount - taken, left) * 100))
+                if cents < 1:
+                    continue
+                self._call("POST", "refunds", {"payment_intent": payment, "amount": cents,
+                                               "metadata": {"account": acc_id, "kind": "account closed"}},
+                           idempotency=f"close-{payment}-{cents}")
+                self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)",
+                                (acc_id, -cents / 100, "refund", detail, time.time()))
+                left -= cents / 100
+                refunded += cents / 100
+        r = self._row(acc_id)
+        if r["customer"]:
+            try:
+                self._call("DELETE", f"customers/{r['customer']}")
+            except PaymentError as e:  # the money is back already; a customer left in Stripe holds no balance
+                print(f"stripe: could not delete customer {r['customer']}: {e}", flush=True)
+        self.db.execute("DELETE FROM stripe WHERE account = ?", (acc_id,))
+        return round(refunded, 2)
+
     # Auto top-up ----------------------------------------------------------------------------------------
 
     def set_auto(self, acc_id: str, on: bool, below: float, amount: float) -> dict:

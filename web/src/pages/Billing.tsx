@@ -1,7 +1,7 @@
 import { CreditCard } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { getBilling, setAutoTopup, startTopup, usd, type Billing as BillingData, type Topup } from "../api";
+import { Link, useSearchParams } from "react-router-dom";
+import { deleteAccount, getBilling, setAutoTopup, startTopup, usd, type Billing as BillingData, type Topup } from "../api";
 import { Badge, Button, Card, Notice, cx } from "../components/ui";
 
 // The balance in dollars, how things are priced (by use) and every move: money in, and what each model, chat or
@@ -83,7 +83,50 @@ export default function Billing() {
           )}
         </Card>
       )}
+      {b?.tier && b.tier !== "banned" && <DeleteAccount balance={b.tier === "normal" ? b.balance ?? 0 : 0} />}
     </div>
+  );
+}
+
+// Close the account, after typing "delete": the server refunds what is left and deletes the rest.
+function DeleteAccount({ balance }: { balance: number }) {
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const go = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteAccount();
+      window.location.assign("/");
+    } catch (e: any) {
+      setError(e.message);
+      setBusy(false);
+    }
+  };
+  return (
+    <Card className="space-y-3 p-5">
+      <div>
+        <div className="font-medium">Delete account</div>
+        <p className="mt-1 text-sm text-muted">
+          Deletes your models, datasets, objects, kits and chats, here and in the cloud, and your name and email.
+          {balance > 0 && ` What is left of your paid balance (up to ${usd(balance)}) goes back to your card.`}{" "}
+          Payment records are kept without your name, as the law requires. This cannot be undone.
+        </p>
+      </div>
+      {error && <Notice tone="bad">{error}</Notice>}
+      {!open ? <Button variant="danger" size="sm" onClick={() => setOpen(true)}>Delete account</Button> : (
+        <div className="flex flex-wrap items-center gap-2">
+          <input className={cx(small, "w-40")} placeholder='Type "delete"' value={typed}
+                 onChange={(e) => setTyped(e.target.value)} aria-label='Type "delete" to confirm' />
+          <Button variant="danger" size="sm" disabled={typed.trim().toLowerCase() !== "delete" || busy} onClick={go}>
+            {busy ? "Deleting..." : "Delete for good"}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => { setOpen(false); setTyped(""); }}>Cancel</Button>
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -116,7 +159,8 @@ function TopUp({ t }: { t: Topup }) {
       <Button className="w-full" onClick={go} disabled={busy}>
         <CreditCard className="h-4 w-4" /> {busy ? "Opening Stripe..." : `Add ${usd(amount)}`}
       </Button>
-      <p className="text-xs text-muted">Paid by card on Stripe{t.tax ? ", VAT added for your country" : ""}. Your card is kept by Stripe for auto top-ups, never by us.</p>
+      <p className="text-xs text-muted">Paid by card on Stripe{t.tax ? ", VAT added for your country" : ", VAT included"}. Your card is kept by Stripe for auto top-ups, never by us. By topping up you accept the{" "}
+        <Link className="underline" to="/terms">terms</Link>.</p>
     </div>
   );
 }

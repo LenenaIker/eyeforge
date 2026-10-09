@@ -25,6 +25,10 @@ class FakeStripe:
             return {"id": "cs_1", "url": "https://checkout.stripe.test/cs_1"}
         if path.startswith("payment_intents/"):
             return {"id": "pi_1", "payment_method": {"id": "pm_1", "card": {"brand": "visa", "last4": "4242"}}}
+        if path == "refunds":
+            return {"id": f"re_{len(self.calls)}", "status": "succeeded"}
+        if path.startswith("customers/") and method == "DELETE":
+            return {"id": path.split("/")[1], "deleted": True}
         if path == "payment_intents":
             if self.refuse:
                 raise PaymentError(self.refuse)
@@ -139,3 +143,19 @@ def test_refund_takes_the_money_back_once(pay):
     assert p.handle(refunded(cents=1000)) == "refunded 6.00"   # the rest: Stripe sends the running total
     assert accs.balance(acc.id) == pytest.approx(0)
     assert p.handle(refunded(pi="pi_other")) == "refund of an unknown payment"
+
+
+def test_closing_refunds_the_paid_balance_left_and_drops_the_card(pay):
+    p, accs, acc, stripe = pay
+    p.checkout(acc, 10)  # makes its Stripe customer
+    p.handle(paid(acc.id, "10.00", "pi_old"))
+    p.handle(paid(acc.id, "5.00", "pi_new"))
+    accs.add(acc.id, 3, "grant")  # given, not paid: counted as spent first, never refunded beyond what was paid
+    accs.meter(acc.id, "job1", "run", 4.5)  # 9 $ used at the 2x margin: 9 $ left
+    stripe.calls.clear()
+    assert p.close(acc.id) == pytest.approx(9)
+    refunds = [(c[2]["payment_intent"], c[2]["amount"]) for c in stripe.calls if c[1] == "refunds"]
+    assert refunds == [("pi_new", 500), ("pi_old", 400)]  # newest first
+    assert ("DELETE", "customers/cus_1", None, None) in stripe.calls
+    assert p.handle(refunded("pi_new", 500)) == "already refunded"  # its webhook comes later
+    assert accs.balance(acc.id) == pytest.approx(0)

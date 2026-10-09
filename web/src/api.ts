@@ -280,6 +280,8 @@ const sendJson = (method: string, body: unknown): RequestInit =>
 export const startTopup = (usd: number) => api<{ url: string }>("/api/billing/topup", sendJson("POST", { usd }));
 export const setAutoTopup = (on: boolean, below: number, amount: number) =>
   api<Topup>("/api/billing/auto", sendJson("PUT", { on, below, amount }));
+// Close the account: what is left of the paid balance goes back to the card, everything else is deleted.
+export const deleteAccount = () => api<{ ok: boolean; refunded: number }>("/api/account/delete", sendJson("POST", { confirm: "delete" }));
 
 // Editing the library. Photos go in batches like the chat's: the first batch makes the dataset, the rest join it.
 export type LibraryKind = "datasets" | "objects" | "scenes" | "kits";

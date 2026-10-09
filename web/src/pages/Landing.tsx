@@ -144,6 +144,7 @@ export default function Landing() {
       <footer><div className="wrap">
         <span className="logo">EyeForge</span>
         <span>Open source under the AGPL-3.0 license. Built for the Nebius x NVIDIA Global AI Hackathon.</span>
+        <span className="legal"><Link to="/privacy">Privacy</Link> <Link to="/terms">Terms</Link> <Link to="/support">Support</Link></span>
       </div></footer>
     </div>
   );
