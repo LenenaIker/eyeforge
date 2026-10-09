@@ -163,8 +163,13 @@ def test_add_photos_to_a_trained_job(app, tmp_path):
     (job / "export" / "report.json").write_text(json.dumps({"metric": "f1", "real_test": {"mean": 0.2}}))
     files = [("photos", ("a.jpg", b"dry patch", "image/jpeg")), ("photos", ("b.png", b"another", "image/png")),
              ("photos", ("notes.txt", b"no", "text/plain"))]
-    r = app.post("/api/jobs/barn_cam/photos", data={"note": "misses  dry\npatches"}, files=files)
+    said = {"a.jpg": {"label": "empty"}, "b.png": {"points": [[0.5, 0.25, "cow"], [2, 0, "cow"]]}, "zzz.jpg": {"label": "x"}}
+    r = app.post("/api/jobs/barn_cam/photos", data={"note": "misses  dry\npatches", "labels": json.dumps(said)},
+                 files=files)
     assert r.json() == {"rerun_from": "label", "photos": 2} and app.launched[-1][3] == "label"
+    # What the user said in the live test is a correction, named as the label stage names the photos.
+    fixes = json.loads((job / "input" / "corrections.json").read_text())
+    assert fixes["labels"] == {"added/a.jpg": "empty"} and fixes["points"] == {"added/b.png": [[0.5, 0.25, "cow"]]}
     added = job / "input" / "photos" / "added"
     assert sorted(f.name for f in added.iterdir()) == ["a.jpg", "b.png"]  # its own folder: no clash with a.jpg
     assert (job / "input" / "photos" / "a.jpg").read_bytes() == b"first"

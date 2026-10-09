@@ -683,7 +683,6 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         try:
             parsed = adopt_library(parsed, owner_of(request), job)
         except HTTPException:
-            import shutil
             shutil.rmtree(job.root, ignore_errors=True)  # a refused spec leaves no empty job behind
             raise
         reuse_corrections(parsed, owner_of(request), job)
@@ -1119,10 +1118,12 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
 
     @app.post("/api/jobs/{name}/photos")
     def add_photos(name: str, request: Request, photos: list[UploadFile] = File(...), note: str = Form(""),
-                   more: bool = Form(False), total: int = Form(0)):
+                   more: bool = Form(False), total: int = Form(0), labels: str = Form("")):
         """More photos for a trained job, usually of what the model gets wrong. The teacher marks them, half
         go to test (the rest to training), and only the real-photo branch reruns: the synthetic data stays.
-        In batches like the interview's photos: more=true stores, the last batch (total: all of them) reruns."""
+        In batches like the interview's photos: more=true stores, the last batch (total: all of them) reruns.
+        labels: JSON {photo file name: {"label": class} or {"points": [[x, y, class], ...]}}, what the user said
+        each photo is when they took it in the live test; it wins over the teacher's, as review corrections do."""
         job = job_of(name, request)
         if jobs.running(job):
             raise HTTPException(409, f"job {job.name} is running")
@@ -1143,10 +1144,15 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if public and have + len(images) > MAX_PHOTOS:
             raise HTTPException(413, f"at most {MAX_PHOTOS} photos per model ({have} already)")
         ud["raw"] = raw
-        saved = save_photos(folder / "added", images)
+        names = save_photos(folder / "added", images)
+        said = _photo_labels(labels)
+        fixed = {f"added/{names[n]}": v for n, v in said.items() if n in names}
+        if fixed:  # keys as the label stage names photos: their path inside the raw folder
+            review.apply(job, Cache(home / "cache"), {k: v["label"] for k, v in fixed.items() if "label" in v}, {},
+                         {k: v["points"] for k, v in fixed.items() if "points" in v}, share=False)
         if more:
-            return {"stored": saved}
-        saved = max(saved, total)
+            return {"stored": len(names)}
+        saved = max(len(names), total)
         (job.root / "request.json").write_text(json.dumps({**data, "name": data.get("name", job.name)}, indent=2))
         note = " ".join(note.split())[:120]
         snapshot(job, f"added {saved} photos" + (f": {note}" if note else ""))
@@ -1196,10 +1202,11 @@ def capped(upload: UploadFile, limit: int) -> bytes:
     return data
 
 
-def save_photos(folder: Path, images: list[UploadFile]) -> int:
+def save_photos(folder: Path, images: list[UploadFile]) -> dict[str, str]:
     """Writes uploaded photos under their own names; a different photo with a name already there gets a
-    numbered one (phones reuse names like image.jpg)."""
+    numbered one (phones reuse names like image.jpg). Returns each upload's name -> the file name it got."""
     folder.mkdir(parents=True, exist_ok=True)
+    got = {}
     for p in images:
         data, name = capped(p, MAX_PHOTO_BYTES), Path(p.filename or "photo.jpg").name
         dst, n = folder / name, 1
@@ -1207,7 +1214,27 @@ def save_photos(folder: Path, images: list[UploadFile]) -> int:
             n += 1
             dst = folder / f"{Path(name).stem}_{n}{Path(name).suffix}"
         dst.write_bytes(data)
-    return len(images)
+        got[name] = dst.name
+    return got
+
+
+def _photo_labels(text: str) -> dict[str, dict]:
+    """The live test's labels sent with photos (add_photos), kept only when well formed."""
+    try:
+        raw = json.loads(text) if text else {}
+    except ValueError:
+        raise HTTPException(400, "labels must be JSON") from None
+    out = {}
+    for name, v in (raw.items() if isinstance(raw, dict) else []):
+        if not isinstance(v, dict):
+            continue
+        if isinstance(v.get("label"), str):
+            out[Path(str(name)).name] = {"label": v["label"]}
+        elif isinstance(v.get("points"), list):
+            pts = [p for p in v["points"] if isinstance(p, list) and len(p) == 3 and isinstance(p[2], str)
+                   and all(isinstance(c, (int, float)) and 0 <= c <= 1 for c in p[:2])]
+            out[Path(str(name)).name] = {"points": pts}
+    return out
 
 
 def latest_spec(job: Job) -> Path:

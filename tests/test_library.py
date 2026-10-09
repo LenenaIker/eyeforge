@@ -158,3 +158,27 @@ def test_several_raw_sources_become_one_folder(tmp_path):
     assert len(list((job.input / "raw").rglob("*.jpg"))) == 3
     s = spec_mod.from_dict({"name": "t", "classes": [{"id": "a"}], "user_data": {"raw": ["library:aaaaaaaaaaaaaaaa"]}})
     assert s.user_data.raw == "library:aaaaaaaaaaaaaaaa"
+
+
+def test_photos_added_to_a_job_join_its_dataset(tmp_path):
+    lib = Library(tmp_path, tmp_path / "cache")
+    upload = photos(tmp_path / "uploads", ["red", "blue"])
+    chat = lib.add_chat_photos("u", "s1", upload, "train", None)
+    job = job_with(tmp_path, "j", ["red", "blue"])
+    lib.sync("u", [job])
+    photos(job.input / "photos" / "added", ["green"])  # taken in the live test
+    (job.root / "spec.json").touch()
+    lib.db.execute("DELETE FROM synced")
+    lib.sync("u", [job])
+    (ds,) = lib.datasets("u")
+    assert ds["id"] == chat and ds["photos"] == 3
+
+
+def test_forgetting_an_owner_leaves_others_alone(tmp_path):
+    lib = Library(tmp_path, tmp_path / "cache")
+    mine, theirs = job_with(tmp_path, "m", ["red"]), job_with(tmp_path, "t", ["blue"])
+    lib.sync("u", [mine])
+    lib.sync("v", [theirs])
+    lib.save_kit("u", None, "K", {})
+    lib.forget("u", ["m"])
+    assert lib.datasets("u") == [] and lib.kits("u") == [] and len(lib.datasets("v")) == 1

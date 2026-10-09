@@ -187,6 +187,12 @@ class Library:
             have = {k for (k,) in self.db.execute("SELECT key FROM photos WHERE dataset = ?", (ds,)).fetchall()}
             if set(keys) <= have and (size is None or len(have) < size):
                 same, size = ds, len(have)
+        if same is None:  # photos added to a job (the live test, "Make it better") join the dataset it used
+            for (ds,) in self.db.execute("SELECT item FROM uses WHERE job = ? AND kind = 'dataset'", (job.name,)).fetchall():
+                have = {k for (k,) in self.db.execute("SELECT key FROM photos WHERE dataset = ?", (ds,)).fetchall()}
+                if have and have <= set(keys) and self.owns(owner, "dataset", ds):
+                    self._add_rows(ds, [r for r in rows if r[0] not in have])
+                    return
         if same is None:
             same = _id(owner, "dataset", *keys)
             if self._removed(owner, same):  # the owner deleted it: a later sync does not bring it back
@@ -195,11 +201,14 @@ class Library:
                           default=time.time())
             self.db.execute("INSERT OR IGNORE INTO datasets VALUES (?, ?, ?, ?, ?)",
                             (same, owner, job.name.replace("_", " "), created, int(bool(ud.get("labeled")))))
-            for key, f, split, label in rows:
-                rel = f"photos/{key[:2]}/{key}{f.suffix.lower()}"
-                _store(f, self.files / rel)
-                self.db.execute("INSERT OR IGNORE INTO photos VALUES (?, ?, ?, ?, ?)", (same, key, rel, split, label))
+            self._add_rows(same, rows)
         self.db.execute("INSERT OR IGNORE INTO uses VALUES (?, 'dataset', ?)", (job.name, same))
+
+    def _add_rows(self, ds: str, rows: list) -> None:
+        for key, f, split, label in rows:
+            rel = f"photos/{key[:2]}/{key}{f.suffix.lower()}"
+            _store(f, self.files / rel)
+            self.db.execute("INSERT OR IGNORE INTO photos VALUES (?, ?, ?, ?, ?)", (ds, key, rel, split, label))
 
     def _take_labels(self, owner: str, job: Job) -> None:
         """The teacher's marks and the user's corrections of a job's raw photos, as notes on those photos: a

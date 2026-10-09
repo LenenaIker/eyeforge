@@ -1,8 +1,8 @@
-import { Camera, Flag, Image as ImageIcon, RefreshCw, SlidersHorizontal, X } from "lucide-react";
+import { Camera, Check, Image as ImageIcon, RefreshCw, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { Spinner, cx } from "../components/ui";
-import { addCapture, listCaptures } from "../live/captures";
+import { addCapture, listCaptures, type Said } from "../live/captures";
 import { anchors, decodeBoxes } from "../live/boxes";
 import { decode, type LivePoint } from "../live/decode";
 import { isHandheld } from "../live/device";
@@ -15,7 +15,8 @@ import { loadModel, type LiveModel } from "../live/runtime";
 // while the labels turn with the phone, and the system back gesture leaves (no back button, except on iOS,
 // where an installed app has none). The frame is turned upright before the model sees it and shrunk with
 // Pillow's filter to the model's square input, as ingest did with the photos it was trained and scored on.
-// "This one is wrong" saves the frame (upright, full size) for the job page's "Make it better", offline too.
+// The shutter freezes the frame (upright, full size) with what the model saw; the user says what it really is
+// (one tap when the model was right) and it is kept for the job page's "Make it better", offline too.
 
 // count: a detector's kept boxes, or a grid model's density output (steadier than its points in crowds; models
 // before it: the points).
@@ -39,6 +40,7 @@ export default function Live() {
   const [tuning, setTuning] = useState(false);
   const [saved, setSaved] = useState(0);  // frames saved for improving the model (this job, all visits)
   const [flash, setFlash] = useState(false);
+  const [checking, setChecking] = useState<{ blob: Blob; url: string; w: number; h: number; guess: Seen } | null>(null);
   const video = useRef<HTMLVideoElement>(null);
   const image = useRef<HTMLImageElement>(null);
   const counts = useRef<number[]>([]);
@@ -124,7 +126,7 @@ export default function Live() {
 
   // Inference loop on the camera: one frame at a time, frames arriving meanwhile are skipped.
   useEffect(() => {
-    if (!model || photo || !frame) return;
+    if (!model || photo || !frame || checking) return;
     const canvas = document.createElement("canvas");
     let raf = 0, busy = false, gone = false;
     const tick = async () => {
@@ -142,7 +144,7 @@ export default function Live() {
     };
     raf = requestAnimationFrame(tick);
     return () => { gone = true; cancelAnimationFrame(raf); };
-  }, [model, photo, frame]);
+  }, [model, photo, frame, checking]);
 
   // A photo is scored once (as it is: photos carry their own orientation), and again when the sensitivity changes.
   useEffect(() => {
@@ -153,17 +155,38 @@ export default function Live() {
 
   useEffect(() => { listCaptures(name).then((c) => setSaved(c.length)); }, [name]);
 
-  async function save() {
+  // The shutter: the frame upright, scored again as saved (so the marks sit on the saved picture), to check.
+  async function shoot() {
     const src = photo ? image.current : video.current;
-    if (!src) return;
+    if (!src || !model) return;
     const blob = await uprightJpeg(src, photo ? 0 : turn);
-    if (blob && await addCapture(name, blob)) {
-      setSaved((n) => n + 1);
-      setFlash(true);
-      setTimeout(() => setFlash(false), 180);
-    } else {
-      setError("Could not save the frame: this browser blocks storage for the site.");
+    if (!blob) return;
+    setFlash(true);
+    setTimeout(() => setFlash(false), 180);
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.src = url;
+    try {
+      await img.decode();
+      const guess = await infer(model, img, document.createElement("canvas"), threshold, 0);
+      setChecking({ blob, url, w: img.naturalWidth, h: img.naturalHeight, guess });
+    } catch (e) {
+      URL.revokeObjectURL(url);
+      setError(String(e));
     }
+  }
+
+  async function keep(said: Said | undefined) {
+    if (!checking) return;
+    if (await addCapture(name, checking.blob, said)) setSaved((n) => n + 1);
+    else setError("Could not save the photo: this browser blocks storage for the site.");
+    URL.revokeObjectURL(checking.url);
+    setChecking(null);
+  }
+
+  function discard() {
+    if (checking) URL.revokeObjectURL(checking.url);
+    setChecking(null);
   }
 
   function show(r: Seen) {
@@ -220,7 +243,7 @@ export default function Live() {
       {saved > 0 && !error && (
         <Link to={`/app/job/${name}#improve`} replace
               className="absolute top-[max(0.75rem,env(safe-area-inset-top))] left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/45 px-3.5 py-2 text-xs font-medium whitespace-nowrap text-white backdrop-blur">
-          {saved} saved · Improve the model
+          {saved} photo{saved > 1 ? "s" : ""} · Improve the model
         </Link>
       )}
       {model && seen && (
@@ -253,7 +276,8 @@ export default function Live() {
               )}
             </div>
             <div className="flex gap-3">
-              <RoundButton label="This one is wrong: save it to improve the model" style={face} onClick={save}><Flag className="h-5 w-5" /></RoundButton>
+              <button onClick={shoot} aria-label="Take a photo to improve the model"
+                      className="grid h-14 w-14 place-items-center rounded-full border-4 border-white bg-white/25 active:bg-white/60" />
               {counting && <RoundButton label="Sensitivity" on={tuning} style={face} onClick={() => setTuning(!tuning)}><SlidersHorizontal className="h-5 w-5" /></RoundButton>}
               {photo
                 ? <RoundButton label="Camera" style={face} onClick={() => { setPhoto(null); setFrame(null); setSeen(null); counts.current = []; }}><Camera className="h-5 w-5" /></RoundButton>
@@ -270,8 +294,84 @@ export default function Live() {
           </div>
         </div>
       )}
+      {checking && model && <CheckPhoto c={checking} report={model.report} view={view} onKeep={keep} onDiscard={discard} />}
     </div>
   );
+}
+
+// The photo just taken, frozen, with what the model said: the user fixes it (a class, or the objects' points)
+// before it is kept. Keeping it as it is takes one tap when the model was right.
+function CheckPhoto({ c, report, view, onKeep, onDiscard }: {
+  c: { url: string; w: number; h: number; guess: Seen }; report: LiveModel["report"]; view: { w: number; h: number };
+  onKeep: (said: Said | undefined) => void; onDiscard: () => void;
+}) {
+  const counting = report.task === "count";
+  const bg = "background" in report ? report.background : report.labels[0];
+  const classes = counting ? report.labels.filter((l) => l !== bg) : report.labels;
+  const [label, setLabel] = useState(c.guess.top?.label ?? classes[0]);
+  const [points, setPoints] = useState<[number, number, string][]>(c.guess.points.map(([x, y, l]) => [x, y, l]));
+  const [cls, setCls] = useState(classes[0]);
+  const panel = counting ? (classes.length > 1 ? 190 : 140) : 120 + 48 * Math.ceil(classes.length / 2);
+  const box = fit(c.w, c.h, view.w, Math.max(160, view.h - panel), "contain");
+  const nice = (l: string) => l.replace(/_/g, " ");
+
+  const tap = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!counting) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    const near = points.findIndex(([px, py]) => Math.hypot((px - x) * r.width, (py - y) * r.height) < 22);
+    setPoints(near >= 0 ? points.filter((_, i) => i !== near)
+                        : [...points, [Math.round(x * 1e4) / 1e4, Math.round(y * 1e4) / 1e4, cls]]);
+  };
+
+  return (
+    <div className="absolute inset-0 z-50 flex flex-col bg-black touch-auto">
+      <div className="relative" style={{ height: Math.max(160, view.h - panel) }}>
+        <div className="absolute" style={box} onClick={tap}>
+          <img src={c.url} alt="The photo just taken" className="block h-full w-full" />
+          {counting && points.map(([x, y], i) => (
+            <span key={i} className="pointer-events-none absolute h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-white bg-ember-500/80 shadow-lg"
+                  style={{ left: `${x * 100}%`, top: `${y * 100}%` }} />
+          ))}
+        </div>
+      </div>
+      <div className="flex-1 space-y-3 px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        {counting ? (
+          <>
+            <p className="text-sm text-white/80">
+              <b className="text-white">{points.length}</b> marked. Tap to add one, tap a mark to remove it.
+            </p>
+            {classes.length > 1 && (
+              <div className="flex flex-wrap gap-2">
+                {classes.map((l) => <Chip key={l} on={cls === l} onClick={() => setCls(l)}>{nice(l)}</Chip>)}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-white/80">
+              The model said <b className="text-white">{nice(c.guess.top?.label ?? "?")}</b>. What is it?
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {classes.map((l) => <Chip key={l} on={label === l} onClick={() => setLabel(l)}>{nice(l)}</Chip>)}
+            </div>
+          </>
+        )}
+        <div className="flex gap-3">
+          <button onClick={onDiscard} className="h-11 flex-1 rounded-full bg-white/15 font-medium">Discard</button>
+          <button onClick={() => onKeep(counting ? { points } : { label })}
+                  className="flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-white font-medium text-ink">
+            <Check className="h-4 w-4" /> Keep
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; children: ReactNode }) {
+  return <button onClick={onClick} className={cx("h-10 truncate rounded-full px-4 text-sm font-medium",
+                                                 on ? "bg-ember-500 text-white" : "bg-white/15 text-white")}>{children}</button>;
 }
 
 function Centered({ children }: { children: ReactNode }) {

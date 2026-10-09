@@ -208,8 +208,9 @@ export function reviseJob(job: string, spec: Spec, dry = false, session?: string
   return api<RevisePlan>(`/api/jobs/${job}/revise`, { method: "POST", body: form });
 }
 
-export function addPhotos(job: string, files: File[], note: string) {
-  return sendInBatches<{ rerun_from: string; photos: number }>(`/api/jobs/${job}/photos`, files, { note });
+// labels: what the user said of some photos in the live test, by file name (live/captures.ts).
+export function addPhotos(job: string, files: File[], note: string, labels: Record<string, unknown> = {}) {
+  return sendInBatches<{ rerun_from: string; photos: number }>(`/api/jobs/${job}/photos`, files, { note, labels: JSON.stringify(labels) });
 }
 
 export const listJobs = () => api<{ jobs: string[] }>("/api/jobs");

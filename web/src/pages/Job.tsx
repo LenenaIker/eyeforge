@@ -2,7 +2,7 @@ import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, Dolla
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { enterCameraMode, isHandheld } from "../live/device";
-import { captureFile, clearCaptures, listCaptures, removeCapture, type Capture } from "../live/captures";
+import { captureFile, captureLabels, clearCaptures, listCaptures, removeCapture, type Capture } from "../live/captures";
 import { prepareImages } from "../images";
 import * as API from "../api";
 import type { Report, Stage, Status, Usage, Version } from "../api";
@@ -318,7 +318,7 @@ function Improve({ job, counting, onRerun }: { job: string; counting: boolean; o
   const send = async () => {
     setBusy(true); setError(null);
     try {
-      await API.addPhotos(job, await prepareImages([...caps.map(captureFile), ...files]), note);
+      await API.addPhotos(job, await prepareImages([...caps.map(captureFile), ...files]), note, captureLabels(caps));
       await clearCaptures(job);
       onRerun();
     } catch (e) {
@@ -342,7 +342,8 @@ function Improve({ job, counting, onRerun }: { job: string; counting: boolean; o
           {previews.map((url, i) => (
             <div key={url} className="relative aspect-square overflow-hidden rounded-lg bg-gray-100">
               <img src={url} alt={i < caps.length ? "Frame saved in the live test" : "Photo to add"} className="h-full w-full object-cover" />
-              {i < caps.length && <span className="absolute bottom-1 left-1 rounded bg-black/60 px-1 text-[10px] font-medium text-white">live</span>}
+              {i < caps.length && <span className="absolute bottom-1 left-1 max-w-[90%] truncate rounded bg-black/60 px-1 text-[10px] font-medium text-white">
+                {saidText(caps[i])}</span>}
               <button onClick={() => drop(i)} aria-label="Remove"
                       className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full bg-black/55 text-white"><X className="h-3.5 w-3.5" /></button>
             </div>
@@ -365,6 +366,12 @@ function Improve({ job, counting, onRerun }: { job: string; counting: boolean; o
       {error && <div className="mt-3"><Notice tone="bad">{error}</Notice></div>}
     </Card></div>
   );
+}
+
+/** The tag on a live capture: what the user said it is, or "live" when the teacher will mark it. */
+function saidText(c: Capture): string {
+  if (!c.said) return "live";
+  return "label" in c.said ? c.said.label.replace(/_/g, " ") : `${c.said.points.length} marked`;
 }
 
 /** Object URLs for blobs, revoked when the list changes or the card goes away. */
