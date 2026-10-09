@@ -556,3 +556,12 @@ def test_photos_in_the_interview_warm_up_a_gpu_and_rounds_with_answers_skip_it(t
     assert st["calibration"] == {"state": "ready"}
     assert ("start", "calibration") in gpu.calls and ("touch",) in gpu.calls
     assert not (tmp_path / "jobs" / r["job"] / "logs" / "pipeline.log").exists()  # no cloud run was launched
+
+
+def test_a_failed_job_can_be_tried_again(app, tmp_path):
+    job = tmp_path / "jobs" / "barn_cam"
+    (job / "logs").mkdir(parents=True)
+    (job / "spec.json").write_text(json.dumps({**GOOD, "user_data": {"raw": "photos"}}))
+    r = app.post("/api/jobs/barn_cam/retry")
+    assert r.status_code == 200 and app.launched[-1][0] == "barn_cam"
+    assert app.post("/api/jobs/barn_cam/retry").status_code == 409  # running again

@@ -1,4 +1,4 @@
-import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, DollarSign, ImagePlus, Loader2, Pencil, Sparkles, Square, X, Zap } from "lucide-react";
+import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, DollarSign, ImagePlus, Loader2, Pencil, RotateCcw, Sparkles, Square, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { enterCameraMode, isHandheld } from "../live/device";
@@ -66,7 +66,7 @@ export default function JobPage() {
       {error && <Notice tone="bad">Lost contact with the server, retrying: {error}</Notice>}
       {news && <Notice>{news}</Notice>}
       {s.labeling && !s.calibration ? <Labeling s={s} /> : s.calibration ? <Calibration s={s} reviewKey={reviewKey} onRerun={restart} /> :
-        (s.running || !s.report) && <Progress s={s} failed={failed} />}
+        (s.running || !s.report) && <Progress s={s} failed={failed} onRerun={restart} />}
       {s.report && <Result job={s.job} r={s.report} usd={s.cloud_usd} version={s.version} />}
       {!s.running && s.report && <Improve job={s.job} counting={s.report.task === "count"} onRerun={restart} />}
       {s.report && s.usage && (s.usage.models.length > 0 || s.usage.gpu.length > 0) && <UsagePanel u={s.usage} />}
@@ -125,12 +125,18 @@ function Skeleton() {
 
 const minutes = (sec: number) => sec < 60 ? "under a minute" : `${Math.round(sec / 60)} min`;
 
-function Progress({ s, failed }: { s: Status; failed: boolean }) {
+function Progress({ s, failed, onRerun }: { s: Status; failed: boolean; onRerun: (news?: string) => void }) {
   const done = s.stages.filter((x) => x.state === "done").length;
   const pct = s.stages.length ? Math.round((done / s.stages.length) * 100) : 0;
   const [stopping, setStopping] = useState(false);
   const [asking, setAsking] = useState(false);  // the Stop button asks once, in place
   const t = s.timing;
+  const [retrying, setRetrying] = useState(false);
+  const retry = async () => {
+    setRetrying(true);
+    try { await API.retryJob(s.job); onRerun(); } catch (e) { alert((e as Error).message); }
+    setRetrying(false);
+  };
   const stop = async () => {
     setAsking(false);
     setStopping(true);
@@ -157,6 +163,11 @@ function Progress({ s, failed }: { s: Status; failed: boolean }) {
               <Button variant="danger" size="sm" onClick={stop}><Square className="h-3.5 w-3.5" /> Stop run</Button>
             </div>
           ) : <Button variant="danger" size="sm" onClick={() => setAsking(true)} disabled={stopping}><Square className="h-3.5 w-3.5" /> Stop</Button>)}
+          {!s.running && failed && (
+            <Button variant="secondary" size="sm" onClick={retry} disabled={retrying}>
+              <RotateCcw className="h-3.5 w-3.5" /> {retrying ? "Starting..." : "Try again"}
+            </Button>
+          )}
         </div>
         <div className="h-2 overflow-hidden rounded-full bg-gray-100">
           <div className={cx("h-full rounded-full transition-all duration-700", failed ? "bg-red-400" : "bg-gradient-to-r from-brand-500 to-ember-500")}

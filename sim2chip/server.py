@@ -1024,6 +1024,20 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         cj = jobs.cancel(job_of(name, request))
         return {"cancelled": True, "cloud_job": cj["id"] if cj else None}
 
+    @app.post("/api/jobs/{name}/retry")
+    def retry(name: str, request: Request):
+        """Run a stopped or failed job again: the steps that finished are reused, it goes on from where it stopped
+        (after a fix on our side, or a cloud hiccup)."""
+        job = job_of(name, request)
+        if jobs.running(job):
+            raise HTTPException(409, ALREADY_RUNNING)
+        if (job.root / CALIBRATION).exists():
+            raise HTTPException(409, "check the teacher's marks first")
+        budget_left()
+        room_for_a_run()
+        start_run(job, latest_spec(job), payer=request)
+        return {"rerun_from": None}
+
     @app.post("/api/jobs/{name}/train")
     def train_calibrated(name: str, body: dict, request: Request):
         """The user is happy with the teacher: keep the last fixes and start the first run. Its label stage

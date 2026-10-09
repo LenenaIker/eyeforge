@@ -217,6 +217,8 @@ export const listJobs = () => api<{ jobs: string[] }>("/api/jobs");
 export const jobStatus = (job: string) => api<Status>(`/api/jobs/${job}`);
 export const getReview = (job: string) => api<Review>(`/api/jobs/${job}/review`);
 export const cancelJob = (job: string) => api(`/api/jobs/${job}/cancel`, { method: "POST" });
+// A stopped or failed job again, from where it stopped (what finished is reused).
+export const retryJob = (job: string) => api(`/api/jobs/${job}/retry`, { method: "POST" });
 // calibrating: fixes of the teacher's check; the server refuses them once training started (another device).
 export const applyFixes = (job: string, fixes: Fixes, calibrating = false) =>
   api<{ rerun_from: string | null }>(`/api/jobs/${job}/corrections`, json({ ...fixes, calibrating }));
