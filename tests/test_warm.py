@@ -255,6 +255,13 @@ def test_start_writes_the_worker_and_its_script(tmp_path, monkeypatch):
     assert env["S2C_ENVS"].count("https://") == 3 and "picodet" in env["S2C_ENVS_LATE"]
     script = (tmp_path / "warm" / "warm.nebius.sh").read_text()
     assert "sim2chip.warm_worker" in script and warm.LATE_READY in script and "TF_FORCE_GPU_ALLOW_GROWTH" in script
+    # Isaac Sim's image: whole runs that render go to it too, from the first labels to the model
+    assert be.cli.jobs[0]["image"].endswith("eyeforge-isaac:t1") and "SIM2CHIP_ISAAC_PYTHON" in script
+    warm.worker_file(tmp_path).write_text(json.dumps({**w, "job_id": "aijob-warm"}))  # the fake CLI's running job
+    assert be.warm_for(Cache(tmp_path / "cache"), nebius.worker_runtime(True)) is not None
+    warm.worker_file(tmp_path).write_text(json.dumps({"wid": w["wid"], "job_id": "aijob-warm"}))  # an older GPU
+    assert be.warm_for(Cache(tmp_path / "cache"), nebius.worker_runtime(True)) is None
+    assert be.warm_for(Cache(tmp_path / "cache"), nebius.worker_runtime(False)) is not None
     assert ("sim2chip-cache", warm.key(w["wid"], "code.tgz")) in store.objects
 
 

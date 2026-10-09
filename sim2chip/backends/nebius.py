@@ -360,9 +360,10 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
     return "\n".join(lines) + "\n"
 
 
-def warm_script() -> str:
-    """Shell script of the warm GPU (warm.py): the light image's kits (the worker's Python and the teachers'), the
-    PicoDet kit in the background, its own code, then its loop. Tasks bring their run's code."""
+def warm_script(isaac: bool = True) -> str:
+    """Shell script of the warm GPU (warm.py): the kits (the worker's Python and the teachers'), the PicoDet kit in
+    the background, its own code, then its loop. Tasks bring their run's code. isaac: it runs in Isaac Sim's image,
+    so whole runs that render go to it too (user, 2026-10-09: one GPU from the first labels to the model)."""
     fetch = (f"{KIT_PY} -c 'import sys, time, urllib.request\n"
              "for i in range(5):\n"
              "    try: urllib.request.urlretrieve(sys.argv[1], sys.argv[2]); break\n"
@@ -383,7 +384,8 @@ def warm_script() -> str:
         f"export SIM2CHIP_SAM3_PYTHON={KIT_TEACHER} HF_HUB_CACHE=/tmp/s2c/hf SIM2CHIP_WEIGHTS_DIR=/tmp/s2c/weights",
         # Tasks run side by side: TensorFlow must not take the whole GPU at its first use.
         "export TF_FORCE_GPU_ALLOW_GROWTH=true",
-        f"export PYTHONUNBUFFERED=1 SIM2CHIP_PYTHON={KIT_PY} PYTHONPATH=/tmp/s2c/code SIM2CHIP_RUNS_ON=nebius",
+        f"export PYTHONUNBUFFERED=1 SIM2CHIP_PYTHON={KIT_PY} PYTHONPATH=/tmp/s2c/code SIM2CHIP_RUNS_ON=nebius"
+        + (f" SIM2CHIP_ISAAC_PYTHON={RUNTIMES['isaac'].python}" if isaac else ""),
         f'{KIT_PY} -m sim2chip.warm_worker --id "$S2C_WARM_ID"',
     ]
     return "\n".join(lines) + "\n"
@@ -666,24 +668,27 @@ class NebiusBackend:
         self.store.put(cache_bucket, warm.key(wid, "code.tgz"), code_archive())
         script = home / "warm" / "warm.nebius.sh"
         script.parent.mkdir(parents=True, exist_ok=True)
-        script.write_text(warm_script())
+        runtime = worker_runtime(True)  # Isaac Sim's image: calibration, training and render on one GPU
+        isaac = runtime.python == RUNTIMES["isaac"].python
+        script.write_text(warm_script(isaac))
         env = {"S2C_CACHE_BUCKET": cache_bucket, "SIM2CHIP_REGION": REGION, "S2C_WARM_ID": wid,
                "S2C_CODE_URL": self.store.url(cache_bucket, warm.key(wid, "code.tgz"), hours=warm.HOURS + 1),
                "S2C_ENVS": " ".join(kits[:3]), "S2C_ENVS_LATE": kits[3]}
         secrets = self._secrets(bool(_env("SIM2CHIP_NEBIUS_SECRET")))  # rounds may put phrases in English
-        job_id = self.cli.create_job(f"s2c-warm-{wid}", worker_runtime(False), env, script, warm.HOURS, secrets)
-        w = {"wid": wid, "job_id": job_id, "started": time.time()}
+        job_id = self.cli.create_job(f"s2c-warm-{wid}", runtime, env, script, warm.HOURS, secrets)
+        w = {"wid": wid, "job_id": job_id, "started": time.time(), "image": runtime.image}
         warm.worker_file(home).write_text(json.dumps(w))
         return w
 
     def warm_for(self, cache: Cache, runtime: Runtime) -> dict | None:
-        """The warm GPU of the server whose home holds this cache, when it can take this run: its image (not
-        Isaac Sim's), its job not ended, not stopping."""
+        """The warm GPU of the server whose home holds this cache, when it can take this run: our own images, Isaac
+        Sim's only if the GPU runs in it (older ones ran in the light image, noted without "image"), its job not
+        ended, not stopping."""
         from .. import warm
-        if not runtime.kits or runtime.image != worker_runtime(False).image:
+        if not runtime.kits:
             return None
         w = warm.current(cache.root.parent)
-        if w is None:
+        if w is None or runtime.image not in (worker_runtime(False).image, w.get("image")):
             return None
         try:
             if self.cli.job_state(w["job_id"]) in TERMINAL:
