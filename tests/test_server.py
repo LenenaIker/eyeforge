@@ -581,3 +581,33 @@ def test_a_chat_goes_on_after_the_server_restarts(tmp_path):
     t = after.post(f"/api/interview/{sid}", json={"text": "yes"}).json()
     assert t["kind"] == "done" and t["spec"]["name"] == "Barn Cam"
     assert after.post("/api/interview/0123456789abcdef0123456789abcdef", json={"text": "x"}).status_code == 404
+
+
+def test_photos_checked_before_skip_the_check(app, tmp_path):
+    """A folder the user already corrected, with a few new photos: no check of its own, the run starts and the
+    teacher marks the new ones from the earlier corrections."""
+    import io
+
+    from PIL import Image
+
+    from sim2chip import library, spec as spec_mod
+    from sim2chip.workspace import content_key
+
+    labels = json.dumps(sorted(spec_mod.from_dict(GOOD).labels))
+    photos, lib = [], library.Library(tmp_path, tmp_path / "cache")
+    for i in range(20):
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), (i * 9, 0, 0)).save(buf, "JPEG")
+        photos.append(("photos", (f"p{i:02d}.jpg", buf.getvalue(), "image/jpeg")))
+        f = tmp_path / "scratch" / f"p{i:02d}.jpg"
+        f.parent.mkdir(exist_ok=True)
+        f.write_bytes(buf.getvalue())
+        if i < 4:
+            lib.note("local", content_key(f), library.CLASS, labels, {"label": "cow"}, source="user")
+    r = app.post("/api/jobs", data={"spec": json.dumps(GOOD), "calibrate": "true"}, files=photos).json()
+    assert r["calibrating"] and not app.launched  # 16 new of 20: the check comes first
+    for i in range(4, 15):
+        lib.note("local", content_key(tmp_path / "scratch" / f"p{i:02d}.jpg"), library.CLASS, labels,
+                 {"label": "cow"}, source="user")
+    r = app.post("/api/jobs", data={"spec": json.dumps(GOOD), "calibrate": "true"}, files=photos).json()
+    assert not r.get("calibrating") and app.launched  # 5 new of 20: straight to the run

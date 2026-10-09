@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from . import config, library, review, usage, warm as warm_mod
 from .accounts import MARGIN, START
 from .version import engine
-from .job_service import CALIBRATION, LABELING, JobService, cloud_spent
+from .job_service import CALIBRATION, CALIBRATION_PHOTOS, LABELING, JobService, cloud_spent
 from . import spec as spec_mod
 from .pipeline import Pipeline
 from .workspace import IMAGE_EXT, Cache, Job, current_version, last_engine, open_job, snapshot, versions
@@ -38,6 +38,7 @@ DIST = WEB / "dist"
 OWNER = "owner"  # file in a public server's job folder: the visitor who started it
 PAYER = "payer"  # file in a job folder: the account paying what it uses (accounts mode)
 METER_S = 30     # how often the usage of running jobs is charged
+NEW_SHARE = 0.25  # new photos, at most this share of a folder the user checked before, skip the check
 NO_BUILD = ("<p>EyeForge: the web app is not built. Run <code>cd web && npm install && npm run build</code> in the "
             "repository, then reload. The API under /api works without it.</p>")
 OPEN_API = {"/api/config", "/api/key", "/api/me", "/api/stripe/webhook"}  # API calls open to a visitor without the key or a login
@@ -461,6 +462,24 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if found:
             f.write_text(json.dumps({"labels": {}, "assets": {}, "points": {}, **found}, indent=1))
 
+    def checked_before(parsed: spec_mod.Spec, job: Job) -> bool:
+        """Did the user already check most of these photos (reuse_corrections)? Then the few new ones need no
+        check of their own (user, 2026-10-09): the teacher learns from the earlier corrections and marks them in
+        the run, and the user can still fix them after it. At least a check round's worth of corrected photos,
+        and the new ones at most NEW_SHARE of the folder."""
+        raw = parsed.user_data.raw
+        f = job.input / review.CORRECTIONS
+        if not isinstance(raw, str) or not f.exists():
+            return False
+        try:
+            folder = job.resolve_input(raw)
+        except ValueError:
+            return False
+        fixes = json.loads(f.read_text())
+        known = set(fixes.get("labels") or {}) | set(fixes.get("points") or {})
+        total = sum(1 for p in folder.rglob("*") if p.suffix.lower() in IMAGE_EXT and not p.name.startswith("."))
+        return len(known) >= CALIBRATION_PHOTOS and total - len(known) <= NEW_SHARE * total
+
     def check_paths(parsed: spec_mod.Spec, request: Request, job: Job | None = None) -> None:
         """On a public server, only photos the requester uploaded in their chats (or, revising a job, the job's
         own folders): a path would let a spec read, and upload to the cloud, any file of the server, and another
@@ -711,7 +730,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         credit_interview(job, session, request)
         if session:
             warm_mod.note(home, "job", name, session=f"session:{session}")
-        if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled:
+        if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled \
+                and not checked_before(parsed, job):
             bill_to(job, may_start(request, "run"))  # the teacher's check is the start of the paid run
             jobs.warm_up("calibration", name)
             jobs.calibrate(job)
@@ -855,7 +875,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         (job.root / "request.json").write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         (job.root / LABELING).write_text(json.dumps({"dataset": item, "state": "checking"}))
         jobs.warm_up("calibration", name)
-        jobs.calibrate(job)
+        if checked_before(parsed, job):
+            jobs.label_all(job)
+        else:
+            jobs.calibrate(job)
         return {"job": name}
 
     @app.get("/api/library/datasets/{item}/notes")
