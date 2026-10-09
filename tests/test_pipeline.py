@@ -33,7 +33,7 @@ class InProcess:
     def run_stage(self, stage, job, cache, fp):
         self.ran.append(stage.name)
         if stage.name not in self.fail:
-            job.mark_done(stage.name, fp)
+            job.mark_done(stage.name, fp, {"dropped": 29})  # a stage's own info may use any key
 
 
 def make(tmp_path, spec=SPEC, stages=None):
@@ -181,7 +181,10 @@ def test_a_step_the_model_can_do_without_is_left_out(tmp_path):
     be, said = InProcess(fail={"render"}), []
     make(tmp_path, photos, stages()).run(be, log=said.append)
     job = open_job(tmp_path, "job")
-    assert be.ran == ["render", "train"] and job.dropped("render") and "render was left out" in job.dropped("crops")
+    assert be.ran == ["render", "train"] and job.dropped("render")
+    be = InProcess()  # a stage that dropped some of its items is not itself left out
+    make(tmp_path / "ok", photos, stages()).run(be, log=lambda m: None)
+    assert be.ran == ["render", "crops", "train"] and "render was left out" in job.dropped("crops")
     assert any(m.startswith("WARNING: render left out") for m in said)
     be = InProcess()
     make(tmp_path, photos, stages()).run(be, log=lambda m: None)

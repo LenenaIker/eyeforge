@@ -113,7 +113,7 @@ class Job:
 
     def dropped(self, stage: str) -> str | None:
         """Why the run went on without this stage (Pipeline._drop), or None."""
-        return (self.done(stage) or {}).get("dropped")
+        return (self.done(stage) or {}).get("left_out")  # not "dropped": qa_assets counts its dropped models there
 
     def clear_done(self, stage: str) -> None:
         (self.stage_dir(stage) / DONE).unlink(missing_ok=True)

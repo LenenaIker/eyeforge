@@ -128,7 +128,7 @@ class Pipeline:
         runs it again; the same spec does not (its fingerprint is kept)."""
         import shutil
         shutil.rmtree(self.job.stage_dir(p.stage.name), ignore_errors=True)
-        self.job.mark_done(p.stage.name, p.fingerprint, {"dropped": reason[:300]})
+        self.job.mark_done(p.stage.name, p.fingerprint, {"left_out": reason[:300]})
         log(f"WARNING: {p.stage.name} left out ({reason[:300]}); the run goes on without it")
 
 
