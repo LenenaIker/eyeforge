@@ -232,6 +232,7 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone="good"><Check className="h-3 w-3" /> Ready</Badge>
           {version && version.n > 1 && <Badge>v{version.n} · {version.reason}</Badge>}
+          {version?.engine && <span className="text-xs text-muted" title="The EyeForge that trained this model">EyeForge {version.engine}</span>}
         </div>
         {isHandheld() && r.portable_model_path && (
           <Link to={`/app/job/${job}/live`} onClick={() => { enterCameraMode(); }}
@@ -406,6 +407,7 @@ function Versions({ job, versions }: { job: string; versions: Version[] }) {
             <li key={v.n} className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm">
               <span><span className="font-medium">v{v.n}</span> <span className="text-muted">· {v.reason}</span>
                 {(v.shipped ?? v.headline) != null && <span className="text-muted"> · {pct((v.shipped ?? v.headline)!)}{v.test_size ? ` on ${v.test_size} photos` : ""}</span>}
+                {v.engine && <span className="text-muted"> · EyeForge {v.engine}</span>}
               </span>
               <a href={API.versionFileUrl(job, v.n, v.model ?? "model_int8.tflite")}
                  className="flex items-center gap-1 text-brand-600 hover:underline"><Download className="h-3.5 w-3.5" /> model</a>

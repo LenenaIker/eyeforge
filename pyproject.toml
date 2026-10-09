@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sim2chip"
-version = "0.1.0"
+version = "0.9.0"
 license = "AGPL-3.0-only"
 description = "Describe what your camera should see. Get a tiny model ready to flash on a $10 chip."
 readme = "README.md"

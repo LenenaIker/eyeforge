@@ -81,3 +81,13 @@ def test_evaluate_scores_the_previous_model_on_the_same_photos(tmp_path, monkeyp
     Evaluate().run(ctx)
     prev = json.loads((ctx.job.stage_dir("evaluate") / "previous.json").read_text())
     assert prev["version"] == 2 and "setup changed" in prev["skipped"]
+
+
+def test_each_run_notes_the_eyeforge_that_ran_it(tmp_path, monkeypatch):
+    from sim2chip import version
+    from sim2chip.workspace import last_engine, note_run
+    monkeypatch.setattr(version, "engine", lambda: "0.9.0+abc1234")
+    job = open_job(tmp_path, "j")
+    assert last_engine(job) is None  # runs from before it was noted
+    note_run(job, "label")
+    assert last_engine(job) == "0.9.0+abc1234"

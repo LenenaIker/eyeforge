@@ -26,10 +26,11 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from . import config, library, review, usage, warm as warm_mod
 from .accounts import MARGIN, START
+from .version import engine
 from .job_service import CALIBRATION, LABELING, JobService, cloud_spent
 from . import spec as spec_mod
 from .pipeline import Pipeline
-from .workspace import IMAGE_EXT, Cache, Job, current_version, open_job, snapshot, versions
+from .workspace import IMAGE_EXT, Cache, Job, current_version, last_engine, open_job, snapshot, versions
 
 DOWNLOADS = {"model.tflite", "labels.txt", "model_int8.tflite", "model_data.h", "report.json"}
 WEB = Path(__file__).parent / "web"
@@ -354,7 +355,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return {"backend": backend, "first_question": FIRST_QUESTION, "public": public, "busy": jobs.busy(),
                 "max_runs": max_runs if public else None, "budget": budget,
                 "locked": auth is None and bool(key) and not getattr(request.state, "unlocked", False),
-                "login": auth.providers if auth is not None else None}
+                "login": auth.providers if auth is not None else None, "engine": engine()}
 
     @app.get("/api/me")
     def me(request: Request):
@@ -1471,7 +1472,7 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
             "stages": stages, "log": log[-30:], "cloud_usd": round(cost, 2), "phase": phase(log, running),
             "timing": timing(job, home, stages, running, backend),
             "usage": usage.summary(job, usage.saved_prices(home / "cache"), config.gpu_name()),
-            "version": current_version(job), "versions": [{k: v for k, v in m.items() if k != "report_key"}
+            "version": {**current_version(job), "engine": last_engine(job)}, "versions": [{k: v for k, v in m.items() if k != "report_key"}
                                                           for m in versions(job)],
             "report": json.loads(report.read_text()) if fresh and report.exists() else None}
 

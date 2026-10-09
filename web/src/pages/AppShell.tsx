@@ -41,12 +41,12 @@ export default function AppShell() {
     <div className="flex min-h-dvh">
       {!gate && (
         <>
-          <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 border-r border-line bg-white lg:block"><Sidebar /></aside>
+          <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 border-r border-line bg-white lg:block"><Sidebar engine={config?.engine} /></aside>
           {menu && (
             <div className="fixed inset-0 z-40 lg:hidden" onClick={() => setMenu(false)}>
               <div className="absolute inset-0 bg-black/30" />
               <aside className="absolute inset-y-0 left-0 w-64 bg-white shadow-lg" onClick={(e) => e.stopPropagation()}>
-                <Sidebar onClose={() => setMenu(false)} />
+                <Sidebar engine={config?.engine} onClose={() => setMenu(false)} />
               </aside>
             </div>
           )}
@@ -105,7 +105,7 @@ const NAV: { title?: string; items: NavItem[] }[] = [
   { title: "Manage", items: [{ to: "/app/billing", label: "Billing", icon: CreditCard }] },
 ];
 
-function Sidebar({ onClose }: { onClose?: () => void }) {
+function Sidebar({ engine, onClose }: { engine?: string; onClose?: () => void }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const inJob = pathname.startsWith("/app/job/");  // a model's own page belongs to Models
@@ -133,6 +133,7 @@ function Sidebar({ onClose }: { onClose?: () => void }) {
           ))}
         </div>
       ))}
+      {engine && <div className="mt-auto px-3 pt-4 text-[11px] text-muted/70" title="The EyeForge this server runs">EyeForge {engine}</div>}
     </nav>
   );
 }

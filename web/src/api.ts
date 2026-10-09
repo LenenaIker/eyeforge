@@ -24,6 +24,7 @@ export type Turn = {
 
 export type Config = {
   backend: "local" | "nebius";
+  engine: string;  // the EyeForge this server runs, e.g. 0.9.0+1c20634 (sim2chip/version.py)
   first_question: string;
   public: boolean;
   busy: boolean;
@@ -65,7 +66,8 @@ export type Report = {
 
 export type Version = { n: number; reason: string; created?: number; started?: number; metric?: string;
                         headline?: number | null; shipped?: number | null; test_size?: number | null;
-                        model?: string };  // its device model file (older versions: model_int8.tflite)
+                        model?: string;    // its device model file (older versions: model_int8.tflite)
+                        engine?: string | null };  // the EyeForge that trained it (none before 2026-10-09)
 
 // What a job used of Nebius and NVIDIA (sim2chip/usage.py): model calls and GPU time, in dollars when known.
 export type ModelUsage = { model: string; name: string; steps: string[]; calls: number; input_tokens: number;

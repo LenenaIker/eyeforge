@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -128,6 +129,24 @@ CURRENT_VERSION = "version.json"  # input/version.json: number and reason of the
 PREVIOUS = "previous"             # input/previous/: the model a rerun replaces, scored again on the new test set
 
 
+RUNS = "runs.jsonl"  # logs/runs.jsonl: one line per run started, with the EyeForge that ran it
+
+
+def note_run(job: Job, start: str | None = None) -> None:
+    from .version import engine
+    job.logs.mkdir(parents=True, exist_ok=True)
+    with open(job.logs / RUNS, "a") as f:
+        f.write(json.dumps({"t": round(time.time()), "engine": engine(), "from": start}) + "\n")
+
+
+def last_engine(job: Job) -> str | None:
+    """The EyeForge of the job's latest run (None for runs before it was noted)."""
+    try:
+        return json.loads((job.logs / RUNS).read_text().strip().splitlines()[-1])["engine"]
+    except (OSError, ValueError, IndexError, KeyError):
+        return None
+
+
 def current_version(job: Job) -> dict:
     f = job.input / CURRENT_VERSION
     return json.loads(f.read_text()) if f.exists() else {"n": 1, "reason": "first model"}
@@ -166,7 +185,7 @@ def snapshot(job: Job, reason: str) -> dict | None:
                 "headline": shipped if shipped is not None else real.get("mean", rep.get("val_score")),
                 "shipped": shipped, "seeds_mean": real.get("mean"),
                 "test_size": real.get("test_size"), "report_key": content_key(report),
-                "model": rep.get("model_path", "model_int8.tflite")}
+                "model": rep.get("model_path", "model_int8.tflite"), "engine": last_engine(job)}
         d = job.root / "versions" / f"v{cur['n']}"
         d.mkdir(parents=True, exist_ok=True)
         for f in VERSION_FILES:

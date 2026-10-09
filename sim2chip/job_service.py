@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import spec as spec_mod
 from . import warm as warm_mod
-from .workspace import REPO, Cache, Job
+from .workspace import REPO, Cache, Job, note_run
 
 CALIBRATION = "calibration.json"  # a new job whose teacher the user checks before the first run
 CALIBRATION_PHOTOS = 6  # photos the teacher marks per calibration round
@@ -34,6 +34,9 @@ def launch_run(home: Path, job: Job, request: Path, backend: str, max_usd: float
         cmd += ["--max-usd", str(max_usd)]
     job.logs.mkdir(parents=True, exist_ok=True)
     with open(job.logs / "pipeline.log", "a") as log:  # the child keeps its own copy of the file
+        from .version import engine
+        log.write(f"EyeForge {engine()}\n")
+        log.flush()
         return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=REPO)
 
 
@@ -90,6 +93,7 @@ class JobService:
 
     def start(self, job: Job, request: Path, start: str | None = None) -> None:
         (job.logs / "launched_at").write_text(f"{time.time():.3f}")
+        note_run(job, start)
         self.runs[job.name] = self.launcher(self.home, job, request, self.backend, self.max_usd, start=start)
 
     def running(self, job: Job) -> bool:

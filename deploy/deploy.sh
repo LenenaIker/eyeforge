@@ -13,6 +13,9 @@ ssh "$HOST" "test -f $DIR/.env" || {
   exit 1
 }
 
+# The commit this image runs, for "trained with EyeForge 0.9.0+<commit>" (sim2chip/version.py).
+dirty=false; [ -n "$(git status --porcelain --untracked-files=no)" ] && dirty=true
+echo "{\"commit\": \"$(git rev-parse --short HEAD)\", \"dirty\": $dirty}" > sim2chip/build.json
 docker build --platform linux/amd64 -t eyeforge:latest .
 docker save eyeforge:latest | gzip | ssh "$HOST" 'gunzip | docker load'
 rsync -a deploy/docker-compose.yml deploy/backup.sh "$HOST:$DIR/"
