@@ -102,7 +102,7 @@ class Pipeline:
                     log(f"= {p.stage.name}: up to date")
                 continue
             where = backend.name
-            left_out = [a for a in p.stage.after if self.job.dropped(a)]
+            left_out = [a for a in p.stage.after if self.job.dropped(a) and a not in p.stage.extra]
             if left_out and p.stage.can_skip(self.spec) and only is None:
                 self._drop(p, f"{left_out[0]} was left out", log)
                 continue

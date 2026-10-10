@@ -7,7 +7,7 @@ mask, feathered, so the rest of the photo stays exact. Fits the 3090 with both b
 offload. By default with the Lightning 4-step LoRA (lightx2v, Apache 2.0) and up to five passes, under a minute
 and a half per photo; --full for the 40-step model. Run in /media/lenena-iker/Crucial/envs/eyeforge-qwenedit with HF_HOME on Crucial:
 
-    python experiments/scene3d/erase_qwen.py --dir data/scene3d_test/flow/home_office [--dir ...]
+    python sim2chip/photo2scene/steps/erase_qwen.py --dir data/scene3d_test/flow/home_office [--dir ...]
 
 Qwen does not always remove every object it is told to (bottles 2026-10-08: of three bottles and three caps it
 took one bottle). Each instance whose pixels barely changed (mean difference under --left, 0-255) is still there:

@@ -4,7 +4,7 @@ under --min-score are kept out of training (on HOPE, unreviewed scenes made the 
 alone; experiments/vlm_bench/vlm_qc.py: Qwen3.8-27B ranked all 9 scenes right, bad ones 1-2, usable ones 3-4).
 Any env with Pillow:
 
-    python experiments/scene3d/bg_review.py --dir data/scene3d_test/ours/hope_val_000006 [--model ...]
+    python sim2chip/photo2scene/steps/bg_review.py --dir data/scene3d_test/ours/hope_val_000006 [--model ...]
 
 Reads <dir>/photo.png and <dir>/isaac/{render_NN.png,labels.json}; writes <dir>/review.jpg (the sheet) and
 <dir>/review.json ({"score", "worst", "keep", "model"}). Exit code 3 when the scene is rejected.
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from sim2chip.llm import Client, image_part, parse_json  # noqa: E402
 
@@ -72,7 +72,7 @@ def main():
     ap.add_argument('--min-score', type=float, default=3)
     args = ap.parse_args()
     path = sheet(args.dir)
-    client = Client(usage_log=ROOT / 'runs' / 'llm_usage.jsonl')
+    client = Client(usage_log=Path(os.environ.get('SIM2CHIP_LLM_USAGE', ROOT / 'runs' / 'llm_usage.jsonl')))
     msg = [{'role': 'user', 'content': [{'type': 'text', 'text': PROMPT}, image_part(path)]}]
     answer = None
     for _ in range(2):  # one retry on a bad or cut answer

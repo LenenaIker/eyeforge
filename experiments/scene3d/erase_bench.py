@@ -25,6 +25,8 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFilter
 
+import sys  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'sim2chip', 'photo2scene', 'steps'))  # noqa: E402
 from erase_qwen import PROMPT, left_behind, load
 
 

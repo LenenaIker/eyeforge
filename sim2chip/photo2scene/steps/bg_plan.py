@@ -4,11 +4,11 @@ scene: on HOPE, scenes like that hurt the student more than the good ones helped
 the object phrases for SAM 3, which of them are closed, roughly convex solids (bg_build --solid) and which are
 furniture that stays in place (bg_build --fixed). Any env:
 
-    python experiments/scene3d/bg_plan.py --image data/hope/val/000006/rgb/000000.png --out <dir> [--model ...]
+    python sim2chip/photo2scene/steps/bg_plan.py --image data/hope/val/000006/rgb/000000.png --out <dir> [--model ...]
 
 Writes <dir>/plan.json: {"one_flat_support", "support", "objects": [phrase, ...], "solid": [...], "fixed": [...], "reason",
 "model"}. Exit code 3 when the scene does not fit (the driver skips it), 1 when the model gave no usable plan.
-Model: --model, else SIM2CHIP_PLAN_MODEL, else Kimi-K3 (fastest and best phrases in experiments/vlm_bench).
+Model: --model, else SIM2CHIP_PLAN_MODEL, else Kimi-K2.6 (K3 had the best phrases in experiments/vlm_bench but no longer takes images).
 """
 import argparse
 import json
@@ -16,11 +16,11 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from sim2chip.llm import Client, image_part, parse_json  # noqa: E402
 
-MODEL = 'moonshotai/Kimi-K3'
+MODEL = 'moonshotai/Kimi-K2.6'  # K3 stopped taking images on Token Factory (2026-10-11)
 PROMPT = """We rebuild a scene from this single photo to render new training images for a small object detector: \
 the movable objects are cut out with an open-vocabulary segmenter, and copies of them are placed again on ONE flat \
 support plane (a table top, a floor, one shelf board).
@@ -55,7 +55,7 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--model', default=os.environ.get('SIM2CHIP_PLAN_MODEL', MODEL))
     args = ap.parse_args()
-    client = Client(usage_log=ROOT / 'runs' / 'llm_usage.jsonl')
+    client = Client(usage_log=Path(os.environ.get('SIM2CHIP_LLM_USAGE', ROOT / 'runs' / 'llm_usage.jsonl')))
     msg = [{'role': 'user', 'content': [{'type': 'text', 'text': PROMPT}, image_part(args.image)]}]
     plan = None
     for _ in range(2):  # one retry on a bad or cut answer

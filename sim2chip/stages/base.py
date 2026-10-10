@@ -50,6 +50,7 @@ class Stage:
     gpu: ClassVar[Literal["any", "rtx"] | None] = None
     uses: ClassVar[tuple[str, ...]] = ()
     after: ClassVar[tuple[str, ...]] = ()
+    extra: ClassVar[tuple[str, ...]] = ()  # stages of `after` it goes on without when they were left out
     version: ClassVar[str] = "1"
     # Cloud execution: job timeout, output files (glob, relative to the stage folder) brought back to the
     # local job folder, and whether the stage calls Token Factory (then it gets the API key secret).

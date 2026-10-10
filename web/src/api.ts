@@ -296,7 +296,8 @@ export const reprofileDataset = (id: string) => api<{ profiling: boolean }>(`/ap
 export type ObjectCard = { id: string; name: string; concept: string; source: "photos" | "scene" | "upload";
                            has_file: boolean; thumb: boolean; kept: boolean; license?: string; author?: string;
                            url?: string; created: number; jobs: string[] };
-export type SceneCard = { id: string; name: string; thumb: boolean; created: number };
+export type SceneCard = { id: string; name: string; route: "support" | "street" | "room"; photo_id: number | null;
+                          dataset: string | null; thumb: boolean; objects: string[]; jobs: string[]; created: number };
 export type Kit = { id: string; name: string; datasets: string[]; objects: string[]; scenes: string[];
                     created: number; updated: number };
 export type LibraryData = { models: ModelCard[]; datasets: DatasetCard[]; objects: ObjectCard[]; scenes: SceneCard[];

@@ -21,7 +21,8 @@ MAX_OCCLUSION = 0.85  # fraction hidden by other things
 
 class Points(Stage):
     name = "points"
-    version = "3"  # v2: box size with every point; v3: frames at the count model's input size (a detector's own)
+    version = "4"  # v2: box size with every point; v3: frames at the count model's input size (a detector's own)
+    # v4: frames of the user's place with their boxes in the label
     runtime = "cpu"
     uses = ("hardware", "classes", "task", "look")
     after = ("render",)
@@ -53,7 +54,12 @@ class Points(Stage):
             W, H = img.size
             pts = []
             bb_file = src / f"bounding_box_2d_tight_{f:04d}.npy"
-            if bb_file.exists():
+            if "boxes" in lab:  # a frame of the user's place (scene_from_photo): its boxes come in the label
+                for cls, x0, y0, x1, y1 in lab["boxes"]:
+                    if cls in classes and min(x1 - x0, y1 - y0) >= MIN_SIDE:
+                        pts.append([round((x0 + x1) / 2 / W, 4), round((y0 + y1) / 2 / H, 4), cls,
+                                    round((x1 - x0) / W, 4), round((y1 - y0) / H, 4)])
+            elif bb_file.exists():
                 names = json.loads((src / f"bounding_box_2d_tight_labels_{f:04d}.json").read_text())
                 bb = np.load(bb_file)
                 for r in bb:

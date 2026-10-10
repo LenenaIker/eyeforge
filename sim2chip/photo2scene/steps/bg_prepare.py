@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from PIL import Image, ImageOps
 from transformers import Sam3Model, Sam3Processor
 
-LAMA = '/media/lenena-iker/Crucial/tools/lama/big-lama.pt'
+LAMA = os.environ.get('SIM2CHIP_LAMA', '/media/lenena-iker/Crucial/tools/lama/big-lama.pt')
 
 
 def segment(model, proc, image, phrase, threshold):

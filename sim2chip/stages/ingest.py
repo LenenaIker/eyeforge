@@ -1,7 +1,7 @@
 """User photos: labeled by the user and/or by the teacher (label stage). Map their classes to the spec,
 resize to the model input and split train/test. With `user_data.test`, the test photos come only from
-that folder and all the others go to training. Photos that 3D models were made from never go to test (the
-model has seen them as 3D). With fewer than MIN_TEST test photos the score is noisy: the log says so.
+that folder and all the others go to training. Photos that 3D models or scenes were made from never go to test
+(the model has seen them as 3D, or their background in the synthetic frames). With fewer than MIN_TEST test photos the score is noisy: the log says so.
 
 Test photos come first from those the user reviewed in the job's labeling (input/labeling.json): with fewer
 of them than the test needs, photos marked only by the teacher fill it and the log says how many (user,
@@ -32,9 +32,9 @@ MIN_TEST = 20  # below this many test photos (per class) one photo moves the sco
 
 class Ingest(Stage):
     name = "ingest"
-    version = "7"  # v4: 3D source photos out of test; count split by photo content. v5: box sizes.
+    version = "8"  # v4: 3D source photos out of test; count split by photo content. v5: box sizes.
     # v6: the whole test folder of the user (half went unused), photos of the same name no longer overwritten
-    # v7: reviewed photos first in the test
+    # v7: reviewed photos first in the test; v8: scene photos out of test
     runtime = "cpu"
     reads_input = True
     rereads = (SPLIT,)  # earlier sides of each photo
@@ -261,7 +261,18 @@ def held_out(ctx: Context) -> set[str]:
     manifest = ctx.job.stage_dir("generate_assets") / "manifest.json"
     if manifest.exists():
         keys |= {m["photo_key"] for m in json.loads(manifest.read_text()) if m.get("photo_key")}
-    return keys
+    return keys | scene_photos(ctx)
+
+
+def scene_photos(ctx: Context) -> set[str]:
+    """Content keys of the photos the dataset's scenes were built from (library.export_scenes): their background
+    is in the synthetic frames, so a test on them would be too easy."""
+    from ..library import KEEP, SCENES
+    scenes, snap = ctx.job.input / SCENES, ctx.job.input / KEEP
+    if not scenes.exists() or not snap.exists():
+        return set()
+    ids = {s["photo_id"] for s in json.loads(scenes.read_text())["ready"]}
+    return {p["hash"] for p in json.loads(snap.read_text())["photos"].values() if p["photo_id"] in ids}
 
 
 def point(o: dict) -> list:

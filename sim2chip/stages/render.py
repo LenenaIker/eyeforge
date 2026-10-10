@@ -4,7 +4,9 @@ a balcony or a room (scenes/places.py) with the targets on its floors, railings 
 task, 0 to generation.max_targets targets per frame, spread around the point the camera looks at.
 
 The camera distance is derived from the (first) target's real size and the spec's target_fill, so it adapts
-to any object. Output: render/rgb_*.png, bounding_box_2d_tight_*.{npy,json}, render/labels.json
+to any object. The frames scene_from_photo made in the user's own place come after the template's, their boxes
+in the label ("boxes": [[class, x0, y0, x1, y1], ...], pixels).
+Output: render/rgb_*.png, bounding_box_2d_tight_*.{npy,json}, render/labels.json
 """
 from __future__ import annotations
 
@@ -49,14 +51,15 @@ def expose(path) -> bool:
 
 class Render(Stage):
     name = "render"
-    version = "5"  # v5: fewer frames when some classes have no 3D model; v2: paint, empty-frame distance and camera aim from the spec; v3: masonry parapets;
+    version = "6"  # v6: the frames of the user's place (scene_from_photo); v5: fewer frames when some classes have no 3D model; v2: paint, empty-frame distance and camera aim from the spec; v3: masonry parapets;
     # v4: sun behind the camera in most frames, room lamp, auto exposure and nearly black frames dropped
     runtime = "isaac"
     uses_cache = True
     gpu = "rtx"
     max_hours = 2
     uses = ("scene", "camera", "generation", "classes", "props", "background_class", "task")
-    after = ("qa_assets", "fetch_assets")  # fetch_assets: scene.json with skies and ground textures
+    after = ("qa_assets", "fetch_assets", "scene_from_photo")  # fetch_assets: scene.json with skies and ground textures
+    extra = ("scene_from_photo",)  # without the user's place, the template's frames alone
     skippable = "with photos"
 
     def enabled(self, spec) -> bool:
@@ -132,7 +135,7 @@ class Render(Stage):
         kept = [lab for lab in labels if expose(out / f"rgb_{lab['frame']:04d}.png")]
         if len(kept) < len(labels):
             ctx.log(f"{len(labels) - len(kept)} nearly black frames left out")
-        labels = kept
+        labels = kept + scene_frames(ctx, out, frames)
         (out / "labels.json").write_text(json.dumps(labels, indent=1))
         counts = {}
         for lab in labels:
@@ -156,6 +159,23 @@ def _new_stage():
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     return stage
+
+
+def scene_frames(ctx: Context, out, first: int) -> list[dict]:
+    """The frames scene_from_photo rendered in the user's own place, numbered from `first` on."""
+    src = ctx.job.stage_dir("scene_from_photo")
+    if not (src / "frames.json").exists():
+        return []
+    import shutil
+    labels = []
+    for i, fr in enumerate(json.loads((src / "frames.json").read_text())):
+        f = first + i
+        shutil.copyfile(src / fr["file"], out / f"rgb_{f:04d}.png")
+        labels.append({"frame": f, "class": fr["boxes"][0][0] if fr["boxes"] else ctx.spec.background_class,
+                       "context": "photo", "scene": fr["scene"], "boxes": fr["boxes"]})
+    if labels:
+        ctx.log(f"{len(labels)} frames from the user's place ({len({lab['scene'] for lab in labels})} scenes)")
+    return labels
 
 
 def real_counts(ctx: Context) -> list[int]:

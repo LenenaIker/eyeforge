@@ -160,12 +160,43 @@ def test_internet_models_stay_out_of_the_owners_objects(tmp_path):
     (obj,) = lib.objects("u")
     assert obj["source"] == "photos" and obj["concept"] == "bin"
     # A library from before keeps its internet models as objects: they go when it opens again.
-    lib.db.execute("INSERT INTO objects VALUES ('old1', 'u', 'uid:x', 'Bin', 'bin', 'online', NULL, NULL, 1, '{}', 0)")
+    lib.db.execute("INSERT INTO objects VALUES ('old1', 'u', 'uid:x', 'Bin', 'bin', 'online', NULL, NULL, 1, '{}', 0, NULL)")
     lib.save_kit("u", None, "Street", {"objects": ["old1", obj["id"]]})
     lib.db.execute("PRAGMA user_version = 4")
     lib = Library(tmp_path, tmp_path / "cache")
     assert [o["id"] for o in lib.objects("u")] == [obj["id"]]
     assert lib.kits("u")[0]["objects"] == [obj["id"]]
+
+
+def test_a_scene_built_by_a_job_goes_to_the_next_job_on_its_dataset(tmp_path):
+    lib, ds, ids = dataset(tmp_path)
+    job = Job(tmp_path / "jobs" / "j")
+    stage = job.stage_dir("scene_from_photo")
+    (stage / "s0" / "assets" / "sam3d").mkdir(parents=True)
+    (stage / "s0" / "background.png").write_bytes(b"png")
+    (stage / "s0" / "assets" / "sam3d" / "000_canon.glb").write_bytes(b"glTF")
+    (stage / "s0" / "logs").mkdir()
+    (stage / "s0" / "logs" / "x.log").write_text("noise")
+    (stage / "scenes.json").write_text(json.dumps([
+        {"photo_id": ids[0], "route": "support", "status": "ready", "dir": "s0", "name": "Kitchen table",
+         "objects": [{"index": 0, "name": "water bottle", "concept": "bottle", "role": "target",
+                      "mesh": "assets/sam3d/000_canon.glb"}]},
+        {"photo_id": ids[1], "route": "street", "status": "failed", "why": "no ground"}]))
+    lib.sync("u", [job])
+    (scene,) = lib.scenes("u")
+    assert scene["name"] == "Kitchen table" and scene["dataset"] == ds and scene["jobs"] == ["j"]
+    (obj,) = lib.objects("u")
+    assert obj["source"] == "scene" and obj["scene"] == scene["id"] and scene["objects"] == [obj["id"]]
+    nxt = tmp_path / "jobs" / "k" / "input"
+    lid = lib.create_labeling(ds, "Bottles", "count", [{"key": "bottle"}])
+    lib.export(lid, nxt)
+    given = json.loads((nxt / "scenes.json").read_text())
+    assert given["failed_photos"] == [ids[1]] and given["ready"][0]["objects"][0]["concept"] == "bottle"
+    assert (nxt / "scenes" / scene["id"] / "background.png").exists()
+    assert not (nxt / "scenes" / scene["id"] / "logs").exists()
+    # Deleting the scene keeps the objects taken out of it.
+    lib.delete("u", "scene", scene["id"])
+    assert lib.scenes("u") == [] and lib.objects("u")[0]["scene"] is None
 
 
 def test_a_dataset_profile_is_made_once_and_read_by_the_chat(tmp_path):

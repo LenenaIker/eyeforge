@@ -4,7 +4,7 @@ layout head gives the pose) on the erased photo with our own MoGe depth as its p
 the frame and scale of our floor and planes. This replaces Mira-Scene's stages 2-5 (CCM voxels, SAM 3D stage 2,
 floor, gravity placement): flow_refine.py fits the poses to our depth afterwards. Run in the `eyeforge-sam3d` env:
 
-    python experiments/scene3d/flow_sam3d.py --dir data/street_test/flow/basque_street
+    python sim2chip/photo2scene/steps/flow_sam3d.py --dir data/street_test/flow/basque_street
 
 Writes <dir>/meshes/sam3d/NNN.glb (mesh NNN of mask NNN, OpenGL camera frame: +X right, +Y up, -Z forward,
 metres, vertex colours), NNN.json (SAM 3D's pose, seconds, GPU peak) and <dir>/meshes/scene_graph.json (names).
@@ -12,7 +12,7 @@ A mesh already on disk is kept, so a fresh process after a GPU memory failure on
 
 The support route meshes the photo's movable objects instead (bg_build.py puts them back and shuffles them):
 
-    python experiments/scene3d/flow_sam3d.py --dir <dir> --masks instances.npz --image photo --out meshes_objects
+    python sim2chip/photo2scene/steps/flow_sam3d.py --dir <dir> --masks instances.npz --image photo --out meshes_objects
 
 which also writes NNN_canon.glb (SAM 3D's own y-up frame) and the rotation from it to the OpenCV camera
 ("rot_cv" in NNN.json), the orientation bg_build.py starts its silhouette fit from.

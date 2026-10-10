@@ -11,7 +11,7 @@ photo) and the floor plane give each thing's height above the floor and its size
 Masks from segment_all.py that no thing covers, if present, are drawn as missed by the VLM. Run in the
 `teacher-sam3` env:
 
-    python experiments/scene3d/scene_split.py --dir data/scene3d_test/flow/user_desk
+    python sim2chip/photo2scene/steps/scene_split.py --dir data/scene3d_test/flow/user_desk
 
 Writes <dir>/split.json (floor plane, per thing: name, kind, sizes), split.jpg (green scene mesh, blue scene
 texture, red erased, yellow missed) and objects.npz (masks, phrases: what bg_prepare.py --object-masks erases).

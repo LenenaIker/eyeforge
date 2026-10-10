@@ -158,7 +158,7 @@ def score(cases, threshold, sam=True):
     """sam=False scores only the sizes and closed_convex (no GPU)."""
     if sam:
         from transformers import Sam3Model, Sam3Processor
-        sys.path.insert(0, os.path.join(ROOT, 'experiments/scene3d'))
+        sys.path.insert(0, os.path.join(ROOT, 'sim2chip/photo2scene/steps'))
         from bg_prepare import segment
         model = Sam3Model.from_pretrained('facebook/sam3').to('cuda').eval()
         proc = Sam3Processor.from_pretrained('facebook/sam3')

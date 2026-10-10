@@ -12,6 +12,9 @@ good (user, 2026-10-08; labelings redesigned 2026-10-10, docs/plan_etiquetado.md
   teacher's marks (take_teacher). Nothing else travels between jobs and the library.
 - The owner's 3D objects: uploaded, or built by a job from the owner's photos, with a picture for its card.
   Models found on the internet are our catalog for every user (asset_db.py), never an owner's object.
+- A scene is a place rebuilt from one of the owner's photos (photo2scene, docs/plan_photo2scene.md), built once by
+  a job (take_scenes) and given to the next jobs on that dataset (export_scenes). The things taken out of the
+  photo become the owner's objects, tied to their scene.
 - A kit has no files: a named list of references to datasets, objects and scenes.
 - What a vision model said about a photo's scene is kept by photo content (photo_description), and each dataset
   has a profile (what objects show up, the backgrounds, the places), made before anyone says what to look for.
@@ -35,6 +38,7 @@ from .workspace import IMAGE_EXT, Job, content_key
 
 VERSION = 5  # 4: datasets, labelings, classes, marks and reviews (2026-10-10); older libraries were emptied
 # 5: models found on the internet left the owners' objects (2026-10-11): they are our catalog (asset_db.py)
+# 6: scenes built from a photo (photo2scene, docs/plan_photo2scene.md) and the objects taken out of them
 THUMB = 512  # side of the picture kept for an object's or a scene's card
 TASKS = ("count", "classify")
 # Colors of the classes' marks, by position: distinct on photos and in both themes.
@@ -78,13 +82,14 @@ CREATE TABLE IF NOT EXISTS profile (
 CREATE TABLE IF NOT EXISTS photo_description (
     owner TEXT NOT NULL, content_hash TEXT NOT NULL, classes TEXT NOT NULL, model TEXT, data TEXT NOT NULL,
     created REAL NOT NULL, PRIMARY KEY (owner, content_hash, classes));
+CREATE TABLE IF NOT EXISTS scenes (
+    id TEXT PRIMARY KEY, owner TEXT NOT NULL, photo_id INTEGER REFERENCES photo(id) ON DELETE SET NULL,
+    name TEXT NOT NULL, route TEXT NOT NULL, status TEXT NOT NULL, why TEXT, dir TEXT, thumb TEXT,
+    info TEXT NOT NULL, created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS objects (
     id TEXT PRIMARY KEY, owner TEXT NOT NULL, origin TEXT NOT NULL, name TEXT NOT NULL, concept TEXT NOT NULL,
     source TEXT NOT NULL, file TEXT, thumb TEXT, kept INTEGER NOT NULL, info TEXT NOT NULL, created REAL NOT NULL,
-    UNIQUE (owner, origin));
-CREATE TABLE IF NOT EXISTS scenes (
-    id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, photo TEXT, thumb TEXT, info TEXT NOT NULL,
-    created REAL NOT NULL);
+    scene_id TEXT REFERENCES scenes(id) ON DELETE SET NULL, UNIQUE (owner, origin));
 CREATE TABLE IF NOT EXISTS kits (
     id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, refs TEXT NOT NULL, created REAL NOT NULL,
     updated REAL NOT NULL);
@@ -98,6 +103,9 @@ CREATE TABLE IF NOT EXISTS synced (
 OLD_TABLES = ("datasets", "photos", "notes", "label_edits", "profiles", "uses", "synced")  # before VERSION 4
 TASK_NAME = {"count": "counts objects", "roi_classification": "one label per photo", "classify": "one label per photo"}
 TITLE = "title.txt"  # in a job folder: the name the user gave the model
+SCENES = "scenes.json"  # in a job's input: the ready scenes of its dataset; in scene_from_photo: the ones it built
+# A scene's working files nobody reads again, and one job's layout (photo2scene.COMPOSED).
+SCENE_SKIP = ("logs", "isaac", "report.json", "sheet.jpg", "scene.glb", "sheet_isaac.jpg", "review.jpg", "review.json")
 
 
 def _id(*parts: str) -> str:
@@ -153,7 +161,7 @@ def stage_signature(job: Job) -> float:
     and the model)."""
     paths = [job.spec_path, job.root / "request.json", job.stage_dir("convert_assets") / "assets.json",
              job.stage_dir("qa_assets") / "assets.json", job.stage_dir("label") / "verdicts.json",
-             job.stage_dir("export") / "report.json"]
+             job.stage_dir("scene_from_photo") / "scenes.json", job.stage_dir("export") / "report.json"]
     return max((p.stat().st_mtime for p in paths if p.exists()), default=0.0)
 
 
@@ -170,6 +178,12 @@ class Library:
             # Labels were notes per English phrase until 2026-10-10; the user's data was emptied for the new model.
             for t in OLD_TABLES:
                 self.db.execute(f"DROP TABLE IF EXISTS {t}")
+        if 0 < old < 6:
+            # No job made scenes before photo2scene: the old table was always empty.
+            self.db.execute("DROP TABLE IF EXISTS scenes")
+            cols = [c[1] for c in self.db.execute("PRAGMA table_info(objects)")]
+            if cols and "scene_id" not in cols:
+                self.db.execute("ALTER TABLE objects ADD COLUMN scene_id TEXT REFERENCES scenes(id) ON DELETE SET NULL")
         self.db.executescript(SCHEMA)
         self.lock = threading.Lock()
         if old < 5:
@@ -534,6 +548,7 @@ class Library:
                     "classes": [{"key": c["key"], "description": c["description"], "phrases": c["phrases"]}
                                 for c in lab["classes"]], "photos": photos}
         (job_input / KEEP).write_text(json.dumps(snapshot, indent=1))
+        self.export_scenes(lab["dataset"], job_input)
         return folder
 
     def take_teacher(self, job: Job) -> int:
@@ -583,6 +598,7 @@ class Library:
             if row and row[0] >= stamp:
                 continue
             self._take_objects(owner, job)
+            self.take_scenes(owner, job)
             self.take_teacher(job)
             self.take_model(job)
             with self.lock:
@@ -639,7 +655,7 @@ class Library:
                     info = {k: a[k] for k in ("license", "author", "dims", "category", "photo") if a.get(k)}
                     if a.get("source"):
                         info["url"] = a["source"]
-                    self.db.execute("INSERT INTO objects VALUES (?, ?, ?, ?, ?, 'photos', ?, ?, ?, ?, ?)",
+                    self.db.execute("INSERT INTO objects VALUES (?, ?, ?, ?, ?, 'photos', ?, ?, ?, ?, ?, NULL)",
                                     (oid, owner, f"uid:{uid}", a.get("name") or a["class"], a["class"], file,
                                      thumb, is_kept, json.dumps(info), time.time()))
                 self.db.execute("INSERT OR IGNORE INTO uses VALUES (?, 'object', ?)", (job.name, oid))
@@ -660,7 +676,7 @@ class Library:
             if card is not None:
                 thumb = f"objects/{oid}/card.jpg"
                 _picture(card, self.files / thumb)
-            self.db.execute("INSERT INTO objects VALUES (?, ?, ?, ?, ?, 'upload', ?, ?, 1, '{}', ?)",
+            self.db.execute("INSERT INTO objects VALUES (?, ?, ?, ?, ?, 'upload', ?, ?, 1, '{}', ?, NULL)",
                             (oid, owner, f"upload:{oid}", name, concept, file, thumb, time.time()))
         return oid
 
@@ -683,6 +699,80 @@ class Library:
         dst.mkdir(parents=True, exist_ok=True)
         meta_path.write_text(json.dumps(meta, indent=1))
         return names
+
+    # Scenes from a photo (photo2scene) -------------------------------------------------------------------
+
+    def export_scenes(self, ds: str, job_input: Path) -> int:
+        """The dataset's ready scenes into a job: job_input/scenes/<id>/ with their files and job_input/scenes.json
+        (id, photo, route, folder, objects) for scene_from_photo, which then builds none for those photos."""
+        rows = self.db.execute("SELECT s.id, s.photo_id, s.route, s.dir, s.info FROM scenes s JOIN photo p "
+                               "ON p.id = s.photo_id WHERE p.dataset_id = ? AND s.status = 'ready' "
+                               "ORDER BY s.created", (ds,)).fetchall()
+        tried = [pid for (pid,) in self.db.execute("SELECT s.photo_id FROM scenes s JOIN photo p ON p.id = s.photo_id "
+                                                   "WHERE p.dataset_id = ? AND s.status = 'failed'", (ds,))]
+        out = []
+        for sid, pid, route, folder, info in rows:
+            src = self.files / folder
+            for f in src.rglob("*"):
+                if f.is_file():
+                    _store(f, job_input / "scenes" / sid / f.relative_to(src))
+            objects = [{"id": oid, "name": name, "concept": concept, "file": file}
+                       for oid, name, concept, file in self.db.execute(
+                           "SELECT id, name, concept, file FROM objects WHERE scene_id = ? AND file IS NOT NULL", (sid,))]
+            out.append({"id": sid, "photo_id": pid, "route": route, "dir": f"scenes/{sid}",
+                        "info": json.loads(info), "objects": objects})
+        if out or tried:
+            (job_input / SCENES).write_text(json.dumps({"ready": out, "failed_photos": tried}, indent=1))
+        return len(out)
+
+    def take_scenes(self, owner: str, job: Job) -> int:
+        """The scenes a job built (scene_from_photo/scenes.json) into the owner's library, with the things taken
+        out of each photo as the owner's objects. A failed one is kept too, so the photo is not tried again."""
+        stage = job.stage_dir("scene_from_photo")
+        built = _load(stage / SCENES) or []
+        n = 0
+        with self.lock:
+            for b in built:
+                pid = b.get("photo_id")
+                if pid is None or not self.db.execute("SELECT 1 FROM photo p JOIN dataset d ON d.id = p.dataset_id "
+                                                      "WHERE p.id = ? AND d.owner = ?", (pid, owner)).fetchone():
+                    continue
+                sid = _id(owner, "scene", str(pid))
+                if self.db.execute("SELECT 1 FROM scenes WHERE id = ?", (sid,)).fetchone() or self._removed(owner, sid):
+                    continue
+                folder, thumb = None, None
+                if b["status"] == "ready":
+                    src = stage / b["dir"]
+                    folder = f"scenes/{sid}"
+                    for f in src.rglob("*"):
+                        rel = f.relative_to(src)
+                        if f.is_file() and rel.parts[0] not in SCENE_SKIP:
+                            _store(f, self.files / folder / rel)
+                    if b.get("thumb") and (stage / b["thumb"]).exists():
+                        thumb = f"{folder}/card.jpg"
+                        _picture(stage / b["thumb"], self.files / thumb)
+                self.db.execute("INSERT INTO scenes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                (sid, owner, pid, b.get("name") or f"Scene {pid}", b["route"], b["status"],
+                                 b.get("why"), folder, thumb, json.dumps(b.get("info", {})), time.time()))
+                for o in b.get("objects", []) if folder else []:
+                    oid = _id(owner, "scene_object", sid, str(o["index"]))
+                    file = f"objects/{oid}/model.glb"
+                    _store(stage / b["dir"] / o["mesh"], self.files / file)
+                    card = None
+                    if o.get("card") and (stage / b["dir"] / o["card"]).exists():
+                        card = f"objects/{oid}/card.jpg"
+                        _picture(stage / b["dir"] / o["card"], self.files / card)
+                    info = {k: o[k] for k in ("height_m", "width_m", "role") if k in o}
+                    self.db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?, ?, ?, 'scene', ?, ?, 1, ?, ?, ?)",
+                                    (oid, owner, f"scene:{sid}:{o['index']}", o["name"], o.get("concept") or o["name"],
+                                     file, card, json.dumps(info), time.time(), sid))
+                self.db.execute("INSERT OR IGNORE INTO uses VALUES (?, 'scene', ?)", (job.name, sid))
+                n += 1
+            # The library's scenes the job composed again (frames named by scene id).
+            for sid in {f["scene"] for f in _load(stage / "frames.json") or []}:
+                if self.owns(owner, "scene", sid):
+                    self.db.execute("INSERT OR IGNORE INTO uses VALUES (?, 'scene', ?)", (job.name, sid))
+        return n
 
     # The owner's own changes -------------------------------------------------------------------------------
 
@@ -832,18 +922,22 @@ class Library:
                                               (kind, item)).fetchall()]
 
     def objects(self, owner: str) -> list[dict]:
-        rows = self.db.execute("SELECT id, name, concept, source, file, thumb, kept, info, created FROM objects "
+        rows = self.db.execute("SELECT id, name, concept, source, file, thumb, kept, info, created, scene_id FROM objects "
                                "WHERE owner = ? ORDER BY created DESC", (owner,)).fetchall()
         return [{"id": oid, "name": name, "concept": concept, "source": source, "has_file": file is not None,
                  "thumb": thumb is not None, "kept": bool(kept), **json.loads(info), "created": created,
-                 "jobs": self._used("object", oid)}
-                for oid, name, concept, source, file, thumb, kept, info, created in rows]
+                 "jobs": self._used("object", oid), "scene": scene}
+                for oid, name, concept, source, file, thumb, kept, info, created, scene in rows]
 
     def scenes(self, owner: str) -> list[dict]:
-        rows = self.db.execute("SELECT id, name, thumb, info, created FROM scenes WHERE owner = ? "
-                               "ORDER BY created DESC", (owner,)).fetchall()
-        return [{"id": sid, "name": name, "thumb": thumb is not None, **json.loads(info), "created": created}
-                for sid, name, thumb, info, created in rows]
+        """The owner's ready scenes, with the photo and dataset each comes from and the objects taken out of it."""
+        rows = self.db.execute("SELECT s.id, s.name, s.route, s.photo_id, p.dataset_id, s.thumb, s.info, s.created "
+                               "FROM scenes s LEFT JOIN photo p ON p.id = s.photo_id WHERE s.owner = ? "
+                               "AND s.status = 'ready' ORDER BY s.created DESC", (owner,)).fetchall()
+        return [{"id": sid, "name": name, "route": route, "photo_id": pid, "dataset": ds, "thumb": thumb is not None,
+                 **json.loads(info), "created": created, "jobs": self._used("scene", sid),
+                 "objects": [o for (o,) in self.db.execute("SELECT id FROM objects WHERE scene_id = ?", (sid,))]}
+                for sid, name, route, pid, ds, thumb, info, created in rows]
 
     def kits(self, owner: str) -> list[dict]:
         rows = self.db.execute("SELECT id, name, refs, created, updated FROM kits WHERE owner = ? "

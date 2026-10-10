@@ -111,9 +111,10 @@ SENT = "sent.json"           # in a job folder: the spec as the web sent it (a d
 SESSION_OWNER = ".owner"     # file in uploads/<session>: who started that chat
 CHAT_VIEW = ".view.json"     # file in uploads/<session>: the chat as the web shows it, to open it again anywhere
 MAX_VIEW_BYTES = 2_000_000
-SESSION_HOURS = 6
-# Model calls are logged by purpose, which is the stage name except for qa's two-step strategy.
-PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets"}  # an interview left open longer is dropped
+SESSION_HOURS = 6  # an interview left open longer is dropped
+# Model calls are logged by purpose, which is the stage name except for qa's two-step strategy and photo2scene.
+PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets", "scene_plan": "scene_from_photo",
+                 "scene_assets": "scene_from_photo", "scene_review": "scene_from_photo"}
 
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,

@@ -21,6 +21,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+STEPS = ROOT / 'sim2chip' / 'photo2scene' / 'steps'  # the scripts the product uses too
 HOME = Path.home()
 PY = {
     'sam3': HOME / 'miniforge3/envs/teacher-sam3/bin/python',
@@ -121,28 +122,28 @@ def phase1(f, until):
         # still erases the observation's movable objects: a car is big and is the target there.
         f.run('1.3a_things', 'sam3', [s3 / 'flow_things.py', '--image', f.image, '--dir', d, '--targets', f.targets],
               ['things.json', 'things.npz'])
-        f.run('1.3a_depth_photo', 'mesh', [s3 / 'bg_depth.py', '--dir', d, '--only', 'photo'], ['depth_photo.npz'])
-        f.run('1.3a_split', 'sam3', [s3 / 'scene_split.py', '--dir', d], ['split.json', 'objects.npz'])
+        f.run('1.3a_depth_photo', 'mesh', [STEPS / 'bg_depth.py', '--dir', d, '--only', 'photo'], ['depth_photo.npz'])
+        f.run('1.3a_split', 'sam3', [STEPS / 'scene_split.py', '--dir', d], ['split.json', 'objects.npz'])
         sp = jload(d, 'split.json')['things']
         f.check('1.3a_split', True, {k: [x['name'] for x in sp if x['kind'] == k] for k in ('mesh', 'erase')})
-        f.run('1.3a_prepare', 'sam3', [s3 / 'bg_prepare.py', '--image', f.image, '--object-masks', d / 'objects.npz',
+        f.run('1.3a_prepare', 'sam3', [STEPS / 'bg_prepare.py', '--image', f.image, '--object-masks', d / 'objects.npz',
                                        '--support', ground, '--out', d], ['background.png', 'ground.npz'])
     else:
         # 1.3a Movable objects erased, ground masks (one per phrase, the union is the support).
-        f.run('1.3a_prepare', 'sam3', [s3 / 'bg_prepare.py', '--image', f.image, '--objects', objects, '--support',
+        f.run('1.3a_prepare', 'sam3', [STEPS / 'bg_prepare.py', '--image', f.image, '--objects', objects, '--support',
                                        ground, '--keep-inside', surroundings, '--out', d]
               + (['--shadows'] if fin['weather'] == 'sunny' else []), ['background.png', 'ground.npz'])
     # 1.3a_erase: Qwen-Image-Edit redraws what stood behind the objects inside LaMa's mask; LaMa only blurred it
     # (experiments/NOTES.md, 2026-10-08). background.png becomes Qwen's, LaMa's stays as background_lama.png.
     if f.eraser == 'qwen':
-        f.run('1.3a_erase', 'qwen', [s3 / 'erase_qwen.py', '--dir', d, '--replace'], ['background_qwen.png'])
+        f.run('1.3a_erase', 'qwen', [STEPS / 'erase_qwen.py', '--dir', d, '--replace'], ['background_qwen.png'])
     prep = jload(d, 'prepare.json')
     if not f.check('1.3a_prepare', prep['support_frac'] > 0.03,
                    {'instances': len(prep['instances']), 'support_frac': prep['support_frac']},
                    'the segmenter found almost no ground'):
         return False
     # 1.4 Depth and camera: MoGe-2 on the photo and on the erased photo.
-    f.run('1.4_depth', 'mesh', [s3 / 'bg_depth.py', '--dir', d], ['depth_photo.npz', 'depth_background.npz'])
+    f.run('1.4_depth', 'mesh', [STEPS / 'bg_depth.py', '--dir', d], ['depth_photo.npz', 'depth_background.npz'])
     # 1.4b Everything erased becomes an asset for the generator (targets and distractors). It needs only the
     # erase, the support masks and the photo's depth, so it runs before any later gate can stop the flow.
     assets(f, '1.4b')
@@ -170,7 +171,7 @@ def phase1(f, until):
     for attempt in range(2):
         if f.voxels != 'sam3d':
             f.run('1.5a_ccm', 'mesh', [s3 / 'flow_ccm.py', '--dir', d, '--fresh'], [])
-        f.run('1.5a_sam3d', 'mesh', [s3 / 'flow_sam3d.py', '--dir', d, '--fresh', '--voxels', f.voxels],
+        f.run('1.5a_sam3d', 'mesh', [STEPS / 'flow_sam3d.py', '--dir', d, '--fresh', '--voxels', f.voxels],
               ['meshes/scene_graph.json'])
         # A mesh can fail on GPU memory after a large one; the meshes made are kept, so a fresh process fills the
         # gap. An instance that fails twice is too big for the GPU (a whole row of houses, straight_road
@@ -178,7 +179,7 @@ def phase1(f, until):
         n_masks = len(np.load(d / 'env_masks.npz')['phrases'])
         have = {int(p.stem) for p in (d / 'meshes/sam3d').glob('[0-9][0-9][0-9].glb')}
         if len(have) < n_masks:
-            f.run('1.5a_sam3d_retry', 'mesh', [s3 / 'flow_sam3d.py', '--dir', d, '--voxels', f.voxels], [])
+            f.run('1.5a_sam3d_retry', 'mesh', [STEPS / 'flow_sam3d.py', '--dir', d, '--voxels', f.voxels], [])
             have = {int(p.stem) for p in (d / 'meshes/sam3d').glob('[0-9][0-9][0-9].glb')}
         missing = sorted(set(range(n_masks)) - have)
         if not missing:
@@ -210,8 +211,8 @@ def phase1(f, until):
 def assets(f, step):
     """Every erased thing becomes an asset the generator places again (flow_assets.py, flow_sam3d.py)."""
     d, s3 = f.d, HERE
-    f.run(f'{step}_assets', 'sam3', [s3 / 'flow_assets.py', '--dir', d, '--targets', f.targets], ['assets.json'])
-    args = [s3 / 'flow_sam3d.py', '--dir', d, '--masks', 'assets.npz', '--image', 'photo', '--out', 'assets']
+    f.run(f'{step}_assets', 'sam3', [STEPS / 'flow_assets.py', '--dir', d, '--targets', f.targets], ['assets.json'])
+    args = [STEPS / 'flow_sam3d.py', '--dir', d, '--masks', 'assets.npz', '--image', 'photo', '--out', 'assets']
     f.run(f'{step}_assets_sam3d', 'mesh', args, ['assets/scene_graph.json'])
     f.run(f'{step}_assets_sam3d_retry', 'mesh', args, [])  # fills the meshes a GPU memory failure left out
     a = jload(d, 'assets.json')['assets']
@@ -228,34 +229,34 @@ def support(f, obs):
     HOPE test of 2026-10-06 ran this path with Mira's meshes, now SAM 3D's own). No room, no street, no phase 3."""
     d, s3 = f.d, HERE
     # S.1 Plan: one flat support or not, the object phrases, which are closed solids, which are fixed furniture.
-    code = f.run('S.1_plan', 'sam3', [s3 / 'bg_plan.py', '--image', f.image, '--out', d], ['plan.json'],
+    code = f.run('S.1_plan', 'sam3', [STEPS / 'bg_plan.py', '--image', f.image, '--out', d], ['plan.json'],
                  ok_codes=(0, 3))
     plan = jload(d, 'plan.json')
     if not f.check('S.1_plan', code == 0, {k: plan.get(k) for k in ('support', 'objects', 'solid', 'fixed')},
                    plan.get('reason', 'no single flat support')):
         return False
     weather = obs['final'].get('weather')
-    f.run('S.2_prepare', 'sam3', [s3 / 'bg_prepare.py', '--image', f.image, '--objects', ','.join(plan['objects']),
+    f.run('S.2_prepare', 'sam3', [STEPS / 'bg_prepare.py', '--image', f.image, '--objects', ','.join(plan['objects']),
                                   '--support', plan['support'], '--out', d]
           + (['--shadows'] if weather == 'sunny' else []), ['background.png', 'instances.npz'])
     if f.eraser == 'qwen':
-        f.run('S.2_erase', 'qwen', [s3 / 'erase_qwen.py', '--dir', d, '--replace'], ['background_qwen.png'])
+        f.run('S.2_erase', 'qwen', [STEPS / 'erase_qwen.py', '--dir', d, '--replace'], ['background_qwen.png'])
     prep = jload(d, 'prepare.json')
     if not f.check('S.2_prepare', prep['support_frac'] > 0.03 and bool(prep['instances']),
                    {'instances': len(prep['instances']), 'support_frac': prep['support_frac']},
                    'no support or no objects found'):
         return False
-    f.run('S.3_depth', 'mesh', [s3 / 'bg_depth.py', '--dir', d], ['depth_photo.npz', 'depth_background.npz'])
+    f.run('S.3_depth', 'mesh', [STEPS / 'bg_depth.py', '--dir', d], ['depth_photo.npz', 'depth_background.npz'])
     # S.4 Everything erased (the asked objects first, then what the edit took on its own) as assets, posed by
     # SAM 3D on the photo with its own depth; bg_build uses the asked ones, the generator all of them.
     assets(f, 'S.4')
     # S.5 Support plane, replica check, shuffled layouts and views; S.6 Isaac renders and labels; S.7 VLM review.
-    f.run('S.5_build', 'trellis', [s3 / 'bg_build.py', '--dir', d, '--meshes', d / 'assets', '--views',
+    f.run('S.5_build', 'trellis', [STEPS / 'bg_build.py', '--dir', d, '--meshes', d / 'assets', '--views',
                                    str(f.views), '--solid', ','.join(plan.get('solid', [])), '--fixed',
                                    ','.join(plan.get('fixed', [])), '--stack', '0.2'], ['report.json'])
-    f.run('S.6_isaac', 'isaac', [s3 / 'bg_isaac.py', '--dir', d], ['isaac/fit.json'])
-    f.run('S.6_labels', 'trellis', [s3 / 'view_labels.py', '--dir', d], ['isaac/labels.json'])
-    code = f.run('S.7_review', 'sam3', [s3 / 'bg_review.py', '--dir', d], ['review.json'], ok_codes=(0, 3))
+    f.run('S.6_isaac', 'isaac', [STEPS / 'bg_isaac.py', '--dir', d], ['isaac/fit.json'])
+    f.run('S.6_labels', 'trellis', [STEPS / 'view_labels.py', '--dir', d], ['isaac/labels.json'])
+    code = f.run('S.7_review', 'sam3', [STEPS / 'bg_review.py', '--dir', d], ['review.json'], ok_codes=(0, 3))
     rv = jload(d, 'review.json')
     return f.check('S.7_review', code == 0, {'score': rv.get('score'), 'worst': rv.get('worst')},
                    'the VLM rejected the views')
@@ -401,7 +402,7 @@ def phase3(f, until):
     f.run('3.5_populate', 'trellis', [s3 / 'flow_populate.py', '--dir', d], ['populated/isaac/scene.json'])
     f.run('3.5_render', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'populated', '--hdri-dir', hdri],
           ['populated/sheet_isaac.jpg'])
-    f.run('3.5_labels', 'trellis', [s3 / 'view_labels.py', '--dir', d / 'populated'], ['populated/isaac/labels.json'])
+    f.run('3.5_labels', 'trellis', [STEPS / 'view_labels.py', '--dir', d / 'populated'], ['populated/isaac/labels.json'])
     p = jload(d, 'populated/populate.json')
     return f.check('3.5_populate', sum(p['placed_per_view']) > 0,
                    {'assets': p['assets'], 'placed_per_view': p['placed_per_view'], 'never_placed': p['never_placed']},

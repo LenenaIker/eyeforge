@@ -23,6 +23,7 @@ import numpy as np
 import pyrender
 import trimesh
 from PIL import Image, ImageDraw
+from scipy import ndimage
 from scipy.spatial import cKDTree
 
 CV2GL = np.diag([1.0, -1.0, -1.0, 1.0])
@@ -566,8 +567,11 @@ def main():
 
     # New compositions: the replica objects shuffled on the free part of the support (--layout photo: left where
     # they are), cameras moved around.
-    # Candidate spots: support pixels away from its border and from the image border.
-    free = cv2.erode((support & vb).astype(np.uint8), np.ones((61, 61), np.uint8)) > 0
+    # Candidate spots: support pixels away from its border and from the image border. Only where SAM 3 saw the
+    # support (its holes filled: the objects stood there): an erased bottle top seen against the floor behind the
+    # table is in `support` too, and a bottle placed there stood in the air past the table's edge (2026-10-11).
+    seen = ndimage.binary_fill_holes(raw > 0)
+    free = cv2.erode((support & seen & vb).astype(np.uint8), np.ones((61, 61), np.uint8)) > 0
     free[:h // 10], free[-h // 10:], free[:, :w // 10], free[:, -w // 10:] = False, False, False, False
     ys, xs = np.nonzero(free[::4, ::4])
     cand = on_plane[ys * 4, xs * 4]

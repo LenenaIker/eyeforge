@@ -14,7 +14,7 @@ import ReviewPanel from "./Review";
 const FRIENDLY: Record<string, string> = {
   label: "Reading your photos", generate_assets: "Building 3D models from your photos", ingest: "Sorting your photos",
   fetch_assets: "Finding 3D models", convert_assets: "Preparing the models", preview_assets: "Photographing the models",
-  qa_assets: "Checking the models", render: "Generating synthetic images", points: "Preparing training data",
+  qa_assets: "Checking the models", scene_from_photo: "Rebuilding your place in 3D", render: "Generating synthetic images", points: "Preparing training data",
   crops: "Preparing training data", train: "Training", evaluate: "Testing on your real photos", export: "Packing the model",
 };
 const POLL_MS = 5000;
@@ -260,7 +260,7 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
             {r.left_out?.length ? (
               <p className="mt-3 max-w-md rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
                 Some steps failed and this model was trained without them: {r.left_out.map((x) => FRIENDLY[x.stage] ?? x.stage).join(", ")}.
-                {r.left_out.some((x) => ["render", "crops", "points", "qa_assets", "fetch_assets", "convert_assets", "preview_assets"].includes(x.stage))
+                {r.left_out.some((x) => ["render", "crops", "points", "qa_assets", "fetch_assets", "convert_assets", "preview_assets", "scene_from_photo"].includes(x.stage))
                   ? " It learned from your photos only, with no synthetic images." : ""}
               </p>
             ) : null}

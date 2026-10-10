@@ -6,7 +6,7 @@ outside the asked masks. Each such region is cut out by SAM 3's box prompt, and 
 after, names the thing that went or says it was only a change of the background. Sizes come from MoGe's metric
 points of the photo and the support plane. Run in the `teacher-sam3` env after the erase and bg_depth.py:
 
-    python experiments/scene3d/flow_assets.py --dir data/scene3d_test/flow/bottles --masks instances.npz \
+    python sim2chip/photo2scene/steps/flow_assets.py --dir data/scene3d_test/flow/bottles --masks instances.npz \
         [--targets "bottle"]
 
 Writes <dir>/assets.npz (masks, phrases: the asked instances first, in their order, then the found ones; what
@@ -28,7 +28,7 @@ from transformers import Sam3TrackerModel, Sam3TrackerProcessor
 
 from scene_split import fit_floor, measure
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
 
@@ -121,7 +121,7 @@ def main():
     found = []
     if boxes:
         os.makedirs(os.path.join(d, 'assets_check'), exist_ok=True)
-        client = Client(usage_log=ROOT / 'runs' / 'llm_usage.jsonl')
+        client = Client(usage_log=Path(os.environ.get('SIM2CHIP_LLM_USAGE', ROOT / 'runs' / 'llm_usage.jsonl')))
 
         def ask(k):
             path = os.path.join(d, 'assets_check', f'region_{k:02d}.jpg')
