@@ -217,6 +217,7 @@ def assets(f, step):
     a = jload(d, 'assets.json')['assets']
     have = sum((d / r['mesh']).exists() for r in a)
     f.check(f'{step}_assets', True, {'assets': len(a), 'meshes': have,
+                                     'targets': [r['name'] for r in a if r['role'] == 'target'],
                                      'found_by_change': [r['name'] for r in a if r['found']]})
 
 
@@ -414,6 +415,9 @@ def main():
     ap.add_argument('--targets', default='', help="comma-separated classes the user's model detects: a room erases "
                     'them whatever their size (flow_things.py)')
     args = ap.parse_args()
+    if not args.targets:
+        print('WARNING: no --targets: the erased things all come back as distractors, without target boxes '
+              '(a room still takes the ones its VLM marks as the user\'s classes)', flush=True)
     f = Flow(args.image, args.dir)
     f.voxels = args.voxels
     f.axis_scale = args.axis_scale

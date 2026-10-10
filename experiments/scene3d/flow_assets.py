@@ -16,6 +16,7 @@ flow_sam3d.py meshes) and <dir>/assets.json ({"assets": [{"index", "name", "role
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -60,6 +61,31 @@ def pair(photo, background, box, path):
     out.paste(left.resize(size), (0, 0))
     out.paste(right.resize(size), (size[0] + 12, 0))
     out.save(path, quality=90)
+
+
+def words(text):
+    """Lower-case words, a plural made singular the simple way (the same on both sides of a comparison)."""
+    out = []
+    for w in re.findall(r'[a-z0-9]+', text.lower()):
+        if w.endswith('ies') and len(w) > 4:
+            w = w[:-3] + 'y'
+        elif w.endswith(('sses', 'xes', 'ches', 'shes')):
+            w = w[:-2]
+        elif w.endswith('s') and not w.endswith('ss') and len(w) > 3:
+            w = w[:-1]
+        out.append(w)
+    return out
+
+
+def is_target(name, targets, flagged=()):
+    """Is this erased thing one of the user's classes? The VLM names things freely ("office chair", "blue car")
+    and the classes are short ("chair", "cars"): a class matches when its last word is the thing's (the head
+    noun: "car seat" is no car) and its other words are among the thing's. flagged: the names flow_things.py's
+    VLM marked as one of the user's classes (room route), targets whatever their words."""
+    if name.lower() in flagged:
+        return True
+    n = words(name)
+    return any(n and t and n[-1] == t[-1] and set(t) <= set(n) for t in map(words, targets))
 
 
 def main():
@@ -136,13 +162,18 @@ def main():
     g = g[np.isfinite(g).all(1)]
     g = g[np.random.default_rng(0).choice(len(g), min(len(g), 60000), replace=False)]
     n, dd = fit_floor(g)
-    targets = {t.strip().lower() for t in args.targets.split(',') if t.strip()}
+    targets = [t.strip() for t in args.targets.split(',') if t.strip()]
+    things = os.path.join(d, 'things.json')  # room route: the VLM said which things are the user's classes
+    flagged = {t['name'].lower() for t in json.load(open(things))['things'] if t.get('target')} \
+        if os.path.exists(things) else set()
+    if not targets and not flagged:
+        print('WARNING: no --targets: every asset is a distractor and the views get no target boxes', flush=True)
     rows = []
     for k, (m, name) in enumerate(zip(masks, names)):
         s = measure(pts, m, n, dd)
         # Height of the thing itself: a cup on a desk counts from its own bottom, not from the floor.
         rows.append({'index': k, 'name': name, 'found': k >= asked,
-                     'role': 'target' if name.lower() in targets else 'distractor',
+                     'role': 'target' if is_target(name, targets, flagged) else 'distractor',
                      'height_m': round(s['top'] - s['bottom'], 3) if s else None,
                      'width_m': round(s['width'], 3) if s else None,
                      'area': round(float(m.mean()), 4), 'mesh': f'assets/sam3d/{k:03d}_canon.glb'})
@@ -150,6 +181,7 @@ def main():
                         phrases=np.array(names))
     json.dump({'assets': rows, 'regions_checked': len(boxes)}, open(os.path.join(d, 'assets.json'), 'w'), indent=1)
     print(json.dumps({'asked': asked, 'found': [r['name'] for r in rows if r['found']],
+                      'targets': [r['name'] for r in rows if r['role'] == 'target'],
                       'regions_checked': len(boxes)}))
 
 
