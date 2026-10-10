@@ -450,6 +450,8 @@ models still needs size_m. Use only the ids listed here.
 {items}
 """
 
+IN_THEIR_LANGUAGE = "(Anything you write to the user goes in the language of their own messages.)"
+
 RELABEL = """[Labels of dataset {ds}] The dataset is labeled ({task}) for: {old}. The proposed spec also needs
 {new}, never labeled in it: the teacher would mark {them} on every photo and the user would check a few photos.
 Do not propose the spec yet. Reply with {{"say": "..."}}: in the user's language, tell them which of the classes
@@ -768,12 +770,15 @@ class Session:
                 return Turn("done", "", self.proposed)
             self.proposed = None
             user_text = f"The user wants changes: {user_text}"
+        # Datasets the message names are looked at before the model's turn, not left to it; their cards go before
+        # the message, which stays the last thing the model reads (after English notes it answered a Spanish user
+        # in English, 4 of 9 chats of the library bench, 2026-10-10).
+        for ds in self._named_datasets(user_text):
+            if ds not in self.analysed:
+                self._on_dataset({"dataset": ds})
         self.messages.append({"role": "user", "content": user_text})
         for folder in re.findall(r"(?:~|/)[^\s,;:'\"()]+", user_text):  # folders written in the message
             self._analyse(folder.rstrip("."))
-        for ds in self._named_datasets(user_text):  # looked at before the model's turn, not left to it
-            if ds not in self.analysed:
-                self._on_dataset({"dataset": ds})
         return self._advance()
 
     def _named_datasets(self, text: str) -> list[str]:
@@ -1297,7 +1302,10 @@ class Session:
                    "Trust numbers the sources agree on; the user did not see this.")
 
     def _note(self, text: str) -> None:
-        self.messages.append({"role": "user", "content": text})
+        # Notes are in English; without the reminder the next words to the user often were too (library bench,
+        # 2026-10-10: 3 of 9 Spanish chats proposed their setup in English after search results and the photo
+        # analysis).
+        self.messages.append({"role": "user", "content": text + "\n" + IN_THEIR_LANGUAGE})
         self._save()
 
     def _save(self) -> None:

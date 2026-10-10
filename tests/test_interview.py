@@ -496,7 +496,8 @@ def test_a_dataset_the_user_names_is_looked_at_first_and_never_searched_on_the_w
     assert s._named_datasets("con mi dataset contador mesa") == [other]
     s.reply("cuenta contenedores con 'Chat photos 09 Oct'")
     notes = [m["content"] for m in s.messages if m["role"] == "user"]
-    assert notes[1].startswith(f"[Dataset {ds}]") and any(n.startswith(f"[Dataset {other}]") for n in notes)
+    assert notes[0].startswith(f"[Dataset {ds}]") and any(n.startswith(f"[Dataset {other}]") for n in notes)
+    assert notes.index("cuenta contenedores con 'Chat photos 09 Oct'") > 0  # the user's words after the card
     assert not any(n.startswith("[Web research") for n in notes)
 
 
