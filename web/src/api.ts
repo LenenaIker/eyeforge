@@ -84,7 +84,7 @@ export type Status = {
   running: boolean;
   calibration: { state: "labeling" | "ready" | "failed"; error?: string } | null;  // teacher check before the first run
   // A job that only labels a library dataset (Datasets page): checking the teacher, labeling every photo, done.
-  labeling?: { dataset: string; state: "checking" | "labeling" | "done" | "failed"; error?: string } | null;
+  labeling?: { dataset: string; labeling?: string; state: "checking" | "labeling" | "done" | "failed"; error?: string } | null;
   stages: Stage[];
   log: string[];
   cloud_usd: number;
@@ -109,7 +109,6 @@ export type Review = {
   // count (count task): the model's count by class, from its density output; older models have none.
   test: { key: string; file: string; image: string; truth: any; pred: any; count?: Record<string, number> }[];
   teacher_rules?: string[];  // what the teacher learned from the user's corrections
-  check?: string[];  // count: the classes the teacher's check asks about, the others checked before
 };
 export type Fixes = { labels: Record<string, string>; assets: Record<string, string>; points: Record<string, Point[]> };
 
@@ -251,23 +250,48 @@ export const versionFileUrl = (job: string, n: number, file: string) => `/api/jo
 // and kits are named lists of references to them.
 export type ModelCard = {
   job: string; title?: string | null; created: number; running: boolean; task: string | null; hardware: string | null; classes: string[];
+  labeling: { id: string; name: string; reviewed: number; photos: number } | null;
   model: { metric: string | null; score: number | null; kb: number | null; hardware: string | null } | null;
 };
 // What was seen in a dataset before any goal: objects with the share of photos they show up in, backgrounds.
 export type DatasetProfile = { summary: string; photos: number; created: number;
                                objects: { name: string; share: number; count: number }[]; backgrounds: string[] };
-export type DatasetCard = { id: string; name: string; created: number; labeled: boolean; photos: number;
-                            splits: Record<string, number>; labels: string[]; sample: string[]; jobs: string[];
-                            profile: DatasetProfile | null; profiling: boolean };
-// What is known about one photo: the teacher's boxes, the user's points, a label, a scene description.
-export type PhotoNote = { kind: "scene" | "boxes" | "points" | "class"; ref: string; source: "model" | "user";
-                          model: string | null; data: any };
-export type DatasetNotes = { keys: string[]; notes: Record<string, PhotoNote[]>; profile: DatasetProfile | null;
-                             profiling: boolean };
-export const getDatasetNotes = (id: string) => api<DatasetNotes>(`/api/library/datasets/${id}/notes`);
-export const labelDataset = (id: string, task: "count" | "classify", classes: string[]) =>
-  api<{ job: string }>(`/api/library/datasets/${id}/label`, { method: "POST", headers: { "Content-Type": "application/json" },
-                                                            body: JSON.stringify({ task, classes }) });
+// A labeling (docs/plan_etiquetado.md): the classes looked for in one dataset's photos and their marks. A photo
+// the user reviewed has their marks as its truth. Marks are points in 0..1 of the upright photo (w, h: the box
+// size when the teacher found one); classify marks have no point.
+export type LabelClass = { id: number; key: string; description: string; color: string; phrases: string[]; marks: number };
+export type Labeling = { id: string; dataset: string; name: string; task: "count" | "classify"; threshold: number | null;
+                         copied_from: string | null; created: number; classes: LabelClass[]; photos: number;
+                         reviewed: number; marked: number; models: string[] };
+export type Mark = { class: string; x: number | null; y: number | null; w?: number | null; h?: number | null;
+                     score?: number | null; source?: "teacher" | "user" };
+export type LabelingPhoto = { id: number; hash: string; reviewed: boolean; marks: Mark[] };
+export type DatasetCard = { id: string; name: string; created: number; photos: number; sample: number[];
+                            labelings: Labeling[]; jobs: string[]; profile: DatasetProfile | null; profiling: boolean };
+export type DatasetPage = DatasetCard & { photo_ids: number[] };
+const send = (method: string, body: unknown): RequestInit =>
+  ({ method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+export const getDataset = (id: string) => api<DatasetPage>(`/api/library/datasets/${id}`);
+// teach: the teacher starts on it right away (a few photos to check first): the job to follow.
+export const createLabeling = (ds: string, name: string, task: "count" | "classify", classes: string[], teach: boolean) =>
+  api<{ labeling: string; job?: string }>(`/api/library/datasets/${ds}/labelings`, send("POST", { name, task, classes, teach }));
+export const getLabeling = (id: string) => api<Labeling & { photos: LabelingPhoto[] }>(`/api/library/labelings/${id}`);
+export const teachLabeling = (id: string) => api<{ job: string }>(`/api/library/labelings/${id}/teach`, { method: "POST" });
+export const renameLabeling = (id: string, name: string) => api<{ ok: boolean }>(`/api/library/labelings/${id}`, send("PATCH", { name }));
+export const deleteLabeling = (id: string) => api<{ ok: boolean }>(`/api/library/labelings/${id}`, { method: "DELETE" });
+export const copyLabeling = (id: string, name?: string) => api<{ labeling: string }>(`/api/library/labelings/${id}/copy`, send("POST", { name }));
+// Class changes answer with the labeling that has them: a copy when a model was trained with this one.
+export const addClass = (id: string, name: string, description = "") =>
+  api<{ labeling: string }>(`/api/library/labelings/${id}/classes`, send("POST", { name, description }));
+export const editClass = (id: string, cls: number, change: { key?: string; description?: string; names?: string[] }) =>
+  api<{ labeling: string }>(`/api/library/labelings/${id}/classes/${cls}`, send("PATCH", change));
+export const deleteClass = (id: string, cls: number) =>
+  api<{ labeling: string }>(`/api/library/labelings/${id}/classes/${cls}`, { method: "DELETE" });
+export const reviewPhoto = (id: string, photo: number, marks: Mark[]) =>
+  api<{ ok: boolean }>(`/api/library/labelings/${id}/photos/${photo}`, send("PUT", { marks }));
+export const unreviewPhoto = (id: string, photo: number) =>
+  api<{ ok: boolean }>(`/api/library/labelings/${id}/photos/${photo}`, { method: "DELETE" });
+export const deletePhoto = (photo: number) => api<{ ok: boolean }>(`/api/library/photos/${photo}`, { method: "DELETE" });
 export const reprofileDataset = (id: string) => api<{ profiling: boolean }>(`/api/library/datasets/${id}/profile`, { method: "POST" });
 export type ObjectCard = { id: string; name: string; concept: string; source: "online" | "photos" | "scene" | "upload";
                            has_file: boolean; thumb: boolean; kept: boolean; license?: string; author?: string;
@@ -278,7 +302,7 @@ export type Kit = { id: string; name: string; datasets: string[]; objects: strin
 export type LibraryData = { models: ModelCard[]; datasets: DatasetCard[]; objects: ObjectCard[]; scenes: SceneCard[];
                             kits: Kit[] };
 export const getLibrary = () => api<LibraryData>("/api/library");
-export const libraryPhotoUrl = (key: string) => `/api/library/photos/${key}`;
+export const libraryPhotoUrl = (id: number, big = false) => `/api/library/photos/${id}${big ? "?size=1024" : ""}`;
 export const cardUrl = (kind: "object" | "scene", id: string) => `/api/library/${kind}/${id}/card`;
 
 export type CreditMove = { amount: number; reason: string; detail: string | null; t: number };
@@ -337,13 +361,6 @@ export const deleteItem = (kind: LibraryKind, id: string) =>
 export const renameJob = (job: string, title: string) => api<{ ok: boolean }>(`/api/jobs/${job}`, {
   method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) });
 export const deleteJob = (job: string) => api<{ ok: boolean }>(`/api/jobs/${job}`, { method: "DELETE" });
-// One labeling of a dataset (kind "boxes" or "class", ref its phrase or labels): deleted, or (boxes) renamed.
-export const forgetLabels = (id: string, kind: string, ref: string) =>
-  api<{ removed: number }>(`/api/library/datasets/${id}/labels?kind=${encodeURIComponent(kind)}&ref=${encodeURIComponent(ref)}`,
-                           { method: "DELETE" });
-export const renameLabels = (id: string, ref: string, to: string) => api<{ moved: number }>(
-  `/api/library/datasets/${id}/labels`, { method: "PATCH", headers: { "Content-Type": "application/json" },
-                                          body: JSON.stringify({ ref, to }) });
 export type KitRefs = { name: string; datasets: string[]; objects: string[]; scenes: string[] };
 export const saveKit = (id: string | null, kit: KitRefs) =>
   api<{ id: string }>(id ? `/api/library/kits/${id}` : "/api/library/kits",

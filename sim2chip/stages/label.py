@@ -10,9 +10,10 @@ kept (they teach what "none" looks like). The threshold follows the user's error
 their corrected photos, which also win over the teacher. Its calibration rounds also show photos as different as
 possible (SigLIP 2 embeddings, picked by name when they cannot be had).
 Answers are cached by photo content and model (and noun phrase for SAM 3): the same photo gets the same answer in
-every job, a job with one new class asks SAM 3 only for that class, and new corrections need no GPU. A count
-photo's corrections may cover only some classes (input/corrections.json "checked": the check asked only about the
-classes no earlier job checked); the teacher's marks stand for the others. prefetch() fills SAM 3's answers for the whole folder while the user
+every job, a job with one new class asks SAM 3 only for that class, and new corrections need no GPU.
+The user's truth: the photos they reviewed in the job's labeling (input/labeling.json, library.export), whose
+marks win over the teacher's and teach it (threshold, centres); a job without a labeling (the CLI) reads
+input/corrections.json instead. prefetch() fills SAM 3's answers for the whole folder while the user
 corrects the first photos, and gpu_needed() tells when a round can run without a GPU. Photos with no answer (the teacher failed) are left out, in
 label/no_answer/ (label/unsure/ for count), and asked again on the next run.
 Output: label/<class>/<photo> (copies) or, for count, label/images/<photo>, named by verdicts' "copy";
@@ -31,15 +32,14 @@ from ..tasks import task_of
 from ..workspace import IMAGE_EXT, cache_key, content_key, copy_names
 from .base import Context, Stage
 
-KEPT = "kept_labels.json"  # in input/: the library's labels of the classes earlier jobs labeled (server.reuse_labels)
 NO_ANSWER = "no_answer"  # the teacher failed on the photo: left out, asked again on the next run
 
 
 class Label(Stage):
     name = "label"
-    version = "5"  # 2: SAM 3 instead of a vision model on Token Factory; 3: SigLIP 2 for classification;
+    version = "6"  # 2: SAM 3 instead of a vision model on Token Factory; 3: SigLIP 2 for classification;
     # 4: count, one class per object (SigLIP 2 tells apart classes SAM 3 found on the same object);
-    # 5: count, the user's corrections per class
+    # 5: count, the user's corrections per class; 6: the user's truth from the job's labeling
     runtime = "cpu"  # the teachers run in their own Python (teacher.py); this process plans and writes
     gpu = "any"
     reads_input = True
@@ -69,11 +69,11 @@ class Label(Stage):
         previous = json.loads((out / "verdicts.json").read_text()) if (out / "verdicts.json").exists() else {}
         sample = self._sample()
         keys = {f: str(f.relative_to(src)) for f in files}
-        corrections = review.load_corrections(ctx.job)
+        truth = self._truth(ctx)
         if task_of(spec).points:
-            verdicts, learned, info = self._count(ctx, files, keys, previous, sample, corrections)
+            verdicts, learned, info = self._count(ctx, files, keys, previous, sample, truth["points"])
         else:
-            verdicts, learned, info = self._classify(ctx, files, keys, previous, sample, corrections["labels"])
+            verdicts, learned, info = self._classify(ctx, files, keys, previous, sample, truth["labels"])
 
         counts: dict[str, int] = {}
         for v in verdicts.values():
@@ -255,39 +255,31 @@ class Label(Stage):
         return json.loads(f.read_text()) if f.exists() else {}
 
     @staticmethod
-    def _kept(ctx) -> dict:
-        """Count: the labels kept from earlier jobs for the classes the user had labeled before (input/KEPT):
-        {"classes": [ids], "photos": {key: {class: [objects]}}, "thresholds": {class: threshold}}. These need no
-        teacher; a photo with no kept labels for such a class (new to the dataset) still does."""
-        f = ctx.job.input / KEPT
-        kept = json.loads(f.read_text()) if f.exists() else {}
-        return {"classes": [], "photos": {}, "thresholds": {}, **kept}
-
-    def _known(self, ctx, keys) -> dict:
-        """{key: classes} the teacher need not look for on each photo: kept classes the library has labels of
-        there, or that the user checked there."""
-        kept = self._kept(ctx)
-        if not kept["classes"]:
-            return {}
-        ids = [c.id for c in ctx.spec.classes]
-        fixes = review.unstack(review.load_corrections(ctx.job), ids)
-        return {k: {c for c in kept["classes"] if c in kept["photos"].get(k, {}) or c in review.checked(fixes, k, ids)}
-                for k in keys.values()}
+    def _truth(ctx) -> dict:
+        """The user's own marks: {"labels": {photo: class}, "points": {photo: [[x, y, class], ...]}}, keyed by
+        the photo's path in the raw folder. From the photos reviewed in the job's labeling, else (a job of the
+        CLI) from input/corrections.json."""
+        from ..library import KEEP
+        snap = ctx.job.input / KEEP
+        if snap.exists():
+            out: dict = {"labels": {}, "points": {}}
+            for rel, p in json.loads(snap.read_text())["photos"].items():
+                if not p["reviewed"]:
+                    continue
+                if task_of(ctx.spec).points:
+                    out["points"][rel] = [[m["x"], m["y"], m["class"]] for m in p["marks"] if m.get("x") is not None]
+                elif p["marks"]:
+                    out["labels"][rel] = p["marks"][0]["class"]
+            return out
+        fixes = review.load_corrections(ctx.job)
+        return {"labels": fixes["labels"], "points": fixes["points"]}
 
     def _answer_files(self, ctx, files, keys=None) -> dict:
         """Where SAM 3's answers for this spec's phrases live, shared by every job: model x phrase x photo content.
-        {photo: {phrase: file}}, without the phrases of classes already known on the photo (_known)."""
+        {photo: {phrase: file}}."""
         root = ctx.cache.root / "labels" / "sam3" / cache_key([teacher.MODEL, teacher.SIDE, teacher.FLOOR])
-        by_class = self._phrases(ctx)
-        keys = keys or self._files(ctx)[1]
-        known = self._known(ctx, keys)
-        out = {}
-        for f in files:
-            key = content_key(f)
-            skip = known.get(keys[f], set())
-            phrases = sorted({p for c, ps in by_class.items() if c not in skip for p in ps})
-            out[f] = {p: root / cache_key(p) / f"{key}.json" for p in phrases}
-        return out
+        phrases = sorted({p for ps in self._phrases(ctx).values() for p in ps})
+        return {f: {p: root / cache_key(p) / f"{content_key(f)}.json" for p in phrases} for f in files}
 
     @staticmethod
     def _missing(answers: dict) -> dict:
@@ -299,7 +291,7 @@ class Label(Stage):
         the error of an answer that failed. Failed answers are removed, to ask again on the next run."""
         dets, error = [], None
         for cls, phrases in self._phrases(ctx).items():
-            for p in [p for p in phrases if p in outs]:  # a class known on the photo was not asked about
+            for p in phrases:
                 a = json.loads(outs[p].read_text()) if outs[p].exists() else {"error": "no answer"}
                 if "error" in a:
                     outs[p].unlink(missing_ok=True)
@@ -389,19 +381,15 @@ class Label(Stage):
             teacher.detect([(f, missing[f]) for f in todo], log=ctx.log, timeline=self._timeline(ctx))
         return len(todo)
 
-    def _count(self, ctx, files, keys, previous, sample, corrections):
+    def _count(self, ctx, files, keys, previous, sample, truth):
+        """truth: the user's marks, {photo: [[x, y, class], ...]} (every class looked at)."""
         spec = ctx.spec
-        ids = [c.id for c in spec.classes]
+        ids = {c.id for c in spec.classes}
+        truth = {k: [p for p in v if p[2] in ids] for k, v in truth.items()}  # marks of other classes: not this job's
         phrases = self._phrases(ctx)
         if sample:  # new photos, as different as possible
             files = self._pick(ctx, files, keys, previous, sample)
 
-        kept = self._kept(ctx)
-        reused = set(kept["classes"])
-        known = self._known(ctx, keys)
-        if reused:
-            ctx.log(f"kept from earlier labels of these photos: {', '.join(sorted(reused))}; the teacher looks for "
-                    "them only on photos without them")
         answers = self._answer_files(ctx, files, keys)
         missing = self._missing(answers)
         asked = sorted({p for outs in missing.values() for p in outs})
@@ -415,35 +403,16 @@ class Label(Stage):
             found = self._detections(ctx, answers[f])
             if isinstance(found, str):
                 ctx.log(f"  {keys[f]}: {found}")
-            else:  # a phrase shared with a class still asked for also answered for a known one: not its answer
-                dets[keys[f]] = [d for d in found if d["class"] not in known.get(keys[f], ())]
+            else:
+                dets[keys[f]] = found
         if not dets:
             raise RuntimeError(f"the teacher failed on all {len(files)} photos, see the lines above")
 
-        before = {k: len(v) for k, v in corrections.get("points", {}).items()}
-        corrections = review.unstack(corrections, ids)
-        if dropped := sum(n - len(corrections["points"].get(k, [])) for k, n in before.items()):
-            ctx.log(f"WARNING: {dropped} of your marks put one object under several classes: left out, the "
-                    "teacher's marks stand for those classes on those photos")
-        fix_points = corrections.get("points", {})
-        # The classes the user checked on each photo: their marks are the truth for those, the teacher's for the rest.
-        mine = {k: review.checked(corrections, k, ids) for k in fix_points}
-        truth = {k: [p for p in v if p[2] in mine[k]] for k, v in fix_points.items() if mine[k]}
         dets = self._tell_apart(ctx, {keys[f]: f for f in files}, dets, truth)
-        # The threshold is learned from the classes asked about now: the kept ones keep the threshold they were
-        # labeled with (a photo new to the dataset gets that one too).
-        fresh = {k: [p for p in v if p[2] not in reused] for k, v in truth.items() if mine[k] - reused}
-        chosen = teacher.choose(spec.errors or "balanced",
-                                {k: [d for d in dets[k] if d["class"] in mine[k] - reused] for k in fresh if k in dets},
-                                fresh)
+        chosen = teacher.choose(spec.errors or "balanced", dets, truth)
         th = chosen["threshold"]
-        ctx.log(f"threshold {th} ({chosen['preference']}, from {chosen['photos']} corrected photos)")
-        cut = {c: kept["thresholds"].get(c, th) if c in reused else th for c in ids}
-
-        def marks(key: str) -> list[dict]:
-            out = [o for o in teacher.objects(dets[key], 0) if o["score"] >= cut[o["class"]]]
-            return out + [o for c, objs in kept["photos"].get(key, {}).items() if c in reused for o in objs]
-        found = sum(len(marks(k)) for k in dets)
+        ctx.log(f"threshold {th} ({chosen['preference']}, from {chosen['photos']} reviewed photos)")
+        found = sum(len(teacher.objects(d, th)) for d in dets.values())
         marked = sum(len(v) for v in truth.values())
         if not found and marked:
             # Every photo would teach "nothing here" while the user's own marks say otherwise.
@@ -454,17 +423,12 @@ class Label(Stage):
         verdicts = {}
         for f in files:
             key = keys[f]
-            v = {"objects": marks(key) if key in dets else None,
-                 "reason": (f"{teacher.NAME}, threshold {th}" + ("; earlier labels for " + ", ".join(
-                     sorted(kept["photos"][key])) if kept["photos"].get(key) else "")) if key in dets
-                 else "no valid answer",
+            v = {"objects": teacher.objects(dets[key], th) if key in dets else None,
+                 "reason": f"{teacher.NAME}, threshold {th}" if key in dets else "no valid answer",
                  "model": teacher.MODEL, "threshold": th}
-            # The user's marks win over the teacher's, for the classes they checked (all, or the teacher must have
-            # answered for the others).
-            if key in truth and (mine[key] == set(ids) or v["objects"] is not None):
+            if key in truth:  # the user's marks win over the teacher's
                 v = {**v, "teacher_objects": v["objects"], "judge": "user",
-                     "objects": [{"x": x, "y": y, "class": c} for x, y, c in truth[key]]
-                     + [o for o in v["objects"] or [] if o["class"] not in mine[key]]}
+                     "objects": [{"x": x, "y": y, "class": c} for x, y, c, *_ in truth[key]]}
             verdicts[key] = {**v, "assigned": "unsure" if v["objects"] is None else "images"}
         learned = {**chosen, "model": teacher.MODEL, "phrases": phrases, "note": teacher.explain(chosen)}
         boxes = [[o["box"][2] - o["box"][0], o["box"][3] - o["box"][1]] for v in verdicts.values()

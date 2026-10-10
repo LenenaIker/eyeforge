@@ -3,10 +3,11 @@
 The teacher labels the user's photos and asset QA judges the 3D models; the user only fixes what looks
 wrong, never labels from scratch. This module gathers samples for a front end (photos with their labels,
 3D models with their verdicts, random synthetic frames, test predictions) and applies corrections:
-- photo labels (count task: the points of every object in a photo) go to input/corrections.json, which the
-  label stage applies on top of its (reused) verdicts. A count photo's points cover every class, or only those
-  in "checked" (a check that asked about the classes no earlier job checked: "check");
-- asset decisions go to the asset knowledge base with judge "user", so later jobs reuse them too.
+- on the web server, photo marks go to the job's labeling in the library (server.save_review): the photos the
+  user reviewed there are marked as corrected here. A job of the CLI keeps them in input/corrections.json
+  (apply), which the label stage reads when the job has no labeling;
+- asset decisions go to input/corrections.json and to the asset knowledge base with judge "user", so later
+  jobs reuse them too.
 Then the job reruns from the first stage the corrections affect.
 """
 from __future__ import annotations
@@ -26,16 +27,7 @@ RENDER_SAMPLE = 12
 def load_corrections(job: Job) -> dict:
     f = job.input / CORRECTIONS
     fixes = json.loads(f.read_text()) if f.exists() else {}
-    return {"labels": {}, "assets": {}, "points": {}, "checked": {}, **fixes}
-
-
-def checked(fixes: dict, key: str, ids) -> set[str]:
-    """The classes the user's points on a count photo stand for: those in fixes["checked"], or every class when
-    it does not name them (the photo was fixed with all its classes in view)."""
-    if key not in fixes["points"]:
-        return set()
-    named = (fixes.get("checked") or {}).get(key)
-    return set(ids) if named is None else set(named) & set(ids)
+    return {"labels": {}, "assets": {}, "points": {}, **fixes}
 
 
 class StackedMarks(ValueError):
@@ -57,31 +49,23 @@ def stacked(points: list) -> set[str]:
     return out
 
 
-def unstack(fixes: dict, ids) -> dict:
-    """The corrections without stacked marks: on a photo whose object was marked as several classes, those
-    classes count as not checked (their points go, so the teacher's marks stand and a check asks again)."""
-    for k, pts in list(fixes["points"].items()):
-        bad = stacked(pts)
-        if not bad:
-            continue
-        left = checked(fixes, k, ids) - bad
-        if left:
-            fixes["points"][k] = [p for p in pts if p[2] in left]
-            fixes.setdefault("checked", {})[k] = sorted(left)
-        else:
-            fixes["points"].pop(k)
-            (fixes.get("checked") or {}).pop(k, None)
-    return fixes
-
-
 def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str = "roi_classification") -> dict:
     """Everything a reviewer looks at, with image paths relative to the job folder. For the count task, photos
     and test predictions carry points [x, y, class] in 0..1 of the (upright) image."""
     rel = lambda p: str(Path(p).relative_to(job.root))  # noqa: E731
     from .workspace import copy_name
     fixes = load_corrections(job)
+    from .library import KEEP
+    snap = json.loads((job.input / KEEP).read_text()) if (job.input / KEEP).exists() else None
+    # The photos the user reviewed, with their marks: in the job's labeling, else in its corrections (CLI).
+    if snap is not None:
+        mine = {k: p["marks"] for k, p in snap["photos"].items() if p["reviewed"]}
+        fixed_points = {k: [[m["x"], m["y"], m["class"]] for m in v if m.get("x") is not None] for k, v in mine.items()}
+        fixed_labels = {k: v[0]["class"] for k, v in mine.items() if v}
+    else:
+        fixed_points, fixed_labels = fixes["points"], fixes["labels"]
     out: dict = {"task": task, "labels": labels, "photos": [], "assets": [], "renders": [], "test": [],
-                 "teacher_rules": [], "check": fixes.get("check") or []}
+                 "teacher_rules": []}
     learned = job.stage_dir("label") / "teacher.json"
     if learned.exists():  # the threshold the teacher chose from the user's corrections
         out["teacher_rules"] = [json.loads(learned.read_text())["note"]]
@@ -92,14 +76,18 @@ def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str =
             path = job.stage_dir("label") / v["assigned"] / (v.get("copy") or copy_name(key))
             if "objects" in v:  # count task
                 pts = lambda objs: [[o["x"], o["y"], o["class"]] for o in objs or []]  # noqa: E731
-                out["photos"].append({"key": key, "points": pts(v["objects"]), "unsure": v["objects"] is None,
+                mine = key in fixed_points
+                out["photos"].append({"key": key, "points": fixed_points[key] if mine else pts(v["objects"]),
+                                      "unsure": v["objects"] is None and not mine,
                                       "teacher_points": pts(v.get("teacher_objects", v["objects"])),
-                                      "judge": v.get("judge", "teacher"), "corrected": key in fixes["points"],
+                                      "judge": "user" if mine else v.get("judge", "teacher"), "corrected": mine,
                                       "reason": v.get("reason", ""), "image": rel(path) if path.exists() else None})
                 continue
-            out["photos"].append({"key": key, "label": v["assigned"], "teacher": v.get("teacher", v.get("class")),
+            mine = key in fixed_labels
+            out["photos"].append({"key": key, "label": fixed_labels[key] if mine else v["assigned"],
+                                  "teacher": v.get("teacher", v.get("class")),
                                   "confidence": v.get("confidence"), "reason": v.get("reason", ""),
-                                  "judge": v.get("judge", "teacher"), "corrected": key in fixes["labels"],
+                                  "judge": "user" if mine else v.get("judge", "teacher"), "corrected": mine,
                                   "image": rel(path) if path.exists() else None})
 
     from .asset_db import AssetDB
@@ -136,10 +124,10 @@ def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str =
 
 
 def apply(job: Job, cache: Cache, labels: dict[str, str], assets: dict[str, str],
-          points: dict[str, list] | None = None, share: bool = True, classes: list[str] | None = None) -> str | None:
-    """Save corrections and return the stage to rerun from (None when nothing changed). `points` maps a photo
-    to all its objects as [x, y, class] (the photo's full, corrected list); the user checked them for `classes`
-    (on top of those checked before) or, when None, for every class. Asset decisions always apply to
+          points: dict[str, list] | None = None, share: bool = True) -> str | None:
+    """Save corrections in input/corrections.json and return the stage to rerun from (None when nothing
+    changed). `points` maps a photo to all its objects as [x, y, class] (the photo's full, corrected list; the
+    web server keeps photo marks in the library instead, server.save_review). Asset decisions always apply to
     this job; with `share` they also go to the shared asset knowledge base, which every later job trusts
     (off on a public server, where one visitor must not decide for the others)."""
     fixes = load_corrections(job)
@@ -152,12 +140,6 @@ def apply(job: Job, cache: Cache, labels: dict[str, str], assets: dict[str, str]
         raise StackedMarks("one object is marked as several classes ("
                          + "; ".join(f"{k}: {', '.join(s)}" for k, s in bad.items())
                          + "): keep only the class it is")
-    for k in changed_points:
-        everything = k in fixes["points"] and k not in fixes["checked"]  # checked before for every class
-        if classes is None or everything:
-            fixes["checked"].pop(k, None)
-        else:
-            fixes["checked"][k] = sorted(set(fixes["checked"].get(k, [])) | set(classes))
     fixes["points"] |= changed_points
     fixes["assets"] |= assets
     job.input.mkdir(parents=True, exist_ok=True)

@@ -112,9 +112,10 @@ function Calibration({ s, reviewKey, onRerun }: { s: Status; reviewKey: number; 
 // A labeling job after the check: the teacher marks every photo; the labels then live in the dataset.
 function Labeling({ s }: { s: Status }) {
   const l = s.labeling!;
-  const back = <Link to={`/app/datasets/${l.dataset}`} className="font-medium text-brand-600 hover:underline">See them in the dataset</Link>;
+  const back = <Link to={`/app/datasets/${l.dataset}${l.labeling ? `/labelings/${l.labeling}` : ""}`}
+                     className="font-medium text-brand-600 hover:underline">See them in the labeling</Link>;
   if (l.state === "failed") return <Notice tone="bad">The teacher could not label the photos: {l.error}</Notice>;
-  if (l.state === "done") return <Card className="p-4 text-sm">Every photo is labeled and kept with the dataset, for any model you build with it. {back}</Card>;
+  if (l.state === "done") return <Card className="p-4 text-sm">Every photo is marked and kept in its labeling, for any model you build with it. {back}</Card>;
   return (
     <Card className="flex items-center gap-3 p-4 text-sm">
       <Loader2 className="h-4 w-4 shrink-0 animate-spin" />

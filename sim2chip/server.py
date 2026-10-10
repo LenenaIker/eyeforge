@@ -30,7 +30,7 @@ from .version import engine
 from .job_service import CALIBRATION, CALIBRATION_PHOTOS, LABELING, JobService, cloud_spent
 from . import spec as spec_mod
 from .pipeline import Pipeline
-from .workspace import IMAGE_EXT, Cache, Job, current_version, last_engine, open_job, snapshot, versions
+from .workspace import IMAGE_EXT, Cache, Job, content_key, current_version, last_engine, open_job, snapshot, versions
 
 DOWNLOADS = {"model.tflite", "labels.txt", "model_int8.tflite", "model_data.h", "report.json"}
 WEB = Path(__file__).parent / "web"
@@ -38,7 +38,6 @@ DIST = WEB / "dist"
 OWNER = "owner"  # file in a public server's job folder: the visitor who started it
 PAYER = "payer"  # file in a job folder: the account paying what it uses (accounts mode)
 METER_S = 30     # how often the usage of running jobs is charged
-NEW_SHARE = 0.25  # new photos, at most this share of a folder the user checked before, skip the check
 NO_BUILD = ("<p>EyeForge: the web app is not built. Run <code>cd web && npm install && npm run build</code> in the "
             "repository, then reload. The API under /api works without it.</p>")
 OPEN_API = {"/api/config", "/api/key", "/api/me", "/api/stripe/webhook"}  # API calls open to a visitor without the key or a login
@@ -50,6 +49,13 @@ VISITOR = "eyeforge_visitor"  # cookie: one per browser, so visitors of a public
 # 409 answers when the same job is open twice (phone and computer): the web shows them as news, not errors.
 ALREADY_RUNNING = "This model is already being worked on, maybe from another device."
 CHECK_OVER = "Training already started, maybe from another device."
+
+
+def library_ref(v) -> str | None:
+    """The library id a spec value names ("library:<id>", or the bare id the chat sometimes writes), else None."""
+    if isinstance(v, str) and re.fullmatch(r"[0-9a-f]{16}", v):
+        return v
+    return v[len("library:"):] if isinstance(v, str) and v.startswith("library:") else None
 
 
 def slug(name: str) -> str:
@@ -91,17 +97,17 @@ def attach_library(session, lib, owner: str, folders: Path, kit: str | None = No
             return None
         if on_open is not None:
             on_open()
-        lib.materialize_dataset(owner, ds, folders / f"library_{ds}", by_label=False)
+        lib.materialize_dataset(owner, ds, folders / f"library_{ds}")
         return folders / f"library_{ds}"
-    datasets = lib.datasets(owner)
     session.use_library(*lib.for_chat(owner), kit=chosen, notes=functools.partial(lib.describe, owner),
-                        open_dataset=open_dataset, labeled={d["id"] for d in datasets if d["labels"]},
-                        datasets={d["id"] for d in datasets}, dataset_card=functools.partial(lib.dataset_card, owner))
+                        open_dataset=open_dataset, datasets={d["id"] for d in lib.datasets(owner)},
+                        dataset_card=functools.partial(lib.dataset_card, owner))
 
 
 MAX_PHOTOS = 400  # per upload on a public server
 MAX_PHOTO_BYTES = 30 << 20   # one photo: a 50 MP phone photo is about 20 MB
 MAX_MODEL_BYTES = 200 << 20  # one GLB the user uploads
+SENT = "sent.json"           # in a job folder: the spec as the web sent it (a double click is the same job)
 SESSION_OWNER = ".owner"     # file in uploads/<session>: who started that chat
 CHAT_VIEW = ".view.json"     # file in uploads/<session>: the chat as the web shows it, to open it again anywhere
 MAX_VIEW_BYTES = 2_000_000
@@ -213,10 +219,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     sessions: dict[str, object] = {}
     started: dict[str, float] = {}  # interview session -> start time
     new_session = interviewer
-    jobs = JobService(home, backend, max_usd, launcher=launcher, warm=warm, public=public, max_runs=max_runs,
-                      daily_usd=daily_usd)
-
     lib = library.Library(home, home / "cache")
+    jobs = JobService(home, backend, max_usd, launcher=launcher, warm=warm, public=public, max_runs=max_runs,
+                      daily_usd=daily_usd, on_labels=lib.take_teacher)
     profiling: set[str] = set()  # datasets whose profile is being made
     from concurrent.futures import ThreadPoolExecutor
     profiler = ThreadPoolExecutor(1, thread_name_prefix="profile")
@@ -434,46 +439,19 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             response.delete_cookie(SESSION)
             return response
 
-    def adopt_library(parsed: spec_mod.Spec, owner: str, job: Job) -> spec_mod.Spec:
-        """Library references of a spec ("library:<id>", from a kit or the chat) become files in the job's input
-        folder, so the job travels with them (to Nebius too) and keeps them if the library item is deleted."""
-        def ref(v: str | None) -> str | None:
-            if isinstance(v, str) and re.fullmatch(r"[0-9a-f]{16}", v):  # the chat wrote the bare id
-                return v
-            return v[len("library:"):] if isinstance(v, str) and v.startswith("library:") else None
-
+    def adopt_library(parsed: spec_mod.Spec, owner: str, job: Job, session: str | None = None) -> spec_mod.Spec:
+        """The library and the job (docs/plan_etiquetado.md). The spec's 3D objects ("library:<id>") become files
+        of the job. Its photos are one dataset of the owner: a library dataset it names (photos attached in the chat
+        join it), else the chat's own dataset or a new one. They are labeled in one labeling of that dataset: the
+        one the chat named (changed to the spec's classes, a copy when a model was trained with it), else one with
+        the same classes, else a new one. The job takes a fixed copy of that labeling (library.export) as its raw
+        photos; the teacher's marks come back from it (library.take_teacher)."""
         data = json.loads(parsed.to_json())
         ud = data["user_data"]
-        # One dataset given as test photos and as training photos (labeled or raw) would be tested on what it
-        # trained on: its test side is the test, the rest trains; without a test side the test comes from the
-        # training photos, as for any job without a test folder.
-        test = ref(ud.get("test"))
-        training = {ref(ud.get("labeled"))} | {ref(v) for v in interview_sources(ud.get("raw"))}
-        shared = test if test and test in training else None
-        if shared and lib.owns(owner, "dataset", shared):
-            sides = next((d["splits"] for d in lib.datasets(owner) if d["id"] == shared), {})
-            if not sides.get("test"):
-                ud["test"] = None
-
-        def dataset(v, by_label: bool, test_side: bool = False):
-            ds = ref(v)
-            if not ds:
-                return v
-            if not lib.owns(owner, "dataset", ds):
-                raise HTTPException(400, f"invalid spec: no dataset {ds} in your library")
-            name, splits = f"dataset_{ds}", None
-            if ds == shared:
-                name, splits = (f"dataset_{ds}_test", ("test",)) if test_side else (name, ("train", "3d"))
-            lib.materialize_dataset(owner, ds, job.input / name, by_label=by_label, splits=splits)
-            return name
-        ud["labeled"] = dataset(ud.get("labeled"), True)
-        ud["test"] = dataset(ud.get("test"), True, test_side=True)
-        raw = [dataset(v, False) for v in interview_sources(ud.get("raw"))]
-        ud["raw"] = merge_sources(job, raw) if len(raw) > 1 else (raw[0] if raw else None)
         names = {c["id"]: c.get("names") or [] for c in data["classes"]}
         for cid, item in [(c["id"], c["assets"]) for c in data["classes"] if c.get("assets")] + \
                 [(p["id"], p) for p in data["props"]]:
-            ids = [ref(m) for m in item.get("models") or []]
+            ids = [library_ref(m) for m in item.get("models") or []]
             if not any(ids):
                 continue
             if not all(ids):
@@ -486,144 +464,120 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             if not item["models"] and item.get("source") == "library":
                 item["source"] = "search"
                 item["queries"] = item.get("queries") or names.get(cid) or [cid.replace("_", " ")]
-        return spec_mod.from_dict(data)
 
-    def reuse_corrections(parsed: spec_mod.Spec, owner: str, job: Job) -> None:
-        """The user's earlier corrections of these photos (other jobs, the Datasets page) as this job's, so they
-        are not asked again. Never over corrections the job already has."""
-        from .stages.label import phrases_of
-        f = job.input / review.CORRECTIONS
-        raw = parsed.user_data.raw
-        if f.exists() or not isinstance(raw, str):
-            return
-        try:
-            folder = job.resolve_input(raw)
-        except ValueError:
-            return
-        if not folder.is_dir():
-            return
-        # The label stage's own phrases (classes without English names put in English): the library keeps the
-        # labels under those.
-        count = parsed.task == "count"
-        phrases = {c: p[0] for c, p in phrases_of(parsed, Cache(home / "cache")).items()} if count else {}
-        found = lib.corrections_for(owner, folder, [c.id for c in parsed.classes] if phrases else [], phrases,
-                                    [] if count else parsed.labels)
-        if found:
-            f.write_text(json.dumps({"labels": {}, "assets": {}, "points": {}, **found}, indent=1))
-
-    def unlabeled_as_raw(parsed: spec_mod.Spec, owner: str) -> spec_mod.Spec:
-        """A library dataset without labels of its own given as "labeled" (the chat mixed it up with the
-        teacher's labels, 2026-10-09: the job trained on 0 real photos) is raw photos for the teacher."""
-        ud = parsed.user_data
-        ds = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(ud.labeled or ""))
-        if not ds or not lib.owns(owner, "dataset", ds.group(1)):
-            return parsed
-        if next((d["labels"] for d in lib.datasets(owner) if d["id"] == ds.group(1)), None):
-            return parsed
-        data = json.loads(parsed.to_json())
-        raw = interview_sources(data["user_data"].get("raw"))
-        data["user_data"].update(labeled=None, class_map={}, raw=[ud.labeled, *raw] if raw else ud.labeled)
-        return spec_mod.from_dict(data)
-
-    def follow_labeling(parsed: spec_mod.Spec, owner: str) -> spec_mod.Spec:
-        """A library dataset labeled before for the same task (library.labelings): each class with the id of an
-        earlier one takes that job's names and descriptions, so the teacher looks for the very same things and
-        its kept answers and labels apply (user, 2026-10-09: a dataset's labels are not asked for again;
-        2026-10-10: class by class, the other classes are labeled anew)."""
-        data, changed = json.loads(parsed.to_json()), False
-        for src in interview_sources(parsed.user_data.raw):
-            ds = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(src))
-            if not ds or not lib.owns(owner, "dataset", ds.group(1)):
-                continue
-            for done in lib.labelings(ds.group(1)):  # newest first
-                if done["task"] != parsed.task or done["background"] != parsed.background_class:
-                    continue
-                before = {c["id"]: c for c in json.loads((home / "jobs" / done["job"] / "request.json").read_text())
-                          ["classes"]}
-                for c in data["classes"]:
-                    if c["id"] not in before or c.get("_followed"):
-                        continue
-                    b = before[c["id"]]
-                    c["description"] = b.get("description") or c["description"]
-                    c["names"] = b.get("names") or c.get("names")
-                    if c.get("assets") and b.get("assets"):  # names come from the queries too
-                        c["assets"]["queries"] = b["assets"].get("queries") or c["assets"].get("queries")
-                        c["assets"]["categories"] = b["assets"].get("categories") or c["assets"].get("categories")
-                    c["_followed"] = changed = True
-        for c in data["classes"]:
-            c.pop("_followed", None)
-        return spec_mod.from_dict(data) if changed else parsed
-
-    def labeled_classes(parsed: spec_mod.Spec, owner: str, job: Job) -> tuple[list[str], set[str]]:
-        """The job's classes (count) or labels, and those its raw photos are labeled for already: the user
-        corrected at least a check round's worth of its photos (reuse_corrections), or an earlier job's teacher
-        labeled them for its phrase and the user went on to train with those labels; either way with at most
-        NEW_SHARE of the folder new."""
-        from .stages.label import phrases_of
-        count = parsed.task == "count"
-        ids = [c.id for c in parsed.classes] if count else parsed.labels
-        raw = parsed.user_data.raw
-        if not isinstance(raw, str):
-            return ids, set()
-        try:
-            folder = job.resolve_input(raw)
-        except ValueError:
-            return ids, set()
-        if not folder.is_dir():
-            return ids, set()
-        total = sum(1 for p in folder.rglob("*") if p.suffix.lower() in IMAGE_EXT and not p.name.startswith("."))
-        fixes = review.unstack(review.load_corrections(job), ids)
-        if count:
-            corrected = {c: sum(c in review.checked(fixes, k, ids) for k in fixes["points"]) for c in ids}
+        sources = interview_sources(ud.get("raw"))
+        labeled = ud.get("labeled")
+        if library_ref(labeled):  # a library dataset is photos; how they are labeled is in its labelings
+            sources, labeled = [*sources, labeled], None
+        dsets = list(dict.fromkeys(d for v in sources if (d := library_ref(v))))
+        folders = [v for v in sources if not library_ref(v)]
+        ud.update(test=None, class_map={} if not labeled else ud.get("class_map") or {})
+        if not dsets and not folders and not labeled:  # synthetic images only
+            ud.update(raw=None, labeled=None, labeling=None)
+            return spec_mod.from_dict(data)
+        if len(dsets) > 1:
+            raise HTTPException(400, "invalid spec: one dataset per model (photos attached in the chat join it)")
+        if dsets and not lib.owns(owner, "dataset", dsets[0]):
+            raise HTTPException(400, f"invalid spec: no dataset {dsets[0]} in your library")
+        files = [f for v in folders for f in library._images(job.resolve_input(v))]
+        sorted_into: dict[str, list[Path]] = {}  # photos the user sorted into a folder per class
+        if labeled:
+            base = job.resolve_input(labeled)
+            for label in parsed.labels:
+                sorted_into[label] = [f for sub in parsed.user_data.class_map.get(label, [label])
+                                      for f in library._images(base / sub)]
+        every = files + [f for fs in sorted_into.values() for f in fs]
+        if dsets:
+            ds = dsets[0]
+            lib.add_photos(owner, ds, every)
+        elif session:
+            ds = lib.add_chat_photos(owner, session, every)
         else:
-            corrected = dict.fromkeys(ids, len(set(fixes["labels"]) | set(fixes["points"])))
-        # The label stage's own phrases (classes without English names put in English): the library keeps the
-        # labels under those.
-        phrases = {c: p[0] for c, p in phrases_of(parsed, Cache(home / "cache")).items()} if count else {}
-        known = lib.known_labels(owner, folder, phrases, [] if count else parsed.labels)
+            ds = lib.new_dataset(owner, parsed.name.replace("_", " "), every)
+        lib.note_use(job.name, "dataset", ds)
 
-        def labeled(c: str) -> bool:
-            if corrected[c] >= CALIBRATION_PHOTOS and total - corrected[c] <= NEW_SHARE * total:
-                return True
-            return known[c] > 0 and total - known[c] <= NEW_SHARE * total
-        return ids, {c for c in ids if labeled(c)}
+        task = library.task_of(parsed.task)
+        classes = labeling_classes(parsed)
+        lid = ud.get("labeling")
+        if lid and not (lib.owns_labeling(owner, lid) and lib.labeling(lid)["dataset"] == ds
+                        and lib.labeling(lid)["task"] == task):
+            lid = None
+        try:
+            if lid:
+                lid = lib.fit_classes(lid, classes)
+            else:
+                lid = lib.find_labeling(ds, task, [c["key"] for c in classes]) or \
+                    lib.create_labeling(ds, parsed.name.replace("_", " ").capitalize(), task, classes)
+            for label, fs in sorted_into.items():
+                for f in fs:
+                    if (pid := lib.photo_id(ds, content_key(f))) is not None:
+                        lib.review_photo(lid, pid, [{"class": label}])
+        except ValueError as e:
+            raise HTTPException(400, f"invalid spec: {e}") from None
+        # The teacher looks for a class by the labeling's English names: they win over the chat's.
+        if task == "count":
+            phrases = {c["key"]: c["phrases"] for c in lib.classes(lid)}
+            for c in data["classes"]:
+                if phrases.get(c["id"]):
+                    c["names"] = phrases[c["id"]]
+        ud.update(raw=lib.export(lid, job.input), labeled=None, class_map={}, labeling=lid)
+        return spec_mod.from_dict(data)
 
-    def reuse_labels(parsed: spec_mod.Spec, owner: str, job: Job) -> None:
-        """Count: the teacher's kept marks of the classes these photos are labeled for already, into the job
-        (stages.label.KEPT), so the label stage copies them instead of asking the teacher again and learns its
-        threshold only from the new classes (user, 2026-10-10: a valid labeling is not redone)."""
-        from .stages.label import KEPT, phrases_of
-        f = job.input / KEPT
-        if parsed.task != "count" or f.exists():
-            return
-        _, done = labeled_classes(parsed, owner, job)
-        if not done:
-            return
-        phrases = {c: p[0] for c, p in phrases_of(parsed, Cache(home / "cache")).items() if c in done}
-        kept = lib.kept_boxes(owner, job.resolve_input(parsed.user_data.raw), phrases)
-        job.input.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps({"classes": sorted(done), **kept}, indent=1))
+    def labeling_classes(parsed: spec_mod.Spec) -> list[dict]:
+        """A spec's classes as a labeling's: count, with the English names the teacher looks for; classify, every
+        label the photo is chosen among (the "nothing" one too)."""
+        if parsed.task == "count":
+            from .stages.label import phrases_of
+            phrases = phrases_of(parsed, Cache(home / "cache"))
+            return [{"key": c.id, "description": c.description, "phrases": phrases.get(c.id) or []}
+                    for c in parsed.classes]
+        desc = {c.id: c.description for c in parsed.classes}
+        return [{"key": label, "description": desc.get(label, "none of the other classes")} for label in parsed.labels]
 
-    def to_check(parsed: spec_mod.Spec, owner: str, job: Job) -> list[str]:
-        """The classes the teacher's check must ask about, none when the photos are labeled already (user,
-        2026-10-09: a dataset's labels are not asked for again; 2026-10-10: class by class, so a job that adds a
-        class checks only that one; labeled_classes says which). The new ones are marked in the run, the teacher
-        learning from the earlier corrections, and the user can still fix them after it. The check of a count
-        asks only about the classes left (review "check")."""
-        ids, done = labeled_classes(parsed, owner, job)
-        left = [c for c in ids if c not in done]
-        check = left if parsed.task == "count" and 0 < len(left) < len(ids) else None
-        fixes = review.load_corrections(job)
-        if (fixes.get("check") or None) != check:
-            fixes["check"] = check
-            job.input.mkdir(parents=True, exist_ok=True)
-            (job.input / review.CORRECTIONS).write_text(json.dumps(fixes, indent=1))
-        return left
+    def kept(job: Job) -> dict | None:
+        """The job's copy of its labeling (library.export), or None for a job without one."""
+        f = job.input / library.KEEP
+        return json.loads(f.read_text()) if f.exists() else None
 
-    def checking(job: Job) -> list[str] | None:
-        """The classes the check asks about (to_check), None for every class: the classes the user's fixes in it
-        stand for."""
-        return review.load_corrections(job).get("check") or None
+    def needs_check(job: Job) -> bool:
+        """The teacher's check comes first while the user has reviewed fewer photos of the labeling than one round
+        shows: then the teacher has learned nothing of their criterion yet."""
+        snap = kept(job)
+        return snap is not None and sum(p["reviewed"] for p in snap["photos"].values()) < CALIBRATION_PHOTOS
+
+    def refresh(job: Job) -> None:
+        """The job's copy of its labeling made again (new reviews, new photos), unless the labeling is gone."""
+        snap = kept(job)
+        if snap is not None and lib.labeling(snap["labeling"]) is not None:
+            lib.export(snap["labeling"], job.input)
+
+    def save_review(job: Job, body: dict) -> int:
+        """The user's marks of photos of the job ({"points": {photo: [[x, y, class], ...]}} for count, {"labels":
+        {photo: class}} for classify, keyed as the job names its photos) into its labeling, as reviewed photos.
+        Returns how many photos."""
+        snap = kept(job)
+        points, labels = body.get("points") or {}, body.get("labels") or {}
+        if not points and not labels:
+            return 0
+        if snap is None or lib.labeling(snap["labeling"]) is None:
+            raise HTTPException(409, "this model's labeling is no longer in your library")
+        n = 0
+        try:
+            for rel, pts in points.items():
+                if (p := snap["photos"].get(rel)) is not None:
+                    lib.review_photo(snap["labeling"], p["photo_id"],
+                                     [{"class": str(c), "x": x, "y": y} for x, y, c, *_ in pts])
+                    n += 1
+            for rel, label in labels.items():
+                if (p := snap["photos"].get(rel)) is not None:
+                    lib.review_photo(snap["labeling"], p["photo_id"], [{"class": str(label)}])
+                    n += 1
+        except ValueError as e:
+            if isinstance(e, review.StackedMarks):
+                raise
+            raise HTTPException(400, str(e)) from None
+        refresh(job)
+        return n
 
     def check_paths(parsed: spec_mod.Spec, request: Request, job: Job | None = None) -> None:
         """On a public server, only photos the requester uploaded in their chats (or, revising a job, the job's
@@ -847,8 +801,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 (folder / Path(p.filename).name).write_bytes(capped(p, MAX_PHOTO_BYTES))
                 saved.append(folder / Path(p.filename).name)
         n = len(saved)
-        # Every real photo belongs to a dataset: the chat's own, made with its first photos (user, 2026-10-08).
-        lib.add_chat_photos(owner_of(request), sid, saved, "3d" if purpose == "3d" else "train", cls or None)
+        # Every training photo belongs to a dataset: the chat's own, made with its first photos (user, 2026-10-08).
+        # Photos to build a class's 3D model from stay with the job that uses them.
+        if purpose == "training" and saved:
+            lib.add_chat_photos(owner_of(request), sid, saved)
         if not n and not total:
             raise HTTPException(400, "no images among the files")
         if purpose == "training":  # the GPU starts while the interview goes on
@@ -904,7 +860,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         # The same setup sent twice (a double click, "Looks good" and Train together) must not pay for two runs.
         same = json.loads(parsed.to_json())
         for other, proc in jobs.runs.items():
-            req = home / "jobs" / other / "request.json"
+            req = home / "jobs" / other / SENT  # as sent: request.json has the library's photos in it
             if proc.poll() is None and req.exists() and {**json.loads(req.read_text()), "name": same["name"]} == same \
                     and mine(Job(home / "jobs" / other), request):
                 return {"job": other, "photos": 0, "already_running": True}
@@ -919,23 +875,20 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         job = open_job(home, name)
         if public:
             (job.root / OWNER).write_text(visitor(request))
+        (job.root / SENT).write_text(json.dumps(same))
         parsed = adopt_uploads(parsed, home / "uploads", job)
         save_photos(job.input / "photos", images)  # before the library: raw may merge them with a dataset
         try:
-            parsed = adopt_library(follow_labeling(unlabeled_as_raw(parsed, owner_of(request)), owner_of(request)),
-                                   owner_of(request), job)
+            parsed = adopt_library(parsed, owner_of(request), job, session)
         except HTTPException:
             shutil.rmtree(job.root, ignore_errors=True)  # a refused spec leaves no empty job behind
             raise
-        reuse_corrections(parsed, owner_of(request), job)
-        reuse_labels(parsed, owner_of(request), job)
         req = job.root / "request.json"
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         credit_interview(job, session, request)
         if session:
             warm_mod.note(home, "job", name, session=f"session:{session}")
-        if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled \
-                and to_check(parsed, owner_of(request), job):
+        if calibrate_first and parsed.user_data.raw and needs_check(job):
             bill_to(job, may_start(request, "run"))  # the teacher's check is the start of the paid run
             jobs.warm_up("calibration", name)
             jobs.calibrate(job)
@@ -967,12 +920,13 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 "datasets": datasets, "objects": lib.objects(owner), "scenes": lib.scenes(owner),
                 "kits": lib.kits(owner)}
 
-    @app.get("/api/library/photos/{key}")
-    def library_photo(key: str, request: Request, size: int = 360):
-        src = lib.photo_file(owner_of(request), key) if re.fullmatch(r"[0-9a-f]{16}", key) else None
+    @app.get("/api/library/photos/{pid}")
+    def library_photo(pid: int, request: Request, size: int = 360):
+        src = lib.photo_file(owner_of(request), pid)
         if src is None or not src.exists():
             raise HTTPException(404, "no such photo")
-        return FileResponse(photo_thumb(lib.root / "_thumbs", src, Path(f"{key}.{size}.jpg"), 1024 if size > 360 else 360))
+        big = 1024 if size > 360 else 360
+        return FileResponse(photo_thumb(lib.root / "_thumbs", src, Path(f"{src.stem}.{big}.jpg"), big))
 
     @app.get("/api/library/{kind}/{item}/card")
     def library_card(kind: str, item: str, request: Request):
@@ -1039,31 +993,65 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         profile_soon(owner, item, acc.id if acc is not None else None)
         return {"profiling": True}
 
-    @app.post("/api/library/datasets/{item}/label")
-    def library_label(item: str, body: dict, request: Request):
-        """Label a dataset without training a model: the teacher marks a few photos for the user to check, as
-        before a first run, then every photo (label_all). Count: boxes of each thing named; classify: one of
-        the names per photo. The marks and corrections stay with the photos, for any later model."""
-        owner, _ = owned(request, "datasets", item)
-        task = body.get("task")
-        names = list(dict.fromkeys(str(n).strip()[:60] for n in body.get("classes") or [] if str(n).strip()))
-        if task not in ("count", "classify") or not names or len(names) > 8:
-            raise HTTPException(400, "say what to label: count or classify, and 1 to 8 names")
-        if task == "classify" and len(names) < 2:
-            raise HTTPException(400, "classify needs at least two names to choose among")
-        ds_name = next((d["name"] for d in lib.datasets(owner) if d["id"] == item), "photos")
-        # Class ids in English whatever the user typed (user, 2026-10-10), and for counting the English names the
-        # teacher looks for, as the chat writes them: labels of the same thing are found again by any later job.
+    def english_classes(names: list[str], task: str) -> list[dict]:
+        """Class names as the user typed them, as a labeling's classes: keys in English whatever the language
+        (user, 2026-10-10), and for counting the English names the teacher looks for."""
         from . import teacher
+        names = list(dict.fromkeys(str(n).strip()[:60] for n in names if str(n).strip()))
         english = teacher.english_phrases({f"c{i}": n for i, n in enumerate(names)}) or {}
-        classes = []
+        out = []
         for i, n in enumerate(names):
             phrases = english.get(f"c{i}") or []
-            cid = re.sub(r"[^a-z0-9]+", "_", (phrases[0] if phrases else n).lower()).strip("_") or f"class_{len(classes)}"
-            if cid not in [c["id"] for c in classes]:
-                classes.append({"id": cid, "description": n, **({"names": phrases} if phrases and task == "count" else {})})
-        data = {"name": f"label {ds_name}", "task": "count" if task == "count" else "roi_classification",
-                "classes": classes, "user_data": {"raw": f"library:{item}"}}
+            key = re.sub(r"[^a-z0-9]+", "_", (phrases[0] if phrases else n).lower()).strip("_") or f"class_{len(out)}"
+            if key not in [c["key"] for c in out]:
+                out.append({"key": key, "description": n, "phrases": phrases if task == "count" else []})
+        return out
+
+    def labeling_of(request: Request, lid: str) -> tuple[str, dict]:
+        owner = owner_of(request)
+        if not lib.owns_labeling(owner, lid):
+            raise HTTPException(404, "no such labeling")
+        return owner, lib.labeling(lid)
+
+    def changed(fn, *args) -> dict:
+        """A change to a labeling's classes: the labeling that has it now (a copy when a model uses the old one)."""
+        try:
+            return {"labeling": fn(*args)}
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.get("/api/library/datasets/{item}")
+    def library_dataset(item: str, request: Request):
+        """A dataset: its photos (ids), its labelings and what its photos show."""
+        owner, _ = owned(request, "datasets", item)
+        d = next(d for d in lib.datasets(owner) if d["id"] == item)
+        return {**d, "photo_ids": [p["id"] for p in lib.photos(item)], "profiling": item in profiling}
+
+    @app.post("/api/library/datasets/{item}/labelings")
+    def library_new_labeling(item: str, body: dict, request: Request):
+        """A new labeling of the dataset: {name, task: count | classify, classes: [names]}; teach: start the
+        teacher on it right away (a few photos to check first, then every photo)."""
+        owner, _ = owned(request, "datasets", item)
+        task = body.get("task")
+        if task not in library.TASKS:
+            raise HTTPException(400, "say what to label: count or classify")
+        classes = english_classes(body.get("classes") or [], task)
+        if not classes or len(classes) > 10 or (task == "classify" and len(classes) < 2):
+            raise HTTPException(400, "count needs 1 to 10 classes, classify 2 to 10")
+        name = str(body.get("name") or "").strip()[:80] or ", ".join(c["description"] for c in classes)[:80]
+        lid = lib.create_labeling(item, name, task, classes)
+        return {"labeling": lid, **(teach(lid, owner, request) if body.get("teach") else {})}
+
+    def teach(lid: str, owner: str, request: Request) -> dict:
+        """The teacher labels a labeling's photos without training a model: first a few for the user to check
+        while they have reviewed fewer than a round, then every photo (label_all)."""
+        lab = lib.labeling(lid)
+        data = {"name": f"label {lab['name']}", "task": "count" if lab["task"] == "count" else "roi_classification",
+                **({} if lab["task"] == "count" else {"background_class": None}),  # classify: only its classes
+                "classes": [{"id": c["key"], "description": c["description"] or c["key"].replace("_", " "),
+                             **({"names": c["phrases"]} if lab["task"] == "count" and c["phrases"] else {})}
+                            for c in lab["classes"]],
+                "user_data": {"raw": f"library:{lab['dataset']}", "labeling": lid}}
         try:
             parsed = spec_mod.from_dict(data)
         except spec_mod.SpecError as e:
@@ -1079,46 +1067,97 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         bill_to(job, acc)
         if public:
             (job.root / OWNER).write_text(visitor(request))
-        parsed = adopt_library(follow_labeling(parsed, owner), owner, job)
-        reuse_corrections(parsed, owner, job)
-        reuse_labels(parsed, owner, job)
+        parsed = adopt_library(parsed, owner, job)
         (job.root / "request.json").write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
-        (job.root / LABELING).write_text(json.dumps({"dataset": item, "state": "checking"}))
+        (job.root / LABELING).write_text(json.dumps({"dataset": lab["dataset"], "labeling": lid, "state": "checking"}))
         jobs.warm_up("calibration", name)
-        if not to_check(parsed, owner, job):
-            jobs.label_all(job)
-        else:
+        if needs_check(job):
             jobs.calibrate(job)
+        else:
+            jobs.label_all(job)
         return {"job": name}
 
-    @app.get("/api/library/datasets/{item}/notes")
-    def library_notes(item: str, request: Request):
-        """What is known about each photo of the dataset: descriptions, the teacher's boxes, the user's marks
-        and labels."""
-        owner, _ = owned(request, "datasets", item)
-        keys = [k for (k,) in lib.db.execute("SELECT DISTINCT key FROM photos WHERE dataset = ? ORDER BY key", (item,))]
-        return {"keys": keys, "notes": lib.dataset_notes(owner, item), "profile": lib.profile(owner, item),
-                "profiling": item in profiling}
+    @app.post("/api/library/labelings/{lid}/teach")
+    def library_teach(lid: str, request: Request):
+        owner, _ = labeling_of(request, lid)
+        return teach(lid, owner, request)
 
-    @app.delete("/api/library/datasets/{item}/labels")
-    def library_forget_labels(item: str, kind: str, ref: str, request: Request):
-        """One labeling of the dataset's photos (kind "boxes": a phrase's boxes and marks; "class": the labels
-        chosen among some labels)."""
-        owner, _ = owned(request, "datasets", item)
+    @app.get("/api/library/labelings/{lid}")
+    def library_labeling(lid: str, request: Request):
+        """A labeling with every photo of its dataset: its marks and whether the user reviewed it. The marks a
+        finished teacher job made come in first."""
+        owner, lab = labeling_of(request, lid)
+        lib.sync(owner, [Job(home / "jobs" / n) for n in list_jobs(request)["jobs"]])
+        photos = [{k: v for k, v in p.items() if k != "file"} for p in lib.labeling_photos(lid)]
+        return {**lib.labeling(lid), "photos": photos}
+
+    @app.patch("/api/library/labelings/{lid}")
+    async def library_rename_labeling(lid: str, request: Request):
+        labeling_of(request, lid)
+        name = str((await request.json()).get("name", "")).strip()[:80]
+        if not name:
+            raise HTTPException(400, "give it a name")
+        lib.rename_labeling(lid, name)
+        return {"ok": True}
+
+    @app.delete("/api/library/labelings/{lid}")
+    def library_delete_labeling(lid: str, request: Request):
+        labeling_of(request, lid)
+        lib.delete_labeling(lid)
+        return {"ok": True}
+
+    @app.post("/api/library/labelings/{lid}/copy")
+    def library_copy_labeling(lid: str, body: dict, request: Request):
+        labeling_of(request, lid)
+        return {"labeling": lib.copy_labeling(lid, str(body.get("name") or "").strip()[:80] or None)}
+
+    @app.post("/api/library/labelings/{lid}/classes")
+    def library_add_class(lid: str, body: dict, request: Request):
+        """A new class ({name, description}): the reviewed photos are reviewed again for it."""
+        _, lab = labeling_of(request, lid)
+        c = english_classes([body.get("name") or ""], lab["task"])
+        if not c:
+            raise HTTPException(400, "give the class a name")
+        return changed(lib.add_class, lid, c[0]["key"], str(body.get("description") or c[0]["description"]),
+                       c[0]["phrases"] or None)
+
+    @app.patch("/api/library/labelings/{lid}/classes/{cid}")
+    def library_edit_class(lid: str, cid: int, body: dict, request: Request):
+        """Rename a class (key, in English), or change its description or the English names the teacher looks
+        for (names)."""
+        labeling_of(request, lid)
+        key = re.sub(r"[^a-z0-9]+", "_", str(body["key"]).lower()).strip("_") if body.get("key") else None
+        names = [str(n) for n in body["names"]] if isinstance(body.get("names"), list) else None
+        return changed(lib.edit_class, lid, cid, key, body.get("description"), names)
+
+    @app.delete("/api/library/labelings/{lid}/classes/{cid}")
+    def library_delete_class(lid: str, cid: int, request: Request):
+        labeling_of(request, lid)
+        return changed(lib.delete_class, lid, cid)
+
+    @app.put("/api/library/labelings/{lid}/photos/{pid}")
+    def library_review_photo(lid: str, pid: int, body: dict, request: Request):
+        """The user's marks of a photo ({"marks": [{class, x, y}]} for count, [{class}] for classify): reviewed."""
+        labeling_of(request, lid)
         try:
-            return {"removed": lib.forget_labels(owner, item, kind, ref)}
+            lib.review_photo(lid, pid, [m for m in body.get("marks") or [] if isinstance(m, dict)])
+        except review.StackedMarks:
+            raise
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
+        return {"ok": True}
 
-    @app.patch("/api/library/datasets/{item}/labels")
-    async def library_rename_labels(item: str, request: Request):
-        """A count labeling under another English phrase ({"ref", "to"}), so later jobs find it by that one."""
-        owner, _ = owned(request, "datasets", item)
-        body = await request.json()
-        ref, to = str(body.get("ref", "")).strip(), str(body.get("to", "")).strip().lower()[:60]
-        if not ref or not to:
-            raise HTTPException(400, "say which labels and their new name")
-        return {"moved": lib.rename_labels(owner, item, ref, to)}
+    @app.delete("/api/library/labelings/{lid}/photos/{pid}")
+    def library_unreview_photo(lid: str, pid: int, request: Request):
+        labeling_of(request, lid)
+        lib.unreview_photo(lid, pid)
+        return {"ok": True}
+
+    @app.delete("/api/library/photos/{pid}")
+    def library_delete_photo(pid: int, request: Request):
+        if not lib.delete_photo(owner_of(request), pid):
+            raise HTTPException(404, "no such photo")
+        return {"ok": True}
 
     @app.post("/api/library/objects")
     def library_new_object(request: Request, name: str = Form(...), concept: str = Form(""),
@@ -1353,8 +1392,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         budget_left()
         room_for_a_run()
         may_start(request, "run")
-        review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
-                     share=not public, classes=checking(job))
+        save_review(job, body)
         (job.root / CALIBRATION).unlink()
         start_run(job, job.root / "request.json")
         return {"rerun_from": None}
@@ -1368,8 +1406,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if not (job.root / LABELING).exists() or not (job.root / CALIBRATION).exists():
             raise HTTPException(409, CHECK_OVER)
         may_start(request, "label")
-        review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
-                     share=not public, classes=checking(job))
+        save_review(job, body)
         (job.root / CALIBRATION).unlink()
         jobs.label_all(job)
         return {"rerun_from": "label"}
@@ -1384,13 +1421,14 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if body.get("calibrating") and not (job.root / CALIBRATION).exists():
             raise HTTPException(409, CHECK_OVER)
         if (job.root / CALIBRATION).exists():  # still calibrating the teacher: another round, no training
-            review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
-                         share=not public, classes=checking(job))
+            save_review(job, body)
             jobs.calibrate(job)
             return {"rerun_from": "calibration"}
         budget_left()
-        start = review.apply(job, Cache(home / "cache"), body.get("labels") or {}, body.get("assets") or {},
-                             body.get("points") or {}, share=not public)
+        # Marks go to the labeling (the run takes a fresh copy of it); 3D model decisions stay with the job.
+        start = "label" if save_review(job, body) else None
+        if review.apply(job, Cache(home / "cache"), {}, body.get("assets") or {}, share=not public):
+            start = start or "qa_assets"
         if start is None:
             return {"rerun_from": None}
         snapshot(job, "corrected labels" if start == "label" else "reviewed 3D models")
@@ -1419,9 +1457,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if not dry:
             may_start(request, "run")
             parsed = adopt_uploads(parsed, home / "uploads", job)
-            parsed = adopt_library(follow_labeling(unlabeled_as_raw(parsed, owner_of(request)), owner_of(request)),
-                                   owner_of(request), job)
-            reuse_corrections(parsed, owner_of(request), job)
+            if not parsed.user_data.labeling and (snap := kept(job)):  # the chat kept the job's photos
+                parsed.user_data.labeling = snap["labeling"]
+            parsed = adopt_library(parsed, owner_of(request), job, session)
             credit_interview(job, session, request)
         todo = [p.stage.name for p in Pipeline(parsed, job, Cache(home / "cache")).plan() if p.action == "run"]
         if dry or not todo:
@@ -1450,28 +1488,37 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         images = [p for p in photos if Path(p.filename or "").suffix.lower() in IMAGE_EXT]
         if not images:
             raise HTTPException(400, "no photos (jpg, png, bmp or webp)")
-        req = latest_spec(job)
-        data = json.loads(req.read_text())
-        ud = data.setdefault("user_data", {})
-        raw = ud.get("raw") or "photos"
-        folder = job.input / raw
-        # Only a folder of the job's own: a linked folder is the user's, and a path may be anywhere on disk.
-        if Path(raw).is_absolute() or ".." in Path(raw).parts or folder.is_symlink():
-            raise HTTPException(400, f"this job reads its photos from {raw}: add them there and rerun from label")
-        have = sum(1 for f in folder.rglob("*") if f.suffix.lower() in IMAGE_EXT) if folder.is_dir() else 0
-        if public and have + len(images) > MAX_PHOTOS:
-            raise HTTPException(413, f"at most {MAX_PHOTOS} photos per model ({have} already)")
-        ud["raw"] = raw
-        names = save_photos(folder / "added", images)
-        said = _photo_labels(labels)
-        fixed = {f"added/{names[n]}": v for n, v in said.items() if n in names}
-        if fixed:  # keys as the label stage names photos: their path inside the raw folder
-            review.apply(job, Cache(home / "cache"), {k: v["label"] for k, v in fixed.items() if "label" in v}, {},
-                         {k: v["points"] for k, v in fixed.items() if "points" in v}, share=False)
+        snap = kept(job)
+        if snap is None or lib.labeling(snap["labeling"]) is None:
+            raise HTTPException(400, "this model has no labeling of photos in your library to add them to")
+        lab = lib.labeling(snap["labeling"])
+        owner = owner_of(request)
+        if public and lab["photos"] + len(images) > MAX_PHOTOS:
+            raise HTTPException(413, f"at most {MAX_PHOTOS} photos per model ({lab['photos']} already)")
+        tmp = job.root / "_incoming"
+        names = save_photos(tmp, images)
+        files = {n: tmp / saved for n, saved in names.items()}
+        lib.add_photos(owner, lab["dataset"], list(files.values()))
+        try:  # what the user said each photo is in the live test wins over the teacher's: reviewed photos
+            for n, v in _photo_labels(labels).items():
+                pid = lib.photo_id(lab["dataset"], content_key(files[n])) if n in files else None
+                if pid is None:
+                    continue
+                if "label" in v:
+                    lib.review_photo(lab["id"], pid, [{"class": v["label"]}])
+                elif "points" in v:
+                    lib.review_photo(lab["id"], pid, [{"class": c, "x": x, "y": y} for x, y, c, *_ in v["points"]])
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        refresh(job)
         if more:
             return {"stored": len(names)}
         saved = max(len(names), total)
-        (job.root / "request.json").write_text(json.dumps({**data, "name": data.get("name", job.name)}, indent=2))
+        req = latest_spec(job)
+        if req != job.root / "request.json":
+            (job.root / "request.json").write_text(req.read_text())
         note = " ".join(note.split())[:120]
         snapshot(job, f"added {saved} photos" + (f": {note}" if note else ""))
         start_run(job, job.root / "request.json", "label", payer=request)
@@ -1580,31 +1627,6 @@ def default_describer(home: Path):
             client = replace(client, usage_log=usage_log)
         return scene_profile.describe(photos, classes, client, client.model_for("scene"))
     return describe
-
-
-def merge_sources(job: Job, sources: list[str]) -> str:
-    """Several raw photo sources of a job (folders of its input) as one folder, input/raw, one subfolder each
-    (hard links: no extra space). The same photo in two sources is kept once."""
-    import os
-    import shutil
-
-    from .workspace import content_key
-    out = job.input / "raw"
-    seen = set()
-    for i, src in enumerate(sources):
-        base = job.resolve_input(src)
-        for f in sorted(base.rglob("*")):
-            if f.suffix.lower() not in IMAGE_EXT or (k := content_key(f)) in seen:
-                continue
-            seen.add(k)
-            dst = out / f"{i}_{Path(src).name}" / f.relative_to(base)
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if not dst.exists():
-                try:
-                    os.link(f, dst)
-                except OSError:
-                    shutil.copy2(f, dst)
-    return "raw"
 
 
 def adopt_uploads(spec: spec_mod.Spec, uploads: Path, job: Job) -> spec_mod.Spec:

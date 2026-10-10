@@ -10,11 +10,12 @@ import Interview from "./pages/Interview";
 function FreshInterview() {
   const [params] = useSearchParams();
   const fresh = (useLocation().state as { fresh?: number } | null)?.fresh ?? "";
-  return <Interview key={`${params.get("revise") ?? ""}|${params.get("kit") ?? ""}|${fresh}`} />;
+  return <Interview key={`${params.get("revise") ?? ""}|${params.get("kit") ?? ""}|${params.get("text") ?? ""}|${fresh}`} />;
 }
 import JobPage from "./pages/Job";
 import { Datasets, Kits, Models, Objects, Scenes } from "./pages/Library";
 import { Dataset } from "./pages/Dataset";
+import { LabelingPage } from "./pages/Labeling";
 import Billing from "./pages/Billing";
 import { Privacy, Support, Terms } from "./pages/Legal";
 // The live test pulls in the model runtime: loaded only when someone opens it.
@@ -31,6 +32,7 @@ createRoot(document.getElementById("root")!).render(
           <Route path="models" element={<Models />} />
           <Route path="datasets" element={<Datasets />} />
           <Route path="datasets/:id" element={<Dataset />} />
+          <Route path="datasets/:id/labelings/:lid" element={<LabelingPage />} />
           <Route path="assets/objects" element={<Objects />} />
           <Route path="assets/scenes" element={<Scenes />} />
           <Route path="kits" element={<Kits />} />

@@ -76,8 +76,10 @@ class JobService:
     or None. max_runs counts only on a public server."""
 
     def __init__(self, home: Path, backend: str = "local", max_usd: float | None = None, launcher=None,
-                 warm=None, public: bool = False, max_runs: int = 2, daily_usd: float | None = None):
+                 warm=None, public: bool = False, max_runs: int = 2, daily_usd: float | None = None,
+                 on_labels=None):
         self.home, self.backend, self.max_usd = home, backend, max_usd
+        self.on_labels = on_labels  # on_labels(job): the teacher marked photos of the job (library.take_teacher)
         self.launcher = launcher or launch_run
         self.warm, self.public, self.max_runs, self.daily_usd = warm, public, max_runs, daily_usd
         self.runs: dict[str, subprocess.Popen] = {}
@@ -159,6 +161,7 @@ class JobService:
                     self._calibrate_here(job)
                 else:
                     self._calibrate_in_cloud(job)
+                self._labels_done(job)
                 state.write_text(json.dumps({"state": "ready"}))
                 if self.warm is not None:  # the prefetch follows at once; the user's check itself needs no GPU
                     warm_mod.note(self.home, "check", job.name)
@@ -169,6 +172,14 @@ class JobService:
         state.write_text(json.dumps({"state": "labeling"}))
         self.calibrations[job.name] = threading.Thread(target=work, daemon=True)
         self.calibrations[job.name].start()
+
+    def _labels_done(self, job: Job) -> None:
+        if self.on_labels is not None:
+            try:
+                self.on_labels(job)
+            except Exception as e:  # the library takes them in later (library.sync)
+                print(f"{job.name}: the teacher's marks did not reach the library yet ({type(e).__name__}: {e})",
+                      flush=True)
 
     def _label_sample(self, job: Job):
         from .stages import Context
@@ -183,7 +194,7 @@ class JobService:
 
     def label_all(self, job: Job) -> None:
         """A labeling job: after the check, the teacher marks every photo (the label stage alone, on this
-        machine's GPU or a cloud job). The library takes the marks in from the job (library.sync)."""
+        machine's GPU or a cloud job). The marks go to the job's labeling in the library (on_labels)."""
         from . import teacher
         state = job.root / LABELING
 
@@ -200,6 +211,7 @@ class JobService:
                     Label().run(Context(spec_mod.load(job.root / "request.json"), job, self.cache))
                 else:
                     self._calibrate_in_cloud(job, sample=None)
+                self._labels_done(job)
                 put(state="done")
             except Exception as e:
                 put(state="failed", error=str(e)[:300])

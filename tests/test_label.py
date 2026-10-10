@@ -205,57 +205,9 @@ def test_same_objects_groups_only_different_classes():
     assert [sorted(g) for g in teacher.same_objects(d)] == [[0, 1, 2]]
 
 
-def test_a_new_class_asks_sam3_only_for_it_and_marks_stand_for_their_classes(tmp_path, monkeypatch):
-    """SAM 3's answers are kept per phrase: a later job that adds a class asks only for that class's phrases. The
-    user's marks checked for one class only (the check asked about the new class) leave the teacher's marks of
-    the others in place."""
-    raw = tmp_path / "raw"
-    img(raw / "a.jpg")
-    img(raw / "b.jpg")
-    asked = []
-    found = {"cow": [0.1, 0.1, 0.3, 0.3], "dog": [0.6, 0.6, 0.8, 0.8]}
-
-    def detect(items, log=print, timeline=None):
-        for path, outs in items:
-            asked.append(sorted(outs))
-            for phrase, out in outs.items():
-                out.parent.mkdir(parents=True, exist_ok=True)
-                box = found.get(phrase)
-                out.write_text(json.dumps({"detections": [{"box": box, "score": 0.9}] if box else []}))
-    monkeypatch.setattr(teacher, "detect", detect)
-    cache = Cache(tmp_path / "cache")
-    cows = Context(from_dict({**SPEC, "task": "count", "classes": SPEC["classes"][:1], "user_data": {"raw": "raw"}}),
-                   open_job(tmp_path, "cows"), cache)
-    link_input(cows.job, "raw", raw)
-    Label().run(cows)
-    assert asked == [["cow"], ["cow"]]
-    asked.clear()
-    both = Context(from_dict({**SPEC, "task": "count", "user_data": {"raw": "raw"}}), open_job(tmp_path, "both"), cache)
-    link_input(both.job, "raw", raw)
-    Label().run(both)
-    assert asked == [["dog", "puppy"], ["dog", "puppy"]]
-    # The check asked about dogs only: the user's photo has no dog where the teacher saw one, and a cow mark the
-    # page sent along stays the teacher's.
-    assert review.apply(both.job, cache, {}, {}, {"a.jpg": [[0.2, 0.2, "cow"]]}, classes=["dog"]) == "label"
-    assert review.load_corrections(both.job)["checked"] == {"a.jpg": ["dog"]}
-    asked.clear()
-    Label().run(both)
-    v = json.loads((both.job.stage_dir("label") / "verdicts.json").read_text())
-    assert not asked and v["a.jpg"]["judge"] == "user"
-    assert [o["class"] for o in v["a.jpg"]["objects"]] == ["cow"] and "box" in v["a.jpg"]["objects"][0]
-    assert sorted(o["class"] for o in v["b.jpg"]["objects"]) == ["cow", "dog"]
-    # Fixed again in the review after training, with every class in view: the marks stand for all of them.
-    review.apply(both.job, cache, {}, {}, {"a.jpg": [[0.3, 0.3, "cow"]]})
-    assert review.load_corrections(both.job)["checked"] == {}
-
-
-def test_stacked_marks_are_refused_and_left_out():
-    fixes = {"points": {"a": [[0.5, 0.5, "cow"], [0.501, 0.5, "dog"]], "b": [[0.1, 0.1, "cow"], [0.9, 0.9, "dog"]]},
-             "checked": {}}
-    assert review.stacked(fixes["points"]["a"]) == {"cow", "dog"} and not review.stacked(fixes["points"]["b"])
-    out = review.unstack(fixes, ["cow", "dog", "cat"])
-    # a was checked for every class: what is left of it says "no cat", b stands as it was.
-    assert out["points"] == {"a": [], "b": [[0.1, 0.1, "cow"], [0.9, 0.9, "dog"]]} and out["checked"] == {"a": ["cat"]}
+def test_stacked_marks_are_one_object_under_several_classes():
+    assert review.stacked([[0.5, 0.5, "cow"], [0.501, 0.5, "dog"]]) == {"cow", "dog"}
+    assert not review.stacked([[0.1, 0.1, "cow"], [0.9, 0.9, "dog"], [0.1, 0.1, "cow"]])
 
 
 def test_review_refuses_one_object_under_two_classes(tmp_path):
@@ -269,32 +221,21 @@ def test_review_refuses_one_object_under_two_classes(tmp_path):
     assert not (job.input / review.CORRECTIONS).exists()
 
 
-def test_kept_labels_are_copied_and_only_new_classes_go_to_the_teacher(tmp_path, monkeypatch):
-    """Classes the photos are labeled for already (input/kept_labels.json) are copied as they are: SAM 3 looks only
-    for the new class, and for the kept one only on a photo new to the dataset, with the kept threshold."""
+def test_the_users_truth_comes_from_the_jobs_labeling(tmp_path, monkeypatch):
+    """A job of the web server reads the photos the user reviewed in its labeling (input/labeling.json): their
+    marks win, and the threshold is learned from them."""
+    from sim2chip.library import KEEP
     raw = tmp_path / "raw"
-    for name in ("a.jpg", "b.jpg", "c.jpg"):
+    for name in ("a.jpg", "b.jpg"):
         img(raw / name)
-    asked = []
-
-    def detect(items, log=print, timeline=None):
-        for path, outs in items:
-            asked.append((path.name, sorted(outs)))
-            for phrase, out in outs.items():
-                out.parent.mkdir(parents=True, exist_ok=True)
-                box, score = {"cow": ([0.6, 0.0, 0.8, 0.2], 0.4), "dog": ([0.6, 0.6, 0.8, 0.8], 0.9)}[phrase]
-                out.write_text(json.dumps({"detections": [{"box": box, "score": score}]}))
-    monkeypatch.setattr(teacher, "detect", detect)
-    spec = from_dict({**SPEC, "task": "count", "classes": [SPEC["classes"][0], {**SPEC["classes"][1], "names": ["dog"]}],
-                      "user_data": {"raw": "raw"}})
+    fake_sam3(monkeypatch, lambda name: [{"class": "cow", "box": [0.1, 0.1, 0.3, 0.3], "score": 0.9}])
+    spec = from_dict({**SPEC, "task": "count", "user_data": {"raw": "raw"}})
     ctx = Context(spec, open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
     link_input(ctx.job, "raw", raw)
-    cow = {"x": 0.2, "y": 0.2, "class": "cow", "box": [0.1, 0.1, 0.3, 0.3], "score": 0.8}
-    (ctx.job.input / "kept_labels.json").write_text(json.dumps(
-        {"classes": ["cow"], "photos": {"a.jpg": {"cow": [cow]}, "b.jpg": {"cow": []}}, "thresholds": {"cow": 0.35}}))
+    (ctx.job.input / KEEP).write_text(json.dumps({"labeling": "l1", "task": "count", "classes": [], "photos": {
+        "a.jpg": {"photo_id": 1, "hash": "h1", "reviewed": True, "marks": [{"class": "dog", "x": 0.7, "y": 0.7}]},
+        "b.jpg": {"photo_id": 2, "hash": "h2", "reviewed": False, "marks": []}}}))
     Label().run(ctx)
-    assert sorted(asked) == [("a.jpg", ["dog"]), ("b.jpg", ["dog"]), ("c.jpg", ["cow", "dog"])]
     v = json.loads((ctx.job.stage_dir("label") / "verdicts.json").read_text())
-    got = {k: sorted((o["class"], o["y"]) for o in e["objects"]) for k, e in v.items()}
-    # a: the kept cow, not the teacher's; c: the teacher's cow at the kept threshold 0.35 (0.4 passes).
-    assert got == {"a.jpg": [("cow", 0.2), ("dog", 0.7)], "b.jpg": [("dog", 0.7)], "c.jpg": [("cow", 0.1), ("dog", 0.7)]}
+    assert v["a.jpg"]["judge"] == "user" and [o["class"] for o in v["a.jpg"]["objects"]] == ["dog"]
+    assert [o["class"] for o in v["b.jpg"]["objects"]] == ["cow"]

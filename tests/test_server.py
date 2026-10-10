@@ -59,6 +59,29 @@ def app(tmp_path):
     return client
 
 
+def labeled_job(tmp_path, spec, n=2, task="classify", classes=("cow", "empty")):
+    """A job made by the server from a library dataset of n photos and a labeling of it, as adopt_library does:
+    (job folder, library, labeling id, the job's names of the photos)."""
+    from PIL import Image
+
+    from sim2chip.library import Library
+    lib = Library(tmp_path, tmp_path / "cache")
+    up = tmp_path / "_up"
+    up.mkdir(exist_ok=True)
+    files = []
+    for i in range(n):
+        Image.new("RGB", (800, 600), (i * 40, 0, 0)).save(up / f"{i}.jpg")
+        files.append(up / f"{i}.jpg")
+    ds = lib.new_dataset("local", "Barn", files)
+    lid = lib.create_labeling(ds, "Cows", task, [{"key": c} for c in classes])
+    job = tmp_path / "jobs" / "barn_cam"
+    (job / "logs").mkdir(parents=True)
+    folder = lib.export(lid, job / "input")
+    (job / "request.json").write_text(json.dumps({**spec, "user_data": {"raw": folder, "labeling": lid}}))
+    names = sorted(json.loads((job / "input" / "labeling.json").read_text())["photos"])
+    return job, lib, lid, names
+
+
 def test_interview_over_http(app):
     sid = app.post("/api/interview").json()["session"]
     t = app.post(f"/api/interview/{sid}", json={"text": "cows"}).json()
@@ -82,7 +105,9 @@ def test_job_with_photos_runs_and_reports(app, tmp_path):
     assert r.status_code == 200 and r.json() == {"job": "barn_cam", "photos": 1}
     job = tmp_path / "jobs" / "barn_cam"
     assert (job / "input" / "photos" / "a.jpg").exists() and not (job / "input" / "photos" / "notes.txt").exists()
-    assert json.loads((job / "request.json").read_text())["user_data"]["raw"] == "photos"
+    # The photos are a dataset of the library, labeled in a new labeling the job takes a copy of.
+    ud = json.loads((job / "request.json").read_text())["user_data"]
+    assert ud["raw"] == f"labeling_{ud['labeling']}" and (job / "input" / "labeling.json").exists()
     assert app.launched[0][0] == "barn_cam" and app.launched[0][2] == "nebius"
     # The same spec again is a new job: it must not overwrite barn_cam.
     assert app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"] == "barn_cam_2"
@@ -125,23 +150,28 @@ def test_status_survives_stale_and_invalid_specs(app, tmp_path):
 
 def test_review_corrections_relaunch_and_media_is_fenced(app, tmp_path):
     from PIL import Image
-    job = tmp_path / "jobs" / "barn_cam"
+    job, lib, lid, names = labeled_job(tmp_path, GOOD)
     (job / "label" / "cow").mkdir(parents=True)
-    (job / "logs").mkdir()
-    (job / "request.json").write_text(json.dumps(GOOD))
     Image.new("RGB", (800, 600)).save(job / "label" / "cow" / "a.jpg")
-    (job / "label" / "verdicts.json").write_text(json.dumps({"a.jpg": {"class": "cow", "assigned": "cow"}}))
+    (job / "label" / "verdicts.json").write_text(json.dumps({names[0]: {"class": "cow", "assigned": "cow",
+                                                                        "copy": "a.jpg"}}))
     (job / "export").mkdir()
     (job / "export" / "model_int8.tflite").write_bytes(b"v1")
     (job / "export" / "report.json").write_text(json.dumps({"metric": "accuracy", "val_score": 0.5, "seed": 0}))
     r = app.get("/api/jobs/barn_cam/review").json()
-    assert r["photos"][0]["image"] == "label/cow/a.jpg"
+    assert r["photos"][0]["image"] == "label/cow/a.jpg" and not r["photos"][0]["corrected"]
     thumb = app.get("/api/jobs/barn_cam/media/label/cow/a.jpg")
     assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/jpeg"
     for bad in ("request.json", "../barn_cam/request.json", "label/../../../etc/passwd"):
         assert app.get(f"/api/jobs/barn_cam/media/{bad}").status_code == 404
-    r = app.post("/api/jobs/barn_cam/corrections", json={"labels": {"a.jpg": "empty"}})
+    assert app.post("/api/jobs/barn_cam/corrections", json={"labels": {names[0]: "horse"}}).status_code == 400
+    r = app.post("/api/jobs/barn_cam/corrections", json={"labels": {names[0]: "empty"}})
     assert r.json() == {"rerun_from": "label"} and app.launched[-1][3] == "label"
+    # The correction is the photo's truth in the labeling, and the job's copy of it says so.
+    photo = next(p for p in lib.labeling_photos(lid) if f"{p['id']}.jpg" == names[0])
+    assert photo["reviewed"] and photo["marks"][0]["class"] == "empty" and photo["marks"][0]["source"] == "user"
+    assert json.loads((job / "input" / "labeling.json").read_text())["photos"][names[0]]["reviewed"]
+    assert app.get("/api/jobs/barn_cam/review").json()["photos"][0]["label"] == "empty"
     # The model it replaces is kept as v1 and can still be downloaded.
     s = app.get("/api/jobs/barn_cam").json()
     assert [v["n"] for v in s["versions"]] == [1] and s["version"]["n"] == 2
@@ -153,26 +183,29 @@ def test_review_corrections_relaunch_and_media_is_fenced(app, tmp_path):
 
 
 def test_add_photos_to_a_trained_job(app, tmp_path):
-    job = tmp_path / "jobs" / "barn_cam"
-    (job / "logs").mkdir(parents=True)
-    (job / "input" / "photos").mkdir(parents=True)
-    (job / "input" / "photos" / "a.jpg").write_bytes(b"first")
-    (job / "spec.json").write_text(json.dumps({**GOOD, "user_data": {"raw": "photos"}}))
+    import io
+
+    from PIL import Image
+    job, lib, lid, names = labeled_job(tmp_path, {**GOOD, "task": "count"}, task="count", classes=("cow",))
     (job / "export").mkdir()
     (job / "export" / "model_int8.tflite").write_bytes(b"v1")
     (job / "export" / "report.json").write_text(json.dumps({"metric": "f1", "real_test": {"mean": 0.2}}))
-    files = [("photos", ("a.jpg", b"dry patch", "image/jpeg")), ("photos", ("b.png", b"another", "image/png")),
+
+    def jpg(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (40, 30), color).save(buf, "JPEG")
+        return buf.getvalue()
+    files = [("photos", ("a.jpg", jpg("white"), "image/jpeg")), ("photos", ("b.jpg", jpg("yellow"), "image/jpeg")),
              ("photos", ("notes.txt", b"no", "text/plain"))]
-    said = {"a.jpg": {"label": "empty"}, "b.png": {"points": [[0.5, 0.25, "cow"], [2, 0, "cow"]]}, "zzz.jpg": {"label": "x"}}
+    said = {"a.jpg": {"points": []}, "b.jpg": {"points": [[0.5, 0.25, "cow"], [2, 0, "cow"]]}, "zzz.jpg": {"label": "x"}}
     r = app.post("/api/jobs/barn_cam/photos", data={"note": "misses  dry\npatches", "labels": json.dumps(said)},
                  files=files)
     assert r.json() == {"rerun_from": "label", "photos": 2} and app.launched[-1][3] == "label"
-    # What the user said in the live test is a correction, named as the label stage names the photos.
-    fixes = json.loads((job / "input" / "corrections.json").read_text())
-    assert fixes["labels"] == {"added/a.jpg": "empty"} and fixes["points"] == {"added/b.png": [[0.5, 0.25, "cow"]]}
-    added = job / "input" / "photos" / "added"
-    assert sorted(f.name for f in added.iterdir()) == ["a.jpg", "b.png"]  # its own folder: no clash with a.jpg
-    assert (job / "input" / "photos" / "a.jpg").read_bytes() == b"first"
+    # The photos join the labeling's dataset; what the user said in the live test is their review.
+    photos = lib.labeling_photos(lid)
+    assert len(photos) == 4 and sum(p["reviewed"] for p in photos) == 2
+    assert sorted(m["x"] for p in photos for m in p["marks"]) == [0.5]
+    assert len(json.loads((job / "input" / "labeling.json").read_text())["photos"]) == 4
     s = app.get("/api/jobs/barn_cam").json()
     assert s["version"]["reason"] == "added 2 photos: misses dry patches" and s["versions"][0]["headline"] == 0.2
     assert app.post("/api/jobs/barn_cam/photos", files=files[:1]).status_code == 409  # still running
@@ -222,15 +255,18 @@ def test_revise_a_trained_job(app, tmp_path):
 
 def test_chat_photos_travel_with_the_job(app, tmp_path):
     sid = app.post("/api/interview").json()["session"]
-    files = [("photos", ("a.jpg", b"jpg", "image/jpeg")), ("photos", ("b.jpg", b"jpg", "image/jpeg"))]
+    files = [("photos", ("a.jpg", b"jpg-a", "image/jpeg")), ("photos", ("b.jpg", b"jpg-b", "image/jpeg"))]
     r = app.post(f"/api/interview/{sid}/photos", data={"purpose": "training"}, files=files)
     assert r.status_code == 200 and r.json()["photos"] == 2 and r.json()["kind"] == "say"
+    (chat,) = app.get("/api/library").json()["datasets"]  # the chat's own dataset
     upload = tmp_path / "uploads" / sid / "training"
     spec = {**GOOD, "user_data": {"raw": str(upload)}}
-    assert app.post("/api/jobs", data={"spec": json.dumps(spec)}).status_code == 200
+    assert app.post("/api/jobs", data={"spec": json.dumps(spec), "session": sid}).status_code == 200
     job = tmp_path / "jobs" / "barn_cam"
-    raw = json.loads((job / "request.json").read_text())["user_data"]["raw"]
-    assert not Path(raw).is_absolute() and (job / "input" / raw / "a.jpg").exists()
+    ud = json.loads((job / "request.json").read_text())["user_data"]
+    assert not Path(ud["raw"]).is_absolute() and len(list((job / "input" / ud["raw"]).iterdir())) == 2
+    (d,) = app.get("/api/library").json()["datasets"]
+    assert d["id"] == chat["id"] and d["photos"] == 2 and d["labelings"][0]["id"] == ud["labeling"]
     assert app.get(f"/api/interview/{sid}/thumb", params={"file": str(upload / "a.jpg")}).status_code == 404
 
 
@@ -244,26 +280,22 @@ def test_photos_in_batches_make_one_turn_and_one_rerun(app, tmp_path):
     assert r.json()["photos"] == 3 and r.json()["kind"] == "say"
     assert len(list((tmp_path / "uploads" / sid / "training").iterdir())) == 3
 
-    job = tmp_path / "jobs" / "barn_cam"
-    (job / "logs").mkdir(parents=True)
-    (job / "spec.json").write_text(json.dumps({**GOOD, "user_data": {"raw": "photos"}}))
-    r = app.post("/api/jobs/barn_cam/photos", data={"more": "true"}, files=batch("a.jpg", "b.jpg"))
+    job, lib, lid, names = labeled_job(tmp_path, GOOD)
+    r = app.post("/api/jobs/barn_cam/photos", data={"more": "true"}, files=batch("x.jpg", "y.jpg"))
     assert r.json() == {"stored": 2} and not app.launched
-    r = app.post("/api/jobs/barn_cam/photos", data={"total": "3", "note": "dusk"}, files=batch("c.jpg"))
+    r = app.post("/api/jobs/barn_cam/photos", data={"total": "3", "note": "dusk"}, files=batch("z.jpg"))
     assert r.json() == {"rerun_from": "label", "photos": 3} and len(app.launched) == 1
+    assert len(lib.labeling_photos(lid)) == 5
 
 
 def test_count_review_points_and_big_thumbnail(app, tmp_path):
     from PIL import Image
-    spec = {**GOOD, "task": "count", "user_data": {"raw": "photos"}}
-    job = tmp_path / "jobs" / "barn_cam"
+    job, lib, lid, names = labeled_job(tmp_path, {**GOOD, "task": "count"}, task="count", classes=("cow",))
     (job / "label" / "images").mkdir(parents=True)
-    (job / "logs").mkdir()
-    (job / "request.json").write_text(json.dumps(spec))
     Image.new("RGB", (1600, 1200)).save(job / "label" / "images" / "a.jpg")
     (job / "label" / "verdicts.json").write_text(json.dumps(
-        {"a.jpg": {"objects": [{"x": 0.5, "y": 0.5, "class": "cow", "box": [0.4, 0.4, 0.6, 0.6]}],
-                   "assigned": "images"}}))
+        {names[0]: {"objects": [{"x": 0.5, "y": 0.5, "class": "cow", "box": [0.4, 0.4, 0.6, 0.6]}],
+                    "assigned": "images", "copy": "a.jpg"}}))
     r = app.get("/api/jobs/barn_cam/review").json()
     assert r["task"] == "count" and r["photos"][0]["points"] == [[0.5, 0.5, "cow"]]
     small = app.get("/api/jobs/barn_cam/media/label/images/a.jpg")
@@ -271,10 +303,10 @@ def test_count_review_points_and_big_thumbnail(app, tmp_path):
     assert len(big.content) > len(small.content)
     # Test photos' marks also carry the box size ([x, y, class, w, h]): only the point is kept.
     r = app.post("/api/jobs/barn_cam/corrections",
-                 json={"points": {"a.jpg": [[0.1, 0.2, "cow"], [0.5, 0.5, "cow", 0.2, 0.2]]}})
+                 json={"points": {names[0]: [[0.1, 0.2, "cow"], [0.5, 0.5, "cow", 0.2, 0.2]]}})
     assert r.json() == {"rerun_from": "label"}
-    saved = json.loads((job / "input" / "corrections.json").read_text())
-    assert saved["points"] == {"a.jpg": [[0.1, 0.2, "cow"], [0.5, 0.5, "cow"]]}
+    marks = next(p for p in lib.labeling_photos(lid) if f"{p['id']}.jpg" == names[0])["marks"]
+    assert [(m["x"], m["y"], m["w"]) for m in marks] == [(0.1, 0.2, None), (0.5, 0.5, None)]
 
 
 def test_public_server_needs_the_key_and_uploaded_photos_only(tmp_path):
@@ -423,7 +455,7 @@ def test_calibrate_the_teacher_before_the_first_run(app, tmp_path, monkeypatch):
     def embed(items, texts, text_out, log=print, timeline=None):  # SigLIP 2 without a GPU: every photo along its own axis
         for path, out in items:
             asked.append(path)
-            i = int(path.stem[1:])
+            i = (int(path.stem) - 1) % 20  # the job's photos are named by their library id, 1 to 20
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(json.dumps({"embedding": [1.0 if j == i else 0.0 for j in range(22)]}))
         text_out.parent.mkdir(parents=True, exist_ok=True)
@@ -584,195 +616,76 @@ def test_a_chat_goes_on_after_the_server_restarts(tmp_path):
     assert after.post("/api/interview/0123456789abcdef0123456789abcdef", json={"text": "x"}).status_code == 404
 
 
-def test_photos_checked_before_skip_the_check(app, tmp_path):
-    """A folder the user already corrected, with a few new photos: no check of its own, the run starts and the
-    teacher marks the new ones from the earlier corrections."""
-    import io
-
+def street(tmp_path, n=8):
+    """A library dataset of n photos of the default owner: (library, dataset id, photo ids)."""
     from PIL import Image
 
-    from sim2chip import library, spec as spec_mod
-    from sim2chip.workspace import content_key
-
-    labels = json.dumps(sorted(spec_mod.from_dict(GOOD).labels))
-    photos, lib = [], library.Library(tmp_path, tmp_path / "cache")
-    for i in range(20):
-        buf = io.BytesIO()
-        Image.new("RGB", (64, 64), (i * 9, 0, 0)).save(buf, "JPEG")
-        photos.append(("photos", (f"p{i:02d}.jpg", buf.getvalue(), "image/jpeg")))
+    from sim2chip import library
+    lib = library.Library(tmp_path, tmp_path / "cache")
+    files = []
+    for i in range(n):
         f = tmp_path / "scratch" / f"p{i:02d}.jpg"
         f.parent.mkdir(exist_ok=True)
-        f.write_bytes(buf.getvalue())
-        if i < 4:
-            lib.note("local", content_key(f), library.CLASS, labels, {"label": "cow"}, source="user")
-    r = app.post("/api/jobs", data={"spec": json.dumps(GOOD), "calibrate": "true"}, files=photos).json()
-    assert r["calibrating"] and not app.launched  # 16 new of 20: the check comes first
-    for i in range(4, 15):
-        lib.note("local", content_key(tmp_path / "scratch" / f"p{i:02d}.jpg"), library.CLASS, labels,
-                 {"label": "cow"}, source="user")
-    r = app.post("/api/jobs", data={"spec": json.dumps(GOOD), "calibrate": "true"}, files=photos).json()
-    assert not r.get("calibrating") and app.launched  # 5 new of 20: straight to the run
-
-
-def test_the_check_asks_only_about_classes_not_checked_before(app, tmp_path):
-    """The user marked the cows of a dataset's photos before: a job counting cows and horses reuses those marks
-    for cows and its check asks about horses only; a job counting cows alone needs no check."""
-    from PIL import Image
-
-    from sim2chip import library
-
-    lib = library.Library(tmp_path, tmp_path / "cache")
-    files = []
-    for i in range(8):
-        f = tmp_path / "scratch" / f"p{i}.jpg"
-        f.parent.mkdir(exist_ok=True)
-        Image.new("RGB", (64, 64), (i * 20, 0, 0)).save(f, "JPEG")
+        Image.new("RGB", (64, 64), (i * 9, 0, 0)).save(f, "JPEG")
         files.append(f)
-    ds = lib.new_dataset("local", "field", files)
-    for f in files:
-        lib.note("local", library.content_key(f), library.POINTS, "cow", {"points": [[0.5, 0.5]]}, source="user")
-    cow = {**GOOD["classes"][0], "names": ["cow"]}
-    horse = {**cow, "id": "horse", "description": "horses", "names": ["horse"], "assets": {"categories": ["horse"]}}
-    spec = {**GOOD, "task": "count", "classes": [cow, horse], "user_data": {"raw": f"library:{ds}"}}
+    ds = lib.new_dataset("local", "street", files)
+    return lib, ds, [p["id"] for p in lib.photos(ds)]
+
+
+
+def test_a_labeling_reviewed_for_a_round_needs_no_check(app, tmp_path):
+    """The check comes first while the user has reviewed fewer photos of the labeling than one round shows."""
+    from sim2chip.job_service import CALIBRATION_PHOTOS
+    lib, ds, ids = street(tmp_path, 20)
+    lid = lib.create_labeling(ds, "Cows", "classify", [{"key": "cow"}, {"key": "empty"}])
+    spec = {**GOOD, "user_data": {"raw": f"library:{ds}", "labeling": lid}}
+    for pid in ids[:CALIBRATION_PHOTOS - 1]:
+        lib.review_photo(lid, pid, [{"class": "cow"}])
     r = app.post("/api/jobs", data={"spec": json.dumps(spec), "calibrate": "true"}).json()
     assert r["calibrating"] and not app.launched
-    fixes = json.loads((tmp_path / "jobs" / r["job"] / "input" / "corrections.json").read_text())
-    assert fixes["check"] == ["horse"] and len(fixes["points"]) == 8
-    assert all(v == ["cow"] for v in fixes["checked"].values())
-    assert app.get(f"/api/jobs/{r['job']}/review").json()["check"] == ["horse"]
-    r = app.post("/api/jobs", data={"spec": json.dumps({**spec, "classes": [cow]}), "calibrate": "true"}).json()
+    lib.review_photo(lid, ids[-1], [{"class": "empty"}])
+    r = app.post("/api/jobs", data={"spec": json.dumps({**spec, "name": "Barn Cam 2"}), "calibrate": "true"}).json()
     assert not r.get("calibrating") and app.launched
-
-
-def test_marks_of_a_class_without_english_names_are_found_by_its_english_phrase(app, tmp_path, monkeypatch):
-    """A class with no English names: the label stage asks SAM 3 for its English phrase and the library keeps the
-    marks under it. The server looked for the bare id ("vaca") and asked for a check of photos already marked."""
-    from PIL import Image
-
-    from sim2chip import library, teacher
-
-    lib = library.Library(tmp_path, tmp_path / "cache")
-    files = []
-    for i in range(8):
-        f = tmp_path / "scratch" / f"p{i}.jpg"
-        f.parent.mkdir(exist_ok=True)
-        Image.new("RGB", (64, 64), (i * 20, 0, 0)).save(f, "JPEG")
-        files.append(f)
-    ds = lib.new_dataset("local", "field", files)
-    for f in files:
-        lib.note("local", library.content_key(f), library.POINTS, "cow", {"points": [[0.5, 0.5]]}, source="user")
-    monkeypatch.setattr(teacher, "english_phrases", lambda meaning, client=None: {"vaca": ["cow"]})
-    vaca = {k: v for k, v in GOOD["classes"][0].items() if k not in ("assets", "names")}
-    spec = {**GOOD, "task": "count", "classes": [{**vaca, "id": "vaca", "description": "vacas"}],
-            "user_data": {"raw": f"library:{ds}"}}
-    r = app.post("/api/jobs", data={"spec": json.dumps(spec), "calibrate": "true"}).json()
-    assert not r.get("calibrating") and app.launched
-    fixes = json.loads((tmp_path / "jobs" / r["job"] / "input" / "corrections.json").read_text())
-    assert len(fixes["points"]) == 8
-
-
-def test_one_dataset_as_training_and_test_photos_is_not_tested_on_its_training(app, tmp_path):
-    """The same library dataset as labeled and test photos went into one folder: the job tested on every photo it
-    trained on. Its test side is the test now; a dataset without one leaves the test to the training photos."""
-    from PIL import Image
-
-    from sim2chip import library
-
-    lib = library.Library(tmp_path, tmp_path / "cache")
-    files = []
-    for i in range(6):
-        f = tmp_path / "scratch" / f"p{i}.jpg"
-        f.parent.mkdir(exist_ok=True)
-        Image.new("RGB", (64, 64), (i * 30, 0, 0)).save(f, "JPEG")
-        files.append(f)
-    ds = lib.new_dataset("local", "barn", [])
-    lib._put_photos(ds, files[:4], "train", "cow")
-    lib._put_photos(ds, files[4:], "test", "cow")
-    spec = {**GOOD, "user_data": {"labeled": f"library:{ds}", "test": f"library:{ds}"}}
-    r = app.post("/api/jobs", data={"spec": json.dumps(spec)}).json()
-    job = tmp_path / "jobs" / r["job"]
-    ud = json.loads((job / "request.json").read_text())["user_data"]
-    train = {p.name for p in (job / "input" / ud["labeled"]).rglob("*.jpg")}
-    test = {p.name for p in (job / "input" / ud["test"]).rglob("*.jpg")}
-    assert ud["labeled"] != ud["test"] and len(train) == 4 and len(test) == 2 and not train & test
-    no_test = lib.new_dataset("local", "field", files[:3])
-    spec = {**GOOD, "user_data": {"raw": f"library:{no_test}", "test": f"library:{no_test}"}}
-    r = app.post("/api/jobs", data={"spec": json.dumps(spec)}).json()
-    ud = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["user_data"]
-    assert ud["test"] is None and ud["raw"] == f"dataset_{no_test}"
 
 
 def test_labeling_a_dataset_puts_the_class_ids_in_english(app, tmp_path, monkeypatch):
-    """The names typed on the Datasets page become English ids, and for counting the teacher's English names."""
-    from PIL import Image
-
-    from sim2chip import library, teacher
-
-    lib = library.Library(tmp_path, tmp_path / "cache")
-    f = tmp_path / "scratch" / "p.jpg"
-    f.parent.mkdir()
-    Image.new("RGB", (64, 64), (200, 0, 0)).save(f, "JPEG")
-    ds = lib.new_dataset("local", "street", [f])
+    """The names typed on the Datasets page become English keys, and for counting the teacher's English names;
+    teach starts the teacher on the new labeling."""
+    from sim2chip import teacher
+    lib, ds, ids = street(tmp_path, 1)
     monkeypatch.setattr(teacher, "english_phrases", lambda meaning, client=None: {"c0": ["blue bin", "blue container"]})
-    r = app.post(f"/api/library/datasets/{ds}/label", json={"task": "count", "classes": ["contenedor azul"]}).json()
+    r = app.post(f"/api/library/datasets/{ds}/labelings",
+                 json={"task": "count", "classes": ["contenedor azul"], "teach": True}).json()
+    (c,) = lib.classes(r["labeling"])
+    assert (c["key"], c["description"], c["phrases"]) == ("blue_bin", "contenedor azul", ["blue bin", "blue container"])
     cls = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["classes"]
     assert cls == [{**cls[0], "id": "blue_bin", "description": "contenedor azul", "names": ["blue bin", "blue container"]}]
+    assert app.post(f"/api/library/datasets/{ds}/labelings", json={"task": "classify", "classes": ["a"]}).status_code == 400
 
 
-def test_a_dataset_labeled_before_for_the_same_classes_needs_no_check(app, tmp_path):
-    """The teacher's labels of a library dataset, kept from an earlier job with the same task and classes: the
-    new job takes that job's class names (same phrases for the teacher) and starts without a check."""
-    import io
-
-    from PIL import Image
-
-    from sim2chip import library, spec as spec_mod
-
-    count = {**GOOD, "task": "count", "classes": [{**GOOD["classes"][0], "names": ["cow"]}]}
-    lib = library.Library(tmp_path, tmp_path / "cache")
-    files = []
-    for i in range(8):
-        f = tmp_path / "scratch" / f"p{i}.jpg"
-        f.parent.mkdir(exist_ok=True)
-        Image.new("RGB", (64, 64), (i * 20, 0, 0)).save(f, "JPEG")
-        files.append(f)
-    ds = lib.new_dataset("local", "street", files)
-    for i, f in enumerate(files):
-        lib.note("local", library.content_key(f), library.BOXES, "cow",
-                 {"boxes": [{"box": [0.1, 0.1, 0.3, 0.3], "score": 0.7}] if i == 0 else [], "threshold": 0.45})
-    before = tmp_path / "jobs" / "first"
-    (before / "input").mkdir(parents=True)
-    (before / "request.json").write_text(spec_mod.from_dict({**count, "user_data": {"raw": f"dataset_{ds}"}}).to_json())
-    lib.db.execute("INSERT INTO uses VALUES ('first', 'dataset', ?)", (ds,))
-    (before / "calibration.json").write_text("{}")  # a check left open is no labeling
-    assert lib.dataset_card("local", ds)["models_made_with_it"] == []
-    (before / "calibration.json").unlink()
-    (before / "label").mkdir()
-    (before / "label" / "verdicts.json").write_text("{}")
-    assert [m["model"] for m in lib.dataset_card("local", ds)["models_made_with_it"]] == ["first"]
-    # The chat wrote other names for the same class: the job takes the earlier ones and skips the check.
-    spec = {**count, "classes": [{**count["classes"][0], "names": ["cattle"]}], "user_data": {"raw": f"library:{ds}"}}
-    r = app.post("/api/jobs", data={"spec": json.dumps(spec), "calibrate": "true"}).json()
-    assert not r.get("calibrating") and app.launched
-    assert json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["classes"][0]["names"] == ["cow"]
-    # Its labels go into the job as they are, for the label stage to copy instead of asking the teacher again.
-    kept = json.loads((tmp_path / "jobs" / r["job"] / "input" / "kept_labels.json").read_text())
-    assert kept["classes"] == ["cow"] and kept["thresholds"] == {"cow": 0.45} and len(kept["photos"]) == 8
-    assert sorted(len(v["cow"]) for v in kept["photos"].values()) == [0] * 7 + [1]
-    # Other classes: labeled anew, with a check.
-    other = {**spec, "classes": [{**spec["classes"][0], "id": "horse", "description": "horses"}]}
-    assert app.post("/api/jobs", data={"spec": json.dumps(other), "calibrate": "true"}).json()["calibrating"]
-    # The chat gave the dataset as "labeled" though it has no labels of its own: it is raw photos.
-    wrong = {**GOOD, "user_data": {"labeled": f"library:{ds}", "class_map": {"cow": ["cow"]}}}
-    r = app.post("/api/jobs", data={"spec": json.dumps(wrong), "calibrate": "true"}).json()
-    ud = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["user_data"]
-    assert r["calibrating"] and ud["labeled"] is None and ud["raw"] == f"dataset_{ds}"
-    # The chat gave the dataset's id as the class's 3D models: the job searches for models instead of failing.
-    as_model = {**spec, "classes": [{**spec["classes"][0], "assets": {"source": "library", "models": [f"library:{ds}"]},
-                                     "size_m": {"measure": "length", "range": [1.0, 2.0]}}]}
+def test_a_job_uses_the_labeling_it_names_or_one_with_the_same_classes(app, tmp_path):
+    """Same classes: the same labeling, with its English names for the teacher. Other classes with a labeling
+    named: that labeling changed to them. One dataset per model; a dataset id is never a 3D model."""
+    lib, ds, ids = street(tmp_path, 2)
+    count = {**GOOD, "task": "count", "classes": [{**GOOD["classes"][0], "names": ["cattle"]}],
+             "user_data": {"raw": f"library:{ds}"}}
+    lid = lib.create_labeling(ds, "Cows", "count", [{"key": "cow", "phrases": ["cow"]}])
+    r = app.post("/api/jobs", data={"spec": json.dumps(count)}).json()
+    req = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())
+    assert req["user_data"]["labeling"] == lid and req["classes"][0]["names"] == ["cow"]
+    horse = {**GOOD["classes"][0], "id": "horse", "description": "horses", "names": ["horse"]}
+    more = {**count, "name": "Barn 2", "classes": [*count["classes"], horse], "user_data": {**count["user_data"], "labeling": lid}}
+    r = app.post("/api/jobs", data={"spec": json.dumps(more)}).json()
+    req = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())
+    assert req["user_data"]["labeling"] == lid and [c["key"] for c in lib.classes(lid)] == ["cow", "horse"]
+    other, _, _ = street(tmp_path / "o", 1)
+    two = {**count, "name": "Barn 3", "user_data": {"raw": [f"library:{ds}", f"library:{other.datasets('local')[0]['id']}"]}}
+    assert app.post("/api/jobs", data={"spec": json.dumps(two)}).status_code == 400
+    as_model = {**count, "name": "Barn 4", "classes": [{**count["classes"][0], "assets": {"source": "library", "models": [f"library:{ds}"]},
+                                                         "size_m": {"measure": "length", "range": [1.0, 2.0]}}]}
     r = app.post("/api/jobs", data={"spec": json.dumps(as_model)})
     assets = json.loads((tmp_path / "jobs" / r.json()["job"] / "request.json").read_text())["classes"][0]["assets"]
-    assert r.status_code == 200 and assets["source"] == "search" and assets["queries"] == ["cow"] and not assets["models"]
+    assert r.status_code == 200 and assets["source"] == "search" and assets["queries"] == ["cattle"] and not assets["models"]
 
 
 def test_a_finished_turn_can_be_picked_up_after_the_request_was_cut(app):
@@ -796,31 +709,34 @@ def test_a_model_can_be_renamed_and_deleted(app, tmp_path, monkeypatch):
     assert not (tmp_path / "jobs" / job).exists() and app.get(f"/api/jobs/{job}").status_code == 404
 
 
-def test_a_datasets_labels_can_be_renamed_and_deleted(app, tmp_path):
-    from PIL import Image
-
-    from sim2chip import library
-
-    lib = library.Library(tmp_path, tmp_path / "cache")
-    files = []
-    for i in range(2):
-        f = tmp_path / "scratch" / f"p{i}.jpg"
-        f.parent.mkdir(exist_ok=True)
-        Image.new("RGB", (64, 64), (i * 90, 0, 0)).save(f, "JPEG")
-        files.append(f)
-    ds = lib.new_dataset("local", "street", files)
-    k0, k1 = (library.content_key(f) for f in files)
-    lib.note("local", k0, library.BOXES, "paper bin", {"boxes": []})
-    lib.note("local", k0, library.POINTS, "paper bin", {"points": [[0.5, 0.5]]}, source="user")
-    lib.note("local", k1, library.BOXES, "paper bin", {"boxes": []})
-    lib.note("local", k1, library.BOXES, "blue bin", {"boxes": [{"box": [0, 0, 1, 1]}]})
-    assert app.patch(f"/api/library/datasets/{ds}/labels", json={"ref": "paper bin", "to": "Blue bin"}).json()["moved"] == 2
-    notes = app.get(f"/api/library/datasets/{ds}/notes").json()["notes"]
-    assert {n["ref"] for v in notes.values() for n in v} == {"blue bin"}
-    assert [n["data"] for n in notes[k1]] == [{"boxes": [{"box": [0, 0, 1, 1]}]}]  # the new name's kept
-    assert app.delete(f"/api/library/datasets/{ds}/labels", params={"kind": "boxes", "ref": "blue bin"}).json()["removed"] == 3
-    assert app.get(f"/api/library/datasets/{ds}/notes").json()["notes"] == {}
-    assert app.delete(f"/api/library/datasets/{ds}/labels", params={"kind": "scene", "ref": "x"}).status_code == 400
+def test_labelings_can_be_managed_on_the_datasets_page(app, tmp_path, monkeypatch):
+    from sim2chip import teacher
+    lib, ds, ids = street(tmp_path, 2)
+    monkeypatch.setattr(teacher, "english_phrases", lambda meaning, client=None: {"c0": ["green bin"]})
+    lid = lib.create_labeling(ds, "Bins", "count", [{"key": "blue_bin", "phrases": ["blue bin"]}])
+    d = app.get(f"/api/library/datasets/{ds}").json()
+    assert d["photo_ids"] == ids and d["labelings"][0]["id"] == lid
+    assert app.patch(f"/api/library/labelings/{lid}", json={"name": "Street bins"}).json()["ok"]
+    got = app.get(f"/api/library/labelings/{lid}").json()
+    assert got["name"] == "Street bins" and [p["id"] for p in got["photos"]] == ids and "file" not in got["photos"][0]
+    assert app.post(f"/api/library/labelings/{lid}/classes", json={"name": "contenedor verde"}).json() == {"labeling": lid}
+    blue, green = lib.classes(lid)
+    assert green["key"] == "green_bin" and green["phrases"] == ["green bin"]
+    assert app.patch(f"/api/library/labelings/{lid}/classes/{blue['id']}", json={"key": "Navy bin"}).json() == {"labeling": lid}
+    assert lib.classes(lid)[0]["key"] == "navy_bin"
+    ok = app.put(f"/api/library/labelings/{lid}/photos/{ids[0]}", json={"marks": [{"class": "navy_bin", "x": 0.5, "y": 0.5}]})
+    assert ok.json()["ok"] and app.get(f"/api/library/labelings/{lid}").json()["reviewed"] == 1
+    bad = app.put(f"/api/library/labelings/{lid}/photos/{ids[1]}",
+                  json={"marks": [{"class": "navy_bin", "x": 0.5, "y": 0.5}, {"class": "green_bin", "x": 0.5, "y": 0.5}]})
+    assert bad.status_code == 400 and "several classes" in bad.json()["detail"]
+    assert app.delete(f"/api/library/labelings/{lid}/photos/{ids[0]}").json()["ok"]
+    copy = app.post(f"/api/library/labelings/{lid}/copy", json={}).json()["labeling"]
+    assert app.delete(f"/api/library/labelings/{lid}/classes/{green['id']}").json() == {"labeling": lid}
+    assert app.delete(f"/api/library/labelings/{lid}").json()["ok"]
+    assert app.get(f"/api/library/labelings/{lid}").status_code == 404 and lib.labeling(copy)["name"] == "Street bins (2)"
+    assert app.delete(f"/api/library/photos/{ids[1]}").json()["ok"] and len(lib.photos(ds)) == 1
+    assert app.get(f"/api/library/photos/{ids[0]}").status_code == 200
+    assert app.get(f"/api/library/labelings/{copy}", headers={}).status_code == 200
 
 
 def test_an_open_chat_comes_back_in_another_tab_until_a_new_one(app):

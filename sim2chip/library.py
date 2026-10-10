@@ -1,22 +1,22 @@
-"""The user's library: datasets of real photos, 3D objects and scenes, kept for good, plus kits (user,
-2026-10-08).
+"""The user's library: datasets of real photos and how they are labeled, 3D objects, scenes and kits, kept for
+good (user, 2026-10-08; labelings redesigned 2026-10-10, docs/plan_etiquetado.md).
 
-- Every real photo belongs to a dataset. The photos a job was given (to train, to test, to build 3D models
-  from) become one dataset; a job with the very same photos as an existing dataset reuses it.
-- Every 3D object a job found online or built from photos is kept, with one picture of it for its card and,
-  for models from the internet, the license and author (CC-BY asks to credit them).
-- Scenes (photo2scene) will be kept the same way, with a picture of the built place.
-- A kit has no files: a named list of references to datasets, objects and scenes, so the chat can start
-  another model from it ("using kit X, count Y").
-- Synthetic images are not kept here: only the few samples a job shows stay in that job.
-- What is known about the photos is kept with them (user, 2026-10-09), so nothing is asked twice: per photo,
-  notes (a vision model's description of the scene, the teacher's marks, the user's corrections), by the photo's
-  content, so they serve every dataset and job that holds it; per dataset, a profile (what objects show up,
-  the backgrounds, the places), made before anyone says what to look for.
+- A dataset is a set of photos (uploaded on the Datasets page or in a chat). A photo belongs to one dataset.
+- A labeling is a list of classes looked for in one dataset's photos, with their marks: "Blue bins by color",
+  count or classify. A dataset may have several. Each mark is one class on one photo (a point with the box
+  size when known, or the whole photo when classifying), from the teacher or from the user. A photo the user
+  reviewed in a labeling has the user's marks as its truth; the teacher never writes on it again.
+- One object, one class: marks of two classes on the same spot of a photo are refused (review.stacked).
+- The classes of a labeling a model was trained with do not change under it: editing them makes a copy.
+- A job gets a fixed copy of its labeling (export: input/labeling.json and the photos) and gives back the
+  teacher's marks (take_teacher). Nothing else travels between jobs and the library.
+- Every 3D object a job found online or built from photos is kept, with a picture for its card and its license.
+- A kit has no files: a named list of references to datasets, objects and scenes.
+- What a vision model said about a photo's scene is kept by photo content (photo_description), and each dataset
+  has a profile (what objects show up, the backgrounds, the places), made before anyone says what to look for.
 
-Files are stored once by content under <home>/library/files and the SQLite file <home>/library/library.db
-says who owns what. Jobs are read into the library when the owner opens it (sync), so jobs made before the
-library existed are taken in too. Nothing here runs a model.
+Files are stored once by content under <home>/library/files; the SQLite file <home>/library/library.db says who
+owns what. Nothing here runs a model.
 """
 from __future__ import annotations
 
@@ -29,19 +29,53 @@ import threading
 import time
 from pathlib import Path
 
-from .review import checked, stacked, unstack
+from .review import StackedMarks, stacked
 from .workspace import IMAGE_EXT, Job, content_key
 
-VERSION = 3  # what sync takes from a job; 2: the teacher's marks and the user's corrections; 3: no marks that put
-# one object under several classes (review.stacked)
+VERSION = 4  # 4: datasets, labelings, classes, marks and reviews (2026-10-10); older libraries were emptied
 THUMB = 512  # side of the picture kept for an object's or a scene's card
+TASKS = ("count", "classify")
+# Colors of the classes' marks, by position: distinct on photos and in both themes.
+COLORS = ["#2f6db5", "#d4a017", "#8a5a2b", "#7a7f87", "#3f8a3a", "#a83e72", "#d2691e", "#2d8aa0", "#7a4f9a",
+          "#b5482f"]
+KEEP = "labeling.json"  # in a job's input: the fixed copy of its labeling (export)
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS datasets (
-    id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, created REAL NOT NULL, labeled INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS photos (
-    dataset TEXT NOT NULL, key TEXT NOT NULL, file TEXT NOT NULL, split TEXT NOT NULL, label TEXT,
-    PRIMARY KEY (dataset, key, split));
+CREATE TABLE IF NOT EXISTS dataset (
+    id TEXT PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS photo (
+    id INTEGER PRIMARY KEY, dataset_id TEXT NOT NULL REFERENCES dataset(id) ON DELETE CASCADE,
+    content_hash TEXT NOT NULL, file TEXT NOT NULL, added REAL NOT NULL, UNIQUE (dataset_id, content_hash));
+CREATE TABLE IF NOT EXISTS labeling (
+    id TEXT PRIMARY KEY, dataset_id TEXT NOT NULL REFERENCES dataset(id) ON DELETE CASCADE, name TEXT NOT NULL,
+    task TEXT NOT NULL CHECK (task IN ('count', 'classify')), threshold REAL,
+    copied_from TEXT REFERENCES labeling(id) ON DELETE SET NULL, created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS class (
+    id INTEGER PRIMARY KEY, labeling_id TEXT NOT NULL REFERENCES labeling(id) ON DELETE CASCADE,
+    key TEXT NOT NULL, description TEXT NOT NULL, color TEXT NOT NULL, position INTEGER NOT NULL,
+    UNIQUE (labeling_id, key));
+CREATE TABLE IF NOT EXISTS class_name (
+    id INTEGER PRIMARY KEY, class_id INTEGER NOT NULL REFERENCES class(id) ON DELETE CASCADE,
+    phrase TEXT NOT NULL, rank INTEGER NOT NULL, UNIQUE (class_id, phrase));
+CREATE TABLE IF NOT EXISTS review (
+    labeling_id TEXT NOT NULL REFERENCES labeling(id) ON DELETE CASCADE,
+    photo_id INTEGER NOT NULL REFERENCES photo(id) ON DELETE CASCADE, reviewed_at REAL NOT NULL,
+    PRIMARY KEY (labeling_id, photo_id));
+CREATE TABLE IF NOT EXISTS mark (
+    id INTEGER PRIMARY KEY, photo_id INTEGER NOT NULL REFERENCES photo(id) ON DELETE CASCADE,
+    class_id INTEGER NOT NULL REFERENCES class(id) ON DELETE CASCADE,
+    x REAL, y REAL, w REAL, h REAL, score REAL, source TEXT NOT NULL CHECK (source IN ('teacher', 'user')));
+CREATE INDEX IF NOT EXISTS mark_photo ON mark (photo_id);
+CREATE INDEX IF NOT EXISTS mark_class ON mark (class_id);
+CREATE TABLE IF NOT EXISTS model (
+    job TEXT PRIMARY KEY, labeling_id TEXT REFERENCES labeling(id) ON DELETE SET NULL, trained_at REAL NOT NULL,
+    reviewed_photos INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS profile (
+    dataset_id TEXT PRIMARY KEY REFERENCES dataset(id) ON DELETE CASCADE, data TEXT NOT NULL, summary TEXT NOT NULL,
+    photos INTEGER NOT NULL, created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS photo_description (
+    owner TEXT NOT NULL, content_hash TEXT NOT NULL, classes TEXT NOT NULL, model TEXT, data TEXT NOT NULL,
+    created REAL NOT NULL, PRIMARY KEY (owner, content_hash, classes));
 CREATE TABLE IF NOT EXISTS objects (
     id TEXT PRIMARY KEY, owner TEXT NOT NULL, origin TEXT NOT NULL, name TEXT NOT NULL, concept TEXT NOT NULL,
     source TEXT NOT NULL, file TEXT, thumb TEXT, kept INTEGER NOT NULL, info TEXT NOT NULL, created REAL NOT NULL,
@@ -58,23 +92,9 @@ CREATE TABLE IF NOT EXISTS removed (
     owner TEXT NOT NULL, item TEXT NOT NULL, PRIMARY KEY (owner, item));
 CREATE TABLE IF NOT EXISTS synced (
     job TEXT PRIMARY KEY, stamp REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS notes (
-    owner TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, source TEXT NOT NULL,
-    model TEXT, data TEXT NOT NULL, created REAL NOT NULL, PRIMARY KEY (owner, key, kind, ref, source));
-CREATE TABLE IF NOT EXISTS label_edits (
-    owner TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, moved_to TEXT, at REAL NOT NULL,
-    PRIMARY KEY (owner, key, kind, ref));
-CREATE TABLE IF NOT EXISTS profiles (
-    dataset TEXT PRIMARY KEY, data TEXT NOT NULL, summary TEXT NOT NULL, photos INTEGER NOT NULL,
-    created REAL NOT NULL);
 """
-# Kinds of notes on a photo. ref says what they answer: the classes the scene was described for, the English
-# phrase the teacher looked for, or the labels a class was chosen among.
-SCENE = "scene"    # a vision model's description of the photo (scene_profile.PROMPT)
-BOXES = "boxes"    # objects found: [{"box": [x0, y0, x1, y1], "score"}] in 0..1 of the upright photo
-POINTS = "points"  # objects marked: [[x, y], ...], the user's corrections of a count
-CLASS = "class"    # the photo's label among the labels in ref
-TASK_NAME = {"count": "counts objects", "roi_classification": "one label per photo"}
+OLD_TABLES = ("datasets", "photos", "notes", "label_edits", "profiles", "uses", "synced")  # before VERSION 4
+TASK_NAME = {"count": "counts objects", "roi_classification": "one label per photo", "classify": "one label per photo"}
 TITLE = "title.txt"  # in a job folder: the name the user gave the model
 
 
@@ -121,11 +141,17 @@ def _picture(src: Path, dst: Path) -> None:
     im.save(dst, quality=88)
 
 
+def task_of(spec_task: str | None) -> str:
+    """The labeling task of a spec task: count, or classify (one label per photo)."""
+    return "count" if spec_task == "count" else "classify"
+
+
 def stage_signature(job: Job) -> float:
-    """When the job last changed what the library takes from it (its spec and the asset stages)."""
+    """When the job last changed what the library takes from it (its spec, the asset stages, the teacher's marks
+    and the model)."""
     paths = [job.spec_path, job.root / "request.json", job.stage_dir("convert_assets") / "assets.json",
              job.stage_dir("qa_assets") / "assets.json", job.stage_dir("label") / "verdicts.json",
-             job.input / "corrections.json"]
+             job.stage_dir("export") / "report.json"]
     return max((p.stat().st_mtime for p in paths if p.exists()), default=0.0)
 
 
@@ -136,269 +162,474 @@ class Library:
         self.cache_root = cache_root
         self.root.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.root / "library.db"), check_same_thread=False, isolation_level=None)
-        self.db.executescript(SCHEMA)
-        if (was := self.db.execute("PRAGMA user_version").fetchone()[0]) < VERSION:  # jobs hold more now
-            if was < 3:
-                self._drop_stacked()
-            self.db.execute("DELETE FROM synced")
+        self.db.execute("PRAGMA foreign_keys = ON")
+        if self.db.execute("PRAGMA user_version").fetchone()[0] < VERSION:
+            # Labels were notes per English phrase until 2026-10-10; the user's data was emptied for the new model.
+            for t in OLD_TABLES:
+                self.db.execute(f"DROP TABLE IF EXISTS {t}")
             self.db.execute(f"PRAGMA user_version = {VERSION}")
+        self.db.executescript(SCHEMA)
         self.lock = threading.Lock()
 
-    def _drop_stacked(self) -> None:
-        """The user's marks that put one object under several phrases, deleted for those phrases on that photo:
-        the photo counts as not checked for them, so the teacher marks it and a check asks again."""
-        marks: dict[tuple[str, str], list] = {}
-        for owner, key, ref, data in self.db.execute(
-                "SELECT owner, key, ref, data FROM notes WHERE kind = ? AND source = 'user'", (POINTS,)):
-            marks.setdefault((owner, key), []).extend([x, y, ref] for x, y in json.loads(data).get("points", []))
-        gone = [(owner, key, POINTS, ref) for (owner, key), pts in marks.items() for ref in stacked(pts)]
-        self.db.executemany("DELETE FROM notes WHERE owner = ? AND key = ? AND kind = ? AND ref = ? "
-                            "AND source = 'user'", gone)
+    # Datasets and photos -----------------------------------------------------------------------------
 
-    # Reading jobs in -------------------------------------------------------------------------------
+    def owns(self, owner: str, kind: str, item: str) -> bool:
+        table = {"dataset": "dataset", "object": "objects", "scene": "scenes", "kit": "kits"}[kind]
+        return self.db.execute(f"SELECT 1 FROM {table} WHERE owner = ? AND id = ?", (owner, item)).fetchone() is not None
 
-    def sync(self, owner: str, jobs: list[Job]) -> None:
-        """Take in what new or changed jobs of this owner made. Cheap when nothing changed."""
-        for job in jobs:
-            stamp = stage_signature(job)
-            row = self.db.execute("SELECT stamp FROM synced WHERE job = ?", (job.name,)).fetchone()
-            if row and row[0] >= stamp:
-                continue
-            with self.lock:
-                self._take_photos(owner, job)
-                self._take_objects(owner, job)
-                self._take_labels(owner, job)
-                self.db.execute("INSERT OR REPLACE INTO synced VALUES (?, ?)", (job.name, stamp))
+    def owns_labeling(self, owner: str, lid: str) -> bool:
+        return self.db.execute("SELECT 1 FROM labeling l JOIN dataset d ON d.id = l.dataset_id WHERE d.owner = ? "
+                               "AND l.id = ?", (owner, lid)).fetchone() is not None
 
-    def _spec(self, job: Job) -> dict:
-        return _load(job.spec_path) or _load(job.root / "request.json") or {}
-
-    def _take_photos(self, owner: str, job: Job) -> None:
-        spec = self._spec(job)
-        ud = spec.get("user_data") or {}
-        rows = []  # (key, source file, split, label)
-
-        def folder(rel: str | None, split: str, labeled: bool):
-            if not rel:
-                return
-            try:
-                base = job.resolve_input(rel)
-            except ValueError:
-                return
-            for f in _images(base):
-                label = f.relative_to(base).parts[0] if labeled and len(f.relative_to(base).parts) > 1 else None
-                rows.append((content_key(f), f, split, label))
-
-        folder(ud.get("labeled"), "train", True)
-        folder(ud.get("raw"), "train", False)
-        folder(ud.get("test"), "test", True)
-        for c in spec.get("classes", []):
-            photos = (c.get("assets") or {}).get("photos")
-            if photos and photos != "user_data":
-                folder(photos, "3d", False)
-                rows[:] = [(k, f, s, c["id"] if s == "3d" and lab is None else lab) for k, f, s, lab in rows]
-        if not rows:
-            return
-        keys = sorted({k for k, *_ in rows})
-        # Photos this owner already has in one dataset (the chat's, or another job's with the same photos): the
-        # job uses the smallest such dataset and nothing new is made. Not one without the labels the job gave
-        # them (the same photos sorted into folders would lose their labels).
-        labeled = {(k, lab) for k, _, _, lab in rows if lab}
-        same, size = None, None
-        for (ds,) in self.db.execute("SELECT id FROM datasets WHERE owner = ?", (owner,)).fetchall():
-            got = self.db.execute("SELECT key, label FROM photos WHERE dataset = ?", (ds,)).fetchall()
-            have = {k for k, _ in got}
-            if set(keys) <= have and labeled <= set(got) and (size is None or len(have) < size):
-                same, size = ds, len(have)
-        if same is None:  # photos added to a job (the live test, "Make it better") join the dataset it used
-            for (ds,) in self.db.execute("SELECT item FROM uses WHERE job = ? AND kind = 'dataset'", (job.name,)).fetchall():
-                have = {k for (k,) in self.db.execute("SELECT key FROM photos WHERE dataset = ?", (ds,)).fetchall()}
-                if have and have <= set(keys) and self.owns(owner, "dataset", ds):
-                    self._add_rows(ds, [r for r in rows if r[0] not in have])
-                    return
-        if same is None:
-            same = _id(owner, "dataset", *keys)
-            if self.owns(owner, "dataset", same):  # the same photos without these labels: a dataset of their own
-                same = _id(owner, "dataset", *keys, *sorted(f"{k}:{lab}" for k, lab in labeled))
-            if self._removed(owner, same):  # the owner deleted it: a later sync does not bring it back
-                return
-            created = min((p.stat().st_mtime for p in (job.spec_path, job.root / "request.json") if p.exists()),
-                          default=time.time())
-            self.db.execute("INSERT OR IGNORE INTO datasets VALUES (?, ?, ?, ?, ?)",
-                            (same, owner, job.name.replace("_", " "), created, int(bool(ud.get("labeled")))))
-            self._add_rows(same, rows)
-        self.db.execute("INSERT OR IGNORE INTO uses VALUES (?, 'dataset', ?)", (job.name, same))
-
-    def _add_rows(self, ds: str, rows: list) -> None:
-        for key, f, split, label in rows:
-            rel = f"photos/{key[:2]}/{key}{f.suffix.lower()}"
-            _store(f, self.files / rel)
-            self.db.execute("INSERT OR IGNORE INTO photos VALUES (?, ?, ?, ?, ?)", (ds, key, rel, split, label))
-
-    def _take_labels(self, owner: str, job: Job) -> None:
-        """The teacher's marks and the user's corrections of a job's raw photos, as notes on those photos: a
-        count's boxes and points by the English phrase of each class, a label among the job's labels."""
-        spec = self._spec(job)
-        raw = (spec.get("user_data") or {}).get("raw")
-        verdicts = _load(job.stage_dir("label") / "verdicts.json") or {}
-        fixes = _load(job.input / "corrections.json") or {}
-        if not raw or not isinstance(raw, str) or not (verdicts or fixes):
-            return
-        try:
-            base = job.resolve_input(raw)
-        except ValueError:
-            return
-        learned = _load(job.stage_dir("label") / "teacher.json") or {}
-        ids = [c.get("id") for c in spec.get("classes", []) if c.get("id")]
-        phrase = {c: (learned.get("phrases") or {}).get(c, [c.replace("_", " ")])[0] for c in ids}
-        labels = json.dumps(sorted(set(ids) | ({spec["background_class"]} if spec.get("background_class") else set())))
-        keys: dict[str, str] = {}
-
-        def key(rel: str) -> str | None:
-            if rel not in keys:
-                f = base / rel
-                keys[rel] = content_key(f) if f.is_file() else None
-            return keys[rel]
-        rows = []  # (key, kind, ref, source, model, data, labeled at)
-        teacher_at, user_at = (f.stat().st_mtime if f.exists() else 0.0
-                               for f in (job.stage_dir("label") / "verdicts.json", job.input / "corrections.json"))
-        for rel, v in verdicts.items():
-            if not (k := key(rel)):
-                continue
-            if "objects" in v:  # count
-                teacher_marks = v.get("teacher_objects", v["objects"]) if v.get("judge") == "user" else v["objects"]
-                if teacher_marks is None:
-                    continue
-                for c in ids:
-                    boxes = [{"box": o["box"], "score": o.get("score")} for o in teacher_marks
-                             if o.get("class") == c and o.get("box")]
-                    rows.append((k, BOXES, phrase[c], "model", v.get("model"),
-                                 {"boxes": boxes, "threshold": v.get("threshold")}, teacher_at))
-            elif v.get("class") and v["class"] != "no_answer":  # classification
-                cls = v.get("teacher", v["class"]) if v.get("judge") == "user" else v["class"]
-                rows.append((k, CLASS, labels, "model", v.get("model"), {"label": cls, "confidence": v.get("confidence")},
-                             teacher_at))
-        fixes = unstack({"points": {}, "checked": {}, **fixes}, ids)
-        for rel, marks in fixes["points"].items():
-            if k := key(rel):
-                for c in checked(fixes, rel, ids):  # only the classes the user looked at on this photo
-                    rows.append((k, POINTS, phrase[c], "user", None, {"points": [[x, y] for x, y, cl in marks if cl == c]},
-                                 user_at))
-        for rel, label in (fixes.get("labels") or {}).items():
-            if k := key(rel):
-                rows.append((k, CLASS, labels, "user", None, {"label": label}, user_at))
-        now = time.time()
-        # Labels the user deleted or renamed on the Datasets page since the job made them stay so: a later sync
-        # of the job (it changed, or VERSION went up) used to bring them back under their old names.
-        put, keep = [], []
-        for k, kind, ref, src, model, data, at in rows:
-            ref, renamed = self._edited(owner, k, kind, ref, at)
-            if ref is not None:
-                (keep if renamed else put).append((owner, k, kind, ref, src, model, json.dumps(data), now))
-        self.db.executemany("INSERT OR REPLACE INTO notes VALUES (?, ?, ?, ?, ?, ?, ?, ?)", put)
-        # Under a new name a photo labeled for both keeps the new name's labels (rename_labels).
-        self.db.executemany("INSERT OR IGNORE INTO notes VALUES (?, ?, ?, ?, ?, ?, ?, ?)", keep)
-
-    def _edited(self, owner: str, key: str, kind: str, ref: str, since: float) -> tuple[str | None, bool]:
-        """A label made at `since` as it stands now: its name after the user's renames since then (None: the
-        user deleted it), and whether it was renamed."""
-        seen, renamed = {ref}, False
-        while True:
-            row = self.db.execute("SELECT moved_to FROM label_edits WHERE owner = ? AND key = ? AND kind = ? "
-                                  "AND ref = ? AND at >= ?", (owner, key, kind, ref, since)).fetchone()
-            if row is None or row[0] is None:
-                return (ref if row is None else None), renamed
-            ref, renamed = row[0], True
-            if ref in seen:
-                return ref, renamed
-            seen.add(ref)
-
-    def _note_edit(self, owner: str, ds: str, kinds, ref: str, to: str | None) -> None:
-        """Remember a deleted (to None) or renamed labeling of a dataset's photos, so sync does not undo it."""
-        keys = [k for (k,) in self.db.execute("SELECT DISTINCT key FROM photos WHERE dataset = ?", (ds,))]
-        now = time.time()
-        self.db.executemany("INSERT OR REPLACE INTO label_edits VALUES (?, ?, ?, ?, ?, ?)",
-                            [(owner, k, kind, ref, to, now) for k in keys for kind in kinds])
-        if to is not None:  # the new name is a live one again, whatever was done to it before
-            self.db.executemany("DELETE FROM label_edits WHERE owner = ? AND key = ? AND kind = ? AND ref = ?",
-                                [(owner, k, kind, to) for k in keys for kind in kinds])
-
-    def _take_objects(self, owner: str, job: Job) -> None:
-        converted = _load(job.stage_dir("convert_assets") / "assets.json") or []
-        kept = {a["uid"] for a in _load(job.stage_dir("qa_assets") / "assets.json") or []}
-        qa_ran = (job.stage_dir("qa_assets") / "assets.json").exists()
-        for a in converted:
-            uid = a["uid"]
-            # A model the job took from this library (fetch_assets uses the object's id as uid) is that object.
-            oid = uid if self.owns(owner, "object", uid) else _id(owner, "object", uid)
-            if self._removed(owner, oid):
-                continue
-            known = self.db.execute("SELECT kept FROM objects WHERE id = ?", (oid,)).fetchone()
-            is_kept = int(uid in kept or not qa_ran)
-            if known:  # seen in another job: approved once is enough
-                if is_kept and not known[0]:
-                    self.db.execute("UPDATE objects SET kept = 1 WHERE id = ?", (oid,))
-            else:
-                glb = self.cache_root / a["glb"] if a.get("glb") else None
-                file = None
-                if glb and glb.exists():
-                    file = f"objects/{oid}/model.glb"
-                    _store(glb, self.files / file)
-                picture = next((p for p in (job.stage_dir("qa_assets") / "sheets" / f"{uid}.jpg",
-                                            job.stage_dir("preview_assets") / f"{uid}_0.png",
-                                            job.stage_dir("generate_assets") / a["class"] / f"{uid}.png")
-                                if p.exists()), None)
-                thumb = None
-                if picture:
-                    thumb = f"objects/{oid}/card.jpg"
-                    _picture(picture, self.files / thumb)
-                info = {k: a[k] for k in ("license", "author", "dims", "category", "photo") if a.get(k)}
-                if a.get("source"):
-                    info["url"] = a["source"]
-                source = "photos" if a.get("generated") else "online"
-                self.db.execute("INSERT INTO objects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                (oid, owner, f"uid:{uid}", a.get("name") or a["class"], a["class"], source, file,
-                                 thumb, is_kept, json.dumps(info), time.time()))
-            self.db.execute("INSERT OR IGNORE INTO uses VALUES (?, 'object', ?)", (job.name, oid))
-
-    def _removed(self, owner: str, item: str) -> bool:
-        return self.db.execute("SELECT 1 FROM removed WHERE owner = ? AND item = ?", (owner, item)).fetchone() is not None
-
-    def _put_photos(self, ds: str, files: list[Path], split: str, label: str | None) -> int:
+    def _put_photos(self, ds: str, files: list[Path]) -> int:
+        """Photos into a dataset, once each by content. Returns how many were new."""
+        n = 0
         for f in files:
             key = content_key(f)
             rel = f"photos/{key[:2]}/{key}{f.suffix.lower()}"
             _store(f, self.files / rel)
-            self.db.execute("INSERT OR IGNORE INTO photos VALUES (?, ?, ?, ?, ?)", (ds, key, rel, split, label))
-        return len(files)
-
-    def add_chat_photos(self, owner: str, session: str, files: list[Path], split: str, label: str | None) -> str:
-        """Photos attached in a chat go to that chat's dataset, made with the first ones."""
-        ds = _id(owner, "chat", session)
-        with self.lock:
-            self.db.execute("DELETE FROM removed WHERE owner = ? AND item = ?", (owner, ds))
-            self.db.execute("INSERT OR IGNORE INTO datasets VALUES (?, ?, ?, ?, 0)",
-                            (ds, owner, time.strftime("Chat photos %d %b %Y %H:%M"), time.time()))
-            self._put_photos(ds, files, split, label)
-        return ds
-
-    # The owner's own changes -------------------------------------------------------------------------
-
-    def owns(self, owner: str, kind: str, item: str) -> bool:
-        table = {"dataset": "datasets", "object": "objects", "scene": "scenes", "kit": "kits"}[kind]
-        return self.db.execute(f"SELECT 1 FROM {table} WHERE owner = ? AND id = ?", (owner, item)).fetchone() is not None
+            n += self.db.execute("INSERT OR IGNORE INTO photo (dataset_id, content_hash, file, added) VALUES (?, ?, ?, ?)",
+                                 (ds, key, rel, time.time())).rowcount
+        return n
 
     def new_dataset(self, owner: str, name: str, files: list[Path]) -> str:
         """Photos uploaded on the Datasets page: a dataset of their own."""
         ds = _id(owner, "upload", str(time.time_ns()))
         with self.lock:
-            self.db.execute("INSERT INTO datasets VALUES (?, ?, ?, ?, 0)", (ds, owner, name, time.time()))
-            self._put_photos(ds, files, "train", None)
+            self.db.execute("INSERT INTO dataset VALUES (?, ?, ?, ?)", (ds, owner, name, time.time()))
+            self._put_photos(ds, files)
         return ds
 
-    def add_photos(self, owner: str, ds: str, files: list[Path]) -> int:
+    def add_chat_photos(self, owner: str, session: str, files: list[Path]) -> str:
+        """Photos attached in a chat go to that chat's dataset, made with the first ones."""
+        ds = _id(owner, "chat", session)
         with self.lock:
-            return self._put_photos(ds, files, "train", None)
+            self.db.execute("DELETE FROM removed WHERE owner = ? AND item = ?", (owner, ds))
+            self.db.execute("INSERT OR IGNORE INTO dataset VALUES (?, ?, ?, ?)",
+                            (ds, owner, time.strftime("Chat photos %d %b %Y %H:%M"), time.time()))
+            self._put_photos(ds, files)
+        return ds
+
+    def chat_dataset(self, owner: str, session: str) -> str | None:
+        ds = _id(owner, "chat", session)
+        return ds if self.owns(owner, "dataset", ds) else None
+
+    def add_photos(self, owner: str, ds: str, files: list[Path]) -> int:
+        if not self.owns(owner, "dataset", ds):
+            return 0
+        with self.lock:
+            return self._put_photos(ds, files)
+
+    def photo_id(self, ds: str, content_hash: str) -> int | None:
+        row = self.db.execute("SELECT id FROM photo WHERE dataset_id = ? AND content_hash = ?", (ds, content_hash)).fetchone()
+        return row[0] if row else None
+
+    def photos(self, ds: str) -> list[dict]:
+        return [{"id": pid, "hash": h, "file": f} for pid, h, f in self.db.execute(
+            "SELECT id, content_hash, file FROM photo WHERE dataset_id = ? ORDER BY id", (ds,))]
+
+    def photo_file(self, owner: str, photo_id: int) -> Path | None:
+        row = self.db.execute("SELECT p.file FROM photo p JOIN dataset d ON d.id = p.dataset_id "
+                              "WHERE d.owner = ? AND p.id = ?", (owner, photo_id)).fetchone()
+        return self.files / row[0] if row else None
+
+    def delete_photo(self, owner: str, photo_id: int) -> bool:
+        with self.lock:
+            row = self.db.execute("SELECT p.file FROM photo p JOIN dataset d ON d.id = p.dataset_id "
+                                  "WHERE d.owner = ? AND p.id = ?", (owner, photo_id)).fetchone()
+            if row is None:
+                return False
+            self.db.execute("DELETE FROM photo WHERE id = ?", (photo_id,))
+            self._drop_files([row[0]])
+        return True
+
+    def _drop_files(self, files: list[str]) -> None:
+        for f in files:
+            if not self.db.execute("SELECT 1 FROM photo WHERE file = ?", (f,)).fetchone():
+                (self.files / f).unlink(missing_ok=True)
+
+    def datasets(self, owner: str) -> list[dict]:
+        out = []
+        for ds, name, created in self.db.execute(
+                "SELECT id, name, created FROM dataset WHERE owner = ? ORDER BY created DESC", (owner,)).fetchall():
+            n = self.db.execute("SELECT COUNT(*) FROM photo WHERE dataset_id = ?", (ds,)).fetchone()[0]
+            sample = [pid for (pid,) in self.db.execute("SELECT id FROM photo WHERE dataset_id = ? ORDER BY id LIMIT 4",
+                                                        (ds,))]
+            out.append({"id": ds, "name": name, "created": created, "photos": n, "sample": sample,
+                        "labelings": self.labelings(ds), "jobs": self._used("dataset", ds),
+                        "profile": self.profile(owner, ds)})
+        return out
+
+    # Labelings -------------------------------------------------------------------------------------------
+
+    def create_labeling(self, ds: str, name: str, task: str, classes: list[dict], copied_from: str | None = None) -> str:
+        """A labeling of a dataset: classes [{key, description, phrases}] in order (keys unique)."""
+        if task not in TASKS:
+            raise ValueError(f"task must be one of {TASKS}")
+        keys = [c["key"] for c in classes]
+        if not keys or len(set(keys)) != len(keys):
+            raise ValueError("a labeling needs classes with different names")
+        lid = _id(ds, "labeling", str(time.time_ns()))
+        with self.lock:
+            self.db.execute("INSERT INTO labeling VALUES (?, ?, ?, ?, NULL, ?, ?)",
+                            (lid, ds, name, task, copied_from, time.time()))
+            for c in classes:
+                self._add_class(lid, c)
+        return lid
+
+    def _add_class(self, lid: str, c: dict) -> int:
+        pos = self.db.execute("SELECT COALESCE(MAX(position) + 1, 0) FROM class WHERE labeling_id = ?",
+                              (lid,)).fetchone()[0]
+        cid = self.db.execute("INSERT INTO class (labeling_id, key, description, color, position) VALUES (?, ?, ?, ?, ?)",
+                              (lid, c["key"], c.get("description") or "", COLORS[pos % len(COLORS)], pos)).lastrowid
+        self._set_phrases(cid, c.get("phrases") or [c["key"].replace("_", " ")])
+        return cid
+
+    def _set_phrases(self, cid: int, phrases: list[str]) -> None:
+        self.db.execute("DELETE FROM class_name WHERE class_id = ?", (cid,))
+        for i, p in enumerate(dict.fromkeys(p.strip().lower() for p in phrases if p and p.strip())):
+            self.db.execute("INSERT INTO class_name (class_id, phrase, rank) VALUES (?, ?, ?)", (cid, p, i))
+
+    def classes(self, lid: str) -> list[dict]:
+        out = []
+        for cid, key, desc, color in self.db.execute(
+                "SELECT id, key, description, color FROM class WHERE labeling_id = ? ORDER BY position", (lid,)).fetchall():
+            phrases = [p for (p,) in self.db.execute("SELECT phrase FROM class_name WHERE class_id = ? ORDER BY rank",
+                                                     (cid,))]
+            out.append({"id": cid, "key": key, "description": desc, "color": color, "phrases": phrases})
+        return out
+
+    def labelings(self, ds: str) -> list[dict]:
+        """The dataset's labelings, newest first, with their classes, how many photos the user reviewed, how many
+        have marks, the marks per class and the models trained with each."""
+        out = []
+        total = self.db.execute("SELECT COUNT(*) FROM photo WHERE dataset_id = ?", (ds,)).fetchone()[0]
+        for lid, name, task, threshold, copied, created in self.db.execute(
+                "SELECT id, name, task, threshold, copied_from, created FROM labeling WHERE dataset_id = ? "
+                "ORDER BY created DESC", (ds,)).fetchall():
+            classes = self.classes(lid)
+            counts = dict(self.db.execute("SELECT class_id, COUNT(*) FROM mark WHERE class_id IN "
+                                          "(SELECT id FROM class WHERE labeling_id = ?) GROUP BY class_id", (lid,)))
+            for c in classes:
+                c["marks"] = counts.get(c["id"], 0)
+            reviewed = self.db.execute("SELECT COUNT(*) FROM review WHERE labeling_id = ?", (lid,)).fetchone()[0]
+            marked = self.db.execute("SELECT COUNT(DISTINCT photo_id) FROM mark WHERE class_id IN "
+                                     "(SELECT id FROM class WHERE labeling_id = ?)", (lid,)).fetchone()[0]
+            models = [j for (j,) in self.db.execute("SELECT job FROM model WHERE labeling_id = ? ORDER BY trained_at",
+                                                    (lid,))]
+            out.append({"id": lid, "dataset": ds, "name": name, "task": task, "threshold": threshold,
+                        "copied_from": copied, "created": created, "classes": classes, "photos": total,
+                        "reviewed": reviewed, "marked": marked, "models": models})
+        return out
+
+    def labeling(self, lid: str) -> dict | None:
+        row = self.db.execute("SELECT dataset_id FROM labeling WHERE id = ?", (lid,)).fetchone()
+        if row is None:
+            return None
+        return next(l for l in self.labelings(row[0]) if l["id"] == lid)
+
+    def labeling_photos(self, lid: str) -> list[dict]:
+        """Every photo of the labeling's dataset with its marks for the labeling's classes and whether the user
+        reviewed it: [{id, hash, file, reviewed, marks: [{class, x, y, w, h, score, source}]}]."""
+        ds = self.db.execute("SELECT dataset_id FROM labeling WHERE id = ?", (lid,)).fetchone()
+        if ds is None:
+            return []
+        reviewed = {p for (p,) in self.db.execute("SELECT photo_id FROM review WHERE labeling_id = ?", (lid,))}
+        marks: dict[int, list] = {}
+        for pid, key, x, y, w, h, score, source in self.db.execute(
+                "SELECT m.photo_id, c.key, m.x, m.y, m.w, m.h, m.score, m.source FROM mark m JOIN class c ON c.id = "
+                "m.class_id WHERE c.labeling_id = ? ORDER BY m.id", (lid,)):
+            marks.setdefault(pid, []).append({"class": key, "x": x, "y": y, "w": w, "h": h, "score": score,
+                                              "source": source})
+        return [{**p, "reviewed": p["id"] in reviewed, "marks": marks.get(p["id"], [])} for p in self.photos(ds[0])]
+
+    def find_labeling(self, ds: str, task: str, keys: list[str]) -> str | None:
+        """The newest labeling of the dataset for this task with exactly these classes."""
+        for l in self.labelings(ds):
+            if l["task"] == task and sorted(c["key"] for c in l["classes"]) == sorted(keys):
+                return l["id"]
+        return None
+
+    def used(self, lid: str) -> bool:
+        """A model was trained with it: its classes stay as they were (edits make a copy)."""
+        return self.db.execute("SELECT 1 FROM model WHERE labeling_id = ?", (lid,)).fetchone() is not None
+
+    def rename_labeling(self, lid: str, name: str) -> None:
+        with self.lock:
+            self.db.execute("UPDATE labeling SET name = ? WHERE id = ?", (name, lid))
+
+    def delete_labeling(self, lid: str) -> None:
+        with self.lock:
+            self.db.execute("DELETE FROM labeling WHERE id = ?", (lid,))
+
+    def copy_labeling(self, lid: str, name: str | None = None) -> str:
+        """A new labeling with the same classes, marks and reviews, to change without touching this one."""
+        src = self.labeling(lid)
+        new = self.create_labeling(src["dataset"], name or f"{src['name']} (2)", src["task"],
+                                   [{"key": c["key"], "description": c["description"], "phrases": c["phrases"]}
+                                    for c in src["classes"]], copied_from=lid)
+        with self.lock:
+            ids = {c["key"]: c["id"] for c in self.classes(new)}
+            self.db.execute("UPDATE labeling SET threshold = ? WHERE id = ?", (src["threshold"], new))
+            for c in src["classes"]:
+                self.db.execute("INSERT INTO mark (photo_id, class_id, x, y, w, h, score, source) SELECT photo_id, ?, x, y, "
+                                "w, h, score, source FROM mark WHERE class_id = ?", (ids[c["key"]], c["id"]))
+            self.db.execute("INSERT INTO review SELECT ?, photo_id, reviewed_at FROM review WHERE labeling_id = ?",
+                            (new, lid))
+        return new
+
+    def _editable(self, lid: str) -> str:
+        """The labeling itself, or a copy when a model was trained with it."""
+        return self.copy_labeling(lid) if self.used(lid) else lid
+
+    def add_class(self, lid: str, key: str, description: str = "", phrases: list[str] | None = None) -> str:
+        """A new class: the photos the user reviewed are reviewed again (nobody looked for it there). Returns the
+        labeling that has it (a copy when a model uses this one)."""
+        lid = self._editable(lid)
+        with self.lock:
+            if self.db.execute("SELECT 1 FROM class WHERE labeling_id = ? AND key = ?", (lid, key)).fetchone():
+                raise ValueError(f"the labeling has a class {key} already")
+            self._add_class(lid, {"key": key, "description": description, "phrases": phrases})
+            self.db.execute("DELETE FROM review WHERE labeling_id = ?", (lid,))
+        return lid
+
+    def edit_class(self, lid: str, cid: int, key: str | None = None, description: str | None = None,
+                   phrases: list[str] | None = None) -> str:
+        """Rename a class or change its description or English names: its marks follow it."""
+        key_of = self.db.execute("SELECT key FROM class WHERE id = ? AND labeling_id = ?", (cid, lid)).fetchone()
+        if key_of is None:
+            raise ValueError("no such class in this labeling")
+        new = self._editable(lid)
+        if new != lid:
+            cid = self.db.execute("SELECT id FROM class WHERE labeling_id = ? AND key = ?", (new, key_of[0])).fetchone()[0]
+        with self.lock:
+            if key and key != key_of[0]:
+                if self.db.execute("SELECT 1 FROM class WHERE labeling_id = ? AND key = ?", (new, key)).fetchone():
+                    raise ValueError(f"the labeling has a class {key} already")
+                self.db.execute("UPDATE class SET key = ? WHERE id = ?", (key, cid))
+            if description is not None:
+                self.db.execute("UPDATE class SET description = ? WHERE id = ?", (description, cid))
+            if phrases is not None:
+                self._set_phrases(cid, phrases)
+        return new
+
+    def delete_class(self, lid: str, cid: int) -> str:
+        key_of = self.db.execute("SELECT key FROM class WHERE id = ? AND labeling_id = ?", (cid, lid)).fetchone()
+        if key_of is None:
+            raise ValueError("no such class in this labeling")
+        if self.db.execute("SELECT COUNT(*) FROM class WHERE labeling_id = ?", (lid,)).fetchone()[0] <= 1:
+            raise ValueError("a labeling keeps at least one class: delete the labeling instead")
+        new = self._editable(lid)
+        with self.lock:
+            self.db.execute("DELETE FROM class WHERE labeling_id = ? AND key = ?", (new, key_of[0]))
+        return new
+
+    def fit_classes(self, lid: str, classes: list[dict]) -> str:
+        """The labeling to use for these classes [{key, description, phrases}]: this one when its classes are the
+        same, else this one changed to them (a copy when a model uses it). Classes it has keep their names and
+        marks; new ones are added (the reviewed photos are then reviewed again); missing ones are dropped."""
+        have = {c["key"]: c for c in self.classes(lid)}
+        want = [c["key"] for c in classes]
+        if sorted(have) == sorted(want):
+            return lid
+        lid = self._editable(lid)
+        have = {c["key"]: c for c in self.classes(lid)}
+        with self.lock:
+            for key, c in have.items():
+                if key not in want:
+                    self.db.execute("DELETE FROM class WHERE id = ?", (c["id"],))
+            added = [c for c in classes if c["key"] not in have]
+            for c in added:
+                self._add_class(lid, c)
+            if added:
+                self.db.execute("DELETE FROM review WHERE labeling_id = ?", (lid,))
+        return lid
+
+    # Marks -------------------------------------------------------------------------------------------------
+
+    def _class_ids(self, lid: str) -> dict[str, int]:
+        return dict(self.db.execute("SELECT key, id FROM class WHERE labeling_id = ?", (lid,)).fetchall())
+
+    def _photo_in(self, lid: str, photo_id: int) -> bool:
+        return self.db.execute("SELECT 1 FROM photo p JOIN labeling l ON l.dataset_id = p.dataset_id WHERE l.id = ? "
+                               "AND p.id = ?", (lid, photo_id)).fetchone() is not None
+
+    def review_photo(self, lid: str, photo_id: int, marks: list[dict]) -> None:
+        """The user's marks of a photo, its truth from now on: [{class, x, y(, w, h)}] for count (empty: nothing
+        there), [{class}] (one) for classify. One object, one class."""
+        ids = self._class_ids(lid)
+        task = self.db.execute("SELECT task FROM labeling WHERE id = ?", (lid,)).fetchone()[0]
+        if not self._photo_in(lid, photo_id):
+            raise ValueError("that photo is not in this labeling's dataset")
+        bad = sorted({m.get("class") for m in marks} - set(ids))
+        if bad:
+            raise ValueError(f"no class {', '.join(map(str, bad))} in this labeling")
+        if task == "classify" and len(marks) != 1:
+            raise ValueError("classifying gives each photo exactly one class")
+        if task == "count":
+            if pile := stacked([[m["x"], m["y"], m["class"]] for m in marks]):
+                raise StackedMarks(f"one object is marked as several classes ({', '.join(sorted(pile))}): keep only "
+                                   "the class it is")
+        with self.lock:
+            self.db.execute(f"DELETE FROM mark WHERE photo_id = ? AND class_id IN ({','.join('?' * len(ids))})",
+                            (photo_id, *ids.values()))
+            for m in marks:
+                self.db.execute("INSERT INTO mark (photo_id, class_id, x, y, w, h, score, source) VALUES "
+                                "(?, ?, ?, ?, ?, ?, NULL, 'user')",
+                                (photo_id, ids[m["class"]], *(round(float(m[k]), 4) if m.get(k) is not None else None
+                                                              for k in ("x", "y", "w", "h"))))
+            self.db.execute("INSERT OR REPLACE INTO review VALUES (?, ?, ?)", (lid, photo_id, time.time()))
+
+    def unreview_photo(self, lid: str, photo_id: int) -> None:
+        with self.lock:
+            self.db.execute("DELETE FROM review WHERE labeling_id = ? AND photo_id = ?", (lid, photo_id))
+
+    def take_teacher_marks(self, lid: str, by_photo: dict[int, list[dict]], threshold: float | None = None) -> int:
+        """The teacher's marks of these photos (replacing its earlier ones), on photos the user has not reviewed.
+        Returns how many photos took them."""
+        ids = self._class_ids(lid)
+        reviewed = {p for (p,) in self.db.execute("SELECT photo_id FROM review WHERE labeling_id = ?", (lid,))}
+        n = 0
+        with self.lock:
+            for pid, marks in by_photo.items():
+                if pid in reviewed or not self._photo_in(lid, pid):
+                    continue
+                self.db.execute(f"DELETE FROM mark WHERE photo_id = ? AND class_id IN ({','.join('?' * len(ids))})",
+                                (pid, *ids.values()))
+                for m in marks:
+                    if m.get("class") in ids:
+                        self.db.execute("INSERT INTO mark (photo_id, class_id, x, y, w, h, score, source) VALUES "
+                                        "(?, ?, ?, ?, ?, ?, ?, 'teacher')",
+                                        (pid, ids[m["class"]], m.get("x"), m.get("y"), m.get("w"), m.get("h"),
+                                         m.get("score")))
+                n += 1
+            if threshold is not None:
+                self.db.execute("UPDATE labeling SET threshold = ? WHERE id = ?", (threshold, lid))
+        return n
+
+    # Into a job and back -----------------------------------------------------------------------------------
+
+    def export(self, lid: str, job_input: Path) -> str:
+        """The labeling as a job takes it: its dataset's photos in job_input/labeling_<id>/ (named by photo id) and
+        job_input/labeling.json with its classes and each photo's marks and review. Returns the folder's name."""
+        lab = self.labeling(lid)
+        folder = f"labeling_{lid}"
+        dst = job_input / folder
+        dst.mkdir(parents=True, exist_ok=True)
+        photos = {}
+        for p in self.labeling_photos(lid):
+            name = f"{p['id']}{Path(p['file']).suffix}"
+            _store(self.files / p["file"], dst / name)
+            photos[name] = {"photo_id": p["id"], "hash": p["hash"], "reviewed": p["reviewed"], "marks": p["marks"]}
+        keep = {name for name in photos}
+        for f in dst.iterdir():  # photos deleted from the dataset since the last export
+            if f.name not in keep:
+                f.unlink()
+        snapshot = {"labeling": lid, "name": lab["name"], "task": lab["task"], "threshold": lab["threshold"],
+                    "classes": [{"key": c["key"], "description": c["description"], "phrases": c["phrases"]}
+                                for c in lab["classes"]], "photos": photos}
+        (job_input / KEEP).write_text(json.dumps(snapshot, indent=1))
+        return folder
+
+    def take_teacher(self, job: Job) -> int:
+        """The teacher's marks a job made (label/verdicts.json) into the labeling it was given, for the photos the
+        user has not reviewed."""
+        snap = _load(job.input / KEEP)
+        verdicts = _load(job.stage_dir("label") / "verdicts.json")
+        if not snap or not verdicts or self.labeling(snap["labeling"]) is None:
+            return 0
+        learned = _load(job.stage_dir("label") / "teacher.json") or {}
+        by_photo: dict[int, list[dict]] = {}
+        for rel, v in verdicts.items():
+            p = snap["photos"].get(rel)
+            if p is None or p["reviewed"]:
+                continue
+            if "objects" in v:  # count
+                objs = v.get("teacher_objects", v["objects"]) if v.get("judge") == "user" else v["objects"]
+                if objs is None:
+                    continue
+                by_photo[p["photo_id"]] = [
+                    {"class": o["class"], "x": o["x"], "y": o["y"],
+                     "w": round(o["box"][2] - o["box"][0], 4) if o.get("box") else None,
+                     "h": round(o["box"][3] - o["box"][1], 4) if o.get("box") else None, "score": o.get("score")}
+                    for o in objs]
+            elif v.get("class") and v["class"] != "no_answer":
+                cls = v.get("teacher", v["class"]) if v.get("judge") == "user" else v["class"]
+                by_photo[p["photo_id"]] = [{"class": cls, "score": v.get("teacher_confidence", v.get("confidence"))}]
+        return self.take_teacher_marks(snap["labeling"], by_photo, learned.get("threshold"))
+
+    def take_model(self, job: Job) -> None:
+        """A finished model: which labeling it was trained with, and how many of its photos the user reviewed."""
+        snap = _load(job.input / KEEP)
+        report = job.stage_dir("export") / "report.json"
+        if not snap or not report.exists() or self.labeling(snap["labeling"]) is None:
+            return
+        reviewed = sum(p["reviewed"] for p in snap["photos"].values())
+        with self.lock:
+            self.db.execute("INSERT OR IGNORE INTO model VALUES (?, ?, ?, ?)",
+                            (job.name, snap["labeling"], report.stat().st_mtime, reviewed))
+
+    def sync(self, owner: str, jobs: list[Job]) -> None:
+        """Take in what new or changed jobs of this owner made: 3D objects, the teacher's marks, the model. Cheap
+        when nothing changed."""
+        for job in jobs:
+            stamp = stage_signature(job)
+            row = self.db.execute("SELECT stamp FROM synced WHERE job = ?", (job.name,)).fetchone()
+            if row and row[0] >= stamp:
+                continue
+            self._take_objects(owner, job)
+            self.take_teacher(job)
+            self.take_model(job)
+            with self.lock:
+                self.db.execute("INSERT OR REPLACE INTO synced VALUES (?, ?)", (job.name, stamp))
+
+    def note_use(self, job: str, kind: str, item: str) -> None:
+        with self.lock:
+            self.db.execute("INSERT OR IGNORE INTO uses VALUES (?, ?, ?)", (job, kind, item))
+
+    # 3D objects --------------------------------------------------------------------------------------------
+
+    def _take_objects(self, owner: str, job: Job) -> None:
+        converted = _load(job.stage_dir("convert_assets") / "assets.json") or []
+        kept = {a["uid"] for a in _load(job.stage_dir("qa_assets") / "assets.json") or []}
+        qa_ran = (job.stage_dir("qa_assets") / "assets.json").exists()
+        with self.lock:
+            for a in converted:
+                uid = a["uid"]
+                # A model the job took from this library (fetch_assets uses the object's id as uid) is that object.
+                oid = uid if self.owns(owner, "object", uid) else _id(owner, "object", uid)
+                if self._removed(owner, oid):
+                    continue
+                known = self.db.execute("SELECT kept FROM objects WHERE id = ?", (oid,)).fetchone()
+                is_kept = int(uid in kept or not qa_ran)
+                if known:  # seen in another job: approved once is enough
+                    if is_kept and not known[0]:
+                        self.db.execute("UPDATE objects SET kept = 1 WHERE id = ?", (oid,))
+                else:
+                    glb = self.cache_root / a["glb"] if a.get("glb") else None
+                    file = None
+                    if glb and glb.exists():
+                        file = f"objects/{oid}/model.glb"
+                        _store(glb, self.files / file)
+                    picture = next((p for p in (job.stage_dir("qa_assets") / "sheets" / f"{uid}.jpg",
+                                                job.stage_dir("preview_assets") / f"{uid}_0.png",
+                                                job.stage_dir("generate_assets") / a["class"] / f"{uid}.png")
+                                    if p.exists()), None)
+                    thumb = None
+                    if picture:
+                        thumb = f"objects/{oid}/card.jpg"
+                        _picture(picture, self.files / thumb)
+                    info = {k: a[k] for k in ("license", "author", "dims", "category", "photo") if a.get(k)}
+                    if a.get("source"):
+                        info["url"] = a["source"]
+                    source = "photos" if a.get("generated") else "online"
+                    self.db.execute("INSERT INTO objects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    (oid, owner, f"uid:{uid}", a.get("name") or a["class"], a["class"], source, file,
+                                     thumb, is_kept, json.dumps(info), time.time()))
+                self.db.execute("INSERT OR IGNORE INTO uses VALUES (?, 'object', ?)", (job.name, oid))
+
+    def _removed(self, owner: str, item: str) -> bool:
+        return self.db.execute("SELECT 1 FROM removed WHERE owner = ? AND item = ?", (owner, item)).fetchone() is not None
 
     def new_object(self, owner: str, name: str, concept: str, glb: Path, card: Path | None) -> str:
         """A 3D model the owner uploads (GLB), with the picture the app rendered of it for its card."""
@@ -416,241 +647,6 @@ class Library:
             self.db.execute("INSERT INTO objects VALUES (?, ?, ?, ?, ?, 'upload', ?, ?, 1, '{}', ?)",
                             (oid, owner, f"upload:{oid}", name, concept, file, thumb, time.time()))
         return oid
-
-    def rename(self, owner: str, kind: str, item: str, name: str) -> None:
-        table = {"dataset": "datasets", "object": "objects", "scene": "scenes", "kit": "kits"}[kind]
-        with self.lock:
-            self.db.execute(f"UPDATE {table} SET name = ? WHERE owner = ? AND id = ?", (name, owner, item))
-
-    def delete(self, owner: str, kind: str, item: str) -> int:
-        """Delete a dataset, object or scene (kept deleted: syncing its jobs again does not bring it back) or a
-        kit. The item leaves every kit of the owner; returns how many kits it was in. A photo's file goes only
-        when no dataset holds it any more."""
-        with self.lock:
-            if kind == "kit":
-                self.db.execute("DELETE FROM kits WHERE owner = ? AND id = ?", (owner, item))
-                return 0
-            if kind == "dataset":
-                files = [f for (f,) in self.db.execute("SELECT DISTINCT file FROM photos WHERE dataset = ?", (item,))]
-                keys = [k for (k,) in self.db.execute("SELECT DISTINCT key FROM photos WHERE dataset = ?", (item,))]
-                self.db.execute("DELETE FROM photos WHERE dataset = ?", (item,))
-                self.db.execute("DELETE FROM datasets WHERE owner = ? AND id = ?", (owner, item))
-                self.db.execute("DELETE FROM profiles WHERE dataset = ?", (item,))
-                for k in keys:  # what was known about a photo goes with the owner's last copy of it
-                    if not self.db.execute("SELECT 1 FROM photos p JOIN datasets d ON d.id = p.dataset "
-                                           "WHERE d.owner = ? AND p.key = ?", (owner, k)).fetchone():
-                        self.db.execute("DELETE FROM notes WHERE owner = ? AND key = ?", (owner, k))
-                        self.db.execute("DELETE FROM label_edits WHERE owner = ? AND key = ?", (owner, k))
-                for f in files:
-                    if not self.db.execute("SELECT 1 FROM photos WHERE file = ?", (f,)).fetchone():
-                        (self.files / f).unlink(missing_ok=True)
-            else:
-                table = {"object": "objects", "scene": "scenes"}[kind]
-                self.db.execute(f"DELETE FROM {table} WHERE owner = ? AND id = ?", (owner, item))
-                shutil.rmtree(self.files / f"{table}/{item}", ignore_errors=True)
-            self.db.execute("DELETE FROM uses WHERE kind = ? AND item = ?", (kind, item))
-            self.db.execute("INSERT OR IGNORE INTO removed VALUES (?, ?)", (owner, item))
-            n = 0
-            for kid, refs in self.db.execute("SELECT id, refs FROM kits WHERE owner = ?", (owner,)).fetchall():
-                r = json.loads(refs)
-                if item in r.get(kind + "s", []):
-                    r[kind + "s"].remove(item)
-                    self.db.execute("UPDATE kits SET refs = ?, updated = ? WHERE id = ?", (json.dumps(r), time.time(), kid))
-                    n += 1
-            return n
-
-    def forget(self, owner: str, jobs: list[str]) -> None:
-        """Everything of an owner whose account is closed: datasets (and photo files no one else holds), objects,
-        scenes, kits and notes; `jobs`: the names of its jobs, whose records here go too."""
-        for kind, table in (("dataset", "datasets"), ("object", "objects"), ("scene", "scenes"), ("kit", "kits")):
-            for (item,) in self.db.execute(f"SELECT id FROM {table} WHERE owner = ?", (owner,)).fetchall():
-                self.delete(owner, kind, item)
-        with self.lock:
-            self.db.execute("DELETE FROM notes WHERE owner = ?", (owner,))
-            self.db.execute("DELETE FROM label_edits WHERE owner = ?", (owner,))
-            self.db.execute("DELETE FROM removed WHERE owner = ?", (owner,))
-        self.forget_jobs(jobs)
-
-    def forget_jobs(self, jobs: list[str]) -> None:
-        """The records of deleted jobs. What they gave the library (photos, labels, objects, scenes) stays."""
-        with self.lock:
-            for job in jobs:
-                self.db.execute("DELETE FROM uses WHERE job = ?", (job,))
-                self.db.execute("DELETE FROM synced WHERE job = ?", (job,))
-
-    def _label_kinds(self, kind: str) -> tuple[str, ...]:
-        if kind not in (BOXES, CLASS):
-            raise ValueError(f"no labels of kind {kind}")
-        return (BOXES, POINTS) if kind == BOXES else (CLASS,)
-
-    def forget_labels(self, owner: str, ds: str, kind: str, ref: str) -> int:
-        """One labeling of a dataset's photos (the teacher's boxes and the user's marks for a phrase, or the labels
-        chosen among some labels), wherever those photos are used: labels belong to the photo's content."""
-        kinds = self._label_kinds(kind)
-        with self.lock:
-            self._note_edit(owner, ds, kinds, ref, None)
-            return self.db.execute(
-                f"DELETE FROM notes WHERE owner = ? AND kind IN ({','.join('?' * len(kinds))}) AND ref = ? "
-                "AND key IN (SELECT key FROM photos WHERE dataset = ?)", (owner, *kinds, ref, ds)).rowcount
-
-    def rename_labels(self, owner: str, ds: str, ref: str, to: str) -> int:
-        """A count labeling of a dataset's photos under another English phrase, e.g. "paper bin" -> "blue bin": a
-        later job looking for the new phrase reuses them. A photo labeled for both keeps the new phrase's."""
-        keys = "key IN (SELECT key FROM photos WHERE dataset = ?)"
-        with self.lock:
-            self._note_edit(owner, ds, (BOXES, POINTS), ref, to)
-            moved = self.db.execute(f"UPDATE OR IGNORE notes SET ref = ? WHERE owner = ? AND kind IN (?, ?) AND ref = ? "
-                                    f"AND {keys}", (to, owner, BOXES, POINTS, ref, ds)).rowcount
-            self.db.execute(f"DELETE FROM notes WHERE owner = ? AND kind IN (?, ?) AND ref = ? AND {keys}",
-                            (owner, BOXES, POINTS, ref, ds))
-        return moved
-
-    def save_kit(self, owner: str, kit: str | None, name: str, refs: dict[str, list[str]]) -> str:
-        """Create (kit None) or replace a kit. Only references the owner holds are kept."""
-        clean = {f"{k}s": [i for i in dict.fromkeys(refs.get(f"{k}s", [])) if self.owns(owner, k, i)]
-                 for k in ("dataset", "object", "scene")}
-        now = time.time()
-        with self.lock:
-            if kit is None:
-                kit = _id(owner, "kit", str(time.time_ns()))
-                self.db.execute("INSERT INTO kits VALUES (?, ?, ?, ?, ?, ?)", (kit, owner, name, json.dumps(clean), now, now))
-            else:
-                self.db.execute("UPDATE kits SET name = ?, refs = ?, updated = ? WHERE owner = ? AND id = ?",
-                                (name, json.dumps(clean), now, owner, kit))
-        return kit
-
-    # What is known about the photos ----------------------------------------------------------------
-
-    def notes(self, owner: str, keys: list[str], kind: str, ref: str) -> dict[str, dict]:
-        """Notes of one kind on these photos, the user's winning over a model's: {key: note}."""
-        out: dict[str, dict] = {}
-        for i in range(0, len(keys), 500):
-            part = keys[i:i + 500]
-            rows = self.db.execute(
-                f"SELECT key, source, model, data, created FROM notes WHERE owner = ? AND kind = ? AND ref = ? "
-                f"AND key IN ({','.join('?' * len(part))}) ORDER BY source = 'user'", (owner, kind, ref, *part))
-            for key, source, model, data, created in rows:
-                out[key] = {"source": source, "model": model, "data": json.loads(data), "created": created}
-        return out
-
-    def note(self, owner: str, key: str, kind: str, ref: str, data, source: str = "model",
-             model: str | None = None) -> None:
-        with self.lock:
-            self.db.execute("INSERT OR REPLACE INTO notes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            (owner, key, kind, ref, source, model, json.dumps(data), time.time()))
-
-    def describe(self, owner: str, photos: list[Path], classes: str, run, model: str | None = None) -> list[dict]:
-        """Descriptions of the scene in these photos for these classes (scene_profile.describe), the kept ones
-        reused: run(photos) is called only for those without one and its answers are kept (run None: only the kept
-        ones). A photo the model could not describe is asked again next time."""
-        keys = {f: content_key(f) for f in photos}
-        kept = self.notes(owner, list(keys.values()), SCENE, classes)
-        todo = [f for f in photos if keys[f] not in kept]
-        out = [{**n["data"], "photo": f.name} for f in photos if (n := kept.get(keys[f]))]
-        if todo and run is not None:
-            # Answers come back by file name: one name in two subfolders cannot tell its photos apart, so those
-            # answers are used but not kept (asked again next time) rather than kept on the wrong photo.
-            names = [f.name for f in todo]
-            by_name = {f.name: f for f in todo if names.count(f.name) == 1}
-            for d in run(todo):
-                f = by_name.get(d.get("photo"))
-                if f is not None:
-                    self.note(owner, keys[f], SCENE, classes, {k: v for k, v in d.items() if k != "photo"},
-                              model=model)
-                if d.get("photo") in names:
-                    out.append(d)
-        return out
-
-    def profile_stale(self, owner: str, ds: str) -> bool:
-        """Has the dataset no profile, or new photos the profile has not seen while it looked at fewer than
-        it could?"""
-        from .scene_profile import SAMPLE
-        n = self.db.execute("SELECT COUNT(DISTINCT key) FROM photos WHERE dataset = ?", (ds,)).fetchone()[0]
-        row = self.db.execute("SELECT photos FROM profiles WHERE dataset = ?", (ds,)).fetchone()
-        if not self.owns(owner, "dataset", ds) or not n:
-            return False
-        return row is None or (row[0] != n and row[0] < SAMPLE)
-
-    def profile_dataset(self, owner: str, ds: str, run, model: str | None = None, fresh: bool = False) -> dict | None:
-        """A dataset's profile before any goal (scene_profile.GENERAL): what objects show up, the backgrounds,
-        the places and the light, from a sample of its photos. run(photos) describes photos; the descriptions
-        are kept as notes (fresh: made anew). None when no photo could be described."""
-        from . import scene_profile
-        rows = self.db.execute("SELECT DISTINCT p.key, p.file FROM photos p JOIN datasets d ON d.id = p.dataset "
-                               "WHERE d.owner = ? AND d.id = ?", (owner, ds)).fetchall()
-        files = scene_profile.sample([self.files / f for _, f in rows])
-        if fresh:  # the user asked to look again: the kept descriptions are not reused
-            with self.lock:
-                self.db.executemany("DELETE FROM notes WHERE owner = ? AND key = ? AND kind = ? AND ref = ?",
-                                    [(owner, f.stem, SCENE, scene_profile.GENERAL) for f in files])
-        found = self.describe(owner, files, scene_profile.GENERAL, run, model)
-        if not found:
-            return None
-        prof = scene_profile.aggregate(found)
-        text = scene_profile.dataset_summary(prof, len(found))
-        with self.lock:
-            self.db.execute("INSERT OR REPLACE INTO profiles VALUES (?, ?, ?, ?, ?)",
-                            (ds, json.dumps(prof), text, len({k for k, _ in rows}), time.time()))
-        return {"data": prof, "summary": text}
-
-    def dataset_notes(self, owner: str, ds: str) -> dict[str, list[dict]]:
-        """Every note on the dataset's photos: {key: [{kind, ref, source, model, data}]}."""
-        if not self.owns(owner, "dataset", ds):
-            return {}
-        out: dict[str, list[dict]] = {}
-        rows = self.db.execute("SELECT n.key, n.kind, n.ref, n.source, n.model, n.data FROM notes n WHERE n.owner = ? "
-                               "AND n.key IN (SELECT key FROM photos WHERE dataset = ?) ORDER BY n.key, n.kind",
-                               (owner, ds))
-        for key, kind, ref, source, model, data in rows:
-            out.setdefault(key, []).append({"kind": kind, "ref": ref, "source": source, "model": model,
-                                            "data": json.loads(data)})
-        return out
-
-    def profile(self, owner: str, ds: str) -> dict | None:
-        row = self.db.execute("SELECT r.data, r.summary, r.photos, r.created FROM profiles r JOIN datasets d "
-                              "ON d.id = r.dataset WHERE d.owner = ? AND d.id = ?", (owner, ds)).fetchone()
-        if row is None:
-            return None
-        sug = json.loads(row[0]).get("suggest", {})
-        return {"summary": row[1], "photos": row[2], "created": row[3], "objects": sug.get("seen", []),
-                "backgrounds": sug.get("backgrounds", [])}
-
-    # Into a job ------------------------------------------------------------------------------------
-
-    def materialize_dataset(self, owner: str, ds: str, dst: Path, by_label: bool,
-                            splits: tuple[str, ...] | None = None) -> int:
-        """A dataset's photos as a plain folder of a job (hard links): one subfolder per label for labeled
-        photos (by_label), else flat. Photos without a label go flat even then, and so do the photos 3D models
-        were made from (their label is the class they were models of, not a label the user gave the photo).
-        splits: only the photos on these sides (a dataset given as both training and test photos)."""
-        rows = self.db.execute("SELECT p.key, p.file, p.label, p.split FROM photos p JOIN datasets d "
-                               "ON d.id = p.dataset WHERE d.owner = ? AND d.id = ?", (owner, ds)).fetchall()
-        rows = [r for r in rows if splits is None or r[3] in splits]
-        for key, file, label, split in rows:
-            sub = dst / label if by_label and label and split != "3d" else dst
-            _store(self.files / file, sub / Path(file).name)
-        return len(rows)
-
-    def corrections_for(self, owner: str, folder: Path, ids: list[str], phrases: dict[str, str],
-                        labels: list[str]) -> dict:
-        """The owner's earlier corrections of the photos in a job's raw folder, as that job's corrections.json
-        (keys relative to the folder): a count's points for the classes the user marked on the photo before
-        (phrases: class id -> English phrase), named in "checked" when not every class of the job, a photo's
-        label when it was chosen among the very same labels."""
-        files = {str(f.relative_to(folder)): content_key(f) for f in _images(folder)}
-        out: dict = {"labels": {}, "points": {}, "checked": {}}
-        same = json.dumps(sorted(labels))
-        chosen = self.notes(owner, list(files.values()), CLASS, same)
-        marked = {c: self.notes(owner, list(files.values()), POINTS, p) for c, p in phrases.items()}
-        for rel, k in files.items():
-            if (n := chosen.get(k)) and n["source"] == "user":
-                out["labels"][rel] = n["data"]["label"]
-            mine = [c for c in ids if k in marked[c] and marked[c][k]["source"] == "user"]
-            if mine:
-                out["points"][rel] = [[x, y, c] for c in mine for x, y in marked[c][k]["data"]["points"]]
-                if len(mine) < len(ids):
-                    out["checked"][rel] = mine
-        return {k: v for k, v in unstack(out, ids).items() if v}
 
     def materialize_objects(self, owner: str, ids: list[str], dst: Path) -> list[str]:
         """Objects' GLB files into a job folder, with objects.json (name, concept, license, author, page) that
@@ -672,120 +668,152 @@ class Library:
         meta_path.write_text(json.dumps(meta, indent=1))
         return names
 
-    # Reading out -----------------------------------------------------------------------------------
+    # The owner's own changes -------------------------------------------------------------------------------
+
+    def rename(self, owner: str, kind: str, item: str, name: str) -> None:
+        table = {"dataset": "dataset", "object": "objects", "scene": "scenes", "kit": "kits"}[kind]
+        with self.lock:
+            self.db.execute(f"UPDATE {table} SET name = ? WHERE owner = ? AND id = ?", (name, owner, item))
+
+    def delete(self, owner: str, kind: str, item: str) -> int:
+        """Delete a dataset (with its photos and labelings), an object or a scene (kept deleted: syncing its jobs
+        again does not bring it back) or a kit. The item leaves every kit of the owner; returns how many kits it
+        was in."""
+        with self.lock:
+            if kind == "kit":
+                self.db.execute("DELETE FROM kits WHERE owner = ? AND id = ?", (owner, item))
+                return 0
+            if kind == "dataset":
+                files = [f for (f,) in self.db.execute("SELECT file FROM photo WHERE dataset_id = ?", (item,))]
+                self.db.execute("DELETE FROM dataset WHERE owner = ? AND id = ?", (owner, item))
+                self._drop_files(files)
+            else:
+                table = {"object": "objects", "scene": "scenes"}[kind]
+                self.db.execute(f"DELETE FROM {table} WHERE owner = ? AND id = ?", (owner, item))
+                shutil.rmtree(self.files / f"{table}/{item}", ignore_errors=True)
+            self.db.execute("DELETE FROM uses WHERE kind = ? AND item = ?", (kind, item))
+            self.db.execute("INSERT OR IGNORE INTO removed VALUES (?, ?)", (owner, item))
+            n = 0
+            for kid, refs in self.db.execute("SELECT id, refs FROM kits WHERE owner = ?", (owner,)).fetchall():
+                r = json.loads(refs)
+                if item in r.get(kind + "s", []):
+                    r[kind + "s"].remove(item)
+                    self.db.execute("UPDATE kits SET refs = ?, updated = ? WHERE id = ?", (json.dumps(r), time.time(), kid))
+                    n += 1
+            return n
+
+    def forget(self, owner: str, jobs: list[str]) -> None:
+        """Everything of an owner whose account is closed: datasets (and photo files no one else holds), objects,
+        scenes, kits and photo descriptions; `jobs`: the names of its jobs, whose records here go too."""
+        for kind, table in (("dataset", "dataset"), ("object", "objects"), ("scene", "scenes"), ("kit", "kits")):
+            for (item,) in self.db.execute(f"SELECT id FROM {table} WHERE owner = ?", (owner,)).fetchall():
+                self.delete(owner, kind, item)
+        with self.lock:
+            self.db.execute("DELETE FROM photo_description WHERE owner = ?", (owner,))
+            self.db.execute("DELETE FROM removed WHERE owner = ?", (owner,))
+        self.forget_jobs(jobs)
+
+    def forget_jobs(self, jobs: list[str]) -> None:
+        """The records of deleted jobs. What they gave the library (marks, objects, scenes) stays."""
+        with self.lock:
+            for job in jobs:
+                self.db.execute("DELETE FROM uses WHERE job = ?", (job,))
+                self.db.execute("DELETE FROM synced WHERE job = ?", (job,))
+                self.db.execute("DELETE FROM model WHERE job = ?", (job,))
+
+    def save_kit(self, owner: str, kit: str | None, name: str, refs: dict[str, list[str]]) -> str:
+        """Create (kit None) or replace a kit. Only references the owner holds are kept."""
+        clean = {f"{k}s": [i for i in dict.fromkeys(refs.get(f"{k}s", [])) if self.owns(owner, k, i)]
+                 for k in ("dataset", "object", "scene")}
+        now = time.time()
+        with self.lock:
+            if kit is None:
+                kit = _id(owner, "kit", str(time.time_ns()))
+                self.db.execute("INSERT INTO kits VALUES (?, ?, ?, ?, ?, ?)", (kit, owner, name, json.dumps(clean), now, now))
+            else:
+                self.db.execute("UPDATE kits SET name = ?, refs = ?, updated = ? WHERE owner = ? AND id = ?",
+                                (name, json.dumps(clean), now, owner, kit))
+        return kit
+
+    # What is known about the photos ------------------------------------------------------------------------
+
+    def describe(self, owner: str, photos: list[Path], classes: str, run, model: str | None = None) -> list[dict]:
+        """Descriptions of the scene in these photos for these classes (scene_profile.describe), the kept ones
+        reused: run(photos) is called only for those without one and its answers are kept (run None: only the kept
+        ones). A photo the model could not describe is asked again next time."""
+        keys = {f: content_key(f) for f in photos}
+        kept = {}
+        for k, data in self.db.execute(
+                f"SELECT content_hash, data FROM photo_description WHERE owner = ? AND classes = ? AND content_hash IN "
+                f"({','.join('?' * len(keys))})", (owner, classes, *keys.values())) if keys else []:
+            kept[k] = json.loads(data)
+        todo = [f for f in photos if keys[f] not in kept]
+        out = [{**kept[keys[f]], "photo": f.name} for f in photos if keys[f] in kept]
+        if todo and run is not None:
+            # Answers come back by file name: one name in two subfolders cannot tell its photos apart, so those
+            # answers are used but not kept (asked again next time) rather than kept on the wrong photo.
+            names = [f.name for f in todo]
+            by_name = {f.name: f for f in todo if names.count(f.name) == 1}
+            for d in run(todo):
+                f = by_name.get(d.get("photo"))
+                if f is not None:
+                    with self.lock:
+                        self.db.execute("INSERT OR REPLACE INTO photo_description VALUES (?, ?, ?, ?, ?, ?)",
+                                        (owner, keys[f], classes, model,
+                                         json.dumps({k: v for k, v in d.items() if k != "photo"}), time.time()))
+                if d.get("photo") in names:
+                    out.append(d)
+        return out
+
+    def profile_stale(self, owner: str, ds: str) -> bool:
+        """Has the dataset no profile, or new photos the profile has not seen while it looked at fewer than
+        it could?"""
+        from .scene_profile import SAMPLE
+        if not self.owns(owner, "dataset", ds):
+            return False
+        n = self.db.execute("SELECT COUNT(*) FROM photo WHERE dataset_id = ?", (ds,)).fetchone()[0]
+        row = self.db.execute("SELECT photos FROM profile WHERE dataset_id = ?", (ds,)).fetchone()
+        if not n:
+            return False
+        return row is None or (row[0] != n and row[0] < SAMPLE)
+
+    def profile_dataset(self, owner: str, ds: str, run, model: str | None = None, fresh: bool = False) -> dict | None:
+        """A dataset's profile before any goal (scene_profile.GENERAL): what objects show up, the backgrounds,
+        the places and the light, from a sample of its photos. run(photos) describes photos; the descriptions
+        are kept (fresh: made anew). None when no photo could be described."""
+        from . import scene_profile
+        if not self.owns(owner, "dataset", ds):
+            return None
+        rows = self.db.execute("SELECT content_hash, file FROM photo WHERE dataset_id = ?", (ds,)).fetchall()
+        files = scene_profile.sample([self.files / f for _, f in rows])
+        if fresh:  # the user asked to look again: the kept descriptions are not reused
+            with self.lock:
+                self.db.executemany("DELETE FROM photo_description WHERE owner = ? AND content_hash = ? AND classes = ?",
+                                    [(owner, f.stem, scene_profile.GENERAL) for f in files])
+        found = self.describe(owner, files, scene_profile.GENERAL, run, model)
+        if not found:
+            return None
+        prof = scene_profile.aggregate(found)
+        text = scene_profile.dataset_summary(prof, len(found))
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO profile VALUES (?, ?, ?, ?, ?)",
+                            (ds, json.dumps(prof), text, len(rows), time.time()))
+        return {"data": prof, "summary": text}
+
+    def profile(self, owner: str, ds: str) -> dict | None:
+        row = self.db.execute("SELECT r.data, r.summary, r.photos, r.created FROM profile r JOIN dataset d "
+                              "ON d.id = r.dataset_id WHERE d.owner = ? AND d.id = ?", (owner, ds)).fetchone()
+        if row is None:
+            return None
+        sug = json.loads(row[0]).get("suggest", {})
+        return {"summary": row[1], "photos": row[2], "created": row[3], "objects": sug.get("seen", []),
+                "backgrounds": sug.get("backgrounds", [])}
+
+    # Reading out -----------------------------------------------------------------------------------------
 
     def _used(self, kind: str, item: str) -> list[str]:
         return [j for (j,) in self.db.execute("SELECT job FROM uses WHERE kind = ? AND item = ? ORDER BY job",
                                               (kind, item)).fetchall()]
-
-    def labelings(self, ds: str) -> list[dict]:
-        """How earlier jobs had the teacher label this dataset, newest first: {job, task, classes (ids), phrases
-        (count: the English phrase the teacher looked for, per class), background, checked (photos the user
-        corrected), models}. Only jobs that went past the teacher's check
-        (a check left open is no labeling the user accepted). A job with the same task and classes gets the
-        same labels again without a check (server.follow_labeling). models: per class or prop of the job, its
-        3D model search queries and the models kept for it, so a new job can find them again."""
-        out = []
-        # Labels the user deleted (forget_labels) are no labeling any more: only jobs already taken in (synced)
-        # are judged by them, a job that just ended may not be.
-        row = self.db.execute("SELECT owner FROM datasets WHERE id = ?", (ds,)).fetchone()
-        have = set(self.db.execute("SELECT DISTINCT kind, ref FROM notes WHERE owner = ? AND key IN "
-                                   "(SELECT key FROM photos WHERE dataset = ?)", (row[0] if row else "", ds)).fetchall())
-        synced = {j for (j,) in self.db.execute("SELECT job FROM synced").fetchall()}
-        for job in self._used("dataset", ds):
-            root = self.root.parent / "jobs" / job
-            spec = _load(root / "request.json")
-            if not spec or not (spec.get("user_data") or {}).get("raw") or (root / "calibration.json").exists() \
-                    or not (root / "label" / "verdicts.json").exists():
-                continue
-            fixes = _load(root / "input" / "corrections.json") or {}
-            kept = dict(self.db.execute("SELECT o.concept, SUM(o.kept) FROM uses u JOIN objects o ON o.id = u.item "
-                                        "WHERE u.job = ? AND u.kind = 'object' GROUP BY o.concept", (job,)).fetchall())
-            models = {}
-            for c in [*spec.get("classes", []), *spec.get("props", [])]:
-                queries = (c.get("assets") or {}).get("queries") if "assets" in c else c.get("queries")
-                if queries:
-                    models[c["id"]] = {"queries": queries, "kept": int(kept.get(c["id"]) or 0)}
-            ids = [c["id"] for c in spec.get("classes", [])]
-            learned = (_load(root / "label" / "teacher.json") or {}).get("phrases") or {}
-            if job in synced:
-                if spec.get("task") == "count":
-                    ids = [c for c in ids if {(BOXES, learned.get(c, [c.replace("_", " ")])[0]),
-                                              (POINTS, learned.get(c, [c.replace("_", " ")])[0])} & have]
-                elif (CLASS, json.dumps(sorted(set(ids) | ({spec["background_class"]} if spec.get("background_class")
-                                                              else set())))) not in have:
-                    ids = []
-                if not ids:
-                    continue
-            out.append({"job": job, "task": spec.get("task"), "classes": ids,
-                        "phrases": {c: learned.get(c, [c.replace("_", " ")])[0] for c in ids},
-                        "background": spec.get("background_class"),
-                        "checked": len(set(fixes.get("labels") or {}) | set(fixes.get("points") or {})),
-                        "models": models, "t": (root / "request.json").stat().st_mtime})
-        return sorted(out, key=lambda d: -d["t"])
-
-    def label_phrases(self, owner: str, ds: str) -> dict[str, int]:
-        """The English phrases the dataset's photos are labeled for (the teacher's boxes or the user's marks, under
-        their current names: renamed labels too) and on how many photos: {phrase: photos}."""
-        return dict(self.db.execute(
-            "SELECT ref, COUNT(DISTINCT key) FROM notes WHERE owner = ? AND kind IN (?, ?) AND key IN "
-            "(SELECT key FROM photos WHERE dataset = ?) GROUP BY ref ORDER BY ref", (owner, BOXES, POINTS, ds)).fetchall())
-
-    def known_labels(self, owner: str, folder: Path, phrases: dict[str, str], labels: list[str]) -> dict[str, int]:
-        """Photos of the folder the teacher (or the user) already labeled, per class: a count's boxes or points for
-        the class's phrase (phrases: class id -> English phrase), else a label among these very labels (the
-        same number for every label)."""
-        keys = [content_key(f) for f in _images(folder)]
-        if phrases:
-            return {c: len(set(self.notes(owner, keys, BOXES, p)) | set(self.notes(owner, keys, POINTS, p)))
-                    for c, p in phrases.items()}
-        return dict.fromkeys(labels, len(self.notes(owner, keys, CLASS, json.dumps(sorted(labels)))))
-
-    def kept_boxes(self, owner: str, folder: Path, phrases: dict[str, str]) -> dict:
-        """The teacher's kept marks on the photos of a job's raw folder, for these classes (phrases: class id ->
-        English phrase), as the label stage takes them (stages.label.KEPT): {"photos": {key in the folder:
-        {class: [objects]}}, "thresholds": {class: the threshold most of them were marked with}}. A photo with
-        an empty list was looked at and has none."""
-        files = {str(f.relative_to(folder)): content_key(f) for f in _images(folder)}
-        photos: dict[str, dict] = {}
-        thresholds: dict[str, float] = {}
-        for c, p in phrases.items():
-            found = self.notes(owner, list(files.values()), BOXES, p)
-            seen: dict[float, int] = {}
-            for rel, k in files.items():
-                if (n := found.get(k)) is None:
-                    continue
-                photos.setdefault(rel, {})[c] = [
-                    {"x": round((b["box"][0] + b["box"][2]) / 2, 4), "y": round((b["box"][1] + b["box"][3]) / 2, 4),
-                     "class": c, "box": b["box"], "score": b.get("score")} for b in n["data"].get("boxes", [])]
-                if (t := n["data"].get("threshold")) is not None:
-                    seen[t] = seen.get(t, 0) + 1
-            if seen:
-                thresholds[c] = max(seen, key=seen.get)
-        # One object kept under several classes (marks from before the teacher gave each object one class, 1b61d43:
-        # every bin was every color at once) is no label of those classes: the teacher looks again there.
-        from .teacher import same_objects
-        for rel, by_class in photos.items():
-            objs = [o for c in by_class for o in by_class[c]]
-            for g in same_objects(objs):
-                for i in g:
-                    by_class.pop(objs[i]["class"], None)
-        return {"photos": {rel: v for rel, v in photos.items() if v}, "thresholds": thresholds}
-
-    def datasets(self, owner: str) -> list[dict]:
-        out = []
-        for ds, name, created, labeled in self.db.execute(
-                "SELECT id, name, created, labeled FROM datasets WHERE owner = ? ORDER BY created DESC", (owner,)):
-            splits = dict(self.db.execute("SELECT split, COUNT(*) FROM photos WHERE dataset = ? GROUP BY split", (ds,)))
-            n = self.db.execute("SELECT COUNT(DISTINCT key) FROM photos WHERE dataset = ?", (ds,)).fetchone()[0]
-            sample = [k for (k,) in self.db.execute("SELECT key FROM photos WHERE dataset = ? ORDER BY key LIMIT 4",
-                                                    (ds,))]
-            labels = [l for (l,) in self.db.execute("SELECT DISTINCT label FROM photos WHERE dataset = ? AND label "
-                                                    "IS NOT NULL ORDER BY label", (ds,))]
-            out.append({"id": ds, "name": name, "created": created, "labeled": bool(labeled),
-                        "photos": n, "splits": splits, "labels": labels, "sample": sample,
-                        "jobs": self._used("dataset", ds), "profile": self.profile(owner, ds)})
-        return out
 
     def objects(self, owner: str) -> list[dict]:
         rows = self.db.execute("SELECT id, name, concept, source, file, thumb, kept, info, created FROM objects "
@@ -809,46 +837,31 @@ class Library:
 
     def dataset_card(self, owner: str, ds: str) -> dict | None:
         """What the interview learns of one dataset when it looks at it (interview "dataset" action), read now so
-        changes made on the Datasets page count: its photos, the labels on them per English name (how many photos
-        the teacher marked, how many the user checked), the label sets photos were sorted into, the models made with
-        it and their 3D model searches, and what its photos show."""
-        d = next((x for x in self.datasets(owner) if x["id"] == ds), None)
-        if d is None:
+        changes made on the Datasets page count: its photos, its labelings (task, classes with their English
+        names, photos reviewed by the user, models trained with it) and what its photos show."""
+        if not self.owns(owner, "dataset", ds):
             return None
-        rows = self.db.execute("SELECT kind, ref, source, COUNT(DISTINCT key) FROM notes WHERE owner = ? AND kind IN "
-                               "(?, ?, ?) AND key IN (SELECT key FROM photos WHERE dataset = ?) GROUP BY kind, ref, source",
-                               (owner, BOXES, POINTS, CLASS, ds)).fetchall()
-        count: dict[str, dict] = {}
-        sets: dict[str, dict] = {}
-        for kind, ref, source, n in rows:
-            if kind == CLASS:
-                c = sets.setdefault(ref, {"labels": json.loads(ref), "photos_marked_by_teacher": 0,
-                                          "photos_checked_by_user": 0})
-            else:
-                c = count.setdefault(ref, {"name": ref, "photos_marked_by_teacher": 0, "photos_checked_by_user": 0})
-            key = "photos_checked_by_user" if source == "user" else "photos_marked_by_teacher"
-            c[key] = max(c[key], n)
-        models = [{"model": l["job"], "task": TASK_NAME.get(l["task"], l["task"]), "classes": l["classes"],
-                   "3d_model_searches": {k: {"queries": m["queries"], "models_kept": m["kept"]}
-                                         for k, m in l["models"].items()}}
-                  for l in self.labelings(ds)[:3]]
-        return {"id": ds, "name": d["name"], "photos": d["photos"],
-                "sorted_into_folders": d["labels"] or None,
-                "count_labels": sorted(count.values(), key=lambda c: c["name"]),
-                "photo_labels": list(sets.values()),
-                "models_made_with_it": models,
-                "what_its_photos_show": d["profile"]["summary"] if d["profile"] else None}
+        name, = self.db.execute("SELECT name FROM dataset WHERE id = ?", (ds,)).fetchone()
+        n = self.db.execute("SELECT COUNT(*) FROM photo WHERE dataset_id = ?", (ds,)).fetchone()[0]
+        prof = self.profile(owner, ds)
+        return {"id": ds, "name": name, "photos": n,
+                "labelings": [{"id": l["id"], "name": l["name"], "task": l["task"],
+                               "classes": [{"key": c["key"], "names": c["phrases"], "description": c["description"]}
+                                           for c in l["classes"]],
+                               "photos_reviewed_by_user": l["reviewed"], "photos_with_marks": l["marked"],
+                               "models": l["models"]} for l in self.labelings(ds)],
+                "what_its_photos_show": prof["summary"] if prof else None}
 
     def for_chat(self, owner: str) -> tuple[str, set[str]]:
         """What the interview is told of the library up front (interview.LIBRARY): an index of every kit with its
-        items and the datasets outside kits. A dataset's labels and models come when the interview looks at it
+        items and the datasets outside kits. A dataset's labelings come when the interview looks at it
         (dataset_card). Objects outside kits are left out (hundreds of them, kept from earlier jobs). Returns the
         text and the ids it lists."""
         datasets = {d["id"]: d for d in self.datasets(owner)}
         objects = {o["id"]: o for o in self.objects(owner)}
 
         def ds_line(d):
-            return f'dataset "{d["name"]}" (id {d["id"]}, {d["photos"]} photos)'
+            return f'dataset "{d["name"]}" (id {d["id"]}, {d["photos"]} photos, {len(d["labelings"])} labelings)'
 
         def obj_line(o):
             return f'object "{o["name"]}" (id {o["id"]}, a {o["concept"].replace("_", " ")})'
@@ -865,10 +878,13 @@ class Library:
             ids |= {d["id"] for d in loose}
         return ("\n".join(lines) if lines else "- nothing yet"), ids
 
-    def photo_file(self, owner: str, key: str) -> Path | None:
-        row = self.db.execute("SELECT p.file FROM photos p JOIN datasets d ON d.id = p.dataset "
-                              "WHERE d.owner = ? AND p.key = ? LIMIT 1", (owner, key)).fetchone()
-        return self.files / row[0] if row else None
+    def materialize_dataset(self, owner: str, ds: str, dst: Path) -> int:
+        """A dataset's photos as a plain folder (hard links), named by photo id: the chat looks at them."""
+        rows = self.db.execute("SELECT p.id, p.file FROM photo p JOIN dataset d ON d.id = p.dataset_id "
+                               "WHERE d.owner = ? AND d.id = ?", (owner, ds)).fetchall()
+        for pid, file in rows:
+            _store(self.files / file, dst / f"{pid}{Path(file).suffix}")
+        return len(rows)
 
     def card_file(self, owner: str, kind: str, item: str) -> Path | None:
         table = {"object": "objects", "scene": "scenes"}[kind]
@@ -889,7 +905,11 @@ def model_summary(job: Job, running: bool) -> dict:
         real = report.get("real_test") or report.get("real_accuracy") or {}
         model = {"metric": real.get("metric") or report.get("metric"), "score": test.get("score", real.get("mean")),
                  "kb": report.get("model_kb"), "hardware": report.get("hardware")}
+    snap = _load(job.input / KEEP) or {}
     return {"job": job.name, "title": title.read_text().strip() if title.exists() else None, "created": created,
             "running": running, "task": spec.get("task"),
             "hardware": spec.get("hardware"), "classes": [c.get("id") for c in spec.get("classes", [])],
+            "labeling": {"id": snap["labeling"], "name": snap.get("name"),
+                         "reviewed": sum(p["reviewed"] for p in snap["photos"].values()),
+                         "photos": len(snap["photos"])} if snap.get("labeling") else None,
             "model": model}

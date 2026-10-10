@@ -1,66 +1,49 @@
-import { ArrowLeft, Pencil, RefreshCw, Tag, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowLeft, Copy, GraduationCap, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { forgetLabels, getDatasetNotes, getLibrary, labelDataset, libraryPhotoUrl, renameLabels, reprofileDataset,
-         type DatasetNotes, type DatasetProfile, type PhotoNote } from "../api";
+import { copyLabeling, createLabeling, deleteLabeling, getDataset, libraryPhotoUrl, renameLabeling, reprofileDataset,
+         type DatasetPage, type DatasetProfile, type Labeling } from "../api";
 import { ConfirmDialog, Dialog, MoreMenu, NameDialog, field, menuItem } from "../components/library";
 import { Badge, Button, Card, Notice, Spinner, cx } from "../components/ui";
 
-// One dataset: what was seen in it (its profile) and every photo with what is known about it, the teacher's boxes
-// and the user's marks drawn on it. Kept by photo content, so a label made once serves every model.
+// One dataset (docs/plan_etiquetado.md): what is in its photos, its labelings (each a card with its classes and
+// how many photos you reviewed) and its photos. Classes never show on their own: always inside their labeling.
 
 const PAGE = 60;
+type Tab = "labelings" | "photos";
 
-// A label's name for the filter: the phrase the teacher looked for, or the labels a class was chosen among.
-const refName = (n: PhotoNote) => n.kind === "class" ? JSON.parse(n.ref).join(" / ") : n.ref;
+export const classHue = (i: number) => (i * 137) % 360;  // the class's color, by its place in the labeling
 
 export function Dataset() {
   const { id = "" } = useParams();
-  const [d, setD] = useState<DatasetNotes | null>(null);
-  const [name, setName] = useState("");
+  const [d, setD] = useState<DatasetPage | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [show, setShow] = useState<string>("");
+  const [tab, setTab] = useState<Tab>("labelings");
   const [limit, setLimit] = useState(PAGE);
-  const [labeling, setLabeling] = useState(false);
-  const [editing, setEditing] = useState<"rename" | "delete" | null>(null);  // the labeling shown
-  const load = useCallback(() => {
-    getDatasetNotes(id).then(setD).catch((e) => setError(e.message));
-  }, [id]);
-  useEffect(() => {
-    load();
-    getLibrary().then((l) => setName(l.datasets.find((x) => x.id === id)?.name ?? "")).catch(() => {});
-  }, [id, load]);
+  const [creating, setCreating] = useState(false);
+  const load = useCallback(() => { getDataset(id).then(setD).catch((e) => setError(e.message)); }, [id]);
+  useEffect(load, [load]);
   useEffect(() => {  // the profile is being made: look again in a while
     if (!d?.profiling) return;
     const t = setTimeout(load, 5000);
     return () => clearTimeout(t);
   }, [d, load]);
 
-  // The labelings this dataset has, by kind and phrase: the filter's choices.
-  const kinds = useMemo(() => {
-    const out = new Map<string, string>();
-    for (const notes of Object.values(d?.notes ?? {}))
-      for (const n of notes) if (n.kind !== "scene") out.set(`${n.kind === "points" ? "boxes" : n.kind}:${n.ref}`, refName(n));
-    return [...out.entries()];
-  }, [d]);
-  useEffect(() => { if (!show && kinds.length) setShow(kinds[0][0]); }, [kinds, show]);
-
   if (error) return <div className="py-6"><Notice tone="bad">{error}</Notice></div>;
   if (!d) return <div className="flex justify-center py-16"><Spinner /></div>;
-  const [kind, ref] = show ? [show.slice(0, show.indexOf(":")), show.slice(show.indexOf(":") + 1)] : ["", ""];
-  const labeled = d.keys.filter((k) => (d.notes[k] ?? []).some((n) => n.ref === ref)).length;
   const p = d.profile;
+  const tabs: [Tab, string][] = [["labelings", `Labelings (${d.labelings.length})`], ["photos", `Photos (${d.photos})`]];
   return (
     <div className="space-y-6 py-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
-       <div>
-        <Link to="/app/datasets" className="inline-flex items-center gap-1 text-sm text-muted hover:text-ink"><ArrowLeft className="h-4 w-4" /> Datasets</Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">{name || "Dataset"}</h1>
-        <p className="mt-1 text-sm text-muted">{d.keys.length} photo{d.keys.length === 1 ? "" : "s"}</p>
-       </div>
-       <Button size="sm" className="h-10" onClick={() => setLabeling(true)}><Tag className="h-4 w-4" /> Label</Button>
+        <div>
+          <Link to="/app/datasets" className="inline-flex items-center gap-1 text-sm text-muted hover:text-ink"><ArrowLeft className="h-4 w-4" /> Datasets</Link>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight">{d.name}</h1>
+          <p className="mt-1 text-sm text-muted">{d.photos} photo{d.photos === 1 ? "" : "s"}</p>
+        </div>
+        <Button size="sm" className="h-10" onClick={() => setCreating(true)}><Plus className="h-4 w-4" /> New labeling</Button>
       </div>
-      {labeling && <LabelDialog id={id} profile={d.profile} onClose={() => setLabeling(false)} />}
+      {creating && <NewLabeling id={id} profile={p} onClose={() => setCreating(false)} onMade={load} />}
 
       <Card className="space-y-3 p-5">
         <div className="flex items-center justify-between gap-3">
@@ -75,92 +58,106 @@ export function Dataset() {
             {p.objects.map((o) => <Badge key={o.name} tone="brand">{o.name} · {Math.round(o.share * 100)}% · ~{o.count}</Badge>)}
           </div>
           {p.backgrounds.length > 0 && <p className="text-sm"><span className="text-muted">Backgrounds:</span> {p.backgrounds.join("; ")}</p>}
-          {p.summary.includes("Places:") && <p className="text-sm text-muted">{p.summary.slice(p.summary.indexOf("Places:"))}</p>}
         </>}
       </Card>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-medium">Labels</span>
-        {kinds.length === 0 && <span className="text-sm text-muted">None yet: a model trained on these photos labels them.</span>}
-        {kinds.map(([k, label]) => (
-          <button key={k} onClick={() => setShow(k)}
-                  className={cx("rounded-full border px-3 py-1 text-sm", show === k ? "border-brand-500 bg-brand-50 text-brand-700" : "border-line hover:border-brand-500")}>
-            {k.startsWith("class:") ? "Class" : "Boxes"}: {label}
+      <div className="flex gap-1 border-b border-line" role="tablist">
+        {tabs.map(([k, label]) => (
+          <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)}
+                  className={cx("-mb-px border-b-2 px-3 py-2 text-sm", tab === k ? "border-brand-600 font-semibold text-ink" : "border-transparent text-muted hover:text-ink")}>
+            {label}
           </button>
         ))}
-        {show && <span className="text-sm text-muted">{labeled} of {d.keys.length} photos labeled</span>}
-        {show && <MoreMenu items={(close) => <>
-          {kind === "boxes" && <button className={menuItem} onClick={() => { close(); setEditing("rename"); }}><Pencil className="h-4 w-4" /> Rename</button>}
-          <button className={cx(menuItem, "text-red-600")} onClick={() => { close(); setEditing("delete"); }}><Trash2 className="h-4 w-4" /> Delete</button>
-        </>} />}
       </div>
-      {editing === "rename" && (
-        <NameDialog title="Rename these labels" name={ref} onClose={() => setEditing(null)}
-                    hint={<>The English name the teacher looked for. A model that looks for the new name reuses these labels;
-                      name what the camera sees, like "blue bin". If that name has labels already, a photo labeled for both keeps those.</>}
-                    save={(to) => renameLabels(id, ref, to).then(() => { setShow(`boxes:${to.toLowerCase()}`); load(); })} />
+
+      {tab === "labelings" && (
+        d.labelings.length === 0
+          ? <Card className="p-6 text-sm text-muted">No labelings yet. A labeling is a list of things to find (or to sort the photos
+              by) with their marks on every photo. Make one with "New labeling", or a model trained on these photos makes it.</Card>
+          : <div className="space-y-3">{d.labelings.map((l) => <LabelingCard key={l.id} d={d} l={l} onChanged={load} />)}</div>
       )}
-      {editing === "delete" && (
-        <ConfirmDialog title={`Delete the labels "${kinds.find(([k]) => k === show)?.[1] ?? ref}"?`} action="Delete"
-                       onClose={() => setEditing(null)} run={() => forgetLabels(id, kind, ref).then(() => { setShow(""); load(); })}>
-          The teacher's marks and your corrections for these labels go from every photo of this dataset (and from the same
-          photos in your other datasets). Models already trained keep working; a new model labels them again.
+
+      {tab === "photos" && <>
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+          {d.photo_ids.slice(0, limit).map((pid) => (
+            <img key={pid} src={libraryPhotoUrl(pid)} alt="" loading="lazy" className="aspect-square w-full rounded-lg bg-gray-100 object-cover" />
+          ))}
+        </div>
+        {limit < d.photo_ids.length && <div className="flex justify-center"><Button variant="ghost" onClick={() => setLimit(limit + PAGE)}>Show more</Button></div>}
+      </>}
+    </div>
+  );
+}
+
+// A labeling as a card: its classes inside it, how many photos you reviewed, and what to do with it.
+function LabelingCard({ d, l, onChanged }: { d: DatasetPage; l: Labeling; onChanged: () => void }) {
+  const navigate = useNavigate();
+  const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
+  const open = `/app/datasets/${d.id}/labelings/${l.id}`;
+  const reviewed = l.photos ? l.reviewed / l.photos : 0;
+  const marked = l.photos ? Math.max(0, l.marked - l.reviewed) / l.photos : 0;
+  const train = () => navigate(`/app?text=${encodeURIComponent(
+    `Train a model with the labeling "${l.name}" (id ${l.id}) of my dataset "${d.name}".`)}`, { state: { fresh: Date.now() } });
+  return (
+    <Card className="space-y-3 p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <Link to={open} className="font-semibold hover:underline">{l.name}</Link>
+        <span className="text-sm text-muted">{l.task === "count" ? "Finds and counts things" : "Sorts the photos"}
+          {l.models.length > 0 && ` · used by ${l.models.length} model${l.models.length === 1 ? "" : "s"}`}</span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {l.classes.map((c, i) => (
+          <span key={c.id} className="inline-flex items-center gap-1.5 rounded-md bg-gray-100 px-2 py-0.5 text-sm">
+            <i className="h-2.5 w-2.5 rounded-full" style={{ background: `hsl(${classHue(i)} 70% 45%)` }} />{c.key}
+          </span>
+        ))}
+      </div>
+      <div className="flex h-2 overflow-hidden rounded-full bg-gray-100" title={`${l.reviewed} reviewed, ${l.marked} with marks`}>
+        <i className="block bg-brand-600" style={{ width: `${reviewed * 100}%` }} />
+        <i className="block bg-brand-200" style={{ width: `${marked * 100}%` }} />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm text-muted">{l.reviewed} of {l.photos} reviewed by you · {l.marked} with marks</span>
+        <span className="flex-1" />
+        <Button size="sm" variant="secondary" onClick={() => navigate(open)}>Open</Button>
+        <Button size="sm" variant="secondary" onClick={train}><GraduationCap className="h-4 w-4" /> Train a model</Button>
+        <MoreMenu items={(close) => <>
+          <button className={menuItem} onClick={() => { close(); setDialog("rename"); }}><Pencil className="h-4 w-4" /> Rename</button>
+          <button className={menuItem} onClick={() => { close(); copyLabeling(l.id).then(onChanged); }}><Copy className="h-4 w-4" /> Copy</button>
+          <button className={cx(menuItem, "text-red-600")} onClick={() => { close(); setDialog("delete"); }}><Trash2 className="h-4 w-4" /> Delete</button>
+        </>} />
+      </div>
+      {dialog === "rename" && <NameDialog title="Rename labeling" name={l.name} onClose={() => setDialog(null)}
+                                          save={(v) => renameLabeling(l.id, v).then(onChanged)} />}
+      {dialog === "delete" && (
+        <ConfirmDialog title={`Delete "${l.name}"?`} action="Delete" onClose={() => setDialog(null)}
+                       run={() => deleteLabeling(l.id).then(onChanged)}>
+          Its classes and every mark on its photos are deleted, yours too. The photos stay in the dataset, and models
+          already trained keep working.
         </ConfirmDialog>
       )}
-
-      {/* items-start: each photo keeps its own height, so its boxes (drawn over the whole tile) fit the photo
-          and not the tallest one of the row. */}
-      <div className="grid grid-cols-2 items-start gap-3 sm:grid-cols-3 lg:grid-cols-4">
-        {d.keys.slice(0, limit).map((key) => <Photo key={key} k={key} notes={(d.notes[key] ?? []).filter((n) => n.ref === ref && (kind === "class" ? n.kind === "class" : n.kind !== "class"))} />)}
-      </div>
-      {limit < d.keys.length && <div className="flex justify-center"><Button variant="ghost" onClick={() => setLimit(limit + PAGE)}>Show more</Button></div>}
-    </div>
+    </Card>
   );
 }
 
-// A photo with its labels drawn on it: the teacher's boxes, the user's points (which win), or its class.
-function Photo({ k, notes }: { k: string; notes: PhotoNote[] }) {
-  const user = notes.find((n) => n.source === "user");
-  const model = notes.find((n) => n.source === "model");
-  const cls = notes.find((n) => n.kind === "class");
-  return (
-    <div className="relative overflow-hidden rounded-xl bg-gray-100">
-      <img src={libraryPhotoUrl(k)} alt="" loading="lazy" className="block h-auto w-full" />
-      <svg viewBox="0 0 1 1" preserveAspectRatio="none" className="pointer-events-none absolute inset-0 h-full w-full">
-        {!user && model?.kind === "boxes" && (model.data.boxes as { box: number[] }[]).map((b, i) => (
-          <rect key={i} x={b.box[0]} y={b.box[1]} width={b.box[2] - b.box[0]} height={b.box[3] - b.box[1]}
-                fill="none" stroke="#7a6bfb" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-        ))}
-        {user?.kind === "points" && (user.data.points as number[][]).map(([x, y], i) => (
-          <circle key={i} cx={x} cy={y} r={0.018} fill="#22c55e" stroke="white" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
-        ))}
-      </svg>
-      {(user || cls) && (
-        <div className="absolute bottom-1.5 left-1.5 flex gap-1">
-          {cls && <Badge tone={cls.source === "user" || user ? "good" : "brand"}>{(user ?? cls).data.label ?? ""}</Badge>}
-          {user && <Badge tone="good">yours</Badge>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Ask the teacher to label the dataset: count (a box on every thing named) or classify (one name per photo).
-// The names the profile saw are offered as a start.
-function LabelDialog({ id, profile, onClose }: { id: string; profile: DatasetProfile | null; onClose: () => void }) {
+// A new labeling: find things (a mark on every one) or sort photos (one class each). The things the profile saw
+// are offered as a start. The teacher can start on it right away.
+function NewLabeling({ id, profile, onClose, onMade }:
+  { id: string; profile: DatasetProfile | null; onClose: () => void; onMade: () => void }) {
   const navigate = useNavigate();
   const [task, setTask] = useState<"count" | "classify">("count");
+  const [name, setName] = useState("");
   const [names, setNames] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const list = names.split(",").map((n) => n.trim()).filter(Boolean);
-  const go = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!list.length) { setError("Write what to label first."); return; }
+  const go = async (teach: boolean) => {
+    if (!list.length) { setError("Write the classes first."); return; }
     setBusy(true);
     try {
-      const r = await labelDataset(id, task, list);
-      navigate(`/app/job/${r.job}`);
+      const r = await createLabeling(id, name.trim(), task, list, teach);
+      if (r.job) navigate(`/app/job/${r.job}`);
+      else { onMade(); onClose(); }
     } catch (err: any) {
       setError(err.message);
       setBusy(false);
@@ -169,17 +166,17 @@ function LabelDialog({ id, profile, onClose }: { id: string; profile: DatasetPro
   const add = (n: string) => setNames(list.includes(n) ? names : [...list, n].join(", "));
   const row = "flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 text-sm";
   return (
-    <Dialog title="Label these photos" onClose={onClose}>
-      <form onSubmit={go} className="space-y-4">
-        {([["count", "Find things", "A box on every one, to count or detect them."],
-           ["classify", "Sort photos", "Each photo gets one of the names."]] as const).map(([k, title, text]) => (
+    <Dialog title="New labeling" onClose={onClose}>
+      <form onSubmit={(e) => { e.preventDefault(); go(true); }} className="space-y-4">
+        {([["count", "Find things", "A mark on every one, to count or detect them."],
+           ["classify", "Sort photos", "Each photo gets one of the classes."]] as const).map(([k, title, text]) => (
           <label key={k} className={cx(row, task === k ? "border-brand-500 bg-brand-50" : "border-line")}>
             <input type="radio" checked={task === k} onChange={() => setTask(k)} className="mt-0.5 accent-brand-600" />
             <span><span className="font-medium">{title}</span><br /><span className="text-muted">{text}</span></span>
           </label>
         ))}
-        <input value={names} onChange={(e) => setNames(e.target.value)} className={field} aria-label="Names"
-               placeholder={task === "count" ? "What to find, e.g. bottle, cup" : "The names, e.g. full, empty"} />
+        <input value={names} onChange={(e) => setNames(e.target.value)} className={field} aria-label="Classes"
+               placeholder={task === "count" ? "What to find, e.g. blue bin, yellow bin" : "The classes, e.g. full, empty"} />
         {profile && profile.objects.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {profile.objects.map((o) => (
@@ -188,9 +185,15 @@ function LabelDialog({ id, profile, onClose }: { id: string; profile: DatasetPro
             ))}
           </div>
         )}
-        <p className="text-xs text-muted">The teacher marks a few photos first so you can check it understood. Then it labels them all.</p>
+        <input value={name} onChange={(e) => setName(e.target.value)} className={field} aria-label="Name"
+               placeholder="Its name (optional), e.g. Bins by color" />
+        <p className="text-xs text-muted">Name each class by what the camera sees (a color, a shape), not by what it means.
+          The teacher marks a few photos first so you can check it understood, then it marks them all.</p>
         {error && <Notice tone="bad">{error}</Notice>}
-        <Button type="submit" className="w-full" disabled={busy}>{busy ? "Starting..." : "Start"}</Button>
+        <div className="flex gap-2">
+          <Button type="button" variant="secondary" className="flex-1" disabled={busy} onClick={() => go(false)}>Just create it</Button>
+          <Button type="submit" className="flex-1" disabled={busy}>{busy ? "Starting..." : "Create and label"}</Button>
+        </div>
       </form>
     </Dialog>
   );

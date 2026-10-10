@@ -29,10 +29,7 @@ export default function ReviewPanel({ job, onRerun, calibrating = false, labelin
   const media = (p: string, big = false) => API.mediaUrl(job, p, big);
   const hue = (c: string) => (review.labels.indexOf(c) * 137) % 360;
   const marksOf = (key: string) => fixes.points[key] ?? review.photos.find((x) => x.key === key)?.points ?? [];
-  // The check of a count may ask about some classes only (the others were checked before): only those are shown
-  // and edited, the marks of the others go back unchanged.
-  const only = calibrating && review.check?.length ? new Set(review.check) : null;
-  const shown = (points: Point[]) => only ? points.filter((p) => only.has(p[2])) : points;
+  const shown = (points: Point[]) => points;
   const n = Object.keys(fixes.labels).length + Object.keys(fixes.assets).length + Object.keys(fixes.points).length;
   const set = (kind: keyof Fixes, key: string, value: any) => setFixes((f) => {
     const next = { ...f, [kind]: { ...f[kind] } } as Fixes;
@@ -91,8 +88,7 @@ export default function ReviewPanel({ job, onRerun, calibrating = false, labelin
       {tab === "test" && <Hint>{counting ? "Orange dots: what the model found. White rings: the objects really there. Tap a photo to fix the rings."
                                          : "What the model answered on your real test photos."}</Hint>}
       {tab === "photos" && <Hint>{counting ? "The marks the teacher model put on your photos. Tap a photo to add or remove marks."
-                                           : "The teacher's label for each photo. Tap to change it."}
-        {only && ` Only ${[...only].join(", ")} this time: you checked the other classes before.`}</Hint>}
+                                           : "The teacher's label for each photo. Tap to change it."}</Hint>}
       {tab === "assets" && <Hint>3D models found for your objects. Tap to keep or drop one.</Hint>}
 
       <div className="columns-2 gap-3 sm:columns-3 lg:columns-4 [&>*]:mb-3 [&>*]:break-inside-avoid">
@@ -167,14 +163,14 @@ export default function ReviewPanel({ job, onRerun, calibrating = false, labelin
       )}
 
       {editing && (
-        <Editor editing={editing} labels={only ? [...only] : review.labels.slice(1)} media={media} hue={hue}
+        <Editor editing={editing} labels={review.labels.slice(1)} media={media} hue={hue}
                 teacher={shown(review.photos.find((x) => x.key === editing.key)?.teacher_points ?? [])}
                 onClose={() => setEditing(null)}
                 onDone={(points) => {
                   const p = review.photos.find((x) => x.key === editing.key);
                   const t = review.test.find((x) => x.key === editing.key);
                   const original = p?.points ?? t?.truth;
-                  const all = only && p ? [...marksOf(p.key).filter((x) => !only.has(x[2])), ...points] : points;
+                  const all = points;
                   const same = (a?: Point[]) => JSON.stringify(a?.map(String).sort()) === JSON.stringify(all.map(String).sort());
                   set("points", editing.key, same(original) ? undefined : all);
                   setEditing(null);
@@ -208,7 +204,7 @@ function Tile({ src, overlay, children, onClick, changed, dim, title }: {
 
 // Count task marks: [x, y, class] in 0..1 of the upright image.
 // Marks are coloured by class; a model's predictions are orange so they stand apart from the white truth rings.
-function Dots({ points, hue, ring, predicted, onRemove }: { points: Point[]; hue: (c: string) => number; ring?: boolean;
+export function Dots({ points, hue, ring, predicted, onRemove }: { points: Point[]; hue: (c: string) => number; ring?: boolean;
                                                           predicted?: boolean; onRemove?: (i: number) => void }) {
   return <>{points.map((p, i) => (
     <span key={i} title={p[2]} onClick={onRemove ? (e) => { e.stopPropagation(); onRemove(i); } : undefined}
@@ -227,7 +223,7 @@ const SAME_SPOT = 0.01;
 const stacked = (points: Point[]) => points.filter((p, i) => points.some((q, j) => j !== i && q[2] !== p[2]
   && Math.abs(q[0] - p[0]) < SAME_SPOT && Math.abs(q[1] - p[1]) < SAME_SPOT)).length;
 
-function Editor({ editing, labels, media, hue, teacher, onClose, onDone }: {
+export function Editor({ editing, labels, media, hue, teacher, onClose, onDone }: {
   editing: Editing; labels: string[]; media: (p: string, big?: boolean) => string; hue: (c: string) => number;
   teacher: Point[]; onClose: () => void; onDone: (p: Point[]) => void;
 }) {

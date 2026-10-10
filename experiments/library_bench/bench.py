@@ -71,7 +71,7 @@ def run_one(sc: dict, tag: str, rep: int) -> dict:
     out = OUT / tag / f"{sc['id']}_{rep}"
     out.mkdir(parents=True, exist_ok=True)
     lib = Library(HOME, HOME / "cache")
-    owner = lib.db.execute("SELECT owner FROM datasets WHERE id = ?", (sc["dataset"],)).fetchone()[0]
+    owner = lib.db.execute("SELECT owner FROM dataset WHERE id = ?", (sc["dataset"],)).fetchone()[0]
     session = server.default_interviewer(HOME, backend="nebius", public=True)()
     session.client.usage_log = out / "usage.jsonl"
     session.uploads = out / "uploads"

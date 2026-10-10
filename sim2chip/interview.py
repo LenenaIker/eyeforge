@@ -451,15 +451,15 @@ LIBRARY = """
 The user's library: things they already have, kept from earlier models or uploaded. A kit is a named list of
 them. When the user names a kit (or a dataset or object listed below), use those instead of searching for 3D
 models or asking for new photos; never ask for photos again for a dataset they named.
-Before proposing a spec that uses a dataset, look at it: {{"dataset": "<id>"}}. You get its labels (count labels
-by English name, with how many photos the teacher marked and how many the user checked), the models made with it
-and their 3D model searches, and what its photos show (the photo analysis). Then:
-- the dataset's photos go in user_data "raw": "library:<id>" (the teacher labels them), or in "labeled":
-  "library:<id>" only when it is sorted into folders that match the classes (class_map maps each class to them);
-  photos the user attaches in this chat count too: "raw": ["library:<id>", "<attached folder>"];
-- put in the spec only the classes the user wants now. A counted class reuses the dataset's labels when its
-  "names" start with the label's exact English name ("names": ["blue bin"] for the label "blue bin"); any other
-  name is labeled anew by the teacher and checked by the user;
+Before proposing a spec that uses a dataset, look at it: {{"dataset": "<id>"}}. You get its labelings (each one a
+named list of classes, with their keys and English names, how many photos the user reviewed and the models trained
+with it) and what its photos show (the photo analysis). Then:
+- the dataset's photos go in user_data "raw": "library:<id>" (one dataset per model); photos the user attaches
+  in this chat join it: "raw": ["library:<id>", "<attached folder>"];
+- user_data "labeling": the id of the labeling to use when the user wants what it has, or it with classes added or
+  left out (its classes keep their marks; new ones the teacher labels and the user checks); null for a new
+  labeling. For the classes a labeling has, use its keys as class ids and its English names as "names";
+- put in the spec only the classes the user wants now;
 - 3D models kept for a class are found again by the same search queries: reuse them with "assets": {{"source":
   "search", "queries": [those queries]}} (models_kept 0 means no usable model: try other queries). A dataset id
   is never a 3D model;
@@ -473,12 +473,12 @@ models still needs size_m. Use only the ids listed here.
 
 IN_THEIR_LANGUAGE = "(Anything you write to the user goes in the language of their own messages.)"
 
-RELABEL = """[Labels of dataset {ds}] The dataset is labeled ({task}) for: {old}. The proposed spec also needs
-{new}, never labeled in it: the teacher would mark {them} on every photo and the user would check a few photos.
-Do not propose the spec yet. Reply with {{"say": "..."}}: in the user's language, tell them which of the classes
-they want are labeled already and which are new, and ask whether to go on with the new ones or leave them out. Classes the user did
-not ask for stay out of the spec even if the dataset is labeled for them. Then propose what they choose, with
-"names" starting with the dataset's exact label names for the labeled ones."""
+RELABEL = """[Labelings of dataset {ds}] The dataset already has these labelings ({task}): {old}. The proposed spec
+{what}. Do not propose the spec yet. Reply with {{"say": "..."}}: in the user's language, name the labeling closest
+to what they want and its classes, and ask whether to use it (adding {new} if they want them: the teacher marks
+the new classes on every photo and the user checks a few), or to start a new labeling. Then propose what they
+choose, with user_data "labeling" set to that labeling's id (or null for a new one) and its class keys and names
+for the classes it has."""
 
 RESEARCH = """
 You can look facts up on the web: {{"research": "<one precise question>"}} returns a short answer and its sources.
@@ -646,14 +646,6 @@ def _dataset_as_model(session, s: spec_mod.Spec) -> str | None:
             'give "assets": {"source": "search", "queries": [the same search queries]} and "models": []')
 
 
-def _unlabeled_dataset(session, s: spec_mod.Spec) -> str | None:
-    ds = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(s.user_data.labeled or ""))
-    if not ds or ds.group(1) in getattr(session, "labeled_ids", set()):
-        return None
-    return (f"dataset {ds.group(1)} has no labels of its own (the teacher's earlier labels are not that): give it as "
-            f'user_data "raw": "library:{ds.group(1)}", with "labeled": null and no class_map')
-
-
 def _scene_problem(session, s: spec_mod.Spec) -> str | None:
     return session.scene_check(s.scene) if session.scene_check else None
 
@@ -665,7 +657,7 @@ def _photo_models_problem(session, s: spec_mod.Spec) -> str | None:
 
 
 # What a proposed spec must pass beyond spec.validate, in order: the first problem goes back to the model.
-SPEC_CHECKS = (_unknown_categories, _foreign_folders, _library_refs, _dataset_as_model, _unlabeled_dataset, _scene_problem, lambda _, s: check_photos(s),
+SPEC_CHECKS = (_unknown_categories, _foreign_folders, _library_refs, _dataset_as_model, _scene_problem, lambda _, s: check_photos(s),
                lambda _, s: sam3_names_problem(s), lambda _, s: catch_all_problem(s), _photo_models_problem)
 
 
@@ -720,18 +712,16 @@ class Session:
         self.relabel_asked: dict[str, int] = {}  # dataset id -> self.replies when the user was to be asked
 
     def use_library(self, items: str, ids: set[str], kit: str | None = None, notes=None, open_dataset=None,
-                    labeled: set[str] | None = None, datasets: set[str] | None = None,
-                    dataset_card=None) -> None:
+                    datasets: set[str] | None = None, dataset_card=None) -> None:
         """Tell the model what the user's library holds (kits and datasets, see LIBRARY); kit: the name of the kit
         the user chose to start from. notes: keeps and reuses photo descriptions (Library.describe);
         open_dataset(id): a folder with a dataset's photos, so describe_scene can measure it for this goal;
-        labeled: the datasets with labels of their own, the only ones a spec may give as "labeled"; datasets: every
-        dataset id, never a 3D model; dataset_card(id): the dataset as it is now (library.dataset_card), for the
-        "dataset" action, for reusing its labels' names and for asking before labeling it anew (relabel_question)."""
+        datasets: every dataset id, never a 3D model; dataset_card(id): the dataset as it is now
+        (library.dataset_card), for the "dataset" action, for its labelings' class names and for asking which
+        labeling to use (relabel_question)."""
         self.library_ids = set(ids)
         self.dataset_card = dataset_card
         self.dataset_ids = set(datasets or ())
-        self.labeled_ids = set(labeled or ())
         self.photo_notes, self.open_dataset = notes, open_dataset
         self.messages[0]["content"] += LIBRARY.format(items=items)
         if kit:
@@ -1061,7 +1051,7 @@ class Session:
             self._note(f"dataset: {ds} is not one of the listed datasets; use only the ids listed.")
             return
         step = self._step(f"Looking at your dataset {card['name']}")
-        self._end(step, detail=f"{len(card['count_labels']) + len(card['photo_labels'])} labelings")
+        self._end(step, detail=f"{len(card['labelings'])} labelings")
         self._note(f"[Dataset {ds}] " + json.dumps(card, ensure_ascii=False))
         if ds not in self.analysed:
             self.analysed.add(ds)
@@ -1129,44 +1119,53 @@ class Session:
             intro = (intro + "\n\n" if intro else "") + reuse
         return Turn("confirm", (intro + "\n\n" if intro else "") + summary(s), s, intro=intro)
 
+    def _labeling_of(self, s) -> tuple[dict | None, list[dict]]:
+        """The labeling a spec names (from its dataset's card) and the labelings of its dataset."""
+        cards = self._cards(s.user_data.raw if isinstance(s, spec_mod.Spec) else (s.get("user_data") or {}).get("raw"))
+        labelings = [l for _, card in cards for l in card["labelings"]]
+        lid = s.user_data.labeling if isinstance(s, spec_mod.Spec) else (s.get("user_data") or {}).get("labeling")
+        return next((l for l in labelings if l["id"] == lid), None), labelings
+
     def _reuse_line(self, s: spec_mod.Spec) -> str:
-        """For the user to confirm: which counted classes reuse the labels already on their dataset's photos (and
-        on how many), and which the teacher labels anew. The chat may map a wish to a label that is not it
-        (2026-10-10 bench: "papeleras", litter bins, given the dataset's "litter" label); this shows it."""
-        if s.task != "count":
+        """For the user to confirm: the labeling the photos use (and how many of them the user reviewed), and the
+        classes the teacher labels anew. The chat may map a wish to a class that is not it (2026-10-10 bench:
+        "papeleras", litter bins, given the dataset's "litter" label); this shows it."""
+        if not self._cards(s.user_data.raw):
             return ""
-        from . import teacher
-        labels = {c["name"]: c for _, card in self._cards(s.user_data.raw) for c in card["count_labels"]}
-        if not labels:
-            return ""
-        now = {c: p[0] for c, p in teacher.phrases(s).items()}
-        old = [f"{c} ({labels[p]['photos_marked_by_teacher']} photos, {labels[p]['photos_checked_by_user']} checked by you)"
-               for c, p in now.items() if p in labels]
-        new = [c for c, p in now.items() if p not in labels]
-        return ("Labels already on your photos, reused: " + (", ".join(old) or "none") + "."
-                + (f" Labeled anew (you check a few photos first): {', '.join(new)}." if new else ""))
+        chosen, _ = self._labeling_of(s)
+        if chosen is None:
+            return "A new labeling of your photos: the teacher marks every photo and you check a few first."
+        have = {c["key"] for c in chosen["classes"]}
+        new = [c.id for c in s.classes if c.id not in have] if s.task == "count" else \
+            [label for label in s.labels if label not in have]
+        return (f"Labeling \"{chosen['name']}\" ({chosen['photos_reviewed_by_user']} photos reviewed by you)"
+                + (f"; new classes the teacher labels and you check first: {', '.join(new)}." if new else "."))
 
     def relabel_question(self, s: spec_mod.Spec) -> str | None:
-        """A library dataset the teacher labeled before, now with classes it was never labeled for (another English
-        name): the model must tell the user which classes it is labeled with and ask, once, before proposing.
-        In code, as Nemotron ignored the same request in LIBRARY (basura_counter, 2026-10-10: other class ids
-        went to a full check of every photo without a word)."""
-        from . import teacher
-        task = "counts objects" if s.task == "count" else "one label per photo"
-        now = {c: p[0] for c, p in teacher.phrases(s).items()} if s.task == "count" else {c: c for c in s.labels}
+        """A library dataset with labelings, and a spec that names none of them or changes its classes: the model
+        must tell the user which labelings there are and ask, once, before proposing. In code, as Nemotron ignored
+        the same request in LIBRARY (basura_counter, 2026-10-10: other class ids went to a full check of every
+        photo without a word)."""
+        chosen, labelings = self._labeling_of(s)
+        task = "count" if s.task == "count" else "classify"
+        same_task = [l for l in labelings if l["task"] == task]
+        if not same_task:
+            return None
+        want = [c.id for c in s.classes] if s.task == "count" else list(s.labels)
+        if chosen is not None and sorted(c["key"] for c in chosen["classes"]) == sorted(want):
+            return None
         for ds, card in self._cards(s.user_data.raw):
-            old = {c["name"] for c in card["count_labels"]} if s.task == "count" else \
-                {label for c in card["photo_labels"] for label in c["labels"]}
-            if not old:
-                continue
-            new = [c for c, p in now.items() if p not in old]
             asked = self.relabel_asked.get(ds)
-            if not new or (asked is not None and self.replies > asked):
+            if asked is not None and self.replies > asked:
                 continue
             self.relabel_asked[ds] = self.replies
-            return RELABEL.format(ds=ds, task=task, old=", ".join(sorted(old)),
-                                  new=", ".join(f"{c} ({now[c]})" if now[c] != c else c for c in new),
-                                  them="it" if len(new) == 1 else "them")
+            old = "; ".join(f"\"{l['name']}\" (id {l['id']}): {', '.join(c['key'] for c in l['classes'])}"
+                            for l in same_task)
+            have = {c["key"] for c in chosen["classes"]} if chosen else set()
+            new = [c for c in want if c not in have] if chosen else want
+            what = (f"changes the classes of \"{chosen['name']}\"" if chosen else
+                    "names no labeling (user_data \"labeling\" is null)")
+            return RELABEL.format(ds=ds, task=task, old=old, what=what, new=", ".join(new) or "nothing")
         return None
 
     def _cards(self, raw) -> list[tuple[str, dict]]:
@@ -1180,24 +1179,18 @@ class Session:
         return out
 
     def _reuse_label_names(self, spec: dict) -> None:
-        """A counted class meant as a label the dataset has gets that label's exact English name first in "names",
-        so the teacher looks for the same thing and the labels are reused. Seen 2026-10-10 (library bench): the
-        chat said it reused "blue bin" but named the class by its 3D search, "blue recycling bin", which the
-        teacher would have labeled anew. The class's id, names and queries are matched against the labels."""
+        """The classes the spec's labeling has keep that labeling's English names, so the teacher looks for the
+        same things as before. Seen 2026-10-10 (library bench): the chat said it reused "blue bin" but named the
+        class by its 3D search, "blue recycling bin". The server does the same; doing it here shows it."""
         if spec.get("task") != "count" or not isinstance(spec.get("user_data"), dict):
             return
-        labels = {c["name"] for _, card in self._cards(spec["user_data"].get("raw")) for c in card["count_labels"]}
-        if not labels:
+        chosen, _ = self._labeling_of(spec)
+        if chosen is None:
             return
+        names = {c["key"]: c["names"] for c in chosen["classes"]}
         for c in spec.get("classes") or []:
-            if not isinstance(c, dict) or not isinstance(c.get("id"), str):
-                continue
-            a = c.get("assets") if isinstance(c.get("assets"), dict) else {}
-            names = [n for n in c.get("names") or [] if isinstance(n, str)]
-            seen = [c["id"].replace("_", " "), *names, *(a.get("queries") or []), *(a.get("categories") or [])]
-            match = next((t.strip().lower() for t in seen if isinstance(t, str) and t.strip().lower() in labels), None)
-            if match and (not names or names[0].lower() != match):
-                c["names"] = [match] + [n for n in names if n.lower() != match]
+            if isinstance(c, dict) and names.get(c.get("id")):
+                c["names"] = names[c["id"]]
 
     def _fix_scene(self, spec: dict) -> None:
         """Scene fields the code can settle without another turn: weather left empty or unknown (indoors it is

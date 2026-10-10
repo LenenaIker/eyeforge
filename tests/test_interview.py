@@ -338,19 +338,6 @@ def test_no_synthetic_images_means_no_3d_stages():
     assert "synthetic images: none" in interview.summary(from_dict({**spec, "generation": {"frames": 0}}))
 
 
-def test_a_dataset_without_labels_is_never_given_as_labeled():
-    """The teacher's earlier labels of a dataset are not labels of its own: such a dataset goes in raw."""
-    from sim2chip.interview import _unlabeled_dataset
-    from sim2chip import spec as spec_mod
-
-    class S:
-        labeled_ids = {"aaaaaaaaaaaaaaaa"}
-    base = {"name": "x", "classes": [{"id": "cow", "description": "cows"}]}
-    wrong = spec_mod.from_dict({**base, "user_data": {"labeled": "library:bbbbbbbbbbbbbbbb", "class_map": {"cow": ["cow"]}}})
-    right = spec_mod.from_dict({**base, "user_data": {"labeled": "library:aaaaaaaaaaaaaaaa", "class_map": {"cow": ["cow"]}}})
-    assert "raw" in _unlabeled_dataset(S(), wrong) and _unlabeled_dataset(S(), right) is None
-
-
 def test_a_dataset_id_is_never_a_3d_model():
     """The chat read "3D models kept" in a dataset's line and gave the dataset's id as the models."""
     from sim2chip.interview import _dataset_as_model
@@ -380,60 +367,51 @@ def test_class_ids_go_into_english_everywhere_the_spec_names_them():
     assert any("contenedor_azul -> blue_bin" in m["content"] for m in s.messages)
 
 
-def card(names):
-    """A library.dataset_card with count labels of these English names."""
-    return {"id": "x", "name": "street", "photos": 38, "sorted_into_folders": None, "photo_labels": [],
-            "count_labels": [{"name": n, "photos_marked_by_teacher": 38, "photos_checked_by_user": 3} for n in names],
-            "models_made_with_it": [], "what_its_photos_show": None}
+LID = "1111111111111111"
+
+
+def card(names, lid=LID):
+    """A library.dataset_card with one count labeling of these English names."""
+    return {"id": "x", "name": "street", "photos": 38, "what_its_photos_show": None,
+            "labelings": [{"id": lid, "name": "Bins", "task": "count",
+                           "classes": [{"key": n.replace(" ", "_"), "names": [n], "description": ""} for n in names],
+                           "photos_reviewed_by_user": 3, "photos_with_marks": 38, "models": []}]}
 
 
 def test_a_dataset_labeled_for_other_classes_is_asked_about_once():
-    """A spec that labels a library dataset for classes it was never labeled for goes back to the model, which
-    must ask the user; after the user answers, the same spec is proposed."""
+    """A spec that names no labeling of a dataset that has some, or changes one's classes, goes back to the model,
+    which must ask the user; after the user answers, the same spec is proposed."""
     ds = "a7d9ef2d4b43c27b"
     blue = {"id": "blue_bin", "description": "blue bins", "names": ["blue bin"]}
     can = {"id": "can", "description": "drink can", "names": ["drink can"]}
     spec = {"name": "bins", "task": "count", "background_class": "empty", "classes": [blue, can],
-            "user_data": {"raw": f"library:{ds}"}}
-    client = Scripted([{"spec": spec}, {"say": "It is labeled for blue bins: keep those or add cans?"},
-                       {"spec": spec}])
+            "user_data": {"raw": f"library:{ds}", "labeling": LID}}
+    client = Scripted([{"spec": spec}, {"say": "It has blue bins: add cans to it?"}, {"spec": spec}])
     s = interview.Session(client, "m", interview.CategoryIndex(counts={}))
     s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin"]))
     t = s.reply("count bins and cans in my street photos")
-    assert t.kind == "say" and "Labels of dataset" in client.seen[1] and "can" in client.seen[1]
-    assert "blue_bin" not in client.seen[1].split("needs")[1]  # labeled before under another id, same name
+    assert t.kind == "say" and "Labelings of dataset" in client.seen[1] and "adding can" in client.seen[1]
+    assert f"(id {LID}): blue_bin" in client.seen[1]
     assert s.reply("add cans").kind == "confirm"
-    # The classes it was labeled for: no question.
+    # Its classes exactly: no question; no labeling named: a question.
+    fresh = interview.Session(client, "m", interview.CategoryIndex(counts={}))
+    fresh.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin"]))
     only = {**spec, "classes": [blue]}
-    assert interview.Session(client, "m", interview.CategoryIndex(counts={})).relabel_question(
-        interview.spec_mod.from_dict(only)) is None
+    assert fresh.relabel_question(interview.spec_mod.from_dict(only)) is None
+    none = {**only, "user_data": {"raw": f"library:{ds}"}}
+    assert "names no labeling" in fresh.relabel_question(interview.spec_mod.from_dict(none))
 
 
-def test_labels_renamed_on_the_photos_count_as_labeled():
-    """Labels kept under a new name (paper bin -> blue bin) and no job that used that name: still no question."""
-    ds = "a7d9ef2d4b43c27b"
-    blue = {"id": "blue_bin", "description": "blue bins", "names": ["blue bin"]}
-    spec = {"name": "bins", "task": "count", "background_class": "empty", "classes": [blue],
-            "user_data": {"raw": f"library:{ds}"}}
-    s = interview.Session(Scripted([]), "m", interview.CategoryIndex(counts={}))
-    s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin", "mattress"]))
-    assert s.relabel_question(interview.spec_mod.from_dict(spec)) is None
-    green = {**blue, "id": "green_bin", "names": ["green bin"]}
-    ask = s.relabel_question(interview.spec_mod.from_dict({**spec, "classes": [blue, green]}))
-    assert "blue bin, mattress" in ask and "green_bin (green bin)" in ask
-
-
-def test_a_class_meant_as_a_dataset_label_takes_its_exact_name():
-    """The chat named the blue bin class by its 3D search; the dataset's label is "blue bin": names start with it."""
+def test_a_class_of_the_labeling_takes_its_english_names():
+    """The chat named the blue bin class by its 3D search; the labeling calls it "blue bin": that name wins."""
     ds = "a7d9ef2d4b43c27b"
     s = interview.Session(Scripted([]), "m", interview.CategoryIndex(counts={}))
     s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin", "plastic bag"]))
-    spec = {"task": "count", "user_data": {"raw": f"library:{ds}"}, "classes": [
+    spec = {"task": "count", "user_data": {"raw": f"library:{ds}", "labeling": LID}, "classes": [
         {"id": "blue_bin", "names": ["blue recycling bin"], "assets": {"source": "search", "queries": ["blue recycling bin"]}},
-        {"id": "bag", "assets": {"source": "search", "queries": ["plastic bag", "trash bag"]}},
         {"id": "papelera", "names": ["litter bin"]}]}
     s._reuse_label_names(spec)
-    assert [c.get("names") for c in spec["classes"]] == [["blue bin", "blue recycling bin"], ["plastic bag"], ["litter bin"]]
+    assert [c.get("names") for c in spec["classes"]] == [["blue bin"], ["litter bin"]]
 
 
 def test_scene_tags_and_weather_the_code_can_settle(monkeypatch):
@@ -453,7 +431,7 @@ def test_the_dataset_action_shows_the_dataset_as_it_is_now():
     s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin"]))
     assert s.reply("count bins with my street dataset").text == "Which bins?"
     notes = [m["content"] for m in s.messages if m["role"] == "user"]
-    assert any(n.startswith(f"[Dataset {ds}]") and '"blue bin"' in n for n in notes)
+    assert any(n.startswith(f"[Dataset {ds}]") and '"blue bin"' in n and LID in n for n in notes)
     assert "not one of the listed datasets" in client.seen[2]
 
 
@@ -507,19 +485,19 @@ def test_plain_words_without_json_are_a_question():
     assert t.kind == "say" and t.text == "¿En qué dispositivo lo usarás?"
 
 
-def test_the_proposal_says_which_classes_reuse_the_datasets_labels():
+def test_the_proposal_says_which_labeling_and_which_new_classes():
     ds = "a7d9ef2d4b43c27b"
     blue = {"id": "blue_bin", "description": "blue bins", "names": ["blue bin"]}
     can = {"id": "trash_can", "description": "litter bins", "names": ["trash can"]}
     spec = {"name": "bins", "task": "count", "background_class": "empty", "classes": [blue, can],
-            "user_data": {"raw": f"library:{ds}"}}
+            "user_data": {"raw": f"library:{ds}", "labeling": LID}}
     client = Scripted([{"spec": spec}])
     s = interview.Session(client, "m", interview.CategoryIndex(counts={}))
     s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin"]))
     s.relabel_asked[ds] = -1  # asked already
     t = s.reply("bins and litter bins")
     assert t.kind == "confirm"
-    assert "reused: blue_bin (38 photos, 3 checked by you)" in t.intro and "Labeled anew" in t.intro and "trash_can" in t.intro
+    assert 'Labeling "Bins" (3 photos reviewed by you)' in t.intro and "new classes" in t.intro and "trash_can" in t.intro
 
 
 def test_3d_models_with_zero_frames_get_the_default_frames():

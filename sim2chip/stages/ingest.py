@@ -3,7 +3,9 @@ resize to the model input and split train/test. With `user_data.test`, the test 
 that folder and all the others go to training. Photos that 3D models were made from never go to test (the
 model has seen them as 3D). With fewer than MIN_TEST test photos the score is noisy: the log says so.
 
-The split is kept (split.json, by photo content): photos added to a trained job never move the old ones, so a
+Test photos come first from those the user reviewed in the job's labeling (input/labeling.json): with fewer
+of them than the test needs, photos marked only by the teacher fill it and the log says how many (user,
+2026-10-10). The split is kept (split.json, by photo content): photos added to a trained job never move the old ones, so a
 new version is scored on the same test photos as the old one. Half of the added photos go to test (the case
 the user found missing gets measured too) and the rest all go to training, past the train_per_class cap.
 Exact copies of a photo count once (they would otherwise land on both sides).
@@ -30,8 +32,9 @@ MIN_TEST = 20  # below this many test photos (per class) one photo moves the sco
 
 class Ingest(Stage):
     name = "ingest"
-    version = "6"  # v4: 3D source photos out of test; count split by photo content. v5: box sizes.
+    version = "7"  # v4: 3D source photos out of test; count split by photo content. v5: box sizes.
     # v6: the whole test folder of the user (half went unused), photos of the same name no longer overwritten
+    # v7: reviewed photos first in the test
     runtime = "cpu"
     reads_input = True
     rereads = (SPLIT,)  # earlier sides of each photo
@@ -73,8 +76,9 @@ class Ingest(Stage):
                         if f.suffix.lower() in IMAGE_EXT)
             return {content_key(f): f for f in fs}
 
-        held = held_out(ctx)
-        counts, sides = {}, {}
+        held, first = held_out(ctx), reviewed(ctx)
+        known, first = first is not None, first or set()
+        counts, sides, unsure_test = {}, {}, 0
         for cls in ctx.spec.labels:
             by_key = files_of(sources, cls)
             files = list(by_key.values())
@@ -86,7 +90,8 @@ class Ingest(Stage):
                 test = test_photos(t_key, ud.test_per_class, big_enough)
             else:
                 s = split(list(by_key), held, prev, ud.test_per_class, ud.train_per_class,
-                          lambda k: big_enough(by_key[k]))
+                          lambda k: big_enough(by_key[k]), first)
+                unsure_test += sum(v == "test" and k not in first for k, v in s.items()) if known else 0
                 test = [by_key[k] for k, v in s.items() if v == "test"]
             train = [by_key[k] for k, v in s.items() if v == "train"]
             sides |= s
@@ -105,7 +110,10 @@ class Ingest(Stage):
                 ctx.log(f"WARNING: only {len(test)} test photos of {cls}: each one moves its score by "
                         f"{100 / len(test):.0f} points")
         write_split(out, sides, prev)
-        return {"counts": counts}
+        if unsure_test:
+            ctx.log(f"WARNING: {unsure_test} test photos were marked only by the teacher (too few reviewed ones): "
+                    "review more photos for a score you can trust")
+        return {"counts": counts, "test_teacher_only": unsure_test}
 
     def _count(self, ctx: Context) -> dict:
         from PIL import Image, ImageOps
@@ -118,7 +126,8 @@ class Ingest(Stage):
         src_dir = ctx.job.resolve_input(ud.raw)
         # Ordered by photo content, not by name or folder: a photo lands on the same side in every job.
         ck = {k: content_key(src_dir / k) for k, v in verdicts.items() if v["assigned"] == "images"}
-        held = held_out(ctx)
+        held, first = held_out(ctx), reviewed(ctx)
+        known, first = first is not None, first or set()
         out = ctx.job.stage_dir(self.name)
         prev = read_split(out)
         if not prev and (out / "test" / "points.json").exists():  # ingested before split.json existed
@@ -127,7 +136,8 @@ class Ingest(Stage):
                    for v in json.loads((out / side / "points.json").read_text()).values()}
             prev = {c: old.get(k, "unused") for k, c in ck.items() if (src_dir / k).stat().st_mtime <= since}
         shutil.rmtree(out, ignore_errors=True)
-        sides = split(list(ck.values()), held, prev, ud.test_per_class, ud.train_per_class)
+        sides = split(list(ck.values()), held, prev, ud.test_per_class, ud.train_per_class, first=first)
+        unsure_test = sum(v == "test" and c not in first for c, v in sides.items()) if known else 0
         keys = sorted(ck, key=lambda k: order(ck[k]))
         n_test = sum(sides[ck[k]] == "test" for k in keys)
         counts = {}
@@ -151,7 +161,10 @@ class Ingest(Stage):
         write_split(out, sides, prev)
         if 0 < n_test < MIN_TEST:
             ctx.log(f"WARNING: only {n_test} test photos: the score is noisy, add photos for a steadier one")
-        return {"counts": counts}
+        if unsure_test:
+            ctx.log(f"WARNING: {unsure_test} of {n_test} test photos were marked only by the teacher (too few "
+                    "reviewed ones): review more photos for a score you can trust")
+        return {"counts": counts, "test_teacher_only": unsure_test}
 
     @staticmethod
     def _folder(ctx: Context, key: str, rel: str):
@@ -167,15 +180,16 @@ def order(key: str) -> str:
 
 
 def split(keys: list[str], held: set[str], prev: dict[str, str], test_cap: int, train_cap: int,
-          usable=lambda k: True) -> dict[str, str]:
+          usable=lambda k: True, first: set[str] = frozenset()) -> dict[str, str]:
     """Each photo's side: "test", "train" or "unused" (over the caps, or too small).
 
     First split: half to test when there are fewer photos than both caps, else test_cap to test and train_cap
     to train. Later splits (prev, the earlier sides) keep every known photo where it was and split only the
     new ones: half of them to test while test_cap allows, the rest all to training. Photos in `held` (3D
-    models were made from them) never go to test. `usable` is checked lazily: opening every photo of a large
-    dataset just to read its size would take minutes."""
-    ordered = sorted(keys, key=lambda k: (k in held, order(k)))
+    models were made from them) never go to test; photos in `first` (reviewed by the user) go to test first.
+    `usable` is checked lazily: opening every photo of a large dataset just to read its size would take
+    minutes."""
+    ordered = sorted(keys, key=lambda k: (k in held, k not in first, order(k)))
     sides = {k: ("train" if prev[k] == "test" and k in held else prev[k]) for k in ordered if k in prev}
     new = [k for k in ordered if k not in sides]
     if not prev:
@@ -224,6 +238,15 @@ def write_split(out, sides: dict[str, str], prev: dict[str, str]) -> None:
     """Photos no longer in the job (deleted, relabeled as unsure) keep their side, should they come back."""
     out.mkdir(parents=True, exist_ok=True)
     (out / SPLIT).write_text(json.dumps(prev | sides, indent=1, sort_keys=True))
+
+
+def reviewed(ctx: Context) -> set[str] | None:
+    """Content keys of the photos the user reviewed in the job's labeling; None for a job without one (the CLI)."""
+    from ..library import KEEP
+    f = ctx.job.input / KEEP
+    if not f.exists():
+        return None
+    return {p["hash"] for p in json.loads(f.read_text())["photos"].values() if p["reviewed"]}
 
 
 def held_out(ctx: Context) -> set[str]:

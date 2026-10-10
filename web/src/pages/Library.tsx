@@ -145,8 +145,8 @@ export function Datasets() {
                                            onClick={() => setUpload({ id: d.id, name: d.name })}><Plus className="h-4 w-4" /> Add photos</button>} />
                 </div>
                 <div className="text-sm text-muted">
-                  {d.photos} photo{d.photos === 1 ? "" : "s"}{d.splits.test ? ` (${d.splits.test} to test)` : ""}
-                  {d.labels.length > 0 && ` · ${d.labels.map(pretty).join(", ")}`}
+                  {d.photos} photo{d.photos === 1 ? "" : "s"}
+                  {d.labelings.length > 0 && ` · ${d.labelings.map((l) => l.name).join(", ")}`}
                 </div>
                 <Seen d={d} />
                 <Used jobs={d.jobs} />
@@ -379,7 +379,7 @@ export function Kits() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {lib.kits.map((k) => {
             const pics = [...k.objects.filter((id) => objects.get(id)?.thumb).map((id) => cardUrl("object", id)),
-                          ...k.datasets.flatMap((id) => datasets.get(id)?.sample.slice(0, 1).map(libraryPhotoUrl) ?? [])].slice(0, 4);
+                          ...k.datasets.flatMap((id) => datasets.get(id)?.sample.slice(0, 1).map((p) => libraryPhotoUrl(p)) ?? [])].slice(0, 4);
             return (
               <Card key={k.id} className="overflow-hidden">
                 <div className="grid aspect-[2/1] grid-cols-4 gap-px bg-line">

@@ -56,7 +56,7 @@ export default function Interview() {
   }, [kit]);
   const [plan, setPlan] = useState<RevisePlan | null>(null);  // what a revision would run again
   const [msgs, setMsgs] = useState<Msg[]>(saved?.msgs ?? []);
-  const [text, setText] = useState(saved?.text ?? "");
+  const [text, setText] = useState(saved?.text ?? params.get("text") ?? "");  // ?text=: a first message to send
   const [busy, setBusy] = useState<string | null>(null);  // what we are waiting for, shown as a typing bubble
   const [live, setLive] = useState<Live | null>(null);    // the steps of the turn in progress, polled
   const [spec, setSpec] = useState<Spec | null>(saved?.spec ?? null);          // the setup to train, with the user's tweaks
