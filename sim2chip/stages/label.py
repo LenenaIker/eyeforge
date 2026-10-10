@@ -15,8 +15,8 @@ photo's corrections may cover only some classes (input/corrections.json "checked
 classes no earlier job checked); the teacher's marks stand for the others. prefetch() fills SAM 3's answers for the whole folder while the user
 corrects the first photos, and gpu_needed() tells when a round can run without a GPU. Photos with no answer (the teacher failed) are left out, in
 label/no_answer/ (label/unsure/ for count), and asked again on the next run.
-Output: label/<class>/<photo> (copies) or, for count, label/images/<photo>; label/verdicts.json,
-label/teacher.json (what the teacher used and a line for review)
+Output: label/<class>/<photo> (copies) or, for count, label/images/<photo>, named by verdicts' "copy";
+label/verdicts.json, label/teacher.json (what the teacher used and a line for review)
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from pathlib import Path
 
 from .. import counting, review, teacher
 from ..tasks import task_of
-from ..workspace import IMAGE_EXT, cache_key, content_key, copy_name
+from ..workspace import IMAGE_EXT, cache_key, content_key, copy_names
 from .base import Context, Stage
 
 NO_ANSWER = "no_answer"  # the teacher failed on the photo: left out, asked again on the next run
@@ -80,10 +80,12 @@ class Label(Stage):
         out.mkdir(parents=True, exist_ok=True)
         for d in out.iterdir():  # copies of an earlier run (verdicts.json was read above)
             shutil.rmtree(d) if d.is_dir() else d.unlink()
+        names = copy_names(verdicts)
         for key, v in verdicts.items():
             d = out / v["assigned"]
             d.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src / key, d / copy_name(key))
+            v["copy"] = names[key]  # where the copy is (ingest, review): names that clash take a hash
+            shutil.copy2(src / key, d / names[key])
         (out / "verdicts.json").write_text(json.dumps(verdicts, indent=1))
         (out / "teacher.json").write_text(json.dumps(learned, indent=1))
         if task_of(spec).points:

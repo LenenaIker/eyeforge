@@ -75,6 +75,32 @@ def test_ingest_separate_test_folder(tmp_path):
     assert top[0] > 200 and bottom[2] > 200  # upright: red on top, blue at the bottom
 
 
+def test_ingest_takes_the_whole_test_folder(tmp_path):
+    """A test folder smaller than test_per_class: every photo is a test photo (half of them went unused)."""
+    photos, test = tmp_path / "photos", tmp_path / "test"
+    for i in range(6):
+        img(photos / "cow" / f"p{i}.jpg")
+        img(test / "cow" / f"t{i}.jpg")
+    ctx = ctx_for(tmp_path, user_data={"labeled": "photos", "test": "test", "test_per_class": 400,
+                                       "train_per_class": 50})
+    link_input(ctx.job, "photos", photos)
+    link_input(ctx.job, "test", test)
+    assert Ingest().run(ctx)["counts"]["cow"] == {"test": 6, "train": 6}
+
+
+def test_ingest_keeps_photos_of_the_same_name(tmp_path):
+    """a.jpg and a.png are two photos: both reach the model input, neither overwrites the other."""
+    photos = tmp_path / "photos"
+    img(photos / "cow" / "a.jpg")
+    img(photos / "cow" / "a.png", color=(10, 200, 10))
+    for i in range(4):
+        img(photos / "cow" / f"p{i}.jpg")
+    ctx = ctx_for(tmp_path, user_data={"labeled": "photos", "test_per_class": 0, "train_per_class": 50})
+    link_input(ctx.job, "photos", photos)
+    assert Ingest().run(ctx)["counts"]["cow"] == {"test": 0, "train": 6}
+    assert len(list((ctx.job.stage_dir("ingest") / "train" / "cow").glob("*.png"))) == 6
+
+
 def test_generate_assets_from_user_photos(tmp_path, monkeypatch):
     """TRELLIS is replaced by a fake: this checks photo selection, caching and the manifest."""
     import sys

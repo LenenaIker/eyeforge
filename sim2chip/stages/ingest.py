@@ -21,7 +21,7 @@ import json
 import shutil
 from pathlib import Path
 
-from ..workspace import IMAGE_EXT, content_key
+from ..workspace import IMAGE_EXT, content_key, unique_name
 from .base import Context, Stage
 
 SPLIT = "split.json"
@@ -30,7 +30,8 @@ MIN_TEST = 20  # below this many test photos (per class) one photo moves the sco
 
 class Ingest(Stage):
     name = "ingest"
-    version = "5"  # v4: 3D source photos out of test; count split by photo content. v5: box sizes
+    version = "6"  # v4: 3D source photos out of test; count split by photo content. v5: box sizes.
+    # v6: the whole test folder of the user (half went unused), photos of the same name no longer overwritten
     runtime = "cpu"
     reads_input = True
     rereads = (SPLIT,)  # earlier sides of each photo
@@ -82,8 +83,7 @@ class Ingest(Stage):
             if test_src:  # the user's own test folder: only a training side to keep
                 s = split(list(by_key), set(), prev, 0, ud.train_per_class, lambda k: big_enough(by_key[k]))
                 t_key = files_of(test_src, cls)
-                ts = split(list(t_key), set(), {}, ud.test_per_class, 0, lambda k: big_enough(t_key[k]))
-                test = [t_key[k] for k, v in ts.items() if v == "test"]
+                test = test_photos(t_key, ud.test_per_class, big_enough)
             else:
                 s = split(list(by_key), held, prev, ud.test_per_class, ud.train_per_class,
                           lambda k: big_enough(by_key[k]))
@@ -93,11 +93,12 @@ class Ingest(Stage):
             for side, sel in (("test", test), ("train", train)):
                 d = out / side / cls
                 d.mkdir(parents=True, exist_ok=True)
+                used: set[str] = set()  # a.jpg and a.png, or the same name in the user's and the teacher's folders
                 for f in sel:
                     with Image.open(f) as im:
                         # Phones store the orientation in EXIF instead of rotating the pixels.
                         im = ImageOps.exif_transpose(im).convert("RGB")
-                        im.resize((size, size), Image.BILINEAR).save(d / f"{f.stem}.png")
+                        im.resize((size, size), Image.BILINEAR).save(d / unique_name(f"{f.stem}.png", used, str(f)))
             counts[cls] = {"test": len(test), "train": len(train)}
             ctx.log(f"{cls:16s} {len(files):7d} photos, test {len(test)}, train {len(train)}")
             if 0 < len(test) < MIN_TEST:
@@ -134,10 +135,11 @@ class Ingest(Stage):
             sel = [k for k in keys if sides[ck[k]] == side]
             d = out / side / "images"
             d.mkdir(parents=True)
-            points = {}
+            points, used = {}, set()
             for key in sel:
-                src = label / "images" / copy_name(key)
-                name = f"{Path(copy_name(key)).stem}.png"
+                copy = verdicts[key].get("copy") or copy_name(key)  # older jobs: no "copy"
+                src = label / "images" / copy
+                name = unique_name(f"{Path(copy).stem}.png", used, key)
                 with Image.open(src) as im:
                     ImageOps.exif_transpose(im).convert("RGB").resize((size, size), Image.BILINEAR).save(d / name)
                 points[name] = {"points": [point(o) for o in verdicts[key]["objects"]],
@@ -192,6 +194,18 @@ def split(keys: list[str], held: set[str], prev: dict[str, str], test_cap: int, 
         n_test = min(room, sum(k not in held for k in fresh) // 2)
         sides |= {k: "test" for k in fresh[:n_test]} | {k: "train" for k in fresh[n_test:]}
     return {k: sides.get(k, "unused") for k in keys}
+
+
+def test_photos(by_key: dict, cap: int, usable) -> list:
+    """The user's own test folder: every usable photo, up to cap (split() would send half of a folder smaller
+    than the caps to training, and a test folder has no training side: that half went unused)."""
+    out = []
+    for k in sorted(by_key, key=order):
+        if len(out) == cap:
+            break
+        if usable(by_key[k]):
+            out.append(by_key[k])
+    return out
 
 
 def made_at(out) -> float:

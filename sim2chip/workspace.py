@@ -234,6 +234,34 @@ def copy_name(key: str) -> str:
     return p[-1] if len(p) == 1 else f"{p[-2]}_{p[-1]}"
 
 
+def copy_names(keys) -> dict[str, str]:
+    """copy_name of every photo of a folder, made unique: day1/cam/IMG_1.jpg, day2/cam/IMG_1.jpg and
+    cam_IMG_1.jpg all give cam_IMG_1.jpg, and one copy would overwrite the others (a count photo's points then
+    went with another photo). Those that clash take a short hash of their path."""
+    import hashlib
+    from collections import Counter
+    base = {k: copy_name(k) for k in keys}
+    seen = Counter(n.lower() for n in base.values())
+    out = {}
+    for k, n in base.items():
+        if seen[n.lower()] > 1:
+            p = Path(n)
+            n = f"{p.stem}_{hashlib.sha256(k.encode()).hexdigest()[:6]}{p.suffix}"
+        out[k] = n
+    return out
+
+
+def unique_name(name: str, used: set[str], key: str) -> str:
+    """name, or name with a short hash of key when a file of that name was already written to the folder
+    (a.jpg and a.png both become a.png)."""
+    import hashlib
+    if name.lower() in used:
+        p = Path(name)
+        name = f"{p.stem}_{hashlib.sha256(key.encode()).hexdigest()[:6]}{p.suffix}"
+    used.add(name.lower())
+    return name
+
+
 def objaverse_at(folder: Path):
     """The objaverse package, downloading into `folder` (it has no setting for this, only module globals)."""
     import objaverse

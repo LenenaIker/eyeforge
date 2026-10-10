@@ -53,7 +53,7 @@ def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str =
     verdicts = job.stage_dir("label") / "verdicts.json"
     if verdicts.exists():
         for key, v in sorted(json.loads(verdicts.read_text()).items()):
-            path = job.stage_dir("label") / v["assigned"] / copy_name(key)
+            path = job.stage_dir("label") / v["assigned"] / (v.get("copy") or copy_name(key))
             if "objects" in v:  # count task
                 pts = lambda objs: [[o["x"], o["y"], o["class"]] for o in objs or []]  # noqa: E731
                 out["photos"].append({"key": key, "points": pts(v["objects"]), "unsure": v["objects"] is None,

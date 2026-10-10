@@ -180,6 +180,35 @@ def test_label_marks_then_ingest_then_review_fix(tmp_path, monkeypatch):
     assert "2 corrected photos" in review.gather(ctx.job, ctx.cache, ctx.spec.labels, task="count")["teacher_rules"][0]
 
 
+def test_photos_with_the_same_copy_name_keep_their_own_points(tmp_path, monkeypatch):
+    """day1/cam/p.jpg, day2/cam/p.jpg and cam_p.jpg all had the copy name cam_p.jpg: one copy overwrote the
+    others and a photo's points went with another photo's pixels."""
+    raw = tmp_path / "raw"
+    for n, rel in enumerate(["day1/cam/p.jpg", "day2/cam/p.jpg", "cam_p.jpg"], 1):
+        (raw / rel).parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (400, 200), (60 * n, 0, 0)).save(raw / rel)  # its red says how many pots it has
+
+    def answer(path):
+        n = round(Image.open(path).getpixel((5, 5))[0] / 60)
+        return {"detections": [box(0.1 * j, 0, 0.1 * j + 0.1, 0.1, 0.9) for j in range(n)]}
+    fake_sam3(monkeypatch, answer)
+    ctx = ctx_for(tmp_path, user_data={"raw": "raw", "test_per_class": 1, "train_per_class": 10})
+    link_input(ctx.job, "raw", raw)
+    Label().run(ctx)
+    assert len(list((ctx.job.stage_dir("label") / "images").iterdir())) == 3
+    Ingest().run(ctx)
+    seen = 0
+    for side in ("test", "train"):
+        d = ctx.job.stage_dir("ingest") / side
+        for name, entry in json.loads((d / "points.json").read_text()).items():
+            n = round(Image.open(d / "images" / name).getpixel((5, 5))[0] / 60)
+            assert len(entry["points"]) == n
+            seen += 1
+    assert seen == 3
+    photos = review.gather(ctx.job, ctx.cache, ctx.spec.labels, task="count")["photos"]
+    assert len({p["image"] for p in photos}) == 3 and all(p["image"] for p in photos)
+
+
 def test_class_without_3d_models_is_looked_for_in_english(tmp_path, monkeypatch):
     """No 3D search, so no English queries: the id "maceta" is translated once, cached, then given to SAM 3."""
     spec = {"name": "t", "task": "count", "classes": [
