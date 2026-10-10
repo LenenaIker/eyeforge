@@ -401,3 +401,17 @@ def test_a_dataset_labeled_for_other_classes_is_asked_about_once():
     only = {**spec, "classes": [blue]}
     assert interview.Session(client, "m", interview.CategoryIndex(counts={})).relabel_question(
         interview.spec_mod.from_dict(only)) is None
+
+
+def test_labels_renamed_on_the_photos_count_as_labeled():
+    """Labels kept under a new name (paper bin -> blue bin) and no job that used that name: still no question."""
+    ds = "a7d9ef2d4b43c27b"
+    blue = {"id": "blue_bin", "description": "blue bins", "names": ["blue bin"]}
+    spec = {"name": "bins", "task": "count", "background_class": "empty", "classes": [blue],
+            "user_data": {"raw": f"library:{ds}"}}
+    s = interview.Session(Scripted([]), "m", interview.CategoryIndex(counts={}))
+    s.use_library("- a dataset", {ds}, datasets={ds}, phrases={ds: ["blue bin", "mattress"]})
+    assert s.relabel_question(interview.spec_mod.from_dict(spec)) is None
+    green = {**blue, "id": "green_bin", "names": ["green bin"]}
+    ask = s.relabel_question(interview.spec_mod.from_dict({**spec, "classes": [blue, green]}))
+    assert "blue bin, mattress" in ask and "green_bin (green bin)" in ask

@@ -655,6 +655,13 @@ class Library:
                         "models": models, "t": (root / "request.json").stat().st_mtime})
         return sorted(out, key=lambda d: -d["t"])
 
+    def label_phrases(self, owner: str, ds: str) -> dict[str, int]:
+        """The English phrases the dataset's photos are labeled for (the teacher's boxes or the user's marks, under
+        their current names: renamed labels too) and on how many photos: {phrase: photos}."""
+        return dict(self.db.execute(
+            "SELECT ref, COUNT(DISTINCT key) FROM notes WHERE owner = ? AND kind IN (?, ?) AND key IN "
+            "(SELECT key FROM photos WHERE dataset = ?) GROUP BY ref ORDER BY ref", (owner, BOXES, POINTS, ds)).fetchall())
+
     def known_labels(self, owner: str, folder: Path, phrases: dict[str, str], labels: list[str]) -> dict[str, int]:
         """Photos of the folder the teacher (or the user) already labeled, per class: a count's boxes or points for
         the class's phrase (phrases: class id -> English phrase), else a label among these very labels (the
@@ -715,7 +722,10 @@ class Library:
                            f'checked by the user; 3D models kept: ' + (", ".join(
                                f'{k} {m["kept"]} (search {m["queries"]})' for k, m in l["models"].items()) or "none")
                            + ")" for l in self.labelings(d["id"])[:2])
-            return f'dataset "{d["name"]}" (id {d["id"]}, {d["photos"]} photos{labels}{done}{seen})'
+            kept = self.label_phrases(owner, d["id"])
+            kept = (". Count labels kept on its photos (English names; a class with \"names\" starting with one "
+                    "of them reuses them): " + ", ".join(f"{p} ({n} photos)" for p, n in kept.items())) if kept else ""
+            return f'dataset "{d["name"]}" (id {d["id"]}, {d["photos"]} photos{labels}{done}{kept}{seen})'
 
         def obj_line(o):
             return f'object "{o["name"]}" (id {o["id"]}, a {o["concept"].replace("_", " ")})'

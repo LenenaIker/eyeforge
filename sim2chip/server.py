@@ -629,7 +629,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                                       notes=functools.partial(lib.describe, owner), open_dataset=open_dataset,
                                       labeled={d["id"] for d in lib.datasets(owner) if d["labels"]},
                                       datasets={d["id"] for d in lib.datasets(owner)},
-                                      labelings={d["id"]: lib.labelings(d["id"]) for d in lib.datasets(owner)})
+                                      labelings={d["id"]: lib.labelings(d["id"]) for d in lib.datasets(owner)},
+                                      phrases={d["id"]: list(lib.label_phrases(owner, d["id"]))
+                                               for d in lib.datasets(owner)})
 
     locks: dict[str, threading.Lock] = {}
 

@@ -646,20 +646,24 @@ class Session:
         self.photo_notes = None  # (photos, classes, run) -> descriptions, the kept ones reused (library)
         self.open_dataset = None  # library dataset id -> a folder of its photos this session may read
         self.labelings: dict[str, list[dict]] = {}  # library dataset id -> library.labelings
+        self.label_phrases: dict[str, list[str]] = {}  # library dataset id -> English names labeled on its photos
         self.replies = 0  # the user's messages so far
         self.relabel_asked: dict[str, int] = {}  # dataset id -> self.replies when the user was to be asked
 
     def use_library(self, items: str, ids: set[str], kit: str | None = None, notes=None, open_dataset=None,
                     labeled: set[str] | None = None, datasets: set[str] | None = None,
-                    labelings: dict[str, list[dict]] | None = None) -> None:
+                    labelings: dict[str, list[dict]] | None = None,
+                    phrases: dict[str, list[str]] | None = None) -> None:
         """Tell the model what the user's library holds (kits and datasets, see LIBRARY); kit: the name of the kit
         the user chose to start from. notes: keeps and reuses photo descriptions (Library.describe);
         open_dataset(id): a folder with a dataset's photos, so describe_scene can measure it for this goal;
         labeled: the datasets with labels of their own, the only ones a spec may give as "labeled"; datasets: every
         dataset id, never a 3D model; labelings: per dataset, how the teacher labeled it before
-        (library.labelings), so the user is asked before a spec labels it for other classes (relabel_question)."""
+        (library.labelings), so the user is asked before a spec labels it for other classes (relabel_question);
+        phrases: per dataset, the English names its photos are labeled for now (renamed ones too)."""
         self.library_ids = set(ids)
         self.labelings = labelings or {}
+        self.label_phrases = phrases or {}
         self.dataset_ids = set(datasets or ())
         self.labeled_ids = set(labeled or ())
         self.photo_notes, self.open_dataset = notes, open_dataset
@@ -1018,9 +1022,10 @@ class Session:
         for src in raw:
             ds = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(src or ""))
             done = [l for l in self.labelings.get(ds.group(1), []) if l["task"] == s.task] if ds else []
-            if not done:
+            kept = set(self.label_phrases.get(ds.group(1), [])) if ds and s.task == "count" else set()
+            if not done and not kept:
                 continue
-            old = {p for l in done for p in (l.get("phrases") or {}).values()} if s.task == "count" else \
+            old = kept | {p for l in done for p in (l.get("phrases") or {}).values()} if s.task == "count" else \
                 {c for l in done for c in l["classes"] + ([l["background"]] if l.get("background") else [])}
             new = [c for c, p in now.items() if p not in old]
             asked = self.relabel_asked.get(ds.group(1))
