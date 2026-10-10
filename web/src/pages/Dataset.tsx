@@ -108,7 +108,9 @@ export function Dataset() {
         </ConfirmDialog>
       )}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+      {/* items-start: each photo keeps its own height, so its boxes (drawn over the whole tile) fit the photo
+          and not the tallest one of the row. */}
+      <div className="grid grid-cols-2 items-start gap-3 sm:grid-cols-3 lg:grid-cols-4">
         {d.keys.slice(0, limit).map((key) => <Photo key={key} k={key} notes={(d.notes[key] ?? []).filter((n) => n.ref === ref && (kind === "class" ? n.kind === "class" : n.kind !== "class"))} />)}
       </div>
       {limit < d.keys.length && <div className="flex justify-center"><Button variant="ghost" onClick={() => setLimit(limit + PAGE)}>Show more</Button></div>}
