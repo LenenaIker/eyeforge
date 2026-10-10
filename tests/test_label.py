@@ -28,12 +28,17 @@ def img(path, color=(120, 120, 120)):
 def fake_sam3(monkeypatch, answer):
     asked = []
 
-    def detect(items, phrases, log=print, timeline=None):
-        assert phrases == {"cow": ["cow"], "dog": ["dog", "puppy"]}
-        for path, out in items:
+    # Each class's objects come from its first phrase (SAM 3 answers each phrase on its own).
+    first = {"cow": "cow", "dog": "dog"}
+
+    def detect(items, log=print, timeline=None):
+        for path, outs in items:
+            assert set(outs) <= {"cow", "dog", "puppy"}
             asked.append(path.name)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(json.dumps({"detections": answer(path.name)}))
+            for phrase, out in outs.items():
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(json.dumps({"detections": [{"box": d["box"], "score": d["score"]}
+                                                          for d in answer(path.name) if first[d["class"]] == phrase]}))
     monkeypatch.setattr(teacher, "detect", detect)
     return asked
 
@@ -198,3 +203,47 @@ def test_same_objects_groups_only_different_classes():
     d = [{"class": "a", "box": [0, 0, 1, 1]}, {"class": "b", "box": [0, 0, 1, 0.95]},
          {"class": "a", "box": [0, 0, 1, 0.9]}, {"class": "c", "box": [0, 0, 0.2, 0.2]}]
     assert [sorted(g) for g in teacher.same_objects(d)] == [[0, 1, 2]]
+
+
+def test_a_new_class_asks_sam3_only_for_it_and_marks_stand_for_their_classes(tmp_path, monkeypatch):
+    """SAM 3's answers are kept per phrase: a later job that adds a class asks only for that class's phrases. The
+    user's marks checked for one class only (the check asked about the new class) leave the teacher's marks of
+    the others in place."""
+    raw = tmp_path / "raw"
+    img(raw / "a.jpg")
+    img(raw / "b.jpg")
+    asked = []
+    found = {"cow": [0.1, 0.1, 0.3, 0.3], "dog": [0.6, 0.6, 0.8, 0.8]}
+
+    def detect(items, log=print, timeline=None):
+        for path, outs in items:
+            asked.append(sorted(outs))
+            for phrase, out in outs.items():
+                out.parent.mkdir(parents=True, exist_ok=True)
+                box = found.get(phrase)
+                out.write_text(json.dumps({"detections": [{"box": box, "score": 0.9}] if box else []}))
+    monkeypatch.setattr(teacher, "detect", detect)
+    cache = Cache(tmp_path / "cache")
+    cows = Context(from_dict({**SPEC, "task": "count", "classes": SPEC["classes"][:1], "user_data": {"raw": "raw"}}),
+                   open_job(tmp_path, "cows"), cache)
+    link_input(cows.job, "raw", raw)
+    Label().run(cows)
+    assert asked == [["cow"], ["cow"]]
+    asked.clear()
+    both = Context(from_dict({**SPEC, "task": "count", "user_data": {"raw": "raw"}}), open_job(tmp_path, "both"), cache)
+    link_input(both.job, "raw", raw)
+    Label().run(both)
+    assert asked == [["dog", "puppy"], ["dog", "puppy"]]
+    # The check asked about dogs only: the user's photo has no dog where the teacher saw one, and a cow mark the
+    # page sent along stays the teacher's.
+    assert review.apply(both.job, cache, {}, {}, {"a.jpg": [[0.2, 0.2, "cow"]]}, classes=["dog"]) == "label"
+    assert review.load_corrections(both.job)["checked"] == {"a.jpg": ["dog"]}
+    asked.clear()
+    Label().run(both)
+    v = json.loads((both.job.stage_dir("label") / "verdicts.json").read_text())
+    assert not asked and v["a.jpg"]["judge"] == "user"
+    assert [o["class"] for o in v["a.jpg"]["objects"]] == ["cow"] and "box" in v["a.jpg"]["objects"][0]
+    assert sorted(o["class"] for o in v["b.jpg"]["objects"]) == ["cow", "dog"]
+    # Fixed again in the review after training, with every class in view: the marks stand for all of them.
+    review.apply(both.job, cache, {}, {}, {"a.jpg": [[0.3, 0.3, "cow"]]})
+    assert review.load_corrections(both.job)["checked"] == {}

@@ -22,7 +22,7 @@ import time
 import traceback
 from pathlib import Path
 
-VERSION = 1
+VERSION = 2  # 2: SAM 3 answers one file per photo and phrase
 DONE = "\x00done "
 WORKERS = {"sam3": "sim2chip.sam3_worker", "siglip": "sim2chip.siglip_worker"}
 

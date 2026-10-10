@@ -105,12 +105,17 @@ def fake_sam3(monkeypatch, answer):
     """SAM 3 without a GPU: answer(photo path) gives its detections; returns the photos it was asked about."""
     asked = []
 
-    def detect(items, phrases, log=print, timeline=None):
-        assert phrases["pot"] == ["flower pot"] and phrases["cat"] == ["cat"]  # queries, else categories
-        for path, out in items:
+    of = {"flower pot": "pot", "cat": "cat"}  # queries, else categories
+
+    def detect(items, log=print, timeline=None):
+        for path, outs in items:
+            assert set(outs) <= set(of)
             asked.append(path)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(json.dumps(answer(path)))
+            a = answer(path)
+            for phrase, out in outs.items():
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(json.dumps(a if "error" in a else {"detections": [
+                    {"box": d["box"], "score": d["score"]} for d in a["detections"] if d["class"] == of[phrase]]}))
     monkeypatch.setattr(teacher, "detect", detect)
     return asked
 

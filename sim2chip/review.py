@@ -4,7 +4,8 @@ The teacher labels the user's photos and asset QA judges the 3D models; the user
 wrong, never labels from scratch. This module gathers samples for a front end (photos with their labels,
 3D models with their verdicts, random synthetic frames, test predictions) and applies corrections:
 - photo labels (count task: the points of every object in a photo) go to input/corrections.json, which the
-  label stage applies on top of its (reused) verdicts;
+  label stage applies on top of its (reused) verdicts. A count photo's points cover every class, or only those
+  in "checked" (a check that asked about the classes no earlier job checked: "check");
 - asset decisions go to the asset knowledge base with judge "user", so later jobs reuse them too.
 Then the job reruns from the first stage the corrections affect.
 """
@@ -25,7 +26,16 @@ RENDER_SAMPLE = 12
 def load_corrections(job: Job) -> dict:
     f = job.input / CORRECTIONS
     fixes = json.loads(f.read_text()) if f.exists() else {}
-    return {"labels": {}, "assets": {}, "points": {}, **fixes}
+    return {"labels": {}, "assets": {}, "points": {}, "checked": {}, **fixes}
+
+
+def checked(fixes: dict, key: str, ids) -> set[str]:
+    """The classes the user's points on a count photo stand for: those in fixes["checked"], or every class when
+    it does not name them (the photo was fixed with all its classes in view)."""
+    if key not in fixes["points"]:
+        return set()
+    named = (fixes.get("checked") or {}).get(key)
+    return set(ids) if named is None else set(named) & set(ids)
 
 
 def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str = "roi_classification") -> dict:
@@ -35,7 +45,7 @@ def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str =
     from .workspace import copy_name
     fixes = load_corrections(job)
     out: dict = {"task": task, "labels": labels, "photos": [], "assets": [], "renders": [], "test": [],
-                 "teacher_rules": []}
+                 "teacher_rules": [], "check": fixes.get("check") or []}
     learned = job.stage_dir("label") / "teacher.json"
     if learned.exists():  # the threshold the teacher chose from the user's corrections
         out["teacher_rules"] = [json.loads(learned.read_text())["note"]]
@@ -90,9 +100,10 @@ def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str =
 
 
 def apply(job: Job, cache: Cache, labels: dict[str, str], assets: dict[str, str],
-          points: dict[str, list] | None = None, share: bool = True) -> str | None:
+          points: dict[str, list] | None = None, share: bool = True, classes: list[str] | None = None) -> str | None:
     """Save corrections and return the stage to rerun from (None when nothing changed). `points` maps a photo
-    to all its objects as [x, y, class] (the photo's full, corrected list). Asset decisions always apply to
+    to all its objects as [x, y, class] (the photo's full, corrected list); the user checked them for `classes`
+    (on top of those checked before) or, when None, for every class. Asset decisions always apply to
     this job; with `share` they also go to the shared asset knowledge base, which every later job trusts
     (off on a public server, where one visitor must not decide for the others)."""
     fixes = load_corrections(job)
@@ -101,6 +112,12 @@ def apply(job: Job, cache: Cache, labels: dict[str, str], assets: dict[str, str]
     changed_points = {k: [[round(float(x), 4), round(float(y), 4), str(c)] for x, y, c, *_ in v]
                       for k, v in (points or {}).items()}
     changed_points = {k: v for k, v in changed_points.items() if fixes["points"].get(k) != v}
+    for k in changed_points:
+        everything = k in fixes["points"] and k not in fixes["checked"]  # checked before for every class
+        if classes is None or everything:
+            fixes["checked"].pop(k, None)
+        else:
+            fixes["checked"][k] = sorted(set(fixes["checked"].get(k, [])) | set(classes))
     fixes["points"] |= changed_points
     fixes["assets"] |= assets
     job.input.mkdir(parents=True, exist_ok=True)

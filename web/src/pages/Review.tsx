@@ -29,6 +29,10 @@ export default function ReviewPanel({ job, onRerun, calibrating = false, labelin
   const media = (p: string, big = false) => API.mediaUrl(job, p, big);
   const hue = (c: string) => (review.labels.indexOf(c) * 137) % 360;
   const marksOf = (key: string) => fixes.points[key] ?? review.photos.find((x) => x.key === key)?.points ?? [];
+  // The check of a count may ask about some classes only (the others were checked before): only those are shown
+  // and edited, the marks of the others go back unchanged.
+  const only = calibrating && review.check?.length ? new Set(review.check) : null;
+  const shown = (points: Point[]) => only ? points.filter((p) => only.has(p[2])) : points;
   const n = Object.keys(fixes.labels).length + Object.keys(fixes.assets).length + Object.keys(fixes.points).length;
   const set = (kind: keyof Fixes, key: string, value: any) => setFixes((f) => {
     const next = { ...f, [kind]: { ...f[kind] } } as Fixes;
@@ -87,15 +91,16 @@ export default function ReviewPanel({ job, onRerun, calibrating = false, labelin
       {tab === "test" && <Hint>{counting ? "Orange dots: what the model found. White rings: the objects really there. Tap a photo to fix the rings."
                                          : "What the model answered on your real test photos."}</Hint>}
       {tab === "photos" && <Hint>{counting ? "The marks the teacher model put on your photos. Tap a photo to add or remove marks."
-                                           : "The teacher's label for each photo. Tap to change it."}</Hint>}
+                                           : "The teacher's label for each photo. Tap to change it."}
+        {only && ` Only ${[...only].join(", ")} this time: you checked the other classes before.`}</Hint>}
       {tab === "assets" && <Hint>3D models found for your objects. Tap to keep or drop one.</Hint>}
 
       <div className="columns-2 gap-3 sm:columns-3 lg:columns-4 [&>*]:mb-3 [&>*]:break-inside-avoid">
         {tab === "photos" && counting && review.photos.map((p) => (
           <Tile key={p.key} src={p.image && media(p.image)} changed={p.key in fixes.points}
-                overlay={<Dots points={marksOf(p.key)} hue={hue} />}
-                onClick={p.image ? () => setEditing({ key: p.key, image: p.image!, title: p.key, points: marksOf(p.key).map((x) => [...x] as Point) }) : undefined}>
-            {p.unsure && !(p.key in fixes.points) ? <Badge tone="bad">teacher unsure</Badge> : <Badge>{marksOf(p.key).length} marked</Badge>}
+                overlay={<Dots points={shown(marksOf(p.key))} hue={hue} />}
+                onClick={p.image ? () => setEditing({ key: p.key, image: p.image!, title: p.key, points: shown(marksOf(p.key)).map((x) => [...x] as Point) }) : undefined}>
+            {p.unsure && !(p.key in fixes.points) ? <Badge tone="bad">teacher unsure</Badge> : <Badge>{shown(marksOf(p.key)).length} marked</Badge>}
             <span className="text-xs text-muted">{p.key in fixes.points || p.judge === "user" ? "you" : "teacher"}</span>
           </Tile>
         ))}
@@ -162,14 +167,16 @@ export default function ReviewPanel({ job, onRerun, calibrating = false, labelin
       )}
 
       {editing && (
-        <Editor editing={editing} labels={review.labels.slice(1)} media={media} hue={hue}
-                teacher={review.photos.find((x) => x.key === editing.key)?.teacher_points ?? []}
+        <Editor editing={editing} labels={only ? [...only] : review.labels.slice(1)} media={media} hue={hue}
+                teacher={shown(review.photos.find((x) => x.key === editing.key)?.teacher_points ?? [])}
                 onClose={() => setEditing(null)}
                 onDone={(points) => {
                   const p = review.photos.find((x) => x.key === editing.key);
                   const t = review.test.find((x) => x.key === editing.key);
                   const original = p?.points ?? t?.truth;
-                  set("points", editing.key, JSON.stringify(points) === JSON.stringify(original) ? undefined : points);
+                  const all = only && p ? [...marksOf(p.key).filter((x) => !only.has(x[2])), ...points] : points;
+                  const same = (a?: Point[]) => JSON.stringify(a?.map(String).sort()) === JSON.stringify(all.map(String).sort());
+                  set("points", editing.key, same(original) ? undefined : all);
                   setEditing(null);
                 }} />
       )}

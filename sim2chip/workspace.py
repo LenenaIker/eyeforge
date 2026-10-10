@@ -8,6 +8,7 @@ bucket to a local folder with the same layout (cloud_worker.py), so stage code d
     <home>/cache/objaverse, cache/usd/{raw,norm}, cache/hdri, cache/textures   (disposable files)
     <home>/cache/db                                                          (asset knowledge base, keep)
     <home>/cache/labels/<prompt>/<model>/<photo>.json                        (teacher answers per photo)
+    <home>/cache/labels/sam3/<model>/<phrase>/<photo>.json                   (SAM 3, per photo and phrase)
 """
 from __future__ import annotations
 

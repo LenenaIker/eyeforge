@@ -176,11 +176,30 @@ def weights(repo: str, log=print, timeline=None) -> str:
     return str(dst)
 
 
-def detect(items: list[tuple[Path, Path]], phrase_map: dict[str, list[str]], log=print, timeline=None) -> None:
-    """Runs SAM 3 on (photo, answer file) pairs; each answer file gets the photo's detections."""
+def detect(items: list[tuple[Path, dict[str, Path]]], log=print, timeline=None) -> None:
+    """Runs SAM 3 on (photo, {noun phrase: answer file}) pairs; each answer file gets what that phrase found on the
+    photo (sam3_worker)."""
     _worker("sim2chip.sam3_worker", NAME, {"model": weights(MODEL, log, timeline), "side": SIDE, "floor": FLOOR,
-                                           "phrases": phrase_map,
-                                           "items": [{"path": str(p), "out": str(o)} for p, o in items]}, log)
+                                           "items": [{"path": str(p), "outs": {k: str(o) for k, o in outs.items()}}
+                                                     for p, outs in items]}, log)
+
+
+def nms(dets: list[dict], iou: float = 0.5) -> list[dict]:
+    """Same-class boxes from several phrases of one class are one object: keep the most confident."""
+    keep = []
+    for d in sorted(dets, key=lambda d: -d["score"]):
+        x0, y0, x1, y1 = d["box"]
+        for k in keep:
+            if k["class"] != d["class"]:
+                continue
+            a0, b0, a1, b1 = k["box"]
+            inter = max(0.0, min(x1, a1) - max(x0, a0)) * max(0.0, min(y1, b1) - max(y0, b0))
+            union = (x1 - x0) * (y1 - y0) + (a1 - a0) * (b1 - b0) - inter
+            if union > 0 and inter / union > iou:
+                break
+        else:
+            keep.append(d)
+    return keep
 
 
 def embed(items: list[tuple[Path, Path]], texts: list[str], text_out: Path, log=print, timeline=None) -> None:

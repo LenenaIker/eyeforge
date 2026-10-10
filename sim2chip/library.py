@@ -29,6 +29,7 @@ import threading
 import time
 from pathlib import Path
 
+from .review import checked
 from .workspace import IMAGE_EXT, Job, content_key
 
 VERSION = 2  # what sync takes from a job; 2: the teacher's marks and the user's corrections
@@ -251,9 +252,10 @@ class Library:
             elif v.get("class") and v["class"] != "no_answer":  # classification
                 cls = v.get("teacher", v["class"]) if v.get("judge") == "user" else v["class"]
                 rows.append((k, CLASS, labels, "model", v.get("model"), {"label": cls, "confidence": v.get("confidence")}))
-        for rel, marks in (fixes.get("points") or {}).items():
+        fixes = {"points": {}, **fixes}
+        for rel, marks in fixes["points"].items():
             if k := key(rel):
-                for c in ids:
+                for c in checked(fixes, rel, ids):  # only the classes the user looked at on this photo
                     rows.append((k, POINTS, phrase[c], "user", None, {"points": [[x, y] for x, y, cl in marks if cl == c]}))
         for rel, label in (fixes.get("labels") or {}).items():
             if k := key(rel):
@@ -532,19 +534,22 @@ class Library:
     def corrections_for(self, owner: str, folder: Path, ids: list[str], phrases: dict[str, str],
                         labels: list[str]) -> dict:
         """The owner's earlier corrections of the photos in a job's raw folder, as that job's corrections.json
-        (keys relative to the folder): a count's points when the user marked the photo for every class of the
-        job (phrases: class id -> English phrase; a photo marked for some classes only would lose the teacher's
-        marks of the others), a photo's label when it was chosen among the very same labels."""
+        (keys relative to the folder): a count's points for the classes the user marked on the photo before
+        (phrases: class id -> English phrase), named in "checked" when not every class of the job, a photo's
+        label when it was chosen among the very same labels."""
         files = {str(f.relative_to(folder)): content_key(f) for f in _images(folder)}
-        out: dict = {"labels": {}, "points": {}}
+        out: dict = {"labels": {}, "points": {}, "checked": {}}
         same = json.dumps(sorted(labels))
         chosen = self.notes(owner, list(files.values()), CLASS, same)
         marked = {c: self.notes(owner, list(files.values()), POINTS, p) for c, p in phrases.items()}
         for rel, k in files.items():
             if (n := chosen.get(k)) and n["source"] == "user":
                 out["labels"][rel] = n["data"]["label"]
-            if ids and all(k in marked[c] and marked[c][k]["source"] == "user" for c in ids):
-                out["points"][rel] = [[x, y, c] for c in ids for x, y in marked[c][k]["data"]["points"]]
+            mine = [c for c in ids if k in marked[c] and marked[c][k]["source"] == "user"]
+            if mine:
+                out["points"][rel] = [[x, y, c] for c in mine for x, y in marked[c][k]["data"]["points"]]
+                if len(mine) < len(ids):
+                    out["checked"][rel] = mine
         return {k: v for k, v in out.items() if v}
 
     def materialize_objects(self, owner: str, ids: list[str], dst: Path) -> list[str]:
@@ -600,14 +605,15 @@ class Library:
                         "models": models, "t": (root / "request.json").stat().st_mtime})
         return sorted(out, key=lambda d: -d["t"])
 
-    def known_labels(self, owner: str, folder: Path, phrases: list[str], labels: list[str]) -> int:
-        """Photos of the folder the teacher (or the user) already labeled for these classes: a count's boxes
-        for every phrase, else a label among these very labels."""
+    def known_labels(self, owner: str, folder: Path, phrases: dict[str, str], labels: list[str]) -> dict[str, int]:
+        """Photos of the folder the teacher (or the user) already labeled, per class: a count's boxes or points for
+        the class's phrase (phrases: class id -> English phrase), else a label among these very labels (the
+        same number for every label)."""
         keys = [content_key(f) for f in _images(folder)]
         if phrases:
-            marked = [set(self.notes(owner, keys, BOXES, p)) | set(self.notes(owner, keys, POINTS, p)) for p in phrases]
-            return sum(all(k in m for m in marked) for k in keys)
-        return len(self.notes(owner, keys, CLASS, json.dumps(sorted(labels))))
+            return {c: len(set(self.notes(owner, keys, BOXES, p)) | set(self.notes(owner, keys, POINTS, p)))
+                    for c, p in phrases.items()}
+        return dict.fromkeys(labels, len(self.notes(owner, keys, CLASS, json.dumps(sorted(labels)))))
 
     def datasets(self, owner: str) -> list[dict]:
         out = []

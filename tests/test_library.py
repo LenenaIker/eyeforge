@@ -144,8 +144,9 @@ def test_corrections_of_one_job_come_back_in_the_next(tmp_path):
     other = photos(tmp_path / "b" / "fotos", ["blue", "red"])
     got = lib.corrections_for("u", other[0].parent, ["bottle_cls"], {"bottle_cls": "bottle"}, [])
     assert got == {"points": {"0.jpg": [[0.2, 0.3, "bottle_cls"]]}}
-    # A second class the user never marked: the photo stays the teacher's.
-    assert lib.corrections_for("u", other[0].parent, ["bottle_cls", "cup"], {"bottle_cls": "bottle", "cup": "cup"}, []) == {}
+    # A second class the user never marked: the marks stand for the first class only, the teacher's for the cup.
+    got = lib.corrections_for("u", other[0].parent, ["bottle_cls", "cup"], {"bottle_cls": "bottle", "cup": "cup"}, [])
+    assert got == {"points": {"0.jpg": [[0.2, 0.3, "bottle_cls"]]}, "checked": {"0.jpg": ["bottle_cls"]}}
 
 
 def test_several_raw_sources_become_one_folder(tmp_path):

@@ -108,6 +108,7 @@ export type Review = {
   // count (count task): the model's count by class, from its density output; older models have none.
   test: { key: string; file: string; image: string; truth: any; pred: any; count?: Record<string, number> }[];
   teacher_rules?: string[];  // what the teacher learned from the user's corrections
+  check?: string[];  // count: the classes the teacher's check asks about, the others checked before
 };
 export type Fixes = { labels: Record<string, string>; assets: Record<string, string>; points: Record<string, Point[]> };
 

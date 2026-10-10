@@ -510,31 +510,51 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 return spec_mod.from_dict(data)
         return parsed
 
-    def checked_before(parsed: spec_mod.Spec, owner: str, job: Job) -> bool:
-        """Are most of these photos labeled already, so the few new ones need no check of their own (user,
-        2026-10-09)? Either the user corrected at least a check round's worth (reuse_corrections), or an earlier
-        job's teacher labeled them for these same classes and the user went on to train with those labels. The
-        new ones, at most NEW_SHARE of the folder, are marked in the run, the teacher learning from the earlier
-        corrections, and the user can still fix them after it."""
+    def to_check(parsed: spec_mod.Spec, owner: str, job: Job) -> list[str]:
+        """The classes the teacher's check must ask about, none when the photos are labeled already (user,
+        2026-10-09: a dataset's labels are not asked for again; 2026-10-10: class by class, so a job that adds a
+        class checks only that one). A class is labeled when the user corrected at least a check round's worth of
+        its photos (reuse_corrections), or an earlier job's teacher labeled them for its phrase and the user went
+        on to train with those labels; either way with at most NEW_SHARE of the folder new. The new ones are
+        marked in the run, the teacher learning from the earlier corrections, and the user can still fix them
+        after it. The check of a count asks only about the classes left (review "check")."""
         from . import teacher
+        count = parsed.task == "count"
+        ids = [c.id for c in parsed.classes] if count else parsed.labels
         raw = parsed.user_data.raw
         if not isinstance(raw, str):
-            return False
+            return ids
         try:
             folder = job.resolve_input(raw)
         except ValueError:
-            return False
+            return ids
         if not folder.is_dir():
-            return False
+            return ids
         total = sum(1 for p in folder.rglob("*") if p.suffix.lower() in IMAGE_EXT and not p.name.startswith("."))
-        f = job.input / review.CORRECTIONS
-        fixes = json.loads(f.read_text()) if f.exists() else {}
-        corrected = len(set(fixes.get("labels") or {}) | set(fixes.get("points") or {}))
-        if corrected >= CALIBRATION_PHOTOS and total - corrected <= NEW_SHARE * total:
-            return True
-        phrases = [p[0] for p in teacher.phrases(parsed).values()] if parsed.task == "count" else []
-        known = lib.known_labels(owner, folder, phrases, parsed.labels if parsed.task != "count" else [])
-        return known > 0 and total - known <= NEW_SHARE * total
+        fixes = review.load_corrections(job)
+        if count:
+            corrected = {c: sum(c in review.checked(fixes, k, ids) for k in fixes["points"]) for c in ids}
+        else:
+            corrected = dict.fromkeys(ids, len(set(fixes["labels"]) | set(fixes["points"])))
+        phrases = {c: p[0] for c, p in teacher.phrases(parsed).items()} if count else {}
+        known = lib.known_labels(owner, folder, phrases, [] if count else parsed.labels)
+
+        def labeled(c: str) -> bool:
+            if corrected[c] >= CALIBRATION_PHOTOS and total - corrected[c] <= NEW_SHARE * total:
+                return True
+            return known[c] > 0 and total - known[c] <= NEW_SHARE * total
+        left = [c for c in ids if not labeled(c)]
+        check = left if count and 0 < len(left) < len(ids) else None
+        if (fixes.get("check") or None) != check:
+            fixes["check"] = check
+            job.input.mkdir(parents=True, exist_ok=True)
+            (job.input / review.CORRECTIONS).write_text(json.dumps(fixes, indent=1))
+        return left
+
+    def checking(job: Job) -> list[str] | None:
+        """The classes the check asks about (to_check), None for every class: the classes the user's fixes in it
+        stand for."""
+        return review.load_corrections(job).get("check") or None
 
     def check_paths(parsed: spec_mod.Spec, request: Request, job: Job | None = None) -> None:
         """On a public server, only photos the requester uploaded in their chats (or, revising a job, the job's
@@ -791,7 +811,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if session:
             warm_mod.note(home, "job", name, session=f"session:{session}")
         if calibrate_first and parsed.user_data.raw and not parsed.user_data.labeled \
-                and not checked_before(parsed, owner_of(request), job):
+                and to_check(parsed, owner_of(request), job):
             bill_to(job, may_start(request, "run"))  # the teacher's check is the start of the paid run
             jobs.warm_up("calibration", name)
             jobs.calibrate(job)
@@ -935,7 +955,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         (job.root / "request.json").write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         (job.root / LABELING).write_text(json.dumps({"dataset": item, "state": "checking"}))
         jobs.warm_up("calibration", name)
-        if checked_before(parsed, owner, job):
+        if not to_check(parsed, owner, job):
             jobs.label_all(job)
         else:
             jobs.calibrate(job)
@@ -1154,7 +1174,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         room_for_a_run()
         may_start(request, "run")
         review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
-                     share=not public)
+                     share=not public, classes=checking(job))
         (job.root / CALIBRATION).unlink()
         start_run(job, job.root / "request.json")
         return {"rerun_from": None}
@@ -1169,7 +1189,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             raise HTTPException(409, CHECK_OVER)
         may_start(request, "label")
         review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
-                     share=not public)
+                     share=not public, classes=checking(job))
         (job.root / CALIBRATION).unlink()
         jobs.label_all(job)
         return {"rerun_from": "label"}
@@ -1185,7 +1205,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             raise HTTPException(409, CHECK_OVER)
         if (job.root / CALIBRATION).exists():  # still calibrating the teacher: another round, no training
             review.apply(job, Cache(home / "cache"), body.get("labels") or {}, {}, body.get("points") or {},
-                         share=not public)
+                         share=not public, classes=checking(job))
             jobs.calibrate(job)
             return {"rerun_from": "calibration"}
         budget_left()

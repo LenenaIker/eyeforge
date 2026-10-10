@@ -613,6 +613,36 @@ def test_photos_checked_before_skip_the_check(app, tmp_path):
     assert not r.get("calibrating") and app.launched  # 5 new of 20: straight to the run
 
 
+def test_the_check_asks_only_about_classes_not_checked_before(app, tmp_path):
+    """The user marked the cows of a dataset's photos before: a job counting cows and horses reuses those marks
+    for cows and its check asks about horses only; a job counting cows alone needs no check."""
+    from PIL import Image
+
+    from sim2chip import library
+
+    lib = library.Library(tmp_path, tmp_path / "cache")
+    files = []
+    for i in range(8):
+        f = tmp_path / "scratch" / f"p{i}.jpg"
+        f.parent.mkdir(exist_ok=True)
+        Image.new("RGB", (64, 64), (i * 20, 0, 0)).save(f, "JPEG")
+        files.append(f)
+    ds = lib.new_dataset("local", "field", files)
+    for f in files:
+        lib.note("local", library.content_key(f), library.POINTS, "cow", {"points": [[0.5, 0.5]]}, source="user")
+    cow = {**GOOD["classes"][0], "names": ["cow"]}
+    horse = {**cow, "id": "horse", "description": "horses", "names": ["horse"], "assets": {"categories": ["horse"]}}
+    spec = {**GOOD, "task": "count", "classes": [cow, horse], "user_data": {"raw": f"library:{ds}"}}
+    r = app.post("/api/jobs", data={"spec": json.dumps(spec), "calibrate": "true"}).json()
+    assert r["calibrating"] and not app.launched
+    fixes = json.loads((tmp_path / "jobs" / r["job"] / "input" / "corrections.json").read_text())
+    assert fixes["check"] == ["horse"] and len(fixes["points"]) == 8
+    assert all(v == ["cow"] for v in fixes["checked"].values())
+    assert app.get(f"/api/jobs/{r['job']}/review").json()["check"] == ["horse"]
+    r = app.post("/api/jobs", data={"spec": json.dumps({**spec, "classes": [cow]}), "calibrate": "true"}).json()
+    assert not r.get("calibrating") and app.launched
+
+
 def test_a_dataset_labeled_before_for_the_same_classes_needs_no_check(app, tmp_path):
     """The teacher's labels of a library dataset, kept from an earlier job with the same task and classes: the
     new job takes that job's class names (same phrases for the teacher) and starts without a check."""
