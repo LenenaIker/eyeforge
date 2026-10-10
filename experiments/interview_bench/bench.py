@@ -44,6 +44,8 @@ LOW = {"enable_thinking": True, "low_effort": True}
 # Token Factory ignores reasoning_budget (checked 2026-10-03: 582 reasoning tokens with a budget of 256).
 VARIANTS = {
     "P": {"desc": "production settings as in the code"},
+    "P1010": {"desc": "production settings, code of 2026-10-10 (scene and slips fixed in code)"},
+    "P1010b": {"desc": "P1010 plus LVIS, count, distractor and pitch slips fixed in code, English ids kept"},
     "A": {"desc": "before 2026-10-03: full reasoning, T 0.3, max 4096", "interview": {"max_tokens": 4096},
           "short": None},
     "A8": {"desc": "full reasoning, T 0.3, max 8192, short calls no reasoning",

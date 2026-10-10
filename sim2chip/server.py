@@ -80,6 +80,25 @@ def default_interviewer(home: Path, backend: str = "local", public: bool = False
     return session
 
 
+def attach_library(session, lib, owner: str, folders: Path, kit: str | None = None, on_open=None) -> None:
+    """The owner's library to an interview (interview.Session.use_library). folders: where a dataset the chat
+    looks at is put as plain photos; on_open: called when that happens (the server asks for the warm GPU, as for
+    an upload)."""
+    chosen = next((k["name"] for k in lib.kits(owner) if k["id"] == kit), None) if kit else None
+
+    def open_dataset(ds: str) -> Path | None:
+        if not lib.owns(owner, "dataset", ds):
+            return None
+        if on_open is not None:
+            on_open()
+        lib.materialize_dataset(owner, ds, folders / f"library_{ds}", by_label=False)
+        return folders / f"library_{ds}"
+    datasets = lib.datasets(owner)
+    session.use_library(*lib.for_chat(owner), kit=chosen, notes=functools.partial(lib.describe, owner),
+                        open_dataset=open_dataset, labeled={d["id"] for d in datasets if d["labels"]},
+                        datasets={d["id"] for d in datasets}, dataset_card=functools.partial(lib.dataset_card, owner))
+
+
 MAX_PHOTOS = 400  # per upload on a public server
 MAX_PHOTO_BYTES = 30 << 20   # one photo: a 50 MP phone photo is about 20 MB
 MAX_MODEL_BYTES = 200 << 20  # one GLB the user uploads
@@ -615,23 +634,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if hasattr(getattr(sessions[sid], "client", None), "usage_log"):
             sessions[sid].client.usage_log = interview_usage(sid)
         if hasattr(sessions[sid], "use_library"):  # the user's kits and datasets, to start from them
-            owner = owner_of(request)
-            chosen = next((k["name"] for k in lib.kits(owner) if k["id"] == kit), None) if kit else None
-            folders = home / "uploads" / sid
-
-            def open_dataset(ds: str, owner=owner, folders=folders) -> Path | None:
-                if not lib.owns(owner, "dataset", ds):
-                    return None
-                jobs.warm_up("library photos", f"session:{sid}")  # as an upload: the GPU starts while the chat goes on
-                lib.materialize_dataset(owner, ds, folders / f"library_{ds}", by_label=False)
-                return folders / f"library_{ds}"
-            sessions[sid].use_library(*lib.for_chat(owner), kit=chosen,
-                                      notes=functools.partial(lib.describe, owner), open_dataset=open_dataset,
-                                      labeled={d["id"] for d in lib.datasets(owner) if d["labels"]},
-                                      datasets={d["id"] for d in lib.datasets(owner)},
-                                      labelings={d["id"]: lib.labelings(d["id"]) for d in lib.datasets(owner)},
-                                      phrases={d["id"]: list(lib.label_phrases(owner, d["id"]))
-                                               for d in lib.datasets(owner)})
+            attach_library(sessions[sid], lib, owner_of(request), home / "uploads" / sid, kit,
+                           on_open=lambda: jobs.warm_up("library photos", f"session:{sid}"))
 
     locks: dict[str, threading.Lock] = {}
 

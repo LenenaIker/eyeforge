@@ -429,37 +429,33 @@ train and test the model (user_data)."""
 LIBRARY = """
 The user's library: things they already have, kept from earlier models or uploaded. A kit is a named list of
 them. When the user names a kit (or a dataset or object listed below), use those instead of searching for 3D
-models or asking for new photos:
-- a dataset as the user's photos: user_data "raw": "library:<id>" (the teacher labels them), or "labeled":
-  "library:<id>" when the dataset's photos carry labels that match the classes (class_map maps each class to
-  those labels);
+models or asking for new photos; never ask for photos again for a dataset they named.
+Before proposing a spec that uses a dataset, look at it: {{"dataset": "<id>"}}. You get its labels (count labels
+by English name, with how many photos the teacher marked and how many the user checked), the models made with it
+and their 3D model searches, and what its photos show (the photo analysis). Then:
+- the dataset's photos go in user_data "raw": "library:<id>" (the teacher labels them), or in "labeled":
+  "library:<id>" only when it is sorted into folders that match the classes (class_map maps each class to them);
+  photos the user attaches in this chat count too: "raw": ["library:<id>", "<attached folder>"];
+- put in the spec only the classes the user wants now. A counted class reuses the dataset's labels when its
+  "names" start with the label's exact English name ("names": ["blue bin"] for the label "blue bin"); any other
+  name is labeled anew by the teacher and checked by the user;
+- 3D models kept for a class are found again by the same search queries: reuse them with "assets": {{"source":
+  "search", "queries": [those queries]}} (models_kept 0 means no usable model: try other queries). A dataset id
+  is never a 3D model;
 - objects as 3D models of a class: "assets": {{"source": "library", "models": ["library:<id>", ...]}} (with
-  source "search" and queries instead if more models should be searched too, keeping "models");
-- objects that are not one of the classes go into props ({{"id", "queries": [], "models": ["library:<id>"],
-  "size_m"}}): look-alikes and background things the camera must learn to ignore.
-Each dataset comes with what was seen in it (objects, backgrounds, places). Before proposing a spec that uses
-a dataset, measure it for this goal: {{"describe_scene": {{"folder": "library:<id>", "classes": "<what to find>"}}}}
-(sizes, camera, scene fields). Photos the user attaches in this chat count too: when a dataset is also used,
-"raw" lists both, ["library:<id>", "<attached folder>"].
-A dataset the teacher labeled before is still used as "raw" (only a dataset listed with labels of its own is
-"labeled"), and it keeps the teacher's labels: when what the user wants now fits, use the same task and exactly
-the same class ids (and background class); the job then reuses the labels and the user is not asked to check the
-photos again. Other classes or another task mean the teacher labels every photo anew and the user checks them:
-say so before proposing them, and propose the earlier classes as the faster option. The 3D models kept for a
-class are found again by the same search queries: reuse them for the same kind of object with "assets":
-{{"source": "search", "queries": [those queries]}} (a dataset id is never a 3D model; a class or a prop with 0 kept
-had no usable model; try other queries). When the user names a dataset, never ask for photos again.
-Decide for each object whether it is a class or a prop from what the user wants now: the same object can be the
-target of one model and a distractor of another. Every class or prop with 3D models still needs size_m. Use only
-the ids listed here.
+  source "search" and queries instead if more models should be searched too, keeping "models"); objects that
+  are not one of the classes go into props ({{"id", "queries": [], "models": ["library:<id>"], "size_m"}}).
+Decide for each object whether it is a class or a prop from what the user wants now. Every class or prop with 3D
+models still needs size_m. Use only the ids listed here.
 {items}
 """
 
-RELABEL = """[Labels of dataset {ds}] The teacher already labeled this dataset ({task}) for: {old}. The proposed
-spec also needs {new}, never labeled in it: the teacher would mark {them} on every photo and the user would check
-a few photos. Do not propose the spec yet. In the user's language, tell them which classes the dataset is
-already labeled with and ask whether to keep those or to add or use the new ones (the labeled ones are reused at
-no cost, the same English names find them again). Then propose what they choose."""
+RELABEL = """[Labels of dataset {ds}] The dataset is labeled ({task}) for: {old}. The proposed spec also needs
+{new}, never labeled in it: the teacher would mark {them} on every photo and the user would check a few photos.
+Do not propose the spec yet. Reply with {{"say": "..."}}: in the user's language, tell them which of the classes
+they want are labeled already and which are new, and ask whether to go on with the new ones or leave them out. Classes the user did
+not ask for stay out of the spec even if the dataset is labeled for them. Then propose what they choose, with
+"names" starting with the dataset's exact label names for the labeled ones."""
 
 RESEARCH = """
 You can look facts up on the web: {{"research": "<one precise question>"}} returns a short answer and its sources.
@@ -531,6 +527,51 @@ def summary(s: spec_mod.Spec) -> str:
 
 FIRST_QUESTION = "Describe what your camera should see / Describe qué debe ver tu cámara:"
 CONFIRM = "Is this right? / ¿Es correcto? (yes/sí, or tell me what to change / o dime qué cambiar)"
+
+
+def _fix_slips(spec: dict, categories: set[str] | None = None) -> None:
+    """Slips in a proposed spec whose fix is plain, made here instead of sending the spec back (one model turn
+    each; in the interview bench of 2026-10-10 most rejected specs were these): the photo orientation put under
+    scene; an Objaverse-LVIS category that does not exist or none at all (searched for by name instead, as the
+    error told the model to do); a 3D model search without queries (the class's English names, else its id); a
+    model count under 1; distractors that do not exist; a camera pitch that is not a [min, max] range."""
+    from .spec import DISTRACTORS
+    sc = spec.get("scene")
+    if isinstance(sc, dict) and "orientation" in sc:
+        tr = spec.setdefault("training", {})
+        if isinstance(tr, dict):
+            tr.setdefault("orientation", sc.pop("orientation"))
+    if isinstance(sc, dict) and isinstance(sc.get("distractors"), list):
+        sc["distractors"] = [d for d in sc["distractors"] if d in DISTRACTORS]
+    for c in spec.get("classes") or []:
+        a = c.get("assets") if isinstance(c, dict) else None
+        if not isinstance(a, dict):
+            continue
+        names = [n for n in c.get("names") or [] if isinstance(n, str) and n.strip()]
+        if a.get("source", "objaverse_lvis") == "objaverse_lvis" and categories is not None:
+            cats = [x for x in a.get("categories") or [] if isinstance(x, str)]
+            if not cats or any(x not in categories for x in cats):
+                a["source"] = "search"
+                a["queries"] = a.get("queries") or [x.split("_(")[0].replace("_", " ") for x in cats] or names[:2]
+                a.pop("categories", None)
+        if a.get("source") == "search" and not a.get("queries"):
+            a["queries"] = names[:2] or [str(c.get("id", "")).replace("_", " ")]
+        if "count" in a and not (isinstance(a["count"], int) and a["count"] >= 1):
+            a.pop("count")
+    for c in spec.get("classes") or []:
+        m = c.get("metallic") if isinstance(c, dict) else None
+        if isinstance(m, (int, float)) and not isinstance(m, bool):
+            c["metallic"] = [round(max(0.0, m - 0.2), 2), round(min(1.0, m + 0.2), 2)]
+    cam = spec.get("camera")
+    if isinstance(cam, dict) and "pitch_deg" in cam:
+        p = cam["pitch_deg"]
+        if isinstance(p, (int, float)) and 0 < p <= 90:
+            cam["pitch_deg"] = [max(1, p - 10), min(90, p + 10)]
+        elif not (isinstance(p, list) and len(p) == 2 and all(isinstance(x, (int, float)) for x in p)
+                  and 0 < min(p) <= max(p) <= 90):
+            cam.pop("pitch_deg")
+        else:
+            cam["pitch_deg"] = sorted(p)
 
 
 def _rename_classes(spec: dict, renamed: dict[str, str]) -> None:
@@ -645,25 +686,21 @@ class Session:
         self.library_ids: set[str] = set()  # library items this chat may reference (see use_library)
         self.photo_notes = None  # (photos, classes, run) -> descriptions, the kept ones reused (library)
         self.open_dataset = None  # library dataset id -> a folder of its photos this session may read
-        self.labelings: dict[str, list[dict]] = {}  # library dataset id -> library.labelings
-        self.label_phrases: dict[str, list[str]] = {}  # library dataset id -> English names labeled on its photos
+        self.dataset_card = None  # library dataset id -> library.dataset_card (see use_library)
         self.replies = 0  # the user's messages so far
         self.relabel_asked: dict[str, int] = {}  # dataset id -> self.replies when the user was to be asked
 
     def use_library(self, items: str, ids: set[str], kit: str | None = None, notes=None, open_dataset=None,
                     labeled: set[str] | None = None, datasets: set[str] | None = None,
-                    labelings: dict[str, list[dict]] | None = None,
-                    phrases: dict[str, list[str]] | None = None) -> None:
+                    dataset_card=None) -> None:
         """Tell the model what the user's library holds (kits and datasets, see LIBRARY); kit: the name of the kit
         the user chose to start from. notes: keeps and reuses photo descriptions (Library.describe);
         open_dataset(id): a folder with a dataset's photos, so describe_scene can measure it for this goal;
         labeled: the datasets with labels of their own, the only ones a spec may give as "labeled"; datasets: every
-        dataset id, never a 3D model; labelings: per dataset, how the teacher labeled it before
-        (library.labelings), so the user is asked before a spec labels it for other classes (relabel_question);
-        phrases: per dataset, the English names its photos are labeled for now (renamed ones too)."""
+        dataset id, never a 3D model; dataset_card(id): the dataset as it is now (library.dataset_card), for the
+        "dataset" action, for reusing its labels' names and for asking before labeling it anew (relabel_question)."""
         self.library_ids = set(ids)
-        self.labelings = labelings or {}
-        self.label_phrases = phrases or {}
+        self.dataset_card = dataset_card
         self.dataset_ids = set(datasets or ())
         self.labeled_ids = set(labeled or ())
         self.photo_notes, self.open_dataset = notes, open_dataset
@@ -734,7 +771,25 @@ class Session:
         self.messages.append({"role": "user", "content": user_text})
         for folder in re.findall(r"(?:~|/)[^\s,;:'\"()]+", user_text):  # folders written in the message
             self._analyse(folder.rstrip("."))
+        for ds in self._named_datasets(user_text):  # looked at before the model's turn, not left to it
+            if ds not in self.analysed:
+                self._on_dataset({"dataset": ds})
         return self._advance()
+
+    def _named_datasets(self, text: str) -> list[str]:
+        """Library datasets the user's message names: by id, by whole name, or by a quoted part of one name."""
+        if self.dataset_card is None:
+            return []
+        names = {d: (self.dataset_card(d) or {}).get("name", "") for d in getattr(self, "dataset_ids", set())}
+        low = text.lower()
+        quoted = [q.strip().lower() for q in re.findall(r"['\"‘’“”«]([^'\"‘’“”«»]{4,80})['\"‘’“”»]", text)]
+        out = []
+        for d, name in names.items():
+            n = name.lower().strip()
+            if d in text or (len(n) >= 4 and n in low) or \
+                    any(q in n and sum(q in m.lower() for m in names.values()) == 1 for q in quoted):
+                out.append(d)
+        return out
 
     def revise(self, spec: spec_mod.Spec) -> Turn:
         """Start from a trained job's spec instead of from scratch: the model sees it as its own accepted
@@ -891,7 +946,7 @@ class Session:
     # never got the spec to confirm and the model kept saying it was ready.
     ACTIONS = (("say", "_on_say"), ("pick_photos", "_on_pick"), ("describe_scene", "_on_describe"),
                ("photos", "_on_photos"), ("research", "_on_research"), ("search", "_on_search"),
-               ("spec", "_on_spec"))
+               ("dataset", "_on_dataset"), ("spec", "_on_spec"))
     OBJECT_ACTIONS = {"pick_photos", "describe_scene", "photos"}  # taken only with an object as value
 
     def _advance(self) -> Turn:
@@ -912,10 +967,15 @@ class Session:
                 raise
             self.messages.append({"role": "assistant", "content": text})
             self._save()
+            prose = False
             try:
                 action, problem = parse_json(text), "it is not a JSON object"
             except ValueError as e:
-                action, problem = None, str(e)
+                action, problem, prose = None, str(e), "{" not in text and bool(text.strip())
+            if prose:
+                # Plain words with no JSON at all are a question to the user (seen 2026-10-10: the chat wrote its
+                # question as prose and lost a turn being told to resend it as {"say": ...}).
+                action = {"say": text.strip()}
             if not isinstance(action, dict):
                 bad_format += 1
                 if bad_format >= MAX_BAD_FORMAT:
@@ -961,6 +1021,20 @@ class Session:
     def _on_describe(self, action: dict) -> None:
         self._describe(action["describe_scene"])
 
+    def _on_dataset(self, action: dict) -> None:
+        """A library dataset as it is now (library.dataset_card), and its photo analysis when not seen yet."""
+        ds = re.sub(r"^library:", "", str(action["dataset"]).strip())
+        card = self.dataset_card(ds) if self.dataset_card is not None and ds in self.library_ids else None
+        if card is None:
+            self._note(f"dataset: {ds} is not one of the listed datasets; use only the ids listed.")
+            return
+        step = self._step(f"Looking at your dataset {card['name']}")
+        self._end(step, detail=f"{len(card['count_labels']) + len(card['photo_labels'])} labelings")
+        self._note(f"[Dataset {ds}] " + json.dumps(card, ensure_ascii=False))
+        if ds not in self.analysed:
+            self.analysed.add(ds)
+            self._describe({"folder": f"library:{ds}", "classes": "the objects"})
+
     def _on_photos(self, action: dict) -> Turn:
         req = action["photos"]
         purpose = req.get("for") if req.get("for") in ("3d", "training") else "training"
@@ -968,7 +1042,14 @@ class Session:
                     request={"for": purpose, "class": req.get("class")})
 
     def _on_research(self, action: dict) -> None:
-        self._research(str(action["research"]))
+        # A library dataset is looked at, not searched for on the web (seen 2026-10-10: the chat sent a dataset's
+        # id to web research, found nothing and asked the user for photos).
+        question = str(action["research"])
+        ds = next((d for d in getattr(self, "dataset_ids", set()) if d in question), None)
+        if ds is not None:
+            self._on_dataset({"dataset": ds})
+            return
+        self._research(question)
 
     def _on_search(self, action: dict) -> None:
         q = action["search"] if isinstance(action["search"], list) else [action["search"]]
@@ -982,6 +1063,9 @@ class Session:
         if isinstance(action["spec"], dict):
             self._english_queries(action["spec"])
             _drop_background_class(action["spec"])
+            self._reuse_label_names(action["spec"])
+            self._fix_scene(action["spec"])
+            _fix_slips(action["spec"], set(self.categories.counts))
         step = self._step("Checking the proposed setup")
         try:
             s = spec_mod.from_dict(action["spec"])
@@ -1008,7 +1092,27 @@ class Session:
             return None
         self.proposed = s
         intro = str(action.get("say") or "").strip()
+        reuse = self._reuse_line(s)
+        if reuse:
+            intro = (intro + "\n\n" if intro else "") + reuse
         return Turn("confirm", (intro + "\n\n" if intro else "") + summary(s), s, intro=intro)
+
+    def _reuse_line(self, s: spec_mod.Spec) -> str:
+        """For the user to confirm: which counted classes reuse the labels already on their dataset's photos (and
+        on how many), and which the teacher labels anew. The chat may map a wish to a label that is not it
+        (2026-10-10 bench: "papeleras", litter bins, given the dataset's "litter" label); this shows it."""
+        if s.task != "count":
+            return ""
+        from . import teacher
+        labels = {c["name"]: c for _, card in self._cards(s.user_data.raw) for c in card["count_labels"]}
+        if not labels:
+            return ""
+        now = {c: p[0] for c, p in teacher.phrases(s).items()}
+        old = [f"{c} ({labels[p]['photos_marked_by_teacher']} photos, {labels[p]['photos_checked_by_user']} checked by you)"
+               for c, p in now.items() if p in labels]
+        new = [c for c, p in now.items() if p not in labels]
+        return ("Labels already on your photos, reused: " + (", ".join(old) or "none") + "."
+                + (f" Labeled anew (you check a few photos first): {', '.join(new)}." if new else ""))
 
     def relabel_question(self, s: spec_mod.Spec) -> str | None:
         """A library dataset the teacher labeled before, now with classes it was never labeled for (another English
@@ -1016,26 +1120,83 @@ class Session:
         In code, as Nemotron ignored the same request in LIBRARY (basura_counter, 2026-10-10: other class ids
         went to a full check of every photo without a word)."""
         from . import teacher
-        raw = s.user_data.raw if isinstance(s.user_data.raw, list) else [s.user_data.raw]
         task = "counts objects" if s.task == "count" else "one label per photo"
         now = {c: p[0] for c, p in teacher.phrases(s).items()} if s.task == "count" else {c: c for c in s.labels}
-        for src in raw:
-            ds = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(src or ""))
-            done = [l for l in self.labelings.get(ds.group(1), []) if l["task"] == s.task] if ds else []
-            kept = set(self.label_phrases.get(ds.group(1), [])) if ds and s.task == "count" else set()
-            if not done and not kept:
+        for ds, card in self._cards(s.user_data.raw):
+            old = {c["name"] for c in card["count_labels"]} if s.task == "count" else \
+                {label for c in card["photo_labels"] for label in c["labels"]}
+            if not old:
                 continue
-            old = kept | {p for l in done for p in (l.get("phrases") or {}).values()} if s.task == "count" else \
-                {c for l in done for c in l["classes"] + ([l["background"]] if l.get("background") else [])}
             new = [c for c, p in now.items() if p not in old]
-            asked = self.relabel_asked.get(ds.group(1))
+            asked = self.relabel_asked.get(ds)
             if not new or (asked is not None and self.replies > asked):
                 continue
-            self.relabel_asked[ds.group(1)] = self.replies
-            return RELABEL.format(ds=ds.group(1), task=task, old=", ".join(sorted(old)),
+            self.relabel_asked[ds] = self.replies
+            return RELABEL.format(ds=ds, task=task, old=", ".join(sorted(old)),
                                   new=", ".join(f"{c} ({now[c]})" if now[c] != c else c for c in new),
                                   them="it" if len(new) == 1 else "them")
         return None
+
+    def _cards(self, raw) -> list[tuple[str, dict]]:
+        """The library datasets among a spec's raw photos, as they are now: (id, library.dataset_card)."""
+        out = []
+        for src in raw if isinstance(raw, list) else [raw]:
+            ds = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(src or ""))
+            if ds and self.dataset_card is not None and ds.group(1) in self.library_ids:
+                if card := self.dataset_card(ds.group(1)):
+                    out.append((ds.group(1), card))
+        return out
+
+    def _reuse_label_names(self, spec: dict) -> None:
+        """A counted class meant as a label the dataset has gets that label's exact English name first in "names",
+        so the teacher looks for the same thing and the labels are reused. Seen 2026-10-10 (library bench): the
+        chat said it reused "blue bin" but named the class by its 3D search, "blue recycling bin", which the
+        teacher would have labeled anew. The class's id, names and queries are matched against the labels."""
+        if spec.get("task") != "count" or not isinstance(spec.get("user_data"), dict):
+            return
+        labels = {c["name"] for _, card in self._cards(spec["user_data"].get("raw")) for c in card["count_labels"]}
+        if not labels:
+            return
+        for c in spec.get("classes") or []:
+            if not isinstance(c, dict) or not isinstance(c.get("id"), str):
+                continue
+            a = c.get("assets") if isinstance(c.get("assets"), dict) else {}
+            names = [n for n in c.get("names") or [] if isinstance(n, str)]
+            seen = [c["id"].replace("_", " "), *names, *(a.get("queries") or []), *(a.get("categories") or [])]
+            match = next((t.strip().lower() for t in seen if isinstance(t, str) and t.strip().lower() in labels), None)
+            if match and (not names or names[0].lower() != match):
+                c["names"] = [match] + [n for n in names if n.lower() != match]
+
+    def _fix_scene(self, spec: dict) -> None:
+        """Scene fields the code can settle without another turn: weather left empty or unknown (indoors it is
+        ignored), and Poly Haven tags no sky or texture has together, cut down to those that still find one. Seen
+        in most chats of the library bench (2026-10-10): one rejected spec and one more model turn each."""
+        sc = spec.get("scene")
+        if not isinstance(sc, dict):
+            return
+        weather = [w for w in sc.get("weather") or [] if w in spec_mod.WEATHER]
+        if not weather:
+            sc["weather"] = ["clear"]
+        elif weather != sc.get("weather"):
+            sc["weather"] = weather
+        try:
+            from . import polyhaven
+            ground = [t for t in sc.get("ground_tags") or [] if isinstance(t, str)]
+            if ground and not polyhaven.pick_textures(polyhaven.catalog("textures"), ground, 1, 0):
+                kept = []
+                for t in ground:
+                    if polyhaven.pick_textures(polyhaven.catalog("textures"), kept + [t], 1, 0):
+                        kept.append(t)
+                sc["ground_tags"] = kept
+            sky = [t for t in sc.get("sky_tags") or [] if isinstance(t, str)]
+            if sky and not polyhaven.pick_skies(polyhaven.catalog("hdris"), sky, sc["weather"], 1, 0):
+                kept = []
+                for t in sky:
+                    if polyhaven.pick_skies(polyhaven.catalog("hdris"), kept + [t], sc["weather"], 1, 0):
+                        kept.append(t)
+                sc["sky_tags"] = kept
+        except (OSError, ValueError, TypeError):
+            return  # offline or odd tags: check_scene reports them as before
 
     def _english_queries(self, spec: dict) -> None:
         """Put an English name first in every search query list. The prompt asks for English, but the model
@@ -1097,7 +1258,10 @@ class Session:
         for i, term in id_terms.items():
             en = names.get(term)
             new = re.sub(r"[^a-z0-9]+", "_", en.lower()).strip("_") if isinstance(en, str) else ""
-            if new and new != i and new not in ids and new not in renamed.values():
+            # Only an id in another language: one that shares a word with its English is English already, and
+            # the translation's longer wording ("empty" -> "empty space", bench 2026-10-10) is not a new id.
+            if new and new != i and new not in ids and new not in renamed.values() \
+                    and not set(i.split("_")) & set(new.split("_")):
                 renamed[i] = new
         if renamed:
             _rename_classes(spec, renamed)

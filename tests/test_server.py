@@ -685,11 +685,11 @@ def test_a_dataset_labeled_before_for_the_same_classes_needs_no_check(app, tmp_p
     (before / "request.json").write_text(spec_mod.from_dict({**count, "user_data": {"raw": f"dataset_{ds}"}}).to_json())
     lib.db.execute("INSERT INTO uses VALUES ('first', 'dataset', ?)", (ds,))
     (before / "calibration.json").write_text("{}")  # a check left open is no labeling
-    assert "labeled it before" not in lib.for_chat("local")[0]
+    assert lib.dataset_card("local", ds)["models_made_with_it"] == []
     (before / "calibration.json").unlink()
     (before / "label").mkdir()
     (before / "label" / "verdicts.json").write_text("{}")
-    assert "labeled it before" in lib.for_chat("local")[0]
+    assert [m["model"] for m in lib.dataset_card("local", ds)["models_made_with_it"]] == ["first"]
     # The chat wrote other names for the same class: the job takes the earlier ones and skips the check.
     spec = {**count, "classes": [{**count["classes"][0], "names": ["cattle"]}], "user_data": {"raw": f"library:{ds}"}}
     r = app.post("/api/jobs", data={"spec": json.dumps(spec), "calibrate": "true"}).json()

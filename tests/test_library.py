@@ -115,7 +115,7 @@ def test_a_dataset_profile_is_made_once_and_read_by_the_chat(tmp_path):
     assert len(asked) == 3 and not lib.profile_stale("u", ds)
     prof = lib.datasets("u")[0]["profile"]
     assert prof["objects"][0] == {"name": "bottle", "share": 1.0, "count": 4}
-    assert "dark wooden table" in prof["summary"] and "dark wooden table" in lib.for_chat("u")[0]
+    assert "dark wooden table" in prof["summary"] and "dark wooden table" in lib.dataset_card("u", ds)["what_its_photos_show"]
     lib.profile_dataset("u", ds, run)  # every photo already described
     assert len(asked) == 3
     assert lib.notes("other", [p for p in lib.dataset_notes("u", ds)], "scene", "x") == {}

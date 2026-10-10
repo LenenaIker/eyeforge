@@ -224,7 +224,16 @@ def profile_folder(folder: Path, classes: str, client, model: str, progress=None
     if not photos:
         raise FileNotFoundError(f"no photos in {folder}")
     run = lambda some: describe(some, classes, client, model, progress=progress)  # noqa: E731
-    d = notes(sample(photos), classes, run) if notes else run(photos)
+    d = None
+    if notes:
+        # Photos described before (a library dataset's profile) answer at once, whichever they are: the sample
+        # follows file names, which differ where a dataset is put as a folder, and one photo more to describe
+        # took the vision model 35 to 45 s (library bench, 2026-10-10).
+        kept = notes(sorted(photos), classes, None)
+        if len(kept) >= max(1, min(SAMPLE, len(photos)) * 3 // 4):
+            d = kept[:SAMPLE]
+    if d is None:
+        d = notes(sample(photos), classes, run) if notes else run(photos)
     prof = aggregate(d)
     return prof, summary(prof, len(d))
 

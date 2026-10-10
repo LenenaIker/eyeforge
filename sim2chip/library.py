@@ -480,13 +480,13 @@ class Library:
 
     def describe(self, owner: str, photos: list[Path], classes: str, run, model: str | None = None) -> list[dict]:
         """Descriptions of the scene in these photos for these classes (scene_profile.describe), the kept ones
-        reused: run(photos) is called only for those without one and its answers are kept. A photo the model
-        could not describe is asked again next time."""
+        reused: run(photos) is called only for those without one and its answers are kept (run None: only the kept
+        ones). A photo the model could not describe is asked again next time."""
         keys = {f: content_key(f) for f in photos}
         kept = self.notes(owner, list(keys.values()), SCENE, classes)
         todo = [f for f in photos if keys[f] not in kept]
         out = [{**n["data"], "photo": f.name} for f in photos if (n := kept.get(keys[f]))]
-        if todo:
+        if todo and run is not None:
             by_name = {f.name: f for f in todo}
             for d in run(todo):
                 f = by_name.get(d.get("photo"))
@@ -706,26 +706,48 @@ class Library:
         return [{"id": kid, "name": name, **json.loads(refs), "created": created, "updated": updated}
                 for kid, name, refs, created, updated in rows]
 
+    def dataset_card(self, owner: str, ds: str) -> dict | None:
+        """What the interview learns of one dataset when it looks at it (interview "dataset" action), read now so
+        changes made on the Datasets page count: its photos, the labels on them per English name (how many photos
+        the teacher marked, how many the user checked), the label sets photos were sorted into, the models made with
+        it and their 3D model searches, and what its photos show."""
+        d = next((x for x in self.datasets(owner) if x["id"] == ds), None)
+        if d is None:
+            return None
+        rows = self.db.execute("SELECT kind, ref, source, COUNT(DISTINCT key) FROM notes WHERE owner = ? AND kind IN "
+                               "(?, ?, ?) AND key IN (SELECT key FROM photos WHERE dataset = ?) GROUP BY kind, ref, source",
+                               (owner, BOXES, POINTS, CLASS, ds)).fetchall()
+        count: dict[str, dict] = {}
+        sets: dict[str, dict] = {}
+        for kind, ref, source, n in rows:
+            if kind == CLASS:
+                c = sets.setdefault(ref, {"labels": json.loads(ref), "photos_marked_by_teacher": 0,
+                                          "photos_checked_by_user": 0})
+            else:
+                c = count.setdefault(ref, {"name": ref, "photos_marked_by_teacher": 0, "photos_checked_by_user": 0})
+            key = "photos_checked_by_user" if source == "user" else "photos_marked_by_teacher"
+            c[key] = max(c[key], n)
+        models = [{"model": l["job"], "task": TASK_NAME.get(l["task"], l["task"]), "classes": l["classes"],
+                   "3d_model_searches": {k: {"queries": m["queries"], "models_kept": m["kept"]}
+                                         for k, m in l["models"].items()}}
+                  for l in self.labelings(ds)[:3]]
+        return {"id": ds, "name": d["name"], "photos": d["photos"],
+                "sorted_into_folders": d["labels"] or None,
+                "count_labels": sorted(count.values(), key=lambda c: c["name"]),
+                "photo_labels": list(sets.values()),
+                "models_made_with_it": models,
+                "what_its_photos_show": d["profile"]["summary"] if d["profile"] else None}
+
     def for_chat(self, owner: str) -> tuple[str, set[str]]:
-        """What the interview is told of the library (interview.LIBRARY): every kit with its items, and the
-        datasets outside kits. Objects outside kits are left out (hundreds of them, kept from earlier jobs).
-        Returns the text and the ids it lists."""
+        """What the interview is told of the library up front (interview.LIBRARY): an index of every kit with its
+        items and the datasets outside kits. A dataset's labels and models come when the interview looks at it
+        (dataset_card). Objects outside kits are left out (hundreds of them, kept from earlier jobs). Returns the
+        text and the ids it lists."""
         datasets = {d["id"]: d for d in self.datasets(owner)}
         objects = {o["id"]: o for o in self.objects(owner)}
 
         def ds_line(d):
-            labels = f", labels {', '.join(d['labels'])}" if d["labels"] else ", no labels"
-            seen = f". {d['profile']['summary']}" if d["profile"] else ""
-            done = "".join(f'. The teacher labeled it before for model "{l["job"]}" (still "raw" for a new model: '
-                           f'{TASK_NAME.get(l["task"], l["task"])}, classes {", ".join(l["classes"])}'
-                           f'{", background " + l["background"] if l["background"] else ""}; {l["checked"]} photos '
-                           f'checked by the user; 3D models kept: ' + (", ".join(
-                               f'{k} {m["kept"]} (search {m["queries"]})' for k, m in l["models"].items()) or "none")
-                           + ")" for l in self.labelings(d["id"])[:2])
-            kept = self.label_phrases(owner, d["id"])
-            kept = (". Count labels kept on its photos (English names; a class with \"names\" starting with one "
-                    "of them reuses them): " + ", ".join(f"{p} ({n} photos)" for p, n in kept.items())) if kept else ""
-            return f'dataset "{d["name"]}" (id {d["id"]}, {d["photos"]} photos{labels}{done}{kept}{seen})'
+            return f'dataset "{d["name"]}" (id {d["id"]}, {d["photos"]} photos)'
 
         def obj_line(o):
             return f'object "{o["name"]}" (id {o["id"]}, a {o["concept"].replace("_", " ")})'

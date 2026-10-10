@@ -19,7 +19,7 @@ class Scripted:
             return json.dumps({t: t for t in json.loads(messages[-1]["content"].split("Terms: ", 1)[1])})
         self.seen.append(messages[-1]["content"])
         action = self.actions.pop(0)
-        return json.dumps(action.get("_english", action) if isinstance(action, dict) else action)
+        return action if isinstance(action, str) else json.dumps(action.get("_english", action))
 
 
 GOOD = {"name": "barn", "classes": [{"id": "cow", "description": "cows", "size_m": {"measure": "length",
@@ -27,7 +27,7 @@ GOOD = {"name": "barn", "classes": [{"id": "cow", "description": "cows", "size_m
 
 
 def test_interview_flow():
-    bad = {**GOOD, "classes": [{**GOOD["classes"][0], "assets": {"categories": ["cattle_(beast)"]}}]}
+    bad = {**GOOD, "classes": [{**GOOD["classes"][0], "size_m": {"measure": "length", "range": [3, 1]}}]}
     client = Scripted([{"say": "Where is the camera?"}, {"search": ["cows"]}, {"spec": bad}, {"spec": GOOD},
                        {"spec": GOOD}])
     answers = iter(["cows in my barn", "on a post, 3 m", "add night please", "yes"])
@@ -36,7 +36,7 @@ def test_interview_flow():
     spec = interview.run(client, "m", cats, ask=lambda q: next(answers), tell=told.append)
     assert spec.name == "barn"
     assert "cow" in client.seen[2] and "taxi" not in client.seen[2]    # search results went back
-    assert "not found in Objaverse-LVIS" in client.seen[3]             # invalid category rejected
+    assert "size_m.range" in client.seen[3]                            # invalid spec rejected
     assert "wants changes: add night please" in client.seen[4]         # user asked for a change
     assert "cow" in told[0]
 
@@ -124,7 +124,7 @@ def test_interview_proposes_the_users_own_photos_for_3d(tmp_path):
 
 
 def test_turn_steps_show_what_the_interview_is_doing():
-    client = Scripted(["not json", {"search": ["cow"]}, {"spec": {"name": "x"}}, {"say": "Where is the camera?"}])
+    client = Scripted(['{"say": ', {"search": ["cow"]}, {"spec": {"name": "x"}}, {"say": "Where is the camera?"}])
     s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}))
     s.begin("t1")
     assert s.reply("cows").text == "Where is the camera?"
@@ -161,26 +161,26 @@ def test_interview_asks_for_photos_when_none_fit(tmp_path):
 
 
 def test_rejected_specs_stop_and_ask_the_user(tmp_path):
-    bad = {**GOOD, "classes": [{**GOOD["classes"][0], "assets": {"categories": ["unicorn"]}}]}
+    bad = {**GOOD, "classes": [{**GOOD["classes"][0], "size_m": {"measure": "length", "range": [3, 1]}}]}
     client = Scripted([{"spec": bad}] * interview.MAX_INVALID_SPECS + [{"say": "No encuentro unicornios, ¿vale un caballo?"}])
     s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}))
     s.transcript = tmp_path / "t.json"
     t = s.reply("unicorns")
     assert t.kind == "say" and "caballo" in t.text
     assert "Stop proposing it" in client.seen[-1]
-    assert "not found in Objaverse-LVIS" in s.transcript.read_text()  # rejections are kept for later
+    assert "size_m.range" in s.transcript.read_text()  # rejections are kept for later
 
 
 def test_endless_rejections_end_the_interview():
-    bad = {**GOOD, "classes": [{**GOOD["classes"][0], "assets": {"categories": ["unicorn"]}}]}
+    bad = {**GOOD, "classes": [{**GOOD["classes"][0], "size_m": {"measure": "length", "range": [3, 1]}}]}
     client = Scripted([{"spec": bad}] * (interview.MAX_INVALID_SPECS * 2))
     t = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62})).reply("unicorns")
-    assert t.kind == "failed" and "unicorn" in t.text
+    assert t.kind == "failed" and "size_m.range" in t.text
 
 
 def test_broken_answers_end_the_interview():
     # Seen 2026-10-03: the same malformed JSON 59 times in a row. The model is told why, then the interview stops.
-    client = Scripted(["not json", "still not", "again", {"say": "never asked"}])
+    client = Scripted(['{"say": ', '{"spec": {', '{"say"', {"say": "never asked"}])
     s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}))
     t = s.reply("cows")
     assert t.kind == "failed" and s.finished
@@ -380,6 +380,13 @@ def test_class_ids_go_into_english_everywhere_the_spec_names_them():
     assert any("contenedor_azul -> blue_bin" in m["content"] for m in s.messages)
 
 
+def card(names):
+    """A library.dataset_card with count labels of these English names."""
+    return {"id": "x", "name": "street", "photos": 38, "sorted_into_folders": None, "photo_labels": [],
+            "count_labels": [{"name": n, "photos_marked_by_teacher": 38, "photos_checked_by_user": 3} for n in names],
+            "models_made_with_it": [], "what_its_photos_show": None}
+
+
 def test_a_dataset_labeled_for_other_classes_is_asked_about_once():
     """A spec that labels a library dataset for classes it was never labeled for goes back to the model, which
     must ask the user; after the user answers, the same spec is proposed."""
@@ -391,8 +398,7 @@ def test_a_dataset_labeled_for_other_classes_is_asked_about_once():
     client = Scripted([{"spec": spec}, {"say": "It is labeled for blue bins: keep those or add litter?"},
                        {"spec": spec}])
     s = interview.Session(client, "m", interview.CategoryIndex(counts={}))
-    s.use_library("- a dataset", {ds}, datasets={ds}, labelings={ds: [
-        {"task": "count", "classes": ["paper_bin"], "phrases": {"paper_bin": "blue bin"}, "background": "empty"}]})
+    s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin"]))
     t = s.reply("count bins and litter in my street photos")
     assert t.kind == "say" and "Labels of dataset" in client.seen[1] and "litter" in client.seen[1]
     assert "blue_bin" not in client.seen[1].split("needs")[1]  # labeled before under another id, same name
@@ -410,8 +416,106 @@ def test_labels_renamed_on_the_photos_count_as_labeled():
     spec = {"name": "bins", "task": "count", "background_class": "empty", "classes": [blue],
             "user_data": {"raw": f"library:{ds}"}}
     s = interview.Session(Scripted([]), "m", interview.CategoryIndex(counts={}))
-    s.use_library("- a dataset", {ds}, datasets={ds}, phrases={ds: ["blue bin", "mattress"]})
+    s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin", "mattress"]))
     assert s.relabel_question(interview.spec_mod.from_dict(spec)) is None
     green = {**blue, "id": "green_bin", "names": ["green bin"]}
     ask = s.relabel_question(interview.spec_mod.from_dict({**spec, "classes": [blue, green]}))
     assert "blue bin, mattress" in ask and "green_bin (green bin)" in ask
+
+
+def test_a_class_meant_as_a_dataset_label_takes_its_exact_name():
+    """The chat named the blue bin class by its 3D search; the dataset's label is "blue bin": names start with it."""
+    ds = "a7d9ef2d4b43c27b"
+    s = interview.Session(Scripted([]), "m", interview.CategoryIndex(counts={}))
+    s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin", "plastic bag"]))
+    spec = {"task": "count", "user_data": {"raw": f"library:{ds}"}, "classes": [
+        {"id": "blue_bin", "names": ["blue recycling bin"], "assets": {"source": "search", "queries": ["blue recycling bin"]}},
+        {"id": "bag", "assets": {"source": "search", "queries": ["plastic bag", "trash bag"]}},
+        {"id": "papelera", "names": ["litter bin"]}]}
+    s._reuse_label_names(spec)
+    assert [c.get("names") for c in spec["classes"]] == [["blue bin", "blue recycling bin"], ["plastic bag"], ["litter bin"]]
+
+
+def test_scene_tags_and_weather_the_code_can_settle(monkeypatch):
+    from sim2chip import polyhaven
+    monkeypatch.setattr(polyhaven, "catalog", lambda kind: kind)
+    monkeypatch.setattr(polyhaven, "pick_textures", lambda cat, tags, n, seed: ["t"] if set(tags) <= {"asphalt"} else [])
+    monkeypatch.setattr(polyhaven, "pick_skies", lambda cat, tags, weather, n, seed: ["s"])
+    spec = {"scene": {"weather": [], "ground_tags": ["asphalt", "pavement"], "sky_tags": ["urban"]}}
+    interview.Session(Scripted([]), "m", interview.CategoryIndex(counts={}))._fix_scene(spec)
+    assert spec["scene"] == {"weather": ["clear"], "ground_tags": ["asphalt"], "sky_tags": ["urban"]}
+
+
+def test_the_dataset_action_shows_the_dataset_as_it_is_now():
+    ds = "a7d9ef2d4b43c27b"
+    client = Scripted([{"dataset": f"library:{ds}"}, {"dataset": "0123456789abcdef"}, {"say": "Which bins?"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}))
+    s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin"]))
+    assert s.reply("count bins with my street dataset").text == "Which bins?"
+    notes = [m["content"] for m in s.messages if m["role"] == "user"]
+    assert any(n.startswith(f"[Dataset {ds}]") and '"blue bin"' in n for n in notes)
+    assert "not one of the listed datasets" in client.seen[2]
+
+
+def test_plain_slips_are_fixed_without_another_turn():
+    spec = {"scene": {"orientation": "any"}, "classes": [
+        {"id": "item", "names": ["item"], "assets": {"source": "search"}},
+        {"id": "big_cup", "assets": {"source": "search", "queries": []}}]}
+    interview._fix_slips(spec)
+    assert spec["training"] == {"orientation": "any"} and "orientation" not in spec["scene"]
+    assert [c["assets"]["queries"] for c in spec["classes"]] == [["item"], ["big cup"]]
+
+
+def test_more_plain_slips_are_fixed():
+    spec = {"scene": {"distractors": ["tree", "fence"]}, "camera": {"pitch_deg": 30}, "classes": [
+        {"id": "car", "assets": {"source": "objaverse_lvis", "categories": ["car"], "count": 0}},
+        {"id": "cow", "assets": {"categories": ["cow"]}},
+        {"id": "edge", "names": ["lawn edge"], "assets": {"source": "objaverse_lvis"}}]}
+    interview._fix_slips(spec, {"cow", "car_(automobile)"})
+    assert spec["scene"]["distractors"] == ["tree"] and spec["camera"]["pitch_deg"] == [20, 40]
+    assert spec["classes"][0]["assets"] == {"source": "search", "queries": ["car"]}
+    assert spec["classes"][1]["assets"] == {"categories": ["cow"]}
+    assert spec["classes"][2]["assets"] == {"source": "search", "queries": ["lawn edge"]}
+
+
+def test_an_english_id_is_not_renamed_by_a_longer_wording():
+    spec = {"classes": [{"id": "cat"}], "background_class": "empty"}
+    client = Scripted([{"_english": {"cat": "domestic cat", "empty": "empty space"}}])
+    interview.Session(client, "m", interview.CategoryIndex(counts={}))._english_queries(spec)
+    assert spec["classes"][0]["id"] == "cat" and spec["background_class"] == "empty"
+
+
+def test_a_dataset_the_user_names_is_looked_at_first_and_never_searched_on_the_web():
+    ds, other = "a7d9ef2d4b43c27b", "8c1b568d88d029d2"
+    cards = {ds: {**card(["blue bin"]), "name": "Chat photos 09 Oct 2026 15:16"},
+             other: {**card(["item"]), "name": "contador mesa"}}
+    client = Scripted([{"research": f"dataset {other}"}, {"say": "Which bins?"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}))
+    s.use_library("- two datasets", {ds, other}, datasets={ds, other}, dataset_card=cards.get)
+    assert s._named_datasets("usa el dataset 'Chat photos 09 Oct' por favor") == [ds]
+    assert s._named_datasets("con mi dataset contador mesa") == [other]
+    s.reply("cuenta contenedores con 'Chat photos 09 Oct'")
+    notes = [m["content"] for m in s.messages if m["role"] == "user"]
+    assert notes[1].startswith(f"[Dataset {ds}]") and any(n.startswith(f"[Dataset {other}]") for n in notes)
+    assert not any(n.startswith("[Web research") for n in notes)
+
+
+def test_plain_words_without_json_are_a_question():
+    client = Scripted(["¿En qué dispositivo lo usarás?"])
+    t = interview.Session(client, "m", interview.CategoryIndex(counts={})).reply("cuenta vacas")
+    assert t.kind == "say" and t.text == "¿En qué dispositivo lo usarás?"
+
+
+def test_the_proposal_says_which_classes_reuse_the_datasets_labels():
+    ds = "a7d9ef2d4b43c27b"
+    blue = {"id": "blue_bin", "description": "blue bins", "names": ["blue bin"]}
+    can = {"id": "trash_can", "description": "litter bins", "names": ["trash can"]}
+    spec = {"name": "bins", "task": "count", "background_class": "empty", "classes": [blue, can],
+            "user_data": {"raw": f"library:{ds}"}}
+    client = Scripted([{"spec": spec}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}))
+    s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin"]))
+    s.relabel_asked[ds] = -1  # asked already
+    t = s.reply("bins and litter bins")
+    assert t.kind == "confirm"
+    assert "reused: blue_bin (38 photos, 3 checked by you)" in t.intro and "Labeled anew" in t.intro and "trash_can" in t.intro
