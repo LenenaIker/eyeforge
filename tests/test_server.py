@@ -643,6 +643,64 @@ def test_the_check_asks_only_about_classes_not_checked_before(app, tmp_path):
     assert not r.get("calibrating") and app.launched
 
 
+def test_marks_of_a_class_without_english_names_are_found_by_its_english_phrase(app, tmp_path, monkeypatch):
+    """A class with no English names: the label stage asks SAM 3 for its English phrase and the library keeps the
+    marks under it. The server looked for the bare id ("vaca") and asked for a check of photos already marked."""
+    from PIL import Image
+
+    from sim2chip import library, teacher
+
+    lib = library.Library(tmp_path, tmp_path / "cache")
+    files = []
+    for i in range(8):
+        f = tmp_path / "scratch" / f"p{i}.jpg"
+        f.parent.mkdir(exist_ok=True)
+        Image.new("RGB", (64, 64), (i * 20, 0, 0)).save(f, "JPEG")
+        files.append(f)
+    ds = lib.new_dataset("local", "field", files)
+    for f in files:
+        lib.note("local", library.content_key(f), library.POINTS, "cow", {"points": [[0.5, 0.5]]}, source="user")
+    monkeypatch.setattr(teacher, "english_phrases", lambda meaning, client=None: {"vaca": ["cow"]})
+    vaca = {k: v for k, v in GOOD["classes"][0].items() if k not in ("assets", "names")}
+    spec = {**GOOD, "task": "count", "classes": [{**vaca, "id": "vaca", "description": "vacas"}],
+            "user_data": {"raw": f"library:{ds}"}}
+    r = app.post("/api/jobs", data={"spec": json.dumps(spec), "calibrate": "true"}).json()
+    assert not r.get("calibrating") and app.launched
+    fixes = json.loads((tmp_path / "jobs" / r["job"] / "input" / "corrections.json").read_text())
+    assert len(fixes["points"]) == 8
+
+
+def test_one_dataset_as_training_and_test_photos_is_not_tested_on_its_training(app, tmp_path):
+    """The same library dataset as labeled and test photos went into one folder: the job tested on every photo it
+    trained on. Its test side is the test now; a dataset without one leaves the test to the training photos."""
+    from PIL import Image
+
+    from sim2chip import library
+
+    lib = library.Library(tmp_path, tmp_path / "cache")
+    files = []
+    for i in range(6):
+        f = tmp_path / "scratch" / f"p{i}.jpg"
+        f.parent.mkdir(exist_ok=True)
+        Image.new("RGB", (64, 64), (i * 30, 0, 0)).save(f, "JPEG")
+        files.append(f)
+    ds = lib.new_dataset("local", "barn", [])
+    lib._put_photos(ds, files[:4], "train", "cow")
+    lib._put_photos(ds, files[4:], "test", "cow")
+    spec = {**GOOD, "user_data": {"labeled": f"library:{ds}", "test": f"library:{ds}"}}
+    r = app.post("/api/jobs", data={"spec": json.dumps(spec)}).json()
+    job = tmp_path / "jobs" / r["job"]
+    ud = json.loads((job / "request.json").read_text())["user_data"]
+    train = {p.name for p in (job / "input" / ud["labeled"]).rglob("*.jpg")}
+    test = {p.name for p in (job / "input" / ud["test"]).rglob("*.jpg")}
+    assert ud["labeled"] != ud["test"] and len(train) == 4 and len(test) == 2 and not train & test
+    no_test = lib.new_dataset("local", "field", files[:3])
+    spec = {**GOOD, "user_data": {"raw": f"library:{no_test}", "test": f"library:{no_test}"}}
+    r = app.post("/api/jobs", data={"spec": json.dumps(spec)}).json()
+    ud = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["user_data"]
+    assert ud["test"] is None and ud["raw"] == f"dataset_{no_test}"
+
+
 def test_labeling_a_dataset_puts_the_class_ids_in_english(app, tmp_path, monkeypatch):
     """The names typed on the Datasets page become English ids, and for counting the teacher's English names."""
     from PIL import Image

@@ -73,6 +73,28 @@ def test_a_dataset_goes_into_a_job_by_label(tmp_path):
     assert lib.materialize_dataset("intruder", ds["id"], tmp_path / "x", by_label=False) == 0
 
 
+def test_a_dataset_goes_into_a_job_side_by_side(tmp_path):
+    """Only the asked sides of a dataset, and the photos 3D models were made from never as labeled photos."""
+    lib = Library(tmp_path, tmp_path / "cache")
+    job = Job(tmp_path / "jobs" / "j")
+    photos(job.input / "lab" / "cat", ["red"])
+    photos(job.input / "tst" / "cat", ["blue"])
+    photos(job.input / "obj", ["green"])
+    (job.root / "spec.json").write_text(json.dumps({
+        "classes": [{"id": "cat", "assets": {"photos": "obj"}}], "user_data": {"labeled": "lab", "test": "tst"}}))
+    lib.sync("u", [job])
+    ds = lib.datasets("u")[0]
+    assert ds["splits"] == {"3d": 1, "test": 1, "train": 1}
+    out = tmp_path / "all"
+    assert lib.materialize_dataset("u", ds["id"], out, by_label=True) == 3
+    assert sorted(p.parent.name for p in out.rglob("*.jpg")) == ["all", "cat", "cat"]
+    out = tmp_path / "test"
+    assert lib.materialize_dataset("u", ds["id"], out, by_label=True, splits=("test",)) == 1
+    out = tmp_path / "train"
+    assert lib.materialize_dataset("u", ds["id"], out, by_label=True, splits=("train", "3d")) == 2
+    assert not {p.name for p in (tmp_path / "test").rglob("*.jpg")} & {p.name for p in out.rglob("*.jpg")}
+
+
 def test_the_chat_may_only_use_listed_library_ids():
     from types import SimpleNamespace
 
@@ -204,3 +226,39 @@ def test_deleted_labels_are_no_labeling_any_more(tmp_path):
     assert [l["classes"] for l in lib.labelings(ds)] == [["botella"]]
     lib.forget_labels("u", ds, "boxes", "bottle")
     assert lib.labelings(ds) == []
+
+
+def test_deleted_and_renamed_labels_stay_so_when_the_job_syncs_again(tmp_path):
+    """forget_labels and rename_labels changed only the notes: the next sync of the job (it changed, or VERSION
+    went up) took its labels in again under the old names."""
+    import os
+    import time
+    lib = Library(tmp_path, tmp_path / "cache")
+    job = job_with(tmp_path, "a", ["red", "blue"])
+    (job.root / "spec.json").write_text(json.dumps({"task": "count", "classes": [{"id": "bin"}, {"id": "cup"}],
+                                                    "user_data": {"raw": "photos"}}))
+    label = job.stage_dir("label")
+    label.mkdir(parents=True)
+    (label / "teacher.json").write_text(json.dumps({"phrases": {"bin": ["paper bin"], "cup": ["cup"]}}))
+    marks = [{"x": 0.5, "y": 0.5, "class": c, "box": [0.4, 0.4, 0.6, 0.6], "score": 0.9} for c in ("bin", "cup")]
+    (label / "verdicts.json").write_text(json.dumps({
+        f"{i}.jpg": {"objects": marks, "model": "facebook/sam3", "threshold": 0.5, "assigned": "images"}
+        for i in range(2)}))
+    (job.input / "corrections.json").write_text(json.dumps({"points": {"0.jpg": [[0.2, 0.3, "bin"]]}}))
+    past = time.time() - 60
+    for f in (label / "verdicts.json", job.input / "corrections.json"):
+        os.utime(f, (past, past))
+    lib.sync("u", [job])
+    ds = lib.datasets("u")[0]["id"]
+    assert lib.label_phrases("u", ds) == {"cup": 2, "paper bin": 2}
+    lib.rename_labels("u", ds, "paper bin", "blue bin")
+    lib.forget_labels("u", ds, "boxes", "cup")
+    lib.db.execute("DELETE FROM synced")  # what a VERSION bump does
+    lib.sync("u", [job])
+    assert lib.label_phrases("u", ds) == {"blue bin": 2}
+    kinds = sorted((n["kind"], n["source"]) for v in lib.dataset_notes("u", ds).values() for n in v)
+    assert kinds == [("boxes", "model"), ("boxes", "model"), ("points", "user")]
+    # The job labels the photos again after that: its new labels are taken in.
+    (label / "verdicts.json").touch()
+    lib.sync("u", [job])
+    assert lib.label_phrases("u", ds) == {"blue bin": 2, "cup": 2, "paper bin": 2}

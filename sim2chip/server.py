@@ -440,17 +440,30 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
 
         data = json.loads(parsed.to_json())
         ud = data["user_data"]
+        # One dataset given as test photos and as training photos (labeled or raw) would be tested on what it
+        # trained on: its test side is the test, the rest trains; without a test side the test comes from the
+        # training photos, as for any job without a test folder.
+        test = ref(ud.get("test"))
+        training = {ref(ud.get("labeled"))} | {ref(v) for v in interview_sources(ud.get("raw"))}
+        shared = test if test and test in training else None
+        if shared and lib.owns(owner, "dataset", shared):
+            sides = next((d["splits"] for d in lib.datasets(owner) if d["id"] == shared), {})
+            if not sides.get("test"):
+                ud["test"] = None
 
-        def dataset(v, by_label: bool):
+        def dataset(v, by_label: bool, test_side: bool = False):
             ds = ref(v)
             if not ds:
                 return v
             if not lib.owns(owner, "dataset", ds):
                 raise HTTPException(400, f"invalid spec: no dataset {ds} in your library")
-            lib.materialize_dataset(owner, ds, job.input / f"dataset_{ds}", by_label=by_label)
-            return f"dataset_{ds}"
-        for k in ("labeled", "test"):
-            ud[k] = dataset(ud.get(k), True)
+            name, splits = f"dataset_{ds}", None
+            if ds == shared:
+                name, splits = (f"dataset_{ds}_test", ("test",)) if test_side else (name, ("train", "3d"))
+            lib.materialize_dataset(owner, ds, job.input / name, by_label=by_label, splits=splits)
+            return name
+        ud["labeled"] = dataset(ud.get("labeled"), True)
+        ud["test"] = dataset(ud.get("test"), True, test_side=True)
         raw = [dataset(v, False) for v in interview_sources(ud.get("raw"))]
         ud["raw"] = merge_sources(job, raw) if len(raw) > 1 else (raw[0] if raw else None)
         names = {c["id"]: c.get("names") or [] for c in data["classes"]}
@@ -474,7 +487,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     def reuse_corrections(parsed: spec_mod.Spec, owner: str, job: Job) -> None:
         """The user's earlier corrections of these photos (other jobs, the Datasets page) as this job's, so they
         are not asked again. Never over corrections the job already has."""
-        from . import teacher
+        from .stages.label import phrases_of
         f = job.input / review.CORRECTIONS
         raw = parsed.user_data.raw
         if f.exists() or not isinstance(raw, str):
@@ -485,9 +498,12 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             return
         if not folder.is_dir():
             return
-        phrases = {c: p[0] for c, p in teacher.phrases(parsed).items()} if parsed.task == "count" else {}
+        # The label stage's own phrases (classes without English names put in English): the library keeps the
+        # labels under those.
+        count = parsed.task == "count"
+        phrases = {c: p[0] for c, p in phrases_of(parsed, Cache(home / "cache")).items()} if count else {}
         found = lib.corrections_for(owner, folder, [c.id for c in parsed.classes] if phrases else [], phrases,
-                                    parsed.labels if parsed.task != "count" else [])
+                                    [] if count else parsed.labels)
         if found:
             f.write_text(json.dumps({"labels": {}, "assets": {}, "points": {}, **found}, indent=1))
 
@@ -542,7 +558,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         on to train with those labels; either way with at most NEW_SHARE of the folder new. The new ones are
         marked in the run, the teacher learning from the earlier corrections, and the user can still fix them
         after it. The check of a count asks only about the classes left (review "check")."""
-        from . import teacher
+        from .stages.label import phrases_of
         count = parsed.task == "count"
         ids = [c.id for c in parsed.classes] if count else parsed.labels
         raw = parsed.user_data.raw
@@ -560,7 +576,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             corrected = {c: sum(c in review.checked(fixes, k, ids) for k in fixes["points"]) for c in ids}
         else:
             corrected = dict.fromkeys(ids, len(set(fixes["labels"]) | set(fixes["points"])))
-        phrases = {c: p[0] for c, p in teacher.phrases(parsed).items()} if count else {}
+        # The label stage's own phrases (classes without English names put in English): the library keeps the
+        # labels under those.
+        phrases = {c: p[0] for c, p in phrases_of(parsed, Cache(home / "cache")).items()} if count else {}
         known = lib.known_labels(owner, folder, phrases, [] if count else parsed.labels)
 
         def labeled(c: str) -> bool:

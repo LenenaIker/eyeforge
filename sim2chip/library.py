@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS synced (
 CREATE TABLE IF NOT EXISTS notes (
     owner TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, source TEXT NOT NULL,
     model TEXT, data TEXT NOT NULL, created REAL NOT NULL, PRIMARY KEY (owner, key, kind, ref, source));
+CREATE TABLE IF NOT EXISTS label_edits (
+    owner TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, moved_to TEXT, at REAL NOT NULL,
+    PRIMARY KEY (owner, key, kind, ref));
 CREATE TABLE IF NOT EXISTS profiles (
     dataset TEXT PRIMARY KEY, data TEXT NOT NULL, summary TEXT NOT NULL, photos INTEGER NOT NULL,
     created REAL NOT NULL);
@@ -237,7 +240,9 @@ class Library:
                 f = base / rel
                 keys[rel] = content_key(f) if f.is_file() else None
             return keys[rel]
-        rows = []
+        rows = []  # (key, kind, ref, source, model, data, labeled at)
+        teacher_at, user_at = (f.stat().st_mtime if f.exists() else 0.0
+                               for f in (job.stage_dir("label") / "verdicts.json", job.input / "corrections.json"))
         for rel, v in verdicts.items():
             if not (k := key(rel)):
                 continue
@@ -249,22 +254,55 @@ class Library:
                     boxes = [{"box": o["box"], "score": o.get("score")} for o in teacher_marks
                              if o.get("class") == c and o.get("box")]
                     rows.append((k, BOXES, phrase[c], "model", v.get("model"),
-                                 {"boxes": boxes, "threshold": v.get("threshold")}))
+                                 {"boxes": boxes, "threshold": v.get("threshold")}, teacher_at))
             elif v.get("class") and v["class"] != "no_answer":  # classification
                 cls = v.get("teacher", v["class"]) if v.get("judge") == "user" else v["class"]
-                rows.append((k, CLASS, labels, "model", v.get("model"), {"label": cls, "confidence": v.get("confidence")}))
+                rows.append((k, CLASS, labels, "model", v.get("model"), {"label": cls, "confidence": v.get("confidence")},
+                             teacher_at))
         fixes = {"points": {}, **fixes}
         for rel, marks in fixes["points"].items():
             if k := key(rel):
                 for c in checked(fixes, rel, ids):  # only the classes the user looked at on this photo
-                    rows.append((k, POINTS, phrase[c], "user", None, {"points": [[x, y] for x, y, cl in marks if cl == c]}))
+                    rows.append((k, POINTS, phrase[c], "user", None, {"points": [[x, y] for x, y, cl in marks if cl == c]},
+                                 user_at))
         for rel, label in (fixes.get("labels") or {}).items():
             if k := key(rel):
-                rows.append((k, CLASS, labels, "user", None, {"label": label}))
+                rows.append((k, CLASS, labels, "user", None, {"label": label}, user_at))
         now = time.time()
-        self.db.executemany("INSERT OR REPLACE INTO notes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            [(owner, k, kind, ref, src, model, json.dumps(data), now)
-                             for k, kind, ref, src, model, data in rows])
+        # Labels the user deleted or renamed on the Datasets page since the job made them stay so: a later sync
+        # of the job (it changed, or VERSION went up) used to bring them back under their old names.
+        put, keep = [], []
+        for k, kind, ref, src, model, data, at in rows:
+            ref, renamed = self._edited(owner, k, kind, ref, at)
+            if ref is not None:
+                (keep if renamed else put).append((owner, k, kind, ref, src, model, json.dumps(data), now))
+        self.db.executemany("INSERT OR REPLACE INTO notes VALUES (?, ?, ?, ?, ?, ?, ?, ?)", put)
+        # Under a new name a photo labeled for both keeps the new name's labels (rename_labels).
+        self.db.executemany("INSERT OR IGNORE INTO notes VALUES (?, ?, ?, ?, ?, ?, ?, ?)", keep)
+
+    def _edited(self, owner: str, key: str, kind: str, ref: str, since: float) -> tuple[str | None, bool]:
+        """A label made at `since` as it stands now: its name after the user's renames since then (None: the
+        user deleted it), and whether it was renamed."""
+        seen, renamed = {ref}, False
+        while True:
+            row = self.db.execute("SELECT moved_to FROM label_edits WHERE owner = ? AND key = ? AND kind = ? "
+                                  "AND ref = ? AND at >= ?", (owner, key, kind, ref, since)).fetchone()
+            if row is None or row[0] is None:
+                return (ref if row is None else None), renamed
+            ref, renamed = row[0], True
+            if ref in seen:
+                return ref, renamed
+            seen.add(ref)
+
+    def _note_edit(self, owner: str, ds: str, kinds, ref: str, to: str | None) -> None:
+        """Remember a deleted (to None) or renamed labeling of a dataset's photos, so sync does not undo it."""
+        keys = [k for (k,) in self.db.execute("SELECT DISTINCT key FROM photos WHERE dataset = ?", (ds,))]
+        now = time.time()
+        self.db.executemany("INSERT OR REPLACE INTO label_edits VALUES (?, ?, ?, ?, ?, ?)",
+                            [(owner, k, kind, ref, to, now) for k in keys for kind in kinds])
+        if to is not None:  # the new name is a live one again, whatever was done to it before
+            self.db.executemany("DELETE FROM label_edits WHERE owner = ? AND key = ? AND kind = ? AND ref = ?",
+                                [(owner, k, kind, to) for k in keys for kind in kinds])
 
     def _take_objects(self, owner: str, job: Job) -> None:
         converted = _load(job.stage_dir("convert_assets") / "assets.json") or []
@@ -383,6 +421,7 @@ class Library:
                     if not self.db.execute("SELECT 1 FROM photos p JOIN datasets d ON d.id = p.dataset "
                                            "WHERE d.owner = ? AND p.key = ?", (owner, k)).fetchone():
                         self.db.execute("DELETE FROM notes WHERE owner = ? AND key = ?", (owner, k))
+                        self.db.execute("DELETE FROM label_edits WHERE owner = ? AND key = ?", (owner, k))
                 for f in files:
                     if not self.db.execute("SELECT 1 FROM photos WHERE file = ?", (f,)).fetchone():
                         (self.files / f).unlink(missing_ok=True)
@@ -409,6 +448,7 @@ class Library:
                 self.delete(owner, kind, item)
         with self.lock:
             self.db.execute("DELETE FROM notes WHERE owner = ?", (owner,))
+            self.db.execute("DELETE FROM label_edits WHERE owner = ?", (owner,))
             self.db.execute("DELETE FROM removed WHERE owner = ?", (owner,))
         self.forget_jobs(jobs)
 
@@ -429,6 +469,7 @@ class Library:
         chosen among some labels), wherever those photos are used: labels belong to the photo's content."""
         kinds = self._label_kinds(kind)
         with self.lock:
+            self._note_edit(owner, ds, kinds, ref, None)
             return self.db.execute(
                 f"DELETE FROM notes WHERE owner = ? AND kind IN ({','.join('?' * len(kinds))}) AND ref = ? "
                 "AND key IN (SELECT key FROM photos WHERE dataset = ?)", (owner, *kinds, ref, ds)).rowcount
@@ -438,6 +479,7 @@ class Library:
         later job looking for the new phrase reuses them. A photo labeled for both keeps the new phrase's."""
         keys = "key IN (SELECT key FROM photos WHERE dataset = ?)"
         with self.lock:
+            self._note_edit(owner, ds, (BOXES, POINTS), ref, to)
             moved = self.db.execute(f"UPDATE OR IGNORE notes SET ref = ? WHERE owner = ? AND kind IN (?, ?) AND ref = ? "
                                     f"AND {keys}", (to, owner, BOXES, POINTS, ref, ds)).rowcount
             self.db.execute(f"DELETE FROM notes WHERE owner = ? AND kind IN (?, ?) AND ref = ? AND {keys}",
@@ -552,13 +594,17 @@ class Library:
 
     # Into a job ------------------------------------------------------------------------------------
 
-    def materialize_dataset(self, owner: str, ds: str, dst: Path, by_label: bool) -> int:
+    def materialize_dataset(self, owner: str, ds: str, dst: Path, by_label: bool,
+                            splits: tuple[str, ...] | None = None) -> int:
         """A dataset's photos as a plain folder of a job (hard links): one subfolder per label for labeled
-        photos (by_label), else flat. Photos without a label go flat even then."""
-        rows = self.db.execute("SELECT p.key, p.file, p.label FROM photos p JOIN datasets d ON d.id = p.dataset "
-                               "WHERE d.owner = ? AND d.id = ?", (owner, ds)).fetchall()
-        for key, file, label in rows:
-            sub = dst / label if by_label and label else dst
+        photos (by_label), else flat. Photos without a label go flat even then, and so do the photos 3D models
+        were made from (their label is the class they were models of, not a label the user gave the photo).
+        splits: only the photos on these sides (a dataset given as both training and test photos)."""
+        rows = self.db.execute("SELECT p.key, p.file, p.label, p.split FROM photos p JOIN datasets d "
+                               "ON d.id = p.dataset WHERE d.owner = ? AND d.id = ?", (owner, ds)).fetchall()
+        rows = [r for r in rows if splits is None or r[3] in splits]
+        for key, file, label, split in rows:
+            sub = dst / label if by_label and label and split != "3d" else dst
             _store(self.files / file, sub / Path(file).name)
         return len(rows)
 

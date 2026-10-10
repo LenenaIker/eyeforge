@@ -110,25 +110,7 @@ class Label(Stage):
 
     @staticmethod
     def _phrases(ctx: Context) -> dict[str, list[str]]:
-        """teacher.phrases, with the classes that have no English names from a 3D model search put in English
-        by the text model. Cached by the classes and their descriptions, so every run asks SAM 3 the same."""
-        spec = ctx.spec
-        found = teacher.phrases(spec)
-        missing = {c.id: c.description or c.id.replace("_", " ") for c in spec.classes if not teacher.names(c)}
-        if not missing:
-            return found
-        f = ctx.cache.root / "labels" / "phrases" / \
-            f"{cache_key(missing)}.json"
-        if f.exists():
-            return {**found, **json.loads(f.read_text())}
-        english = teacher.english_phrases(missing)
-        if english is None:
-            ctx.log(f"WARNING: could not put {', '.join(missing)} in English; {teacher.NAME} understands only "
-                    "English and may find nothing")
-            return found
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(english, indent=1))
-        return {**found, **english}
+        return phrases_of(ctx.spec, ctx.cache, ctx.log)
 
     def _classify(self, ctx, files, keys, previous, sample, fixes):
         prompts = self._prompts(ctx)
@@ -452,3 +434,24 @@ class Label(Stage):
             learned["crowded"] = dense
             learned["note"] += " " + dense["note"]
         return verdicts, learned, {"threshold": th}
+
+
+def phrases_of(spec, cache, log=print) -> dict[str, list[str]]:
+    """teacher.phrases, with the classes that have no English names from a 3D model search put in English
+    by the text model. Cached by the classes and their descriptions, so every run asks SAM 3 the same, and the
+    server finds a dataset's kept labels by the very phrases this stage writes them under."""
+    found = teacher.phrases(spec)
+    missing = {c.id: c.description or c.id.replace("_", " ") for c in spec.classes if not teacher.names(c)}
+    if not missing:
+        return found
+    f = cache.root / "labels" / "phrases" / f"{cache_key(missing)}.json"
+    if f.exists():
+        return {**found, **json.loads(f.read_text())}
+    english = teacher.english_phrases(missing)
+    if english is None:
+        log(f"WARNING: could not put {', '.join(missing)} in English; {teacher.NAME} understands only "
+            "English and may find nothing")
+        return found
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(english, indent=1))
+    return {**found, **english}
