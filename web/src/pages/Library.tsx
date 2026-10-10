@@ -222,45 +222,29 @@ export function Objects() {
   const { lib, error, reload } = useLibrary();
   const { sel, toggle, clear } = useSelection();
   const [upload, setUpload] = useState(false);
-  // Ours (built from the user's photos, taken out of their scenes or uploaded) apart from what came from the internet.
+  // Only the user's own: built from their photos, taken out of their scenes or uploaded. Models found on the
+  // internet are our catalog, not theirs (2026-10-11).
   const all = lib?.objects ?? [];
-  const mine = all.filter((o) => o.source !== "online");
-  const [pick, setPick] = useState<"mine" | "online" | null>(null);
-  const show = pick ?? (mine.length ? "mine" : "online");
   const [rejected, setRejected] = useState(false);
-  const inTab = all.filter((o) => (show === "mine") === (o.source !== "online"));
-  const shown = inTab.filter((o) => rejected || o.kept);
-  const tabs: [typeof show, string, number][] = [
-    ["mine", "Yours", mine.filter((o) => rejected || o.kept).length],
-    ["online", "From the internet", all.filter((o) => o.source === "online" && (rejected || o.kept)).length],
-  ];
+  const shown = all.filter((o) => rejected || o.kept);
   const action = <Button size="sm" className="h-10" onClick={() => setUpload(true)}><Upload className="h-4 w-4" /> Upload 3D model</Button>;
   return (
-    <Page title="Objects" intro="3D models found online, built from your photos, taken out of your scenes or uploaded. The approved ones go into synthetic images." action={action}>
+    <Page title="Objects" intro="Your 3D models: built from your photos, taken out of your scenes or uploaded. The approved ones go into synthetic images." action={action}>
       {!lib ? <Loading error={error} /> : all.length === 0 ? (
         <Empty icon={<Box className="h-6 w-6" />} title="No 3D objects yet" action={action}>
-          When a model trains with synthetic images, the 3D objects it finds or builds from your photos are kept here.
-          You can also upload your own (.glb).
+          3D models built from your photos or taken out of your scenes are kept here. You can also upload your own (.glb).
         </Empty>
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-2">
-            {tabs.map(([k, label, n]) => (
-              <button key={k} onClick={() => setPick(k)}
-                      className={cx("h-9 rounded-full px-3.5 text-sm font-medium transition-colors",
-                                    show === k ? "bg-ink text-white" : "bg-white text-muted ring-1 ring-line hover:text-ink")}>
-                {label} <span className="opacity-60">{n}</span>
-              </button>
-            ))}
-            <label className="ml-auto flex items-center gap-2 text-sm text-muted">
+          <div className="flex justify-end">
+            <label className="flex items-center gap-2 text-sm text-muted">
               <input type="checkbox" checked={rejected} onChange={(e) => setRejected(e.target.checked)} className="accent-brand-600" />
               Show rejected
             </label>
           </div>
           {shown.length === 0 && (
             <p className="py-8 text-center text-sm text-muted">
-              {show === "mine" ? "Nothing of yours yet: 3D models built from your photos, taken out of your scenes or uploaded show up here."
-                : "Nothing from the internet here."}
+              All your 3D models were rejected by the check. Tick "Show rejected" to see them.
             </p>
           )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
@@ -422,13 +406,11 @@ function KitEditor({ kit, lib, onClose, onDone }: { kit: Kit | null; lib: Librar
     if (n.has(id)) n.delete(id); else n.add(id);
     return { ...r, [k]: n };
   });
-  type Item = { id: string; name: string; pic: string | null; note: string; group?: string };
-  const objects = lib.objects.filter((o) => o.kept || refs.objects.has(o.id))
-    .sort((a, b) => Number(a.source === "online") - Number(b.source === "online"));
+  type Item = { id: string; name: string; pic: string | null; note: string };
+  const objects = lib.objects.filter((o) => o.kept || refs.objects.has(o.id));
   const items: Record<typeof tab, Item[]> = {
     datasets: lib.datasets.map((d) => ({ id: d.id, name: d.name, pic: d.sample[0] ? libraryPhotoUrl(d.sample[0]) : null, note: `${d.photos} photos` })),
-    objects: objects.map((o) => ({ id: o.id, name: o.name, pic: o.thumb ? cardUrl("object", o.id) : null, note: pretty(o.concept),
-                                   group: o.source === "online" ? "From the internet" : "Yours" })),
+    objects: objects.map((o) => ({ id: o.id, name: o.name, pic: o.thumb ? cardUrl("object", o.id) : null, note: pretty(o.concept) })),
     scenes: lib.scenes.map((s) => ({ id: s.id, name: s.name, pic: s.thumb ? cardUrl("scene", s.id) : null, note: "" })),
   };
   const go = async () => {
@@ -455,9 +437,7 @@ function KitEditor({ kit, lib, onClose, onDone }: { kit: Kit | null; lib: Librar
       </div>
       <div className="mt-3 grid max-h-[45dvh] grid-cols-2 gap-2 overflow-y-auto sm:grid-cols-3">
         {items[tab].length === 0 && <p className="col-span-full py-6 text-center text-sm text-muted">Nothing here yet.</p>}
-        {items[tab].map((it, i) => [
-          it.group && it.group !== items[tab][i - 1]?.group &&
-            <div key={`g-${it.group}`} className="col-span-full pt-2 text-xs font-medium tracking-wide text-muted uppercase">{it.group}</div>,
+        {items[tab].map((it) => (
           <div key={it.id} onClick={() => flip(tab, it.id)} role="checkbox" aria-checked={refs[tab].has(it.id)}
                className={cx("relative cursor-pointer overflow-hidden rounded-xl border text-left", refs[tab].has(it.id) ? "border-brand-500 ring-2 ring-brand-500" : "border-line")}>
             <Tick on={refs[tab].has(it.id)} onToggle={() => flip(tab, it.id)} />
@@ -466,8 +446,8 @@ function KitEditor({ kit, lib, onClose, onDone }: { kit: Kit | null; lib: Librar
               <div className="truncate text-sm font-medium">{it.name}</div>
               <div className="truncate text-xs text-muted">{it.note}</div>
             </div>
-          </div>,
-        ])}
+          </div>
+        ))}
       </div>
       {error && <div className="mt-4"><Notice tone="bad">{error}</Notice></div>}
       <div className="mt-5 flex justify-end gap-2">

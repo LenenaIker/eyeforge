@@ -293,7 +293,7 @@ export const unreviewPhoto = (id: string, photo: number) =>
   api<{ ok: boolean }>(`/api/library/labelings/${id}/photos/${photo}`, { method: "DELETE" });
 export const deletePhoto = (photo: number) => api<{ ok: boolean }>(`/api/library/photos/${photo}`, { method: "DELETE" });
 export const reprofileDataset = (id: string) => api<{ profiling: boolean }>(`/api/library/datasets/${id}/profile`, { method: "POST" });
-export type ObjectCard = { id: string; name: string; concept: string; source: "online" | "photos" | "scene" | "upload";
+export type ObjectCard = { id: string; name: string; concept: string; source: "photos" | "scene" | "upload";
                            has_file: boolean; thumb: boolean; kept: boolean; license?: string; author?: string;
                            url?: string; created: number; jobs: string[] };
 export type SceneCard = { id: string; name: string; thumb: boolean; created: number };

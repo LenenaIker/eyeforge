@@ -150,6 +150,24 @@ def test_a_job_using_library_objects_does_not_copy_them(tmp_path):
     assert obj["id"] == oid and obj["jobs"] == ["j"]
 
 
+def test_internet_models_stay_out_of_the_owners_objects(tmp_path):
+    lib = Library(tmp_path, tmp_path / "cache")
+    job = Job(tmp_path / "jobs" / "j")
+    (job.stage_dir("convert_assets")).mkdir(parents=True)
+    (job.stage_dir("convert_assets") / "assets.json").write_text(json.dumps(
+        [{"uid": "objaverse1", "class": "bin"}, {"uid": "built1", "class": "bin", "generated": True}]))
+    lib.sync("u", [job])
+    (obj,) = lib.objects("u")
+    assert obj["source"] == "photos" and obj["concept"] == "bin"
+    # A library from before keeps its internet models as objects: they go when it opens again.
+    lib.db.execute("INSERT INTO objects VALUES ('old1', 'u', 'uid:x', 'Bin', 'bin', 'online', NULL, NULL, 1, '{}', 0)")
+    lib.save_kit("u", None, "Street", {"objects": ["old1", obj["id"]]})
+    lib.db.execute("PRAGMA user_version = 4")
+    lib = Library(tmp_path, tmp_path / "cache")
+    assert [o["id"] for o in lib.objects("u")] == [obj["id"]]
+    assert lib.kits("u")[0]["objects"] == [obj["id"]]
+
+
 def test_a_dataset_profile_is_made_once_and_read_by_the_chat(tmp_path):
     lib, ds, ids = dataset(tmp_path)
     asked = []

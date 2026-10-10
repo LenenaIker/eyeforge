@@ -10,7 +10,8 @@ good (user, 2026-10-08; labelings redesigned 2026-10-10, docs/plan_etiquetado.md
 - The classes of a labeling a model was trained with do not change under it: editing them makes a copy.
 - A job gets a fixed copy of its labeling (export: input/labeling.json and the photos) and gives back the
   teacher's marks (take_teacher). Nothing else travels between jobs and the library.
-- Every 3D object a job found online or built from photos is kept, with a picture for its card and its license.
+- The owner's 3D objects: uploaded, or built by a job from the owner's photos, with a picture for its card.
+  Models found on the internet are our catalog for every user (asset_db.py), never an owner's object.
 - A kit has no files: a named list of references to datasets, objects and scenes.
 - What a vision model said about a photo's scene is kept by photo content (photo_description), and each dataset
   has a profile (what objects show up, the backgrounds, the places), made before anyone says what to look for.
@@ -32,7 +33,8 @@ from pathlib import Path
 from .review import StackedMarks, stacked
 from .workspace import IMAGE_EXT, Job, content_key
 
-VERSION = 4  # 4: datasets, labelings, classes, marks and reviews (2026-10-10); older libraries were emptied
+VERSION = 5  # 4: datasets, labelings, classes, marks and reviews (2026-10-10); older libraries were emptied
+# 5: models found on the internet left the owners' objects (2026-10-11): they are our catalog (asset_db.py)
 THUMB = 512  # side of the picture kept for an object's or a scene's card
 TASKS = ("count", "classify")
 # Colors of the classes' marks, by position: distinct on photos and in both themes.
@@ -163,13 +165,16 @@ class Library:
         self.root.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.root / "library.db"), check_same_thread=False, isolation_level=None)
         self.db.execute("PRAGMA foreign_keys = ON")
-        if self.db.execute("PRAGMA user_version").fetchone()[0] < VERSION:
+        old = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if old < 4:
             # Labels were notes per English phrase until 2026-10-10; the user's data was emptied for the new model.
             for t in OLD_TABLES:
                 self.db.execute(f"DROP TABLE IF EXISTS {t}")
-            self.db.execute(f"PRAGMA user_version = {VERSION}")
         self.db.executescript(SCHEMA)
         self.lock = threading.Lock()
+        if old < 5:
+            self._drop_online()
+        self.db.execute(f"PRAGMA user_version = {VERSION}")
 
     # Datasets and photos -----------------------------------------------------------------------------
 
@@ -589,7 +594,16 @@ class Library:
 
     # 3D objects --------------------------------------------------------------------------------------------
 
+    def _drop_online(self) -> None:
+        """Models found on the internet were kept as every owner's objects until 2026-10-11. They are our catalog
+        (the asset DB keeps their verdicts, the cache their files), not the owner's: gone from the library."""
+        for oid, owner in self.db.execute("SELECT id, owner FROM objects WHERE source = 'online'").fetchall():
+            self.delete(owner, "object", oid)
+            self.db.execute("DELETE FROM removed WHERE owner = ? AND item = ?", (owner, oid))
+
     def _take_objects(self, owner: str, job: Job) -> None:
+        """The models a job built from the owner's photos become the owner's objects; a model the job took from
+        the library is noted as used. Models found on the internet stay in our catalog (asset_db.py)."""
         converted = _load(job.stage_dir("convert_assets") / "assets.json") or []
         kept = {a["uid"] for a in _load(job.stage_dir("qa_assets") / "assets.json") or []}
         qa_ran = (job.stage_dir("qa_assets") / "assets.json").exists()
@@ -597,7 +611,10 @@ class Library:
             for a in converted:
                 uid = a["uid"]
                 # A model the job took from this library (fetch_assets uses the object's id as uid) is that object.
-                oid = uid if self.owns(owner, "object", uid) else _id(owner, "object", uid)
+                mine = self.owns(owner, "object", uid)
+                if not mine and not a.get("generated"):
+                    continue
+                oid = uid if mine else _id(owner, "object", uid)
                 if self._removed(owner, oid):
                     continue
                 known = self.db.execute("SELECT kept FROM objects WHERE id = ?", (oid,)).fetchone()
@@ -622,9 +639,8 @@ class Library:
                     info = {k: a[k] for k in ("license", "author", "dims", "category", "photo") if a.get(k)}
                     if a.get("source"):
                         info["url"] = a["source"]
-                    source = "photos" if a.get("generated") else "online"
-                    self.db.execute("INSERT INTO objects VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                    (oid, owner, f"uid:{uid}", a.get("name") or a["class"], a["class"], source, file,
+                    self.db.execute("INSERT INTO objects VALUES (?, ?, ?, ?, ?, 'photos', ?, ?, ?, ?, ?)",
+                                    (oid, owner, f"uid:{uid}", a.get("name") or a["class"], a["class"], file,
                                      thumb, is_kept, json.dumps(info), time.time()))
                 self.db.execute("INSERT OR IGNORE INTO uses VALUES (?, 'object', ?)", (job.name, oid))
 
