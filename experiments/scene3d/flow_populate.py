@@ -164,9 +164,12 @@ def main():
         keep = set(json.load(open(kept))['kept']) | {0}  # view 0 is the photo's camera, matched to its light
         scene['views'] = [v for k, v in enumerate(scene['views']) if k in keep]
     n_place = scene['objects']
-    roles = [{'name': e.get('name', f'object {i}'), 'role': 'scene'} for i, e in
-             enumerate(scene.get('env') or [{} for _ in range(n_place)])]
-    roles += [{'name': 'object', 'role': 'scene'}] * (n_place - len(roles))
+    # The place's own objects, named by env_add.py's list, which gives each mesh's object index (a place may
+    # hold objects of its own before them).
+    roles = [{'name': f'object {i}', 'role': 'scene'} for i in range(n_place)]
+    for e in scene.get('env') or []:
+        if e.get('index', n_place) < n_place:
+            roles[e['index']]['name'] = e['name']
     for k, a in enumerate(assets):
         m = a['local'].copy().apply_transform(to_world)
         arr[f'obj{n_place + k}_points'] = np.asarray(m.vertices, np.float32)

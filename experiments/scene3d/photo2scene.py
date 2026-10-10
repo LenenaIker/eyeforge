@@ -271,6 +271,11 @@ def phase2(f, until):
     f.run('2.1b_pieces', 'trellis', [s3 / 'piece_build.py', '--dir', d, kind, '--views', '0', '--depth',
                                      'background'], ['pieces.json', 'isaac/scene.json'])
     keep = [x['index'] for x in jload(d, 'meshes.json')['meshes'] if x['keep']]
+    # The meshes the gates dropped in an earlier run stay dropped when the flow resumes (a redo starts afresh).
+    gone = f.log['steps'].setdefault('2.2_dropped', {})
+    if gone.get('status') != 'ok':
+        gone.clear()
+    keep = [i for i in keep if i not in gone.get('dropped', [])]
     # 2.2 Surroundings meshes into the place, then the geometric gates; a mesh that fails is dropped once.
     for attempt in range(2):
         f.run(f'2.2a_env_{attempt}', 'trellis', [s3 / 'env_add.py', '--env', d / 'meshes', '--scene', d,
@@ -285,6 +290,8 @@ def phase2(f, until):
         if not drop or attempt == 1:
             break
         keep = [i for i in keep if i not in drop]
+        gone.update(status='ok', dropped=sorted(set(gone.get('dropped', [])) | set(drop)))
+        f.save()
         for k in ('place/isaac/scene.json', 'gates.json'):
             (d / k).unlink()
     if not f.check('2.2b_gates', g['ok'] and bool(keep) and not drop,
@@ -307,15 +314,18 @@ def phase2(f, until):
     # world (flow_photometry.py --mode relative); two rounds,
     # a round kept only if the colour difference goes down.
     first = None
-    if (d / 'photometry.json').exists():
-        (d / 'photometry.json').unlink()  # its gains were for the place as built before
-    for r in range(2):
-        f.run(f'2.4a_photometry_{r}', 'trellis', [s3 / 'flow_photometry.py', '--dir', d, '--apply'], [])
+    # Gains of a place built before (env_add.py removed its originals) do not apply to this one. Those of this
+    # place stay: its renders carry them, and a resumed run builds on them instead of measuring them as the
+    # place's own colours.
+    if (d / 'photometry.json').exists() and not (d / 'place/isaac/orig_scene.json').exists():
+        (d / 'photometry.json').unlink()
+    for rnd in range(2):
+        f.run(f'2.4a_photometry_{rnd}', 'trellis', [s3 / 'flow_photometry.py', '--dir', d, '--apply'], [])
         ph = jload(d, 'photometry.json')
         first = first or ph
         if ph['ok'] or not ph.get('applied'):
             break
-        f.run(f'2.4a_render_{r}', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri], [])
+        f.run(f'2.4a_render_{rnd}', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri], [])
     f.run('2.4a_photometry_final', 'trellis', [s3 / 'flow_photometry.py', '--dir', d, '--out', 'photometry_final'],
           [])
     fin = jload(d, 'photometry_final.json')
