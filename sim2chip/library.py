@@ -71,6 +71,7 @@ BOXES = "boxes"    # objects found: [{"box": [x0, y0, x1, y1], "score"}] in 0..1
 POINTS = "points"  # objects marked: [[x, y], ...], the user's corrections of a count
 CLASS = "class"    # the photo's label among the labels in ref
 TASK_NAME = {"count": "counts objects", "roi_classification": "one label per photo"}
+TITLE = "title.txt"  # in a job folder: the name the user gave the model
 
 
 def _id(*parts: str) -> str:
@@ -409,9 +410,39 @@ class Library:
         with self.lock:
             self.db.execute("DELETE FROM notes WHERE owner = ?", (owner,))
             self.db.execute("DELETE FROM removed WHERE owner = ?", (owner,))
+        self.forget_jobs(jobs)
+
+    def forget_jobs(self, jobs: list[str]) -> None:
+        """The records of deleted jobs. What they gave the library (photos, labels, objects, scenes) stays."""
+        with self.lock:
             for job in jobs:
                 self.db.execute("DELETE FROM uses WHERE job = ?", (job,))
                 self.db.execute("DELETE FROM synced WHERE job = ?", (job,))
+
+    def _label_kinds(self, kind: str) -> tuple[str, ...]:
+        if kind not in (BOXES, CLASS):
+            raise ValueError(f"no labels of kind {kind}")
+        return (BOXES, POINTS) if kind == BOXES else (CLASS,)
+
+    def forget_labels(self, owner: str, ds: str, kind: str, ref: str) -> int:
+        """One labeling of a dataset's photos (the teacher's boxes and the user's marks for a phrase, or the labels
+        chosen among some labels), wherever those photos are used: labels belong to the photo's content."""
+        kinds = self._label_kinds(kind)
+        with self.lock:
+            return self.db.execute(
+                f"DELETE FROM notes WHERE owner = ? AND kind IN ({','.join('?' * len(kinds))}) AND ref = ? "
+                "AND key IN (SELECT key FROM photos WHERE dataset = ?)", (owner, *kinds, ref, ds)).rowcount
+
+    def rename_labels(self, owner: str, ds: str, ref: str, to: str) -> int:
+        """A count labeling of a dataset's photos under another English phrase, e.g. "paper bin" -> "blue bin": a
+        later job looking for the new phrase reuses them. A photo labeled for both keeps the new phrase's."""
+        keys = "key IN (SELECT key FROM photos WHERE dataset = ?)"
+        with self.lock:
+            moved = self.db.execute(f"UPDATE OR IGNORE notes SET ref = ? WHERE owner = ? AND kind IN (?, ?) AND ref = ? "
+                                    f"AND {keys}", (to, owner, BOXES, POINTS, ref, ds)).rowcount
+            self.db.execute(f"DELETE FROM notes WHERE owner = ? AND kind IN (?, ?) AND ref = ? AND {keys}",
+                            (owner, BOXES, POINTS, ref, ds))
+        return moved
 
     def save_kit(self, owner: str, kit: str | None, name: str, refs: dict[str, list[str]]) -> str:
         """Create (kit None) or replace a kit. Only references the owner holds are kept."""
@@ -586,6 +617,12 @@ class Library:
         same labels again without a check (server.follow_labeling). models: per class or prop of the job, its
         3D model search queries and the models kept for it, so a new job can find them again."""
         out = []
+        # Labels the user deleted (forget_labels) are no labeling any more: only jobs already taken in (synced)
+        # are judged by them, a job that just ended may not be.
+        row = self.db.execute("SELECT owner FROM datasets WHERE id = ?", (ds,)).fetchone()
+        have = set(self.db.execute("SELECT DISTINCT kind, ref FROM notes WHERE owner = ? AND key IN "
+                                   "(SELECT key FROM photos WHERE dataset = ?)", (row[0] if row else "", ds)).fetchall())
+        synced = {j for (j,) in self.db.execute("SELECT job FROM synced").fetchall()}
         for job in self._used("dataset", ds):
             root = self.root.parent / "jobs" / job
             spec = _load(root / "request.json")
@@ -602,6 +639,15 @@ class Library:
                     models[c["id"]] = {"queries": queries, "kept": int(kept.get(c["id"]) or 0)}
             ids = [c["id"] for c in spec.get("classes", [])]
             learned = (_load(root / "label" / "teacher.json") or {}).get("phrases") or {}
+            if job in synced:
+                if spec.get("task") == "count":
+                    ids = [c for c in ids if {(BOXES, learned.get(c, [c.replace("_", " ")])[0]),
+                                              (POINTS, learned.get(c, [c.replace("_", " ")])[0])} & have]
+                elif (CLASS, json.dumps(sorted(set(ids) | ({spec["background_class"]} if spec.get("background_class")
+                                                              else set())))) not in have:
+                    ids = []
+                if not ids:
+                    continue
             out.append({"job": job, "task": spec.get("task"), "classes": ids,
                         "phrases": {c: learned.get(c, [c.replace("_", " ")])[0] for c in ids},
                         "background": spec.get("background_class"),
@@ -702,6 +748,7 @@ def model_summary(job: Job, running: bool) -> dict:
     spec = _load(job.spec_path) or _load(job.root / "request.json") or {}
     created = min((p.stat().st_mtime for p in (job.spec_path, job.root / "request.json") if p.exists()),
                   default=job.root.stat().st_mtime)
+    title = job.root / TITLE
     report = _load(job.stage_dir("export") / "report.json")
     model = None
     if report:
@@ -709,6 +756,7 @@ def model_summary(job: Job, running: bool) -> dict:
         real = report.get("real_test") or report.get("real_accuracy") or {}
         model = {"metric": real.get("metric") or report.get("metric"), "score": test.get("score", real.get("mean")),
                  "kb": report.get("model_kb"), "hardware": report.get("hardware")}
-    return {"job": job.name, "created": created, "running": running, "task": spec.get("task"),
+    return {"job": job.name, "title": title.read_text().strip() if title.exists() else None, "created": created,
+            "running": running, "task": spec.get("task"),
             "hardware": spec.get("hardware"), "classes": [c.get("id") for c in spec.get("classes", [])],
             "model": model}

@@ -84,6 +84,8 @@ MAX_PHOTOS = 400  # per upload on a public server
 MAX_PHOTO_BYTES = 30 << 20   # one photo: a 50 MP phone photo is about 20 MB
 MAX_MODEL_BYTES = 200 << 20  # one GLB the user uploads
 SESSION_OWNER = ".owner"     # file in uploads/<session>: who started that chat
+CHAT_VIEW = ".view.json"     # file in uploads/<session>: the chat as the web shows it, to open it again anywhere
+MAX_VIEW_BYTES = 2_000_000
 SESSION_HOURS = 6
 # Model calls are logged by purpose, which is the stage name except for qa's two-step strategy.
 PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets"}  # an interview left open longer is dropped
@@ -718,6 +720,48 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return answered(sid, act, turn_out(sid, guarded(sid, session.reply, str(body.get("text", "")), act=act,
                                                         request=request)), request)
 
+    @app.put("/api/interview/{sid}/view")
+    async def interview_save_view(sid: str, request: Request):
+        """The chat as the web shows it ({"key", "view"}), so it opens again in another tab, after a reload or on
+        another device (interview_open)."""
+        if not owns_upload(sid, request):
+            raise HTTPException(404, "unknown interview session")
+        body = await request.body()
+        if len(body) > MAX_VIEW_BYTES:
+            raise HTTPException(413, "chat too long to keep")
+        data = json.loads(body)
+        (home / "uploads" / sid / CHAT_VIEW).write_text(json.dumps(
+            {"key": str(data.get("key", ""))[:120], "view": data.get("view"), "t": time.time()}))
+        return {"ok": True}
+
+    def open_chats(key: str, request: Request) -> list[tuple[float, str, dict]]:
+        """The requester's chats for this key (a new model, a kit, a model being changed) still open: (when, id,
+        view), newest first."""
+        uploads, out = home / "uploads", []
+        for d in uploads.iterdir() if uploads.exists() else []:
+            f = d / CHAT_VIEW
+            if f.is_file() and not ended(d.name).exists() and owns_upload(d.name, request):
+                try:
+                    v = json.loads(f.read_text())
+                except ValueError:
+                    continue
+                if v.get("key") == key:
+                    out.append((v.get("t", 0), d.name, v.get("view")))
+        return sorted(out, key=lambda x: -x[0])
+
+    @app.get("/api/interview/open")
+    def interview_open(key: str, request: Request):
+        """The requester's last open chat for this key, as the web last showed it."""
+        found = open_chats(key, request)
+        return {"session": found[0][1], "view": found[0][2]} if found else {}
+
+    @app.delete("/api/interview/open")
+    def interview_close(key: str, request: Request):
+        """"New model": the open chats for this key are not brought back any more (their transcripts stay)."""
+        for _, sid, _ in open_chats(key, request):
+            (home / "uploads" / sid / CHAT_VIEW).unlink(missing_ok=True)
+        return {"ok": True}
+
     @app.get("/api/interview/{sid}/activity")
     def interview_activity(sid: str, act: str, request: Request):
         """What the turn `act` is doing right now: its steps so far (thinking, searching, checking the setup),
@@ -1003,6 +1047,26 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return {"keys": keys, "notes": lib.dataset_notes(owner, item), "profile": lib.profile(owner, item),
                 "profiling": item in profiling}
 
+    @app.delete("/api/library/datasets/{item}/labels")
+    def library_forget_labels(item: str, kind: str, ref: str, request: Request):
+        """One labeling of the dataset's photos (kind "boxes": a phrase's boxes and marks; "class": the labels
+        chosen among some labels)."""
+        owner, _ = owned(request, "datasets", item)
+        try:
+            return {"removed": lib.forget_labels(owner, item, kind, ref)}
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.patch("/api/library/datasets/{item}/labels")
+    async def library_rename_labels(item: str, request: Request):
+        """A count labeling under another English phrase ({"ref", "to"}), so later jobs find it by that one."""
+        owner, _ = owned(request, "datasets", item)
+        body = await request.json()
+        ref, to = str(body.get("ref", "")).strip(), str(body.get("to", "")).strip().lower()[:60]
+        if not ref or not to:
+            raise HTTPException(400, "say which labels and their new name")
+        return {"moved": lib.rename_labels(owner, item, ref, to)}
+
     @app.post("/api/library/objects")
     def library_new_object(request: Request, name: str = Form(...), concept: str = Form(""),
                            model: UploadFile = File(...), card: UploadFile | None = File(None)):
@@ -1151,6 +1215,36 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         response = JSONResponse({"ok": True, "refunded": refunded})
         response.delete_cookie(SESSION)
         return response
+
+    def forget_job(job: Job) -> None:
+        """A model the owner deletes: its folder, its cloud storage and its records in the library. What it gave
+        the library (photos, labels, objects, scenes) stays there."""
+        if backend == "nebius" and ((job.root / "cloud_id").exists() or (job.logs / "cloud_usage.jsonl").exists()):
+            from .backends.nebius import NebiusBackend
+            try:
+                NebiusBackend().delete_storage(job)
+            except Exception as e:  # left for a hand cleanup: the log says which
+                print(f"could not delete the cloud storage of {job.name}: {e}", flush=True)
+        shutil.rmtree(job.root, ignore_errors=True)
+        lib.forget_jobs([job.name])
+
+    @app.delete("/api/jobs/{name}")
+    def delete_job(name: str, request: Request):
+        job = job_of(name, request)
+        if jobs.running(job):
+            raise HTTPException(409, "the model is still running: cancel it or wait until it ends")
+        forget_job(job)
+        return {"ok": True}
+
+    @app.patch("/api/jobs/{name}")
+    async def rename_job(name: str, request: Request):
+        """The name the user gives a model; its folder (and every link to it) keeps the first one."""
+        job = job_of(name, request)
+        title = str((await request.json()).get("title", "")).strip()[:80]
+        if not title:
+            raise HTTPException(400, "a name is needed")
+        (job.root / library.TITLE).write_text(title)
+        return {"ok": True}
 
     @app.get("/api/jobs/{name}")
     def job_status(name: str, request: Request):
@@ -1626,7 +1720,9 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     report = job.stage_dir("export") / "report.json"
     fresh = any(st["name"] == "export" and st["state"] == "done" for st in stages)  # not a stale model
     calibration = job.root / CALIBRATION
-    return {"job": job.name, "spec": json.loads(spec.to_json()), "running": running,
+    title = job.root / library.TITLE
+    return {"job": job.name, "title": title.read_text().strip() if title.exists() else None,
+            "spec": json.loads(spec.to_json()), "running": running,
             "calibration": json.loads(calibration.read_text()) if calibration.exists() else None,
             "labeling": json.loads((job.root / LABELING).read_text()) if (job.root / LABELING).exists() else None,
             "stages": stages, "log": log[-30:], "cloud_usd": round(cost, 2), "phase": phase(log, running),

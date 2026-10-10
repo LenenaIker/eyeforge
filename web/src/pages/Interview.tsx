@@ -11,9 +11,9 @@ import { useApp } from "./AppShell";
 type Msg = { id: number; from: "bot" | "me" | "sys"; text: string; photos?: string[]; turn?: Turn };
 let nextId = 0;
 
-// The chat as it was, kept while the user looks at other pages and across a reload of the tab: one per
-// conversation (a new model, a kit, a model being changed). "New model" starts a fresh one. pending: a turn that
-// was still running when the user left, whose answer the server keeps (API.activity) for when they come back.
+// The chat as it was, kept while the user looks at other pages, in this tab (reloads too) and on the server (other
+// tabs and devices): one per conversation (a new model, a kit, a model being changed). "New model" starts a fresh
+// one. pending: a turn still running when the user left, whose answer the server keeps (API.activity).
 type Saved = { session: string | null; msgs: Msg[]; text: string; spec: Spec | null; proposal: Spec | null;
                photoRequest: Turn["request"] | null; realPhotos: number; pending: { act: string; label: string } | null };
 const chats = new Map<string, Saved>();
@@ -49,6 +49,7 @@ export default function Interview() {
     if (chat) nextId = Math.max(nextId, ...chat.msgs.map((m) => m.id + 1));
     return chat;
   });
+  const toServer = useRef<number | undefined>(undefined);  // the chat goes to the server a moment after it changes
   const [kitName, setKitName] = useState<string | null>(null);
   useEffect(() => {
     if (kit) API.getLibrary().then((l) => setKitName(l.kits.find((k) => k.id === kit)?.name ?? null)).catch(() => {});
@@ -74,11 +75,34 @@ export default function Interview() {
 
   const push = (m: Omit<Msg, "id">) => setMsgs((all) => [...all, { ...m, id: nextId++ }]);
   useEffect(() => {
-    saveChat(key, { session: session.current, msgs, text, spec, proposal, photoRequest, realPhotos, pending });
+    const chat: Saved = { session: session.current, msgs, text, spec, proposal, photoRequest, realPhotos, pending };
+    saveChat(key, chat);
+    const sid = session.current;
+    if (!sid) return;
+    clearTimeout(toServer.current);
+    toServer.current = window.setTimeout(() => {
+      API.saveChatView(sid, key, { ...chat, msgs: chat.msgs.map(({ photos: _, ...m }) => m) }).catch(() => {});
+    }, 800);
   }, [msgs, text, spec, proposal, photoRequest, realPhotos, pending]);
   useEffect(() => {
     mounted.current = true;
+    if (fresh) API.closeChats(key).catch(() => {});
     if (saved?.pending && session.current) ask(saved.pending.label, null, saved.pending.act);  // left mid-turn
+    else if (!saved && !fresh) {  // nothing in this tab: the chat may be open in another tab or device
+      API.openChat(key).then((r) => {
+        if (!r.session || !r.view || session.current || !mounted.current) return;
+        const v = r.view as Saved;
+        session.current = r.session;
+        nextId = Math.max(nextId, ...(v.msgs ?? []).map((m) => m.id + 1));
+        setMsgs(v.msgs ?? []);
+        setText(v.text ?? "");
+        setSpec(v.spec ?? null);
+        setProposal(v.proposal ?? null);
+        setPhotoRequest(v.photoRequest ?? null);
+        setRealPhotos(v.realPhotos ?? 0);
+        if (v.pending) ask(v.pending.label, null, v.pending.act);
+      }).catch(() => {});
+    }
     return () => { mounted.current = false; };
   }, []);
   useEffect(() => {

@@ -718,3 +718,53 @@ def test_a_finished_turn_can_be_picked_up_after_the_request_was_cut(app):
     got = app.get(f"/api/interview/{sid}/activity?act=t1").json()
     assert got["turn"] == turn and turn["text"] == "Where is the camera?"
     assert "turn" not in app.get(f"/api/interview/{sid}/activity?act=t2").json()  # another turn: still running
+
+
+def test_a_model_can_be_renamed_and_deleted(app, tmp_path, monkeypatch):
+    r = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()
+    job = r["job"]
+    assert app.patch(f"/api/jobs/{job}", json={"title": "Cows at night"}).json()["ok"]
+    assert app.get(f"/api/jobs/{job}").json()["title"] == "Cows at night"
+    assert next(m for m in app.get("/api/library").json()["models"] if m["job"] == job)["title"] == "Cows at night"
+    assert app.delete(f"/api/jobs/{job}").status_code == 409  # still running
+    monkeypatch.setattr(FakeProc, "poll", lambda self: 0)
+    assert app.delete(f"/api/jobs/{job}").json()["ok"]
+    assert not (tmp_path / "jobs" / job).exists() and app.get(f"/api/jobs/{job}").status_code == 404
+
+
+def test_a_datasets_labels_can_be_renamed_and_deleted(app, tmp_path):
+    from PIL import Image
+
+    from sim2chip import library
+
+    lib = library.Library(tmp_path, tmp_path / "cache")
+    files = []
+    for i in range(2):
+        f = tmp_path / "scratch" / f"p{i}.jpg"
+        f.parent.mkdir(exist_ok=True)
+        Image.new("RGB", (64, 64), (i * 90, 0, 0)).save(f, "JPEG")
+        files.append(f)
+    ds = lib.new_dataset("local", "street", files)
+    k0, k1 = (library.content_key(f) for f in files)
+    lib.note("local", k0, library.BOXES, "paper bin", {"boxes": []})
+    lib.note("local", k0, library.POINTS, "paper bin", {"points": [[0.5, 0.5]]}, source="user")
+    lib.note("local", k1, library.BOXES, "paper bin", {"boxes": []})
+    lib.note("local", k1, library.BOXES, "blue bin", {"boxes": [{"box": [0, 0, 1, 1]}]})
+    assert app.patch(f"/api/library/datasets/{ds}/labels", json={"ref": "paper bin", "to": "Blue bin"}).json()["moved"] == 2
+    notes = app.get(f"/api/library/datasets/{ds}/notes").json()["notes"]
+    assert {n["ref"] for v in notes.values() for n in v} == {"blue bin"}
+    assert [n["data"] for n in notes[k1]] == [{"boxes": [{"box": [0, 0, 1, 1]}]}]  # the new name's kept
+    assert app.delete(f"/api/library/datasets/{ds}/labels", params={"kind": "boxes", "ref": "blue bin"}).json()["removed"] == 3
+    assert app.get(f"/api/library/datasets/{ds}/notes").json()["notes"] == {}
+    assert app.delete(f"/api/library/datasets/{ds}/labels", params={"kind": "scene", "ref": "x"}).status_code == 400
+
+
+def test_an_open_chat_comes_back_in_another_tab_until_a_new_one(app):
+    sid = app.post("/api/interview").json()["session"]
+    view = {"msgs": [{"id": 0, "from": "me", "text": "cows"}], "text": "half typed"}
+    assert app.put(f"/api/interview/{sid}/view", json={"key": "eyeforge.chat.new", "view": view}).json()["ok"]
+    assert app.get("/api/interview/open", params={"key": "eyeforge.chat.new"}).json() == {"session": sid, "view": view}
+    assert app.get("/api/interview/open", params={"key": "eyeforge.chat.kit.x"}).json() == {}
+    app.delete("/api/interview/open", params={"key": "eyeforge.chat.new"})
+    assert app.get("/api/interview/open", params={"key": "eyeforge.chat.new"}).json() == {}
+    assert app.put("/api/interview/0123456789abcdef0123456789abcdef/view", json={"key": "k", "view": {}}).status_code == 404

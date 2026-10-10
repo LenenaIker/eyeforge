@@ -1,6 +1,8 @@
 import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, DollarSign, ImagePlus, Loader2, Pencil, RotateCcw, Sparkles, Square, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { ModelMenu } from "../components/library";
+import { useApp } from "./AppShell";
 import { enterCameraMode, isHandheld } from "../live/device";
 import { captureFile, captureLabels, clearCaptures, listCaptures, removeCapture, type Capture } from "../live/captures";
 import { prepareImages } from "../images";
@@ -19,6 +21,8 @@ const POLL_MS = 5000;
 const IDLE_POLL_MS = 15000;
 
 export default function JobPage() {
+  const navigate = useNavigate();
+  const { refreshJobs } = useApp();
   const { name = "" } = useParams();
   const [s, setS] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,9 +63,13 @@ export default function JobPage() {
   const failed = s.stages.some((x) => x.state === "failed") || (!s.running && !s.report && s.log.some((l) => l.startsWith("FAILED")));
   return (
     <div className="space-y-6 py-6">
-      <div>
-        <p className="text-sm text-muted">{s.labeling ? "Labeling" : "Model"}</p>
-        <h1 className="text-2xl font-bold tracking-tight">{(s.spec?.name ?? s.job).replace(/_/g, " ")}</h1>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm text-muted">{s.labeling ? "Labeling" : "Model"}</p>
+          <h1 className="text-2xl font-bold tracking-tight">{s.title ?? (s.spec?.name ?? s.job).replace(/_/g, " ")}</h1>
+        </div>
+        {!s.running && <ModelMenu job={s.job} name={s.title ?? (s.spec?.name ?? s.job).replace(/_/g, " ")}
+                                  onChanged={() => restart()} onDeleted={() => { refreshJobs(); navigate("/app/models"); }} />}
       </div>
       {error && <Notice tone="bad">Lost contact with the server, retrying: {error}</Notice>}
       {news && <Notice>{news}</Notice>}

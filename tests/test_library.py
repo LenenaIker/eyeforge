@@ -183,3 +183,24 @@ def test_forgetting_an_owner_leaves_others_alone(tmp_path):
     lib.save_kit("u", None, "K", {})
     lib.forget("u", ["m"])
     assert lib.datasets("u") == [] and lib.kits("u") == [] and len(lib.datasets("v")) == 1
+
+
+def test_deleted_labels_are_no_labeling_any_more(tmp_path):
+    lib = Library(tmp_path, tmp_path / "cache")
+    job = job_with(tmp_path, "a", ["red", "blue"])
+    spec = {"task": "count", "classes": [{"id": "botella"}, {"id": "vaso"}], "user_data": {"raw": "photos"}}
+    for f in ("spec.json", "request.json"):
+        (job.root / f).write_text(json.dumps(spec))
+    label = job.stage_dir("label")
+    label.mkdir(parents=True)
+    (label / "teacher.json").write_text(json.dumps({"phrases": {"botella": ["bottle"], "vaso": ["glass"]}}))
+    (label / "verdicts.json").write_text(json.dumps({
+        "0.jpg": {"objects": [], "model": "facebook/sam3", "threshold": 0.5, "assigned": "images"}}))
+    lib.sync("u", [job])
+    ds = lib.datasets("u")[0]["id"]
+    assert [(l["classes"], l["phrases"]) for l in lib.labelings(ds)] == [
+        (["botella", "vaso"], {"botella": "bottle", "vaso": "glass"})]
+    assert lib.forget_labels("u", ds, "boxes", "glass") == 1
+    assert [l["classes"] for l in lib.labelings(ds)] == [["botella"]]
+    lib.forget_labels("u", ds, "boxes", "bottle")
+    assert lib.labelings(ds) == []

@@ -1,9 +1,9 @@
-import { ArrowLeft, RefreshCw, Tag } from "lucide-react";
+import { ArrowLeft, Pencil, RefreshCw, Tag, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { getDatasetNotes, getLibrary, labelDataset, libraryPhotoUrl, reprofileDataset, type DatasetNotes,
-         type DatasetProfile, type PhotoNote } from "../api";
-import { Dialog, field } from "../components/library";
+import { forgetLabels, getDatasetNotes, getLibrary, labelDataset, libraryPhotoUrl, renameLabels, reprofileDataset,
+         type DatasetNotes, type DatasetProfile, type PhotoNote } from "../api";
+import { ConfirmDialog, Dialog, MoreMenu, NameDialog, field, menuItem } from "../components/library";
 import { Badge, Button, Card, Notice, Spinner, cx } from "../components/ui";
 
 // One dataset: what was seen in it (its profile) and every photo with what is known about it, the teacher's boxes
@@ -22,6 +22,7 @@ export function Dataset() {
   const [show, setShow] = useState<string>("");
   const [limit, setLimit] = useState(PAGE);
   const [labeling, setLabeling] = useState(false);
+  const [editing, setEditing] = useState<"rename" | "delete" | null>(null);  // the labeling shown
   const load = useCallback(() => {
     getDatasetNotes(id).then(setD).catch((e) => setError(e.message));
   }, [id]);
@@ -88,7 +89,24 @@ export function Dataset() {
           </button>
         ))}
         {show && <span className="text-sm text-muted">{labeled} of {d.keys.length} photos labeled</span>}
+        {show && <MoreMenu items={(close) => <>
+          {kind === "boxes" && <button className={menuItem} onClick={() => { close(); setEditing("rename"); }}><Pencil className="h-4 w-4" /> Rename</button>}
+          <button className={cx(menuItem, "text-red-600")} onClick={() => { close(); setEditing("delete"); }}><Trash2 className="h-4 w-4" /> Delete</button>
+        </>} />}
       </div>
+      {editing === "rename" && (
+        <NameDialog title="Rename these labels" name={ref} onClose={() => setEditing(null)}
+                    hint={<>The English name the teacher looked for. A model that looks for the new name reuses these labels;
+                      name what the camera sees, like "blue bin". If that name has labels already, a photo labeled for both keeps those.</>}
+                    save={(to) => renameLabels(id, ref, to).then(() => { setShow(`boxes:${to.toLowerCase()}`); load(); })} />
+      )}
+      {editing === "delete" && (
+        <ConfirmDialog title={`Delete the labels "${kinds.find(([k]) => k === show)?.[1] ?? ref}"?`} action="Delete"
+                       onClose={() => setEditing(null)} run={() => forgetLabels(id, kind, ref).then(() => { setShow(""); load(); })}>
+          The teacher's marks and your corrections for these labels go from every photo of this dataset (and from the same
+          photos in your other datasets). Models already trained keep working; a new model labels them again.
+        </ConfirmDialog>
+      )}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         {d.keys.slice(0, limit).map((key) => <Photo key={key} k={key} notes={(d.notes[key] ?? []).filter((n) => n.ref === ref && (kind === "class" ? n.kind === "class" : n.kind !== "class"))} />)}

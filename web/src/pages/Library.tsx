@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { cardUrl, createDataset, addDatasetPhotos, getLibrary, libraryPhotoUrl, saveKit, uploadObject,
          type DatasetCard, type Kit, type LibraryData, type ModelCard } from "../api";
-import { Dialog, ItemMenu, SelectBar, Tick, field, useSelection } from "../components/library";
+import { Dialog, ItemMenu, ModelMenu, SelectBar, Tick, field, useSelection } from "../components/library";
 import { Badge, Button, ButtonLink, Card, Notice, Spinner, cx } from "../components/ui";
 import { glbCard } from "../glbCard";
 import { useApp } from "./AppShell";
@@ -75,7 +75,7 @@ function Score({ m }: { m: NonNullable<ModelCard["model"]> }) {
 }
 
 export function Models() {
-  const { lib, error } = useLibrary();
+  const { lib, error, reload } = useLibrary();
   const jobs = lib?.models;
   return (
     <Page title="Models" intro="Every model you built, with how well it did on your real photos." action={newModel}>
@@ -86,13 +86,14 @@ export function Models() {
       ) : (
         <Card className="divide-y divide-line">
           {jobs.map((j) => (
-            <Link key={j.job} to={`/app/job/${j.job}`} className="flex items-center gap-4 px-4 py-3.5 hover:bg-gray-50">
+            <div key={j.job} className="flex items-center gap-2 pr-3 hover:bg-gray-50">
+            <Link to={`/app/job/${j.job}`} className="flex min-w-0 flex-1 items-center gap-4 py-3.5 pl-4">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-muted">
                 <Cpu className="h-5 w-5" strokeWidth={1.75} />
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="truncate font-medium">{pretty(j.job)}</span>
+                  <span className="truncate font-medium">{j.title ?? pretty(j.job)}</span>
                   {j.task && <Badge>{TASKS[j.task] ?? j.task}</Badge>}
                   {j.running && <Badge tone="ember">Training</Badge>}
                 </div>
@@ -105,6 +106,8 @@ export function Models() {
                   : !j.running && <span className="text-muted">Not finished</span>}
               </div>
             </Link>
+            <ModelMenu job={j.job} name={j.title ?? pretty(j.job)} onChanged={reload} onDeleted={reload} />
+            </div>
           ))}
         </Card>
       )}

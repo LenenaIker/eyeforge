@@ -79,6 +79,7 @@ export type Usage = { models: ModelUsage[]; gpu: { where: string; minutes: numbe
 
 export type Status = {
   job: string;
+  title?: string | null;  // the name the user gave the model
   spec: Spec | null;
   running: boolean;
   calibration: { state: "labeling" | "ready" | "failed"; error?: string } | null;  // teacher check before the first run
@@ -160,6 +161,14 @@ export const pick = (sid: string, files: string[], cls: string, act?: string) =>
 export const activity = (sid: string, act: string) =>
   api<{ steps: Step[]; now: number; turn?: Turn; error?: string; status?: number }>(
     `/api/interview/${sid}/activity?act=${encodeURIComponent(act)}`);
+// The chat as the web shows it, kept by the server so it opens again in another tab or device (key: which
+// conversation: a new model, a kit, a model being changed).
+export const saveChatView = (sid: string, key: string, view: unknown) => api<{ ok: boolean }>(
+  `/api/interview/${sid}/view`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, view }) });
+export const openChat = (key: string) =>
+  api<{ session?: string; view?: any }>(`/api/interview/open?key=${encodeURIComponent(key)}`);
+export const closeChats = (key: string) =>
+  api<{ ok: boolean }>(`/api/interview/open?key=${encodeURIComponent(key)}`, { method: "DELETE" });
 const actQuery = (act?: string) => (act ? `?act=${encodeURIComponent(act)}` : "");
 export const thumbUrl = (sid: string, file: string) => `/api/interview/${sid}/thumb?file=${encodeURIComponent(file)}`;
 
@@ -241,7 +250,7 @@ export const versionFileUrl = (job: string, n: number, file: string) => `/api/jo
 // The library (sim2chip/library.py): models are the visitor's jobs; datasets, objects and scenes are kept for good
 // and kits are named lists of references to them.
 export type ModelCard = {
-  job: string; created: number; running: boolean; task: string | null; hardware: string | null; classes: string[];
+  job: string; title?: string | null; created: number; running: boolean; task: string | null; hardware: string | null; classes: string[];
   model: { metric: string | null; score: number | null; kb: number | null; hardware: string | null } | null;
 };
 // What was seen in a dataset before any goal: objects with the share of photos they show up in, backgrounds.
@@ -324,6 +333,17 @@ export const renameItem = (kind: LibraryKind, id: string, name: string) =>
 // kits: how many kits the item was taken out of.
 export const deleteItem = (kind: LibraryKind, id: string) =>
   api<{ kits: number }>(`/api/library/${kind}/${id}`, { method: "DELETE" });
+// Models: a name of the user's (the job's folder keeps the first one) and deleting one.
+export const renameJob = (job: string, title: string) => api<{ ok: boolean }>(`/api/jobs/${job}`, {
+  method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) });
+export const deleteJob = (job: string) => api<{ ok: boolean }>(`/api/jobs/${job}`, { method: "DELETE" });
+// One labeling of a dataset (kind "boxes" or "class", ref its phrase or labels): deleted, or (boxes) renamed.
+export const forgetLabels = (id: string, kind: string, ref: string) =>
+  api<{ removed: number }>(`/api/library/datasets/${id}/labels?kind=${encodeURIComponent(kind)}&ref=${encodeURIComponent(ref)}`,
+                           { method: "DELETE" });
+export const renameLabels = (id: string, ref: string, to: string) => api<{ moved: number }>(
+  `/api/library/datasets/${id}/labels`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({ ref, to }) });
 export type KitRefs = { name: string; datasets: string[]; objects: string[]; scenes: string[] };
 export const saveKit = (id: string | null, kit: KitRefs) =>
   api<{ id: string }>(id ? `/api/library/kits/${id}` : "/api/library/kits",

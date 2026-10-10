@@ -1,6 +1,8 @@
-import { Check, MoreHorizontal, Package, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, MoreHorizontal, Package, Pencil, Plus, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { deleteItem, renameItem, saveKit, type Kit, type LibraryKind } from "../api";
+import { createPortal } from "react-dom";
+import { useNavigate } from "react-router-dom";
+import { deleteItem, deleteJob, renameItem, renameJob, saveKit, type Kit, type LibraryKind } from "../api";
 import { Button, Notice, cx } from "./ui";
 
 // Pieces the library pages share: a dialog, a card's menu (rename, delete), picking cards and putting them in a kit.
@@ -11,7 +13,9 @@ export function Dialog({ title, onClose, children, wide }: { title: string; onCl
     document.addEventListener("keydown", esc);
     return () => document.removeEventListener("keydown", esc);
   }, [onClose]);
-  return (
+  // On the page itself: inside a bar with backdrop-blur (SelectBar) "fixed" would be the bar's box, and the dialog
+  // showed squeezed into it at the bottom of the screen.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center sm:p-6" onClick={onClose}>
       <div className={cx("flex max-h-[90dvh] w-full flex-col rounded-t-2xl bg-white shadow-xl sm:rounded-[var(--radius-card)]",
                          wide ? "sm:max-w-2xl" : "sm:max-w-md")}
@@ -22,7 +26,8 @@ export function Dialog({ title, onClose, children, wide }: { title: string; onCl
         </div>
         <div className="overflow-y-auto p-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -31,31 +36,110 @@ export const field = "h-11 w-full rounded-[var(--radius-control)] border border-
 const SINGULAR: Record<LibraryKind, string> = { datasets: "dataset", objects: "object", scenes: "scene", kits: "kit" };
 
 // The "..." of a card: rename it or delete it (asking first).
-export function ItemMenu({ kind, id, name, onChanged, extra }:
-  { kind: LibraryKind; id: string; name: string; onChanged: () => void; extra?: ReactNode }) {
+// A "..." button and its menu; items get the class `menuItem` and close the menu by calling close().
+export const menuItem = "flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50";
+
+export function MoreMenu({ items }: { items: (close: () => void) => ReactNode }) {
   const [open, setOpen] = useState(false);
-  const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, []);
-  const item = "flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50";
   return (
     <div ref={ref} className="relative">
       <button onClick={() => setOpen(!open)} aria-label="More"
               className="rounded-lg p-1.5 text-muted hover:bg-gray-100 hover:text-ink"><MoreHorizontal className="h-4 w-4" /></button>
       {open && (
         <div className="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-xl border border-line bg-white py-1 shadow-lg">
-          {extra}
-          <button className={item} onClick={() => { setOpen(false); setDialog("rename"); }}><Pencil className="h-4 w-4" /> Rename</button>
-          <button className={cx(item, "text-red-600")} onClick={() => { setOpen(false); setDialog("delete"); }}><Trash2 className="h-4 w-4" /> Delete</button>
+          {items(() => setOpen(false))}
         </div>
       )}
+    </div>
+  );
+}
+
+export function ItemMenu({ kind, id, name, onChanged, extra }:
+  { kind: LibraryKind; id: string; name: string; onChanged: () => void; extra?: ReactNode }) {
+  const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
+  return (
+    <>
+      <MoreMenu items={(close) => <>
+        {extra}
+        <button className={menuItem} onClick={() => { close(); setDialog("rename"); }}><Pencil className="h-4 w-4" /> Rename</button>
+        <button className={cx(menuItem, "text-red-600")} onClick={() => { close(); setDialog("delete"); }}><Trash2 className="h-4 w-4" /> Delete</button>
+      </>} />
       {dialog === "rename" && <RenameDialog kind={kind} id={id} name={name} onClose={() => setDialog(null)} onDone={onChanged} />}
       {dialog === "delete" && <DeleteDialog kind={kind} items={[{ id, name }]} onClose={() => setDialog(null)} onDone={onChanged} />}
-    </div>
+    </>
+  );
+}
+
+// A model's menu: its name, its setup (changed in the chat, which retrains it) and deleting it.
+export function ModelMenu({ job, name, onChanged, onDeleted }:
+  { job: string; name: string; onChanged: () => void; onDeleted: () => void }) {
+  const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
+  const navigate = useNavigate();
+  return (
+    <>
+      <MoreMenu items={(close) => <>
+        <button className={menuItem} onClick={() => { close(); setDialog("rename"); }}><Pencil className="h-4 w-4" /> Rename</button>
+        <button className={menuItem} onClick={() => { close(); navigate(`/app?revise=${job}`); }}><SlidersHorizontal className="h-4 w-4" /> Change setup</button>
+        <button className={cx(menuItem, "text-red-600")} onClick={() => { close(); setDialog("delete"); }}><Trash2 className="h-4 w-4" /> Delete</button>
+      </>} />
+      {dialog === "rename" && <NameDialog title="Rename model" name={name} onClose={() => setDialog(null)}
+                                          save={(v) => renameJob(job, v).then(onChanged)} />}
+      {dialog === "delete" && (
+        <ConfirmDialog title={`Delete "${name}"?`} action="Delete" onClose={() => setDialog(null)}
+                       run={() => deleteJob(job).then(onDeleted)}>
+          The model, its earlier versions and its training files are deleted for good. The photos, labels, 3D models
+          and scenes it added to your library stay there.
+        </ConfirmDialog>
+      )}
+    </>
+  );
+}
+
+// A name to type; save() rejects with the reason it failed.
+export function NameDialog({ title, name, onClose, save, hint }:
+  { title: string; name: string; onClose: () => void; save: (v: string) => Promise<unknown>; hint?: ReactNode }) {
+  const [value, setValue] = useState(name);
+  const [error, setError] = useState<string | null>(null);
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    save(value.trim()).then(onClose).catch((err) => setError(err.message));
+  };
+  return (
+    <Dialog title={title} onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        {hint && <p className="text-sm text-muted">{hint}</p>}
+        <input value={value} onChange={(e) => setValue(e.target.value)} autoFocus className={field} aria-label="Name" />
+        {error && <Notice tone="bad">{error}</Notice>}
+        <Button type="submit" className="w-full" disabled={!value.trim() || value.trim() === name}>Save</Button>
+      </form>
+    </Dialog>
+  );
+}
+
+// "Are you sure?" for something that cannot be undone; run() rejects with the reason it failed.
+export function ConfirmDialog({ title, action, children, onClose, run }:
+  { title: string; action: string; children: ReactNode; onClose: () => void; run: () => Promise<unknown> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const go = () => {
+    setBusy(true);
+    run().then(onClose).catch((err) => { setError(err.message); setBusy(false); });
+  };
+  return (
+    <Dialog title={title} onClose={onClose}>
+      <p className="text-sm text-muted">{children}</p>
+      {error && <div className="mt-4"><Notice tone="bad">{error}</Notice></div>}
+      <div className="mt-5 flex justify-end gap-2">
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button variant="danger" onClick={go} disabled={busy}>{busy ? "Working..." : action}</Button>
+      </div>
+    </Dialog>
   );
 }
 
