@@ -95,7 +95,7 @@ class Render(Stage):
         writer.initialize(output_dir=str(out), rgb=True, bounding_box_2d_tight=True)
         writer.attach([rp])
 
-        shots = _Shots(spec, rng, scene, props, paint, cam, scatter, targets)
+        shots = _Shots(spec, rng, scene, props, paint, cam, scatter, targets, real_counts(ctx))
         places = bool(spec.scene.contexts)
         visible, labels = [], []
         frames = synthetic_frames(gen.frames, [c.id for c in spec.classes], targets)
@@ -108,6 +108,8 @@ class Render(Stage):
             if places:  # a new building and room every 20 frames, a context per frame by its share
                 if f and f % 20 == 0:
                     scene.new_layout()
+                elif f % 5 == 0:  # new colors more often than new layouts: 200 frames had only 10 rooms
+                    scene.recolor()
                 kind = scene.pick_context()
                 scene.show(None if kind == "ground" else kind)
             cls, group = shots.pick()
@@ -154,6 +156,14 @@ def _new_stage():
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     return stage
+
+
+def real_counts(ctx: Context) -> list[int]:
+    """Count: how many objects each of the user's photos shows (the label stage's marks), none without them."""
+    f = ctx.job.stage_dir("label") / "verdicts.json"
+    if not task_of(ctx.spec).points or not f.exists():
+        return []
+    return [len(v["objects"]) for v in json.loads(f.read_text()).values() if v.get("objects") is not None]
 
 
 def _build_scene(ctx: Context, stage, props, rng):
@@ -243,8 +253,11 @@ class _Shots:
     """The frame loop's shared state and one method per kind of shot. The random draws happen in the order the
     loop always made them, so a seed gives the same frames as before this was split out."""
 
-    def __init__(self, spec, rng, scene, props, paint, cam, scatter, targets):
+    def __init__(self, spec, rng, scene, props, paint, cam, scatter, targets, real: list[int] | None = None):
         self.spec, self.cam_spec, self.gen, self.rng = spec, spec.camera, spec.generation, rng
+        # Count: how many objects the user's photos show (the teacher's marks), so frames hold as many.
+        self.real = [n for n in real or [] if n > 0]
+        self.empty = (sum(n == 0 for n in real) / len(real)) if real else None
         self.scene, self.props, self.paint, self.cam, self.scatter = scene, props, paint, cam, scatter
         self.targets = targets
         self.classes = [c.id for c in spec.classes if c.id in targets]
@@ -256,13 +269,15 @@ class _Shots:
         """The frame's class and its targets: none in an empty frame, several at once when counting (each prim at
         most once per frame)."""
         rng, bg = self.rng, self.spec.background_class  # None: every frame shows a class
-        cls = bg if bg and rng.random() < self.gen.empty_ratio else rng.choice(self.classes)
+        empty = self.gen.empty_ratio if self.empty is None or not self.counting else min(0.5, max(0.05, self.empty))
+        cls = bg if bg and rng.random() < empty else rng.choice(self.classes)
         if cls == bg:
             return cls, []
         if self.counting:
             first = rng.choice(self.targets[cls])
             rest = [t for t in self.pool if t is not first]
-            return cls, [first] + rng.sample(rest, min(len(rest), rng.randint(0, self.gen.n_targets - 1)))
+            more = rng.choice(self.real) - 1 if self.real else rng.randint(0, self.gen.n_targets - 1)
+            return cls, [first] + rng.sample(rest, min(len(rest), more))
         return cls, [rng.choice(self.targets[cls])]
 
     def paint_as(self, a, prim) -> bool:
@@ -341,6 +356,7 @@ class _Shots:
         look_at(self.cam.GetPrim(), eye, (target[0] + rng.uniform(-j, j), target[1] + rng.uniform(-j, j),
                                           rng.uniform(0.2, 0.8) * aim_h))
         self.scene.aim_sun(eye, target)
-        shown += self.scene.place_distractors(eye)
+        wall = getattr(self.scene, "backdrop_for", lambda *a: None)(eye, target, radius)
+        shown += self.scene.place_distractors(eye) + ([wall] if wall is not None else [])
         placed, hidden = self.scatter.place(eye, target, radius, height, rng)
         return _Shot(shown + placed, asset, dist, ch, painted, placed, hidden)

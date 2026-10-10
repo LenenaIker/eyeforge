@@ -488,6 +488,11 @@ name (for the 3D model search), or what it looks like. At most {n} per interview
 """
 MAX_RESEARCH = 6
 
+SIZES_PROMPT = """Typical real size of each thing, in meters, as [min, max]: "length" its longest side seen from
+above, "height" from the ground to its top. Answer only with JSON {"<thing>": {"length": [min, max], "height":
+[min, max]}}. Things: """
+SIZE_SLACK = 2  # a size range whose middle is this far from the thing's typical middle (either way) is a slip
+
 ENGLISH_PROMPT = """These are search terms for 3D models and for an English-only object detector. Translate
 each term into the English words a 3D model site would use, keeping every detail the term gives (kind, place,
 size) and never a shorter, more generic word: "maceta" -> "flower pot", "silla de terraza" -> "patio chair",
@@ -658,7 +663,8 @@ def _photo_models_problem(session, s: spec_mod.Spec) -> str | None:
 
 # What a proposed spec must pass beyond spec.validate, in order: the first problem goes back to the model.
 SPEC_CHECKS = (_unknown_categories, _foreign_folders, _library_refs, _dataset_as_model, _scene_problem, lambda _, s: check_photos(s),
-               lambda _, s: sam3_names_problem(s), lambda _, s: catch_all_problem(s), _photo_models_problem)
+               lambda _, s: sam3_names_problem(s), lambda _, s: catch_all_problem(s), _photo_models_problem,
+               lambda session, s: session.sizes_problem(s))
 
 
 @dataclass
@@ -696,6 +702,7 @@ class Session:
         self.transcript: Path | None = None  # set by the server: logs/interviews/<session>.json
         self.finished = False
         self.translation_error: str | None = None  # why the last English translation of queries failed
+        self.typical: dict[str, dict] = {}  # thing -> its typical size, asked once (sizes_problem)
         self.goal = ""  # the user's first message: what the photo analysis looks for
         self.analysed: set[str] = set()  # folders already analysed
         self.settled: list[list[str]] = []  # query lists of the job being revised (see revise)
@@ -710,6 +717,7 @@ class Session:
         self.dataset_card = None  # library dataset id -> library.dataset_card (see use_library)
         self.replies = 0  # the user's messages so far
         self.relabel_asked: dict[str, int] = {}  # dataset id -> self.replies when the user was to be asked
+        self.measured: dict | None = None  # the last photo analysis's scene fields (_apply_measured)
 
     def use_library(self, items: str, ids: set[str], kit: str | None = None, notes=None, open_dataset=None,
                     datasets: set[str] | None = None, dataset_card=None) -> None:
@@ -954,6 +962,7 @@ class Session:
                 self._note("describe_scene: no photo could be described; keep the default open ground scene.")
                 return
             self._end(step)
+            self.measured = {k: v for k, v in fields.items() if k != "suggest"}
             sug = fields.pop("suggest", {})
             photos = "\n".join(sug.pop("photos", []))
             self._note(f"[Photo analysis of the user's photos in {folder}] {text}\nWhat each photo shows:\n{photos}\n"
@@ -1087,6 +1096,7 @@ class Session:
             _drop_background_class(action["spec"])
             self._reuse_label_names(action["spec"])
             self._fix_scene(action["spec"])
+            self._apply_measured(action["spec"])
             _fix_slips(action["spec"], set(self.categories.counts))
         step = self._step("Checking the proposed setup")
         try:
@@ -1191,6 +1201,75 @@ class Session:
         for c in spec.get("classes") or []:
             if isinstance(c, dict) and names.get(c.get("id")):
                 c["names"] = names[c["id"]]
+
+    def sizes_problem(self, s: spec_mod.Spec) -> str | None:
+        """Classes and props whose size_m does not fit the thing (trash_counter, 2026-10-11: a utility pole and a
+        fire hydrant of 0.1-0.2 m by their length, rendered as little sticks): the model knows typical sizes, so
+        it is asked once per thing, and a range far from them, or a tall thing measured by its length, goes back.
+        Nothing is checked when the answer fails."""
+        from . import teacher
+        items = [(f"class {c.id}", (teacher.names(c) or [c.id.replace("_", " ")])[0], c.size_m) for c in s.classes
+                 if c.size_m] + [(f"prop {p.id}", (p.queries or [p.id.replace("_", " ")])[0], p.size_m) for p in s.props
+                                 if p.size_m]
+        ask = sorted({thing for _, thing, _ in items} - set(self.typical))
+        if ask:
+            from .llm import parse_json
+            try:
+                got = parse_json(self.client.chat([{"role": "user", "content": SIZES_PROMPT + json.dumps(ask)}],
+                                                  self.model, purpose="typical_sizes", temperature=0.0,
+                                                  max_tokens=1024, thinking=False))
+            except Exception:  # a size check is a help, never in the way
+                got = {}
+            for thing in ask:
+                v = got.get(thing) if isinstance(got, dict) else None
+                self.typical[thing] = v if isinstance(v, dict) else {}
+        bad = []
+        for who, thing, size in items:
+            typ = self.typical.get(thing) or {}
+
+            def rng_of(key):
+                v = typ.get(key)
+                ok = isinstance(v, list) and len(v) == 2 and all(isinstance(x, (int, float)) and x > 0 for x in v)
+                return sorted(v) if ok else None
+            length, height = rng_of("length"), rng_of("height")
+            lo, hi = size.range
+            if size.measure != "height" and length and height and height[0] > SIZE_SLACK * length[1]:  # a pole
+                bad.append(f"{who} ({thing}) is tall: give its height (\"measure\": \"height\", about "
+                           f"{height[0]:g}-{height[1]:g} m), not its {size.measure}")
+                continue
+            ref = height if size.measure == "height" else length
+            mid, typical = (lo + hi) / 2, (ref[0] + ref[1]) / 2 if ref else None
+            if ref and not typical / SIZE_SLACK <= mid <= typical * SIZE_SLACK:
+                bad.append(f"{who} ({thing}): {size.measure} {lo:g}-{hi:g} m, but it is usually {ref[0]:g}-{ref[1]:g} m")
+        if not bad:
+            return None
+        return "sizes that do not fit the thing: " + "; ".join(bad) + ". Fix size_m and send the spec again"
+
+    def _apply_measured(self, spec: dict) -> None:
+        """What the photo analysis measured goes into the spec in code, not through the chat, which left it out
+        (2026-10-11: the camera of top-down table photos and the walls behind street litter): photos looking down
+        at a surface become that surface seen from above, and open ground gets the walls seen right behind the
+        objects."""
+        m = self.measured
+        if not m or not isinstance(spec.get("scene", {}), dict):
+            return
+        sc = spec.setdefault("scene", {})
+        cam = m.get("camera")
+        if cam:
+            c = spec.setdefault("camera", {})
+            if isinstance(c, dict):
+                c["pitch_deg"] = cam["pitch_deg"]
+                if cam.get("height_m"):
+                    c["height_m"] = cam["height_m"]
+            sc["template"] = "generic"
+            sc["contexts"] = [dict(x) for x in m["contexts"]]
+            if m.get("ground_tags"):
+                sc["ground_tags"] = m["ground_tags"]
+            return
+        backdrop = next((x.get("backdrop") for x in m.get("contexts", []) if x["kind"] == "ground"), None)
+        for x in sc.get("contexts") or []:
+            if isinstance(x, dict) and x.get("kind") == "ground" and backdrop and x.get("backdrop") is None:
+                x["backdrop"] = backdrop
 
     def _fix_scene(self, spec: dict) -> None:
         """Scene fields the code can settle without another turn: weather left empty or unknown (indoors it is

@@ -5,6 +5,8 @@ Frames of the "ground" context are the plain generic scene. Import only inside a
 """
 from __future__ import annotations
 
+import math
+
 from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdShade, Vt
 
 from ..spec import CONTEXTS
@@ -14,7 +16,10 @@ from .generic import GenericScene
 
 MATERIALS = ("wall", "glass", "slab", "railing", "sill", "fabric", "floor", "furniture")
 # Plain colors (linear RGB) when there is no texture, and for the parts that never have one.
-WALL_COLORS = [(0.75, 0.68, 0.55), (0.85, 0.83, 0.78), (0.55, 0.28, 0.18), (0.6, 0.6, 0.58), (0.8, 0.6, 0.45)]
+# Walls: white, light grey, grey, beige, ochre, brick, blue grey. A peach one read as pink under the warm room lamp
+# and filled a whole run (water_container_counter, 2026-10-11).
+WALL_COLORS = [(0.85, 0.84, 0.8), (0.68, 0.68, 0.66), (0.45, 0.45, 0.44), (0.75, 0.68, 0.55), (0.66, 0.48, 0.24),
+               (0.55, 0.28, 0.18), (0.5, 0.56, 0.62)]
 RAILING_COLORS = [(0.05, 0.05, 0.05), (0.8, 0.8, 0.8), (0.25, 0.3, 0.35), (0.4, 0.25, 0.15)]
 FABRIC_COLORS = [(0.7, 0.55, 0.3), (0.3, 0.45, 0.25), (0.6, 0.2, 0.15), (0.75, 0.72, 0.6), (0.2, 0.3, 0.5)]
 FURNITURE_COLORS = [(0.35, 0.2, 0.1), (0.8, 0.78, 0.72), (0.15, 0.15, 0.15), (0.55, 0.4, 0.25)]
@@ -49,6 +54,15 @@ class PlacesScene(GenericScene):
         self.lamp = UsdLux.SphereLight.Define(self.stage, "/World/Places/Lamp")
         self.lamp.CreateRadiusAttr(0.3)
         UsdGeom.Xformable(self.lamp).AddTranslateOp()
+        # A wall right behind objects on open ground (scene.contexts ground backdrop): things left against a
+        # building. One box, turned to face the camera of each frame.
+        self.backdrop = UsdGeom.Mesh.Define(self.stage, "/World/Places/Backdrop")
+        self.backdrop.CreateDoubleSidedAttr(True)
+        xf = UsdGeom.Xformable(self.backdrop)
+        xf.AddTranslateOp()
+        xf.AddRotateZOp()
+        self.backdrop_inputs = _material(self.stage, "/World/Places/BackdropMat", self.backdrop, bool(self.walls))
+        set_visible(self.backdrop.GetPrim(), False)
         self.new_layout()
         self.show(None)
 
@@ -67,6 +81,39 @@ class PlacesScene(GenericScene):
                     inputs["color"].Set(Gf.Vec3f(*_color(m, rng)))
                     inputs["roughness"].Set(0.08 if m == "glass" else 0.4 if m == "railing" else 0.9)
                     inputs["metallic"].Set(0.5 if m in ("glass", "railing") else 0.0)
+        if hasattr(self, "backdrop_inputs"):
+            if "file" in self.backdrop_inputs:
+                self.backdrop_inputs["file"].Set(rng.choice(self.walls))
+                k = rng.uniform(0.7, 1.15)
+                self.backdrop_inputs["scale"].Set(Gf.Vec4f(k, k, k, 1))
+            else:
+                self.backdrop_inputs["color"].Set(Gf.Vec3f(*_color("wall", rng)))
+
+    def recolor(self) -> None:
+        """New plain colors for the walls, furniture and fabric of the place, without a new layout."""
+        rng = self.rng
+        for group in ("building", "room"):
+            for m, (_, inputs) in self.parts[group].items():
+                if "color" in inputs and m in ("wall", "furniture", "fabric"):
+                    inputs["color"].Set(Gf.Vec3f(*_color(m, rng)))
+        if "color" in self.backdrop_inputs:
+            self.backdrop_inputs["color"].Set(Gf.Vec3f(*_color("wall", rng)))
+
+    def backdrop_for(self, eye, target, radius: float):
+        """On open ground, in the share of frames scene.contexts gives: a wall just behind the objects, square to
+        the camera's view, wider than the frame. Returns its prim to show, or None."""
+        c, rng = self.contexts.get("ground"), self.rng
+        if c is None or not c.backdrop or rng.random() >= c.backdrop:
+            return None
+        dx, dy = target[0] - eye[0], target[1] - eye[1]
+        n = math.hypot(dx, dy) or 1.0
+        gap = radius + rng.uniform(0.1, 1.2)
+        width, height = max(6.0, 2.5 * n), rng.uniform(2.5, 6.0)
+        _write(self.backdrop, [((0.0, 0.0, height / 2), (width, 0.3, height))])
+        ops = UsdGeom.Xformable(self.backdrop).GetOrderedXformOps()
+        ops[0].Set(Gf.Vec3d(target[0] + dx / n * gap, target[1] + dy / n * gap, 0.0))
+        ops[1].Set(math.degrees(math.atan2(dy, dx)) + 90.0)  # the box's long side across the view
+        return self.backdrop.GetPrim()
 
     def show(self, kind: str | None) -> None:
         if kind is None or kind == "ground":

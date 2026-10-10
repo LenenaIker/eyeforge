@@ -62,7 +62,8 @@ export default function ReviewPanel({ job, onRerun, calibrating = false, labelin
         <div>
           <h2 className="text-xl font-bold tracking-tight">Check the teacher first</h2>
           <p className="text-sm text-muted">Before training, a large model marked a few of your photos. Fix what it got wrong and
-            press "Teach it": it learns from your fixes and marks a few more photos. When they look right, train.</p>
+            press "Teach it": it learns from your fixes and marks a few more photos. When they look right, train.
+            Photos you leave as they are count as checked, so look at each one.</p>
         </div>
       ) : <div>
         <h2 className="text-xl font-bold tracking-tight">Check what the models decided</h2>

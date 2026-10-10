@@ -9,6 +9,7 @@ wall_tags, railings) that the user confirms or corrects in the interview, before
 """
 from __future__ import annotations
 
+import math
 import random
 import shutil
 import tempfile
@@ -41,6 +42,8 @@ Answer only with JSON:
   doors are about 2 m high, railings about 1 m, chair seats about 0.45 m, bricks 0.25 m>,
  "height_m": <their typical height in meters>,
  "camera_height_m": <height of the camera above the floor it stands on, meters>,
+ "camera_pitch_deg": <how far down the camera looks, degrees: 0 straight ahead, 90 straight down at the surface>,
+ "wall_behind": <true when a wall, fence or building stands right behind the objects, within about 2 m>,
  "others": [up to 6 other movable things standing near them on the same surfaces, English nouns: "chair",
   "watering can", "bicycle"; not parts of the building (shutters, awnings, lamps, windows) and not vehicles],
  "objects": [every kind of object that stands out in the photo, those above included, up to 8:
@@ -117,15 +120,52 @@ def aggregate(descriptions: list[dict]) -> dict:
         if sup:
             c["supports"] = [s for s, _ in sup.most_common()]
         contexts.append(c)
+    camera = _camera(descriptions)
+    if camera.get("top_down"):
+        # Photos that look down at a surface (a table, a lawn, a conveyor) are that surface seen from above,
+        # whatever room or street it is in: open ground with the surface's own texture, the camera looking down
+        # from the measured distance (water_container_counter, 2026-10-11: rendered as side views of a room).
+        dist = sorted(float(d["distance_m"]) for d in descriptions if _number(d.get("distance_m")))
+        contexts = [{"kind": "ground", "share": 1.0, "supports": ["ground"],
+                     **({"distance_m": [round(max(0.2, dist[0] * 0.8), 2), round(dist[-1] * 1.25, 2)]} if dist else {})}]
+    else:
+        behind = [d for d in descriptions if d["context"] == "ground"]
+        for c in contexts:
+            if c["kind"] == "ground" and behind:
+                share = sum(d.get("wall_behind") is True for d in behind) / len(behind)
+                if share >= MIN_SHARE:
+                    c["backdrop"] = round(share, 2)
     walls = [w for w, _ in Counter(d.get("wall") for d in descriptions).most_common() if w in WALLS][:3]
     rails = Counter({"glass": "bars"}.get(d.get("railing"), d.get("railing")) for d in descriptions)
     out = {"contexts": contexts}
+    if camera.get("pitch_deg"):
+        out["camera"] = {k: v for k, v in camera.items() if k != "top_down"}
     out |= _objects_and_light(descriptions)
     if walls:
         out["wall_tags"] = walls
     railings = [r for r, _ in rails.most_common() if r in RAILINGS]
     if railings:
         out["railings"] = railings
+    return out
+
+
+TOP_DOWN_DEG = 45  # photos looking down more steeply than this, most of them: a surface seen from above
+
+
+def _camera(descriptions: list[dict]) -> dict:
+    """The camera of photos that look down at what they show: {"pitch_deg": [min, max], "height_m": [...] (above
+    the surface, from the distance), "top_down": True}; nothing when most photos look ahead (the camera then
+    frames each object by its size)."""
+    pairs = [(float(d["camera_pitch_deg"]), float(d["distance_m"]) if _number(d.get("distance_m")) else None)
+             for d in descriptions if _number(d.get("camera_pitch_deg"))]
+    steep = [(p, dist) for p, dist in pairs if p >= TOP_DOWN_DEG]
+    if not pairs or len(steep) / len(descriptions) < 0.5:
+        return {}
+    pitch = sorted(min(89.0, p) for p, _ in steep)
+    out = {"pitch_deg": [round(max(TOP_DOWN_DEG, pitch[0] - 5)), round(min(89, pitch[-1] + 5))], "top_down": True}
+    heights = sorted(dist * math.sin(math.radians(p)) for p, dist in steep if dist)
+    if heights:
+        out["height_m"] = [round(max(0.1, heights[0] * 0.8), 2), round(heights[-1] * 1.25, 2)]
     return out
 
 
@@ -177,9 +217,12 @@ def summary(profile: dict, n_photos: int) -> str:
              "indoor": "rooms", "ground": "open ground"}
     parts = [f"{round(c['share'] * 100)}% {names[c['kind']]}" +
              (f" ({c['distance_m'][0]}-{c['distance_m'][1]} m)" if c.get("distance_m") else "") +
-             (f", on {', '.join(s.replace('_', ' ') for s in c['supports'])}" if c.get("supports") else "")
+             (f", on {', '.join(s.replace('_', ' ') for s in c['supports'])}" if c.get("supports") else "") +
+             (f", {round(c['backdrop'] * 100)}% with a wall right behind" if c.get("backdrop") else "")
              for c in profile.get("contexts", [])]
     text = f"In {n_photos} of your photos I see: " + "; ".join(parts) + "."
+    if cam := profile.get("camera"):
+        text += f" The camera looks down at {cam['pitch_deg'][0]}-{cam['pitch_deg'][1]} degrees."
     if profile.get("wall_tags"):
         text += f" Walls: {', '.join(profile['wall_tags'])}."
     if profile.get("railings"):

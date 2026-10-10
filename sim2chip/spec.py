@@ -133,12 +133,14 @@ class ContextSpec:
     """One kind of place in the synthetic scenes and its share of the frames. `distance_m` is the camera
     distance to the objects there (facade only, default 6-25 m); `height_m` the camera height above the
     floor it stands on (default a person holding a phone, 1.3-1.8 m; higher for a wall-mounted camera);
-    `supports` where the objects stand (default: every support of the kind)."""
+    `supports` where the objects stand (default: every support of the kind); `backdrop` (open ground only) the
+    share of frames with a wall right behind the objects, as in photos of things left against a building."""
     kind: str
     share: float = 1.0
     distance_m: tuple[float, float] | None = None
     supports: list[str] = field(default_factory=list)
     height_m: tuple[float, float] | None = None
+    backdrop: float | None = None
 
     @property
     def eye_height(self) -> tuple[float, float]:
@@ -588,6 +590,8 @@ def _validate_contexts(sc: SceneSpec) -> None:
             raise SpecError(f"scene.contexts: kind must be one of {list(CONTEXTS)}")
         if c.share <= 0:
             raise SpecError(f"scene.contexts {c.kind}: share must be positive")
+        if c.backdrop is not None and (c.kind != "ground" or not 0 <= c.backdrop <= 1):
+            raise SpecError(f"scene.contexts {c.kind}: backdrop is a share (0 to 1) of open ground frames only")
         if c.distance_m and not 0 < c.distance_m[0] <= c.distance_m[1]:
             raise SpecError(f"scene.contexts {c.kind}: distance_m must be 0 < min <= max")
         bad = [x for x in c.supports if x not in CONTEXTS[c.kind]]

@@ -551,12 +551,24 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if snap is not None and lib.labeling(snap["labeling"]) is not None:
             lib.export(snap["labeling"], job.input)
 
-    def save_review(job: Job, body: dict) -> int:
+    def save_review(job: Job, body: dict, check: bool = False) -> int:
         """The user's marks of photos of the job ({"points": {photo: [[x, y, class], ...]}} for count, {"labels":
         {photo: class}} for classify, keyed as the job names its photos) into its labeling, as reviewed photos.
-        Returns how many photos."""
+        check: a round of the teacher's check, whose photos the user looked at one by one: those left as they
+        were count as reviewed too, with the teacher's marks (trash_counter, 2026-10-11: the user accepted every
+        photo, nothing was saved, and the run trained and was scored on unchecked marks only). Returns how many
+        photos."""
         snap = kept(job)
-        points, labels = body.get("points") or {}, body.get("labels") or {}
+        points, labels = dict(body.get("points") or {}), dict(body.get("labels") or {})
+        if check and snap is not None:
+            shown = json.loads(f.read_text()) if (f := job.stage_dir("label") / "verdicts.json").exists() else {}
+            for rel, v in shown.items():
+                if rel in points or rel in labels or rel not in snap["photos"] or snap["photos"][rel]["reviewed"]:
+                    continue
+                if v.get("objects") is not None:
+                    points[rel] = [[o["x"], o["y"], o["class"]] for o in v["objects"]]
+                elif v.get("class") and v["class"] != "no_answer" and "objects" not in v:
+                    labels[rel] = v["class"]
         if not points and not labels:
             return 0
         if snap is None or lib.labeling(snap["labeling"]) is None:
@@ -1392,7 +1404,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         budget_left()
         room_for_a_run()
         may_start(request, "run")
-        save_review(job, body)
+        save_review(job, body, check=True)
         (job.root / CALIBRATION).unlink()
         start_run(job, job.root / "request.json")
         return {"rerun_from": None}
@@ -1406,7 +1418,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if not (job.root / LABELING).exists() or not (job.root / CALIBRATION).exists():
             raise HTTPException(409, CHECK_OVER)
         may_start(request, "label")
-        save_review(job, body)
+        save_review(job, body, check=True)
         (job.root / CALIBRATION).unlink()
         jobs.label_all(job)
         return {"rerun_from": "label"}
@@ -1421,7 +1433,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if body.get("calibrating") and not (job.root / CALIBRATION).exists():
             raise HTTPException(409, CHECK_OVER)
         if (job.root / CALIBRATION).exists():  # still calibrating the teacher: another round, no training
-            save_review(job, body)
+            save_review(job, body, check=True)
             jobs.calibrate(job)
             return {"rerun_from": "calibration"}
         budget_left()

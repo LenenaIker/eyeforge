@@ -19,6 +19,8 @@ class Scripted:
         self.actions = list(actions)
 
     def chat(self, messages, model, purpose, **kw):
+        if purpose == "typical_sizes":
+            return "{}"
         return json.dumps(self.actions.pop(0))
 
 
@@ -493,9 +495,13 @@ def test_calibrate_the_teacher_before_the_first_run(app, tmp_path, monkeypatch):
     settle(r["job"])
     review = app.get(f"/api/jobs/{r['job']}/review").json()
     assert len(review["photos"]) == 2 * CALIBRATION_PHOTOS and len(asked) == 20
-    assert "2 photos you corrected" in review["teacher_rules"][0] and not app.launched
-    # Train: the run starts from the calibrated answers.
+    # The photos of the round left as they were count as checked too: the teacher learns from all six.
+    assert "6 photos you corrected" in review["teacher_rules"][0] and not app.launched
+    # Train: the run starts from the calibrated answers; every photo the check showed is reviewed.
     assert app.post(f"/api/jobs/{r['job']}/train", json={}).json() == {"rerun_from": None}
+    from sim2chip.library import Library
+    lid = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["user_data"]["labeling"]
+    assert Library(tmp_path, tmp_path / "cache").labeling(lid)["reviewed"] == 2 * CALIBRATION_PHOTOS
     assert app.launched and app.launched[-1][3] is None
     assert app.get(f"/api/jobs/{r['job']}").json()["calibration"] is None
     assert app.post(f"/api/jobs/{r['job']}/train", json={}).status_code == 409

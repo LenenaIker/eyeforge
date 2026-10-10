@@ -9,7 +9,7 @@ under its material; surfaces are where objects can stand, each of one support ki
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 ROOM_AT = (80.0, 0.0)   # the room is built away from the building: only one of them is shown per frame
 TILE_M = 2.0            # texture repeat on walls and floors
@@ -180,6 +180,14 @@ def facade_shot(lay: Layout, supports: list[str], distance: tuple[float, float],
     view (of the wanted supports), the one looked at first."""
     cands = [s for s in lay.surfaces if s.kind in supports] or lay.surfaces
     focus = rng.choice(cands)
+    if focus.kind == "ground":
+        # The pavement runs the whole front: the camera looks at one stretch of it and the objects go there.
+        # Looking at its middle while they went anywhere along it left frames of bare wall (trash_counter,
+        # 2026-10-11).
+        half = min(1.5, (focus.x[1] - focus.x[0]) / 2)
+        cx = rng.uniform(focus.x[0] + half, focus.x[1] - half)
+        focus = replace(focus, x=(cx - half, cx + half))
+        cands = [focus]
     fx, fy, fz = (focus.x[0] + focus.x[1]) / 2, (focus.y[0] + focus.y[1]) / 2, focus.z
     d = rng.uniform(*distance)
     eye = (fx + rng.uniform(-0.4, 0.4) * d, fy - d, rng.uniform(*eye_h))

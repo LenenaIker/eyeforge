@@ -13,6 +13,11 @@ class Scripted:
         self.actions, self.seen = list(actions), []
 
     def chat(self, messages, model, purpose, **kw):
+        if purpose == "typical_sizes" and not (self.actions and isinstance(self.actions[0], dict)
+                                               and self.actions[0].get("_sizes")):
+            return "{}"  # sizes unknown: nothing checked; a test that checks them scripts {"_sizes": {...}}
+        if purpose == "typical_sizes":
+            return json.dumps(self.actions.pop(0)["_sizes"])
         if purpose == "english_queries" and not (self.actions and isinstance(self.actions[0], dict)
                                                  and self.actions[0].get("_english")):
             # Words already in English stay as they are; a test that translates scripts {"_english": {...}}.
@@ -519,3 +524,45 @@ def test_catch_all_classes_are_sent_back():
     ok = spec_mod.from_dict({**base, "classes": [{"id": "trash_bag", "names": ["trash bag"]},
                                                  {"id": "waste_bin", "names": ["waste bin"]}]})
     assert catch_all_problem(ok) is None
+
+
+def test_sizes_that_do_not_fit_the_thing_go_back():
+    """A utility pole of 0.1-0.2 m by its length (trash_counter, 2026-10-11) is a tall thing measured wrong."""
+    from sim2chip import spec as spec_mod
+    pole = {"id": "utility_pole", "queries": ["utility pole"], "size_m": {"measure": "length", "range": [0.1, 0.2]}}
+    hydrant = {"id": "fire_hydrant", "queries": ["fire hydrant"], "size_m": {"measure": "height", "range": [0.1, 0.2]}}
+    bin_ = {"id": "bin", "description": "bins", "names": ["wheelie bin"], "size_m": {"measure": "height", "range": [0.9, 1.2]},
+            "assets": {"source": "search", "queries": ["wheelie bin"]}}
+    s = spec_mod.from_dict({"name": "t", "classes": [bin_], "props": [pole, hydrant]})
+    client = Scripted([{"_sizes": {"utility pole": {"length": [0.2, 0.4], "height": [6, 12]},
+                                   "fire hydrant": {"length": [0.3, 0.5], "height": [0.6, 1.0]},
+                                   "wheelie bin": {"length": [0.5, 0.8], "height": [0.9, 1.1]}}}])
+    session = interview.Session(client, "m", interview.CategoryIndex(counts={}))
+    problem = session.sizes_problem(s)
+    assert "utility_pole (utility pole) is tall" in problem and "fire_hydrant (fire hydrant): height 0.1-0.2 m" in problem
+    assert "class bin" not in problem
+    assert session.sizes_problem(spec_mod.from_dict({"name": "t", "classes": [bin_]})) is None  # asked once, kept
+
+
+def test_the_photo_analysis_goes_into_the_spec_in_code():
+    """Top-down photos become their surface seen from above; walls right behind objects on open ground stay."""
+    from sim2chip import scene_profile
+    table = [{"context": "indoor", "camera_pitch_deg": 75, "distance_m": 0.5, "supports": ["furniture"],
+              "floor": "wood", "light": "indoor", "photo": f"{i}.jpg"} for i in range(4)]
+    prof = scene_profile.aggregate(table)
+    assert prof["contexts"] == [{"kind": "ground", "share": 1.0, "supports": ["ground"], "distance_m": [0.4, 0.62]}]
+    assert prof["camera"]["pitch_deg"] == [70, 80] and prof["camera"]["height_m"][0] < 0.5
+    street = [{"context": "ground", "camera_pitch_deg": 10, "distance_m": 4, "wall_behind": i < 3, "photo": f"{i}.jpg"}
+              for i in range(4)]
+    prof = scene_profile.aggregate(street)
+    assert "camera" not in prof and prof["contexts"][0]["backdrop"] == 0.75
+    s = interview.Session(Scripted([]), "m", interview.CategoryIndex(counts={}))
+    s.measured = scene_profile.aggregate(table)
+    spec = {"scene": {"contexts": [{"kind": "indoor", "share": 1}]}, "camera": {}}
+    s._apply_measured(spec)
+    assert spec["scene"]["contexts"][0]["kind"] == "ground" and spec["camera"]["pitch_deg"] == [70, 80]
+    assert spec["scene"]["ground_tags"] == ["wood"]
+    s.measured = {k: v for k, v in scene_profile.aggregate(street).items() if k != "suggest"}
+    spec = {"scene": {"contexts": [{"kind": "ground", "share": 0.8}, {"kind": "facade", "share": 0.2}]}}
+    s._apply_measured(spec)
+    assert spec["scene"]["contexts"][0]["backdrop"] == 0.75 and "backdrop" not in spec["scene"]["contexts"][1]
