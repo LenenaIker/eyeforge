@@ -564,6 +564,12 @@ def _fix_slips(spec: dict, categories: set[str] | None = None) -> None:
         m = c.get("metallic") if isinstance(c, dict) else None
         if isinstance(m, (int, float)) and not isinstance(m, bool):
             c["metallic"] = [round(max(0.0, m - 0.2), 2), round(min(1.0, m + 0.2), 2)]
+    gen = spec.get("generation")
+    if isinstance(gen, dict) and gen.get("frames") == 0 and (
+            any(isinstance(c, dict) and c.get("assets") for c in spec.get("classes") or []) or spec.get("props")):
+        # Only photos means no 3D models (the prompt says so): 3D models with 0 frames contradict, and the chat's
+        # own words then promised synthetic images (e2e run, 2026-10-10). The models win: default frames.
+        gen.pop("frames")
     cam = spec.get("camera")
     if isinstance(cam, dict) and "pitch_deg" in cam:
         p = cam["pitch_deg"]

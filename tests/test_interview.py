@@ -520,3 +520,12 @@ def test_the_proposal_says_which_classes_reuse_the_datasets_labels():
     t = s.reply("bins and litter bins")
     assert t.kind == "confirm"
     assert "reused: blue_bin (38 photos, 3 checked by you)" in t.intro and "Labeled anew" in t.intro and "trash_can" in t.intro
+
+
+def test_3d_models_with_zero_frames_get_the_default_frames():
+    spec = {"generation": {"frames": 0}, "classes": [{"id": "cup", "assets": {"source": "search", "queries": ["cup"]}}]}
+    interview._fix_slips(spec)
+    assert "frames" not in spec["generation"]
+    only = {"generation": {"frames": 0}, "classes": [{"id": "cup"}]}
+    interview._fix_slips(only)
+    assert only["generation"]["frames"] == 0  # photos only, as asked
