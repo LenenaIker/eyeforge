@@ -222,12 +222,18 @@ function Dots({ points, hue, ring, predicted, onRemove }: { points: Point[]; hue
   ))}</>;
 }
 
+// Marks of two classes on one spot put one object under both (review.stacked on the server; same distance).
+const SAME_SPOT = 0.01;
+const stacked = (points: Point[]) => points.filter((p, i) => points.some((q, j) => j !== i && q[2] !== p[2]
+  && Math.abs(q[0] - p[0]) < SAME_SPOT && Math.abs(q[1] - p[1]) < SAME_SPOT)).length;
+
 function Editor({ editing, labels, media, hue, teacher, onClose, onDone }: {
   editing: Editing; labels: string[]; media: (p: string, big?: boolean) => string; hue: (c: string) => number;
   teacher: Point[]; onClose: () => void; onDone: (p: Point[]) => void;
 }) {
   const [points, setPoints] = useState<Point[]>(editing.points);
   const [cls, setCls] = useState(labels[0]);
+  const piled = stacked(points);
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/50 sm:items-center sm:p-6" onClick={onClose}>
       <div className="flex max-h-dvh w-full max-w-3xl flex-col overflow-hidden bg-white sm:rounded-[var(--radius-card)]" onClick={(e) => e.stopPropagation()}>
@@ -235,6 +241,8 @@ function Editor({ editing, labels, media, hue, teacher, onClose, onDone }: {
           <div className="min-w-0">
             <p className="truncate font-medium">{editing.title}</p>
             <p className="text-xs text-muted">Tap where an object is missing; tap a mark to remove it. {points.length} marked.</p>
+            {piled > 0 && <p className="text-xs text-red-600">{piled} marks of different classes sit on the same object.
+              Tap it to remove the wrong ones until one class is left.</p>}
           </div>
           <button onClick={onClose} className="rounded-lg p-2 text-muted hover:bg-gray-100" aria-label="Close"><X className="h-5 w-5" /></button>
         </div>
@@ -261,7 +269,7 @@ function Editor({ editing, labels, media, hue, teacher, onClose, onDone }: {
           )}
           <div className="flex-1" />
           <Button variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
-          <Button size="sm" onClick={() => onDone(points)}>Done</Button>
+          <Button size="sm" onClick={() => onDone(points)} disabled={piled > 0}>Done</Button>
         </div>
       </div>
     </div>

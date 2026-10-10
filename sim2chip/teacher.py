@@ -32,6 +32,9 @@ BETA = {"find_more": 2.0, "balanced": 1.0, "fewer_false": 0.5}
 DEFAULT = {"find_more": 0.4, "balanced": 0.5, "fewer_false": 0.6}
 THRESHOLDS = [round(0.2 + 0.05 * i, 2) for i in range(15)]  # 0.2 .. 0.9
 MIN_CORRECTED = 2  # fewer corrected photos than this say too little to move the threshold
+# Nor do fewer marked objects than this: 1 bag on 2 photos moved it to 0.85 and left 2 of 6 photos empty
+# (waste_dataset_classes, 2026-10-10).
+MIN_MARKS = 5
 
 SIGLIP_MODEL = "google/siglip2-large-patch16-384"  # base: 2 points worse; so400m: no better (2026-09-30)
 SIGLIP_NAME = "SigLIP 2"
@@ -372,7 +375,7 @@ def choose(preference: str, dets: dict[str, list[dict]], truth: dict) -> dict:
     points), or the default when there are too few of them."""
     beta, default = BETA[preference], DEFAULT[preference]
     keys = [k for k in truth if k in dets]
-    if len(keys) < MIN_CORRECTED:
+    if len(keys) < MIN_CORRECTED or sum(len(truth[k]) for k in keys) < MIN_MARKS:
         return {"threshold": default, "preference": preference, "photos": len(keys)}
 
     def score(t):
@@ -394,7 +397,7 @@ def explain(chosen: dict) -> str:
     what = {"find_more": "find every object, even with some false marks",
             "balanced": "balance missed objects and false marks",
             "fewer_false": "avoid false marks, even if it misses some"}[chosen["preference"]]
-    if chosen["photos"] < MIN_CORRECTED:
+    if "fbeta" not in chosen:  # too few corrections to learn from
         return (f"Marks what it is at least {chosen['threshold']:.0%} sure of, to {what}. Correct a few photos "
                 "and it tunes this to them.")
     return (f"Marks what it is at least {chosen['threshold']:.0%} sure of: the setting that best matches your "

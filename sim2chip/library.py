@@ -29,10 +29,11 @@ import threading
 import time
 from pathlib import Path
 
-from .review import checked
+from .review import checked, stacked, unstack
 from .workspace import IMAGE_EXT, Job, content_key
 
-VERSION = 2  # what sync takes from a job; 2: the teacher's marks and the user's corrections
+VERSION = 3  # what sync takes from a job; 2: the teacher's marks and the user's corrections; 3: no marks that put
+# one object under several classes (review.stacked)
 THUMB = 512  # side of the picture kept for an object's or a scene's card
 
 SCHEMA = """
@@ -136,10 +137,23 @@ class Library:
         self.root.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.root / "library.db"), check_same_thread=False, isolation_level=None)
         self.db.executescript(SCHEMA)
-        if self.db.execute("PRAGMA user_version").fetchone()[0] < VERSION:  # jobs hold more for this version
+        if (was := self.db.execute("PRAGMA user_version").fetchone()[0]) < VERSION:  # jobs hold more now
+            if was < 3:
+                self._drop_stacked()
             self.db.execute("DELETE FROM synced")
             self.db.execute(f"PRAGMA user_version = {VERSION}")
         self.lock = threading.Lock()
+
+    def _drop_stacked(self) -> None:
+        """The user's marks that put one object under several phrases, deleted for those phrases on that photo:
+        the photo counts as not checked for them, so the teacher marks it and a check asks again."""
+        marks: dict[tuple[str, str], list] = {}
+        for owner, key, ref, data in self.db.execute(
+                "SELECT owner, key, ref, data FROM notes WHERE kind = ? AND source = 'user'", (POINTS,)):
+            marks.setdefault((owner, key), []).extend([x, y, ref] for x, y in json.loads(data).get("points", []))
+        gone = [(owner, key, POINTS, ref) for (owner, key), pts in marks.items() for ref in stacked(pts)]
+        self.db.executemany("DELETE FROM notes WHERE owner = ? AND key = ? AND kind = ? AND ref = ? "
+                            "AND source = 'user'", gone)
 
     # Reading jobs in -------------------------------------------------------------------------------
 
@@ -264,7 +278,7 @@ class Library:
                 cls = v.get("teacher", v["class"]) if v.get("judge") == "user" else v["class"]
                 rows.append((k, CLASS, labels, "model", v.get("model"), {"label": cls, "confidence": v.get("confidence")},
                              teacher_at))
-        fixes = {"points": {}, **fixes}
+        fixes = unstack({"points": {}, "checked": {}, **fixes}, ids)
         for rel, marks in fixes["points"].items():
             if k := key(rel):
                 for c in checked(fixes, rel, ids):  # only the classes the user looked at on this photo
@@ -636,7 +650,7 @@ class Library:
                 out["points"][rel] = [[x, y, c] for c in mine for x, y in marked[c][k]["data"]["points"]]
                 if len(mine) < len(ids):
                     out["checked"][rel] = mine
-        return {k: v for k, v in out.items() if v}
+        return {k: v for k, v in unstack(out, ids).items() if v}
 
     def materialize_objects(self, owner: str, ids: list[str], dst: Path) -> list[str]:
         """Objects' GLB files into a job folder, with objects.json (name, concept, license, author, page) that
@@ -726,6 +740,37 @@ class Library:
             return {c: len(set(self.notes(owner, keys, BOXES, p)) | set(self.notes(owner, keys, POINTS, p)))
                     for c, p in phrases.items()}
         return dict.fromkeys(labels, len(self.notes(owner, keys, CLASS, json.dumps(sorted(labels)))))
+
+    def kept_boxes(self, owner: str, folder: Path, phrases: dict[str, str]) -> dict:
+        """The teacher's kept marks on the photos of a job's raw folder, for these classes (phrases: class id ->
+        English phrase), as the label stage takes them (stages.label.KEPT): {"photos": {key in the folder:
+        {class: [objects]}}, "thresholds": {class: the threshold most of them were marked with}}. A photo with
+        an empty list was looked at and has none."""
+        files = {str(f.relative_to(folder)): content_key(f) for f in _images(folder)}
+        photos: dict[str, dict] = {}
+        thresholds: dict[str, float] = {}
+        for c, p in phrases.items():
+            found = self.notes(owner, list(files.values()), BOXES, p)
+            seen: dict[float, int] = {}
+            for rel, k in files.items():
+                if (n := found.get(k)) is None:
+                    continue
+                photos.setdefault(rel, {})[c] = [
+                    {"x": round((b["box"][0] + b["box"][2]) / 2, 4), "y": round((b["box"][1] + b["box"][3]) / 2, 4),
+                     "class": c, "box": b["box"], "score": b.get("score")} for b in n["data"].get("boxes", [])]
+                if (t := n["data"].get("threshold")) is not None:
+                    seen[t] = seen.get(t, 0) + 1
+            if seen:
+                thresholds[c] = max(seen, key=seen.get)
+        # One object kept under several classes (marks from before the teacher gave each object one class, 1b61d43:
+        # every bin was every color at once) is no label of those classes: the teacher looks again there.
+        from .teacher import same_objects
+        for rel, by_class in photos.items():
+            objs = [o for c in by_class for o in by_class[c]]
+            for g in same_objects(objs):
+                for i in g:
+                    by_class.pop(objs[i]["class"], None)
+        return {"photos": {rel: v for rel, v in photos.items() if v}, "thresholds": thresholds}
 
     def datasets(self, owner: str) -> list[dict]:
         out = []

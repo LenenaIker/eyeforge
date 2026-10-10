@@ -247,3 +247,54 @@ def test_a_new_class_asks_sam3_only_for_it_and_marks_stand_for_their_classes(tmp
     # Fixed again in the review after training, with every class in view: the marks stand for all of them.
     review.apply(both.job, cache, {}, {}, {"a.jpg": [[0.3, 0.3, "cow"]]})
     assert review.load_corrections(both.job)["checked"] == {}
+
+
+def test_stacked_marks_are_refused_and_left_out():
+    fixes = {"points": {"a": [[0.5, 0.5, "cow"], [0.501, 0.5, "dog"]], "b": [[0.1, 0.1, "cow"], [0.9, 0.9, "dog"]]},
+             "checked": {}}
+    assert review.stacked(fixes["points"]["a"]) == {"cow", "dog"} and not review.stacked(fixes["points"]["b"])
+    out = review.unstack(fixes, ["cow", "dog", "cat"])
+    # a was checked for every class: what is left of it says "no cat", b stands as it was.
+    assert out["points"] == {"a": [], "b": [[0.1, 0.1, "cow"], [0.9, 0.9, "dog"]]} and out["checked"] == {"a": ["cat"]}
+
+
+def test_review_refuses_one_object_under_two_classes(tmp_path):
+    job = open_job(tmp_path, "job")
+    try:
+        review.apply(job, Cache(tmp_path / "c"), {}, {}, {"a.jpg": [[0.5, 0.5, "cow"], [0.5, 0.5, "dog"]]})
+    except review.StackedMarks as e:
+        assert "a.jpg: cow, dog" in str(e)
+    else:
+        raise AssertionError("stacked marks were saved")
+    assert not (job.input / review.CORRECTIONS).exists()
+
+
+def test_kept_labels_are_copied_and_only_new_classes_go_to_the_teacher(tmp_path, monkeypatch):
+    """Classes the photos are labeled for already (input/kept_labels.json) are copied as they are: SAM 3 looks only
+    for the new class, and for the kept one only on a photo new to the dataset, with the kept threshold."""
+    raw = tmp_path / "raw"
+    for name in ("a.jpg", "b.jpg", "c.jpg"):
+        img(raw / name)
+    asked = []
+
+    def detect(items, log=print, timeline=None):
+        for path, outs in items:
+            asked.append((path.name, sorted(outs)))
+            for phrase, out in outs.items():
+                out.parent.mkdir(parents=True, exist_ok=True)
+                box, score = {"cow": ([0.6, 0.0, 0.8, 0.2], 0.4), "dog": ([0.6, 0.6, 0.8, 0.8], 0.9)}[phrase]
+                out.write_text(json.dumps({"detections": [{"box": box, "score": score}]}))
+    monkeypatch.setattr(teacher, "detect", detect)
+    spec = from_dict({**SPEC, "task": "count", "classes": [SPEC["classes"][0], {**SPEC["classes"][1], "names": ["dog"]}],
+                      "user_data": {"raw": "raw"}})
+    ctx = Context(spec, open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
+    link_input(ctx.job, "raw", raw)
+    cow = {"x": 0.2, "y": 0.2, "class": "cow", "box": [0.1, 0.1, 0.3, 0.3], "score": 0.8}
+    (ctx.job.input / "kept_labels.json").write_text(json.dumps(
+        {"classes": ["cow"], "photos": {"a.jpg": {"cow": [cow]}, "b.jpg": {"cow": []}}, "thresholds": {"cow": 0.35}}))
+    Label().run(ctx)
+    assert sorted(asked) == [("a.jpg", ["dog"]), ("b.jpg", ["dog"]), ("c.jpg", ["cow", "dog"])]
+    v = json.loads((ctx.job.stage_dir("label") / "verdicts.json").read_text())
+    got = {k: sorted((o["class"], o["y"]) for o in e["objects"]) for k, e in v.items()}
+    # a: the kept cow, not the teacher's; c: the teacher's cow at the kept threshold 0.35 (0.4 passes).
+    assert got == {"a.jpg": [("cow", 0.2), ("dog", 0.7)], "b.jpg": [("dog", 0.7)], "c.jpg": [("cow", 0.1), ("dog", 0.7)]}

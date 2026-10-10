@@ -279,3 +279,41 @@ def test_photos_sorted_into_labels_do_not_reuse_an_unlabeled_dataset(tmp_path):
     sets = {d["name"]: d for d in lib.datasets("u")}
     assert sets["lab"]["labels"] == ["cat", "dog"] and sets["raw"]["labels"] == []
     assert sets["lab"]["photos"] == 2 and sets["lab"]["splits"] == {"test": 1, "train": 2}
+
+
+def test_one_object_under_several_classes_is_not_the_users_truth(tmp_path):
+    """A check that showed one bin under every bin phrase saved it as every color at once (2026-10-09): those
+    classes count as not checked on that photo, in sync, in a later job and in the library kept before."""
+    lib = Library(tmp_path, tmp_path / "cache")
+    job = job_with(tmp_path, "a", ["red", "blue"])
+    (job.root / "spec.json").write_text(json.dumps({"task": "count", "classes": [{"id": "blue_bin"}, {"id": "gray_bin"},
+                                                    {"id": "bag"}], "user_data": {"raw": "photos"}}))
+    (job.input / "corrections.json").write_text(json.dumps({"points": {
+        "0.jpg": [[0.5, 0.5, "blue_bin"], [0.5002, 0.5001, "gray_bin"], [0.2, 0.8, "bag"]]}}))
+    lib.sync("u", [job])
+    other = photos(tmp_path / "b" / "fotos", ["red", "blue"])[0].parent
+    phrases = {"blue_bin": "blue bin", "gray_bin": "gray bin", "bag": "bag"}
+    got = lib.corrections_for("u", other, list(phrases), phrases, [])
+    assert got == {"points": {"0.jpg": [[0.2, 0.8, "bag"]]}, "checked": {"0.jpg": ["bag"]}}
+    # A library from before: the stacked notes are dropped when it opens.
+    lib.db.executemany("INSERT OR REPLACE INTO notes VALUES (?, ?, 'points', ?, 'user', NULL, ?, 0)",
+                       [("u", k, p, json.dumps({"points": [[0.5, 0.5]]})) for p in ("blue bin", "gray bin")
+                        for k in ["k1"]])
+    lib.db.execute("PRAGMA user_version = 2")
+    lib = Library(tmp_path, tmp_path / "cache")
+    assert lib.db.execute("SELECT COUNT(*) FROM notes WHERE key = 'k1'").fetchone()[0] == 0
+
+
+def test_kept_boxes_leave_out_one_object_under_several_classes(tmp_path):
+    from sim2chip.library import BOXES, content_key
+    lib = Library(tmp_path, tmp_path / "cache")
+    fs = photos(tmp_path / "raw", ["red", "blue"])
+    bin_box = {"box": [0.4, 0.4, 0.6, 0.8], "score": 0.9}
+    for p in ("blue bin", "gray bin"):  # one bin under both colors on the first photo
+        lib.note("u", content_key(fs[0]), BOXES, p, {"boxes": [bin_box], "threshold": 0.5})
+        lib.note("u", content_key(fs[1]), BOXES, p, {"boxes": [], "threshold": 0.5})
+    lib.note("u", content_key(fs[0]), BOXES, "bag", {"boxes": [{"box": [0.0, 0.0, 0.1, 0.1], "score": 0.8}]})
+    got = lib.kept_boxes("u", fs[0].parent, {"blue_bin": "blue bin", "gray_bin": "gray bin", "bag": "bag"})
+    first, second = fs[0].name, fs[1].name
+    assert list(got["photos"][first]) == ["bag"] and got["photos"][second] == {"blue_bin": [], "gray_bin": []}
+    assert got["thresholds"] == {"blue_bin": 0.5, "gray_bin": 0.5}

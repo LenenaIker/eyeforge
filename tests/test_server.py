@@ -736,8 +736,9 @@ def test_a_dataset_labeled_before_for_the_same_classes_needs_no_check(app, tmp_p
         Image.new("RGB", (64, 64), (i * 20, 0, 0)).save(f, "JPEG")
         files.append(f)
     ds = lib.new_dataset("local", "street", files)
-    for f in files:
-        lib.note("local", library.content_key(f), library.BOXES, "cow", {"boxes": []})
+    for i, f in enumerate(files):
+        lib.note("local", library.content_key(f), library.BOXES, "cow",
+                 {"boxes": [{"box": [0.1, 0.1, 0.3, 0.3], "score": 0.7}] if i == 0 else [], "threshold": 0.45})
     before = tmp_path / "jobs" / "first"
     (before / "input").mkdir(parents=True)
     (before / "request.json").write_text(spec_mod.from_dict({**count, "user_data": {"raw": f"dataset_{ds}"}}).to_json())
@@ -753,6 +754,10 @@ def test_a_dataset_labeled_before_for_the_same_classes_needs_no_check(app, tmp_p
     r = app.post("/api/jobs", data={"spec": json.dumps(spec), "calibrate": "true"}).json()
     assert not r.get("calibrating") and app.launched
     assert json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["classes"][0]["names"] == ["cow"]
+    # Its labels go into the job as they are, for the label stage to copy instead of asking the teacher again.
+    kept = json.loads((tmp_path / "jobs" / r["job"] / "input" / "kept_labels.json").read_text())
+    assert kept["classes"] == ["cow"] and kept["thresholds"] == {"cow": 0.45} and len(kept["photos"]) == 8
+    assert sorted(len(v["cow"]) for v in kept["photos"].values()) == [0] * 7 + [1]
     # Other classes: labeled anew, with a check.
     other = {**spec, "classes": [{**spec["classes"][0], "id": "horse", "description": "horses"}]}
     assert app.post("/api/jobs", data={"spec": json.dumps(other), "calibrate": "true"}).json()["calibrating"]

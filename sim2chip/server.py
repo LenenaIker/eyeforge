@@ -133,6 +133,10 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
 
     app = FastAPI(title="EyeForge")
 
+    @app.exception_handler(review.StackedMarks)
+    async def stacked_marks(request: Request, exc: review.StackedMarks):
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
     @app.middleware("http")
     async def safety_headers(request: Request, call_next):
         """No page of ours inside another site's frame (a hidden "turn on auto top-up" click), no guessing of
@@ -550,28 +554,25 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             c.pop("_followed", None)
         return spec_mod.from_dict(data) if changed else parsed
 
-    def to_check(parsed: spec_mod.Spec, owner: str, job: Job) -> list[str]:
-        """The classes the teacher's check must ask about, none when the photos are labeled already (user,
-        2026-10-09: a dataset's labels are not asked for again; 2026-10-10: class by class, so a job that adds a
-        class checks only that one). A class is labeled when the user corrected at least a check round's worth of
-        its photos (reuse_corrections), or an earlier job's teacher labeled them for its phrase and the user went
-        on to train with those labels; either way with at most NEW_SHARE of the folder new. The new ones are
-        marked in the run, the teacher learning from the earlier corrections, and the user can still fix them
-        after it. The check of a count asks only about the classes left (review "check")."""
+    def labeled_classes(parsed: spec_mod.Spec, owner: str, job: Job) -> tuple[list[str], set[str]]:
+        """The job's classes (count) or labels, and those its raw photos are labeled for already: the user
+        corrected at least a check round's worth of its photos (reuse_corrections), or an earlier job's teacher
+        labeled them for its phrase and the user went on to train with those labels; either way with at most
+        NEW_SHARE of the folder new."""
         from .stages.label import phrases_of
         count = parsed.task == "count"
         ids = [c.id for c in parsed.classes] if count else parsed.labels
         raw = parsed.user_data.raw
         if not isinstance(raw, str):
-            return ids
+            return ids, set()
         try:
             folder = job.resolve_input(raw)
         except ValueError:
-            return ids
+            return ids, set()
         if not folder.is_dir():
-            return ids
+            return ids, set()
         total = sum(1 for p in folder.rglob("*") if p.suffix.lower() in IMAGE_EXT and not p.name.startswith("."))
-        fixes = review.load_corrections(job)
+        fixes = review.unstack(review.load_corrections(job), ids)
         if count:
             corrected = {c: sum(c in review.checked(fixes, k, ids) for k in fixes["points"]) for c in ids}
         else:
@@ -585,8 +586,34 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             if corrected[c] >= CALIBRATION_PHOTOS and total - corrected[c] <= NEW_SHARE * total:
                 return True
             return known[c] > 0 and total - known[c] <= NEW_SHARE * total
-        left = [c for c in ids if not labeled(c)]
-        check = left if count and 0 < len(left) < len(ids) else None
+        return ids, {c for c in ids if labeled(c)}
+
+    def reuse_labels(parsed: spec_mod.Spec, owner: str, job: Job) -> None:
+        """Count: the teacher's kept marks of the classes these photos are labeled for already, into the job
+        (stages.label.KEPT), so the label stage copies them instead of asking the teacher again and learns its
+        threshold only from the new classes (user, 2026-10-10: a valid labeling is not redone)."""
+        from .stages.label import KEPT, phrases_of
+        f = job.input / KEPT
+        if parsed.task != "count" or f.exists():
+            return
+        _, done = labeled_classes(parsed, owner, job)
+        if not done:
+            return
+        phrases = {c: p[0] for c, p in phrases_of(parsed, Cache(home / "cache")).items() if c in done}
+        kept = lib.kept_boxes(owner, job.resolve_input(parsed.user_data.raw), phrases)
+        job.input.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({"classes": sorted(done), **kept}, indent=1))
+
+    def to_check(parsed: spec_mod.Spec, owner: str, job: Job) -> list[str]:
+        """The classes the teacher's check must ask about, none when the photos are labeled already (user,
+        2026-10-09: a dataset's labels are not asked for again; 2026-10-10: class by class, so a job that adds a
+        class checks only that one; labeled_classes says which). The new ones are marked in the run, the teacher
+        learning from the earlier corrections, and the user can still fix them after it. The check of a count
+        asks only about the classes left (review "check")."""
+        ids, done = labeled_classes(parsed, owner, job)
+        left = [c for c in ids if c not in done]
+        check = left if parsed.task == "count" and 0 < len(left) < len(ids) else None
+        fixes = review.load_corrections(job)
         if (fixes.get("check") or None) != check:
             fixes["check"] = check
             job.input.mkdir(parents=True, exist_ok=True)
@@ -901,6 +928,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             shutil.rmtree(job.root, ignore_errors=True)  # a refused spec leaves no empty job behind
             raise
         reuse_corrections(parsed, owner_of(request), job)
+        reuse_labels(parsed, owner_of(request), job)
         req = job.root / "request.json"
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         credit_interview(job, session, request)
@@ -1053,6 +1081,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             (job.root / OWNER).write_text(visitor(request))
         parsed = adopt_library(follow_labeling(parsed, owner), owner, job)
         reuse_corrections(parsed, owner, job)
+        reuse_labels(parsed, owner, job)
         (job.root / "request.json").write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         (job.root / LABELING).write_text(json.dumps({"dataset": item, "state": "checking"}))
         jobs.warm_up("calibration", name)

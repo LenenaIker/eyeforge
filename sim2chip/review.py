@@ -38,6 +38,42 @@ def checked(fixes: dict, key: str, ids) -> set[str]:
     return set(ids) if named is None else set(named) & set(ids)
 
 
+class StackedMarks(ValueError):
+    """Corrections that mark one object as several classes (the server answers 400)."""
+
+
+SAME_SPOT = 0.01  # points of two classes closer than this (share of the photo's side) mark one object
+
+
+def stacked(points: list) -> set[str]:
+    """The classes of a count photo's points [x, y, class] that share a spot with a point of another class: one
+    object marked as several classes. A check that showed SAM 3 finding one bin under every bin phrase saved
+    such stacks as the user's truth (2026-10-09), so the bin was every color at once."""
+    out = set()
+    for i, (x, y, c, *_) in enumerate(points):
+        for x2, y2, c2, *_ in points[i + 1:]:
+            if c != c2 and abs(x - x2) < SAME_SPOT and abs(y - y2) < SAME_SPOT:
+                out |= {c, c2}
+    return out
+
+
+def unstack(fixes: dict, ids) -> dict:
+    """The corrections without stacked marks: on a photo whose object was marked as several classes, those
+    classes count as not checked (their points go, so the teacher's marks stand and a check asks again)."""
+    for k, pts in list(fixes["points"].items()):
+        bad = stacked(pts)
+        if not bad:
+            continue
+        left = checked(fixes, k, ids) - bad
+        if left:
+            fixes["points"][k] = [p for p in pts if p[2] in left]
+            fixes.setdefault("checked", {})[k] = sorted(left)
+        else:
+            fixes["points"].pop(k)
+            (fixes.get("checked") or {}).pop(k, None)
+    return fixes
+
+
 def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str = "roi_classification") -> dict:
     """Everything a reviewer looks at, with image paths relative to the job folder. For the count task, photos
     and test predictions carry points [x, y, class] in 0..1 of the (upright) image."""
@@ -112,6 +148,10 @@ def apply(job: Job, cache: Cache, labels: dict[str, str], assets: dict[str, str]
     changed_points = {k: [[round(float(x), 4), round(float(y), 4), str(c)] for x, y, c, *_ in v]
                       for k, v in (points or {}).items()}
     changed_points = {k: v for k, v in changed_points.items() if fixes["points"].get(k) != v}
+    if bad := {k: sorted(s) for k, v in changed_points.items() if (s := stacked(v))}:
+        raise StackedMarks("one object is marked as several classes ("
+                         + "; ".join(f"{k}: {', '.join(s)}" for k, s in bad.items())
+                         + "): keep only the class it is")
     for k in changed_points:
         everything = k in fixes["points"] and k not in fixes["checked"]  # checked before for every class
         if classes is None or everything:

@@ -392,17 +392,17 @@ def test_a_dataset_labeled_for_other_classes_is_asked_about_once():
     must ask the user; after the user answers, the same spec is proposed."""
     ds = "a7d9ef2d4b43c27b"
     blue = {"id": "blue_bin", "description": "blue bins", "names": ["blue bin"]}
-    litter = {"id": "litter", "description": "litter", "names": ["litter"]}
-    spec = {"name": "bins", "task": "count", "background_class": "empty", "classes": [blue, litter],
+    can = {"id": "can", "description": "drink can", "names": ["drink can"]}
+    spec = {"name": "bins", "task": "count", "background_class": "empty", "classes": [blue, can],
             "user_data": {"raw": f"library:{ds}"}}
-    client = Scripted([{"spec": spec}, {"say": "It is labeled for blue bins: keep those or add litter?"},
+    client = Scripted([{"spec": spec}, {"say": "It is labeled for blue bins: keep those or add cans?"},
                        {"spec": spec}])
     s = interview.Session(client, "m", interview.CategoryIndex(counts={}))
     s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card(["blue bin"]))
-    t = s.reply("count bins and litter in my street photos")
-    assert t.kind == "say" and "Labels of dataset" in client.seen[1] and "litter" in client.seen[1]
+    t = s.reply("count bins and cans in my street photos")
+    assert t.kind == "say" and "Labels of dataset" in client.seen[1] and "can" in client.seen[1]
     assert "blue_bin" not in client.seen[1].split("needs")[1]  # labeled before under another id, same name
-    assert s.reply("add litter").kind == "confirm"
+    assert s.reply("add cans").kind == "confirm"
     # The classes it was labeled for: no question.
     only = {**spec, "classes": [blue]}
     assert interview.Session(client, "m", interview.CategoryIndex(counts={})).relabel_question(
@@ -529,3 +529,15 @@ def test_3d_models_with_zero_frames_get_the_default_frames():
     only = {"generation": {"frames": 0}, "classes": [{"id": "cup"}]}
     interview._fix_slips(only)
     assert only["generation"]["frames"] == 0  # photos only, as asked
+
+
+def test_catch_all_classes_are_sent_back():
+    from sim2chip import spec as spec_mod
+    from sim2chip.interview import catch_all_problem
+    base = {"name": "t", "task": "count", "user_data": {"raw": "photos"}}
+    bad = spec_mod.from_dict({**base, "classes": [{"id": "litter", "names": ["litter", "trash"]},
+                                                  {"id": "blue_bin", "names": ["blue bin"]}]})
+    assert "['litter']" in catch_all_problem(bad)
+    ok = spec_mod.from_dict({**base, "classes": [{"id": "trash_bag", "names": ["trash bag"]},
+                                                 {"id": "waste_bin", "names": ["waste bin"]}]})
+    assert catch_all_problem(ok) is None

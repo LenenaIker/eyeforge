@@ -124,7 +124,8 @@ def box(x0, y0, x1, y1, score, cls="pot"):
     return {"class": cls, "box": [x0, y0, x1, y1], "score": score}
 
 
-def test_teacher_threshold_follows_the_user_preference():
+def test_teacher_threshold_follows_the_user_preference(monkeypatch):
+    monkeypatch.setattr(teacher, "MIN_MARKS", 3)
     dets = {"a": [box(0.1, 0.1, 0.3, 0.3, 0.9), box(0.5, 0.5, 0.7, 0.7, 0.3)],
             "b": [box(0.1, 0.1, 0.3, 0.3, 0.8), box(0.6, 0.1, 0.8, 0.3, 0.4), box(0.6, 0.5, 0.8, 0.7, 0.35)]}
     truth = {"a": [[0.2, 0.2, "pot"], [0.6, 0.6, "pot"]], "b": [[0.2, 0.2, "pot"]]}
@@ -135,6 +136,9 @@ def test_teacher_threshold_follows_the_user_preference():
     # Too few corrected photos: the default of the preference.
     assert teacher.choose("fewer_false", dets, {"a": truth["a"]}) == {
         "threshold": 0.6, "preference": "fewer_false", "photos": 1}
+    # Too few marked objects, however many photos: the default too.
+    monkeypatch.setattr(teacher, "MIN_MARKS", 4)
+    assert teacher.choose("find_more", dets, truth)["threshold"] == 0.4
     objs = teacher.objects(dets["a"], 0.5)
     assert [(o["x"], o["y"], o["class"]) for o in objs] == [(0.2, 0.2, "pot")] and objs[0]["box"] == [0.1, 0.1, 0.3, 0.3]
 

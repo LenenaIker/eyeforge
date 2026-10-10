@@ -340,6 +340,27 @@ def sam3_names_problem(s: spec_mod.Spec) -> str | None:
             "common first, e.g. \"names\": [\"flower pot\", \"plant pot\"]")
 
 
+# Words that name no one thing: SAM 3 given "litter, trash" marked pavement spots at 93% (2026-10-10), and
+# "other_trash" gave 15 bad marks of 27 (basura_counter, 2026-10-10).
+CATCH_ALL = {"litter", "trash", "garbage", "rubbish", "waste", "debris", "junk", "clutter", "stuff", "thing",
+             "things", "object", "objects", "item", "items", "other", "others", "misc", "miscellaneous"}
+
+
+def catch_all_problem(s: spec_mod.Spec) -> str | None:
+    """Counting with the teacher: a class whose id or names end in a word for no one thing ("litter", "other
+    trash") makes SAM 3 mark anything. "trash bag" or "waste bin" are fine: the last word names the thing."""
+    from . import teacher
+    if s.task != "count" or not s.user_data.raw:
+        return None
+    vague = [c.id for c in s.classes
+             if any(n.split()[-1].lower() in CATCH_ALL for n in [c.id.replace("_", " "), *teacher.names(c)] if n.split())]
+    if not vague:
+        return None
+    return (f"classes {vague} name no one thing (\"litter\", \"trash\", \"other ...\"): the teacher that marks the "
+            "photos (SAM 3) then marks random spots. Replace each with the concrete things the user means (\"can\", "
+            "\"bottle\", \"cigarette butt\"), asking the user if unsure, or leave it out")
+
+
 def check_photos(s: spec_mod.Spec) -> str | None:
     """Do the photo folders the spec names exist and have the layout it assumes? Only absolute paths are
     checked (relative ones are uploads that live in the job folder)."""
@@ -645,7 +666,7 @@ def _photo_models_problem(session, s: spec_mod.Spec) -> str | None:
 
 # What a proposed spec must pass beyond spec.validate, in order: the first problem goes back to the model.
 SPEC_CHECKS = (_unknown_categories, _foreign_folders, _library_refs, _dataset_as_model, _unlabeled_dataset, _scene_problem, lambda _, s: check_photos(s),
-               lambda _, s: sam3_names_problem(s), _photo_models_problem)
+               lambda _, s: sam3_names_problem(s), lambda _, s: catch_all_problem(s), _photo_models_problem)
 
 
 @dataclass
