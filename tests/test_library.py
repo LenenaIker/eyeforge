@@ -262,3 +262,20 @@ def test_deleted_and_renamed_labels_stay_so_when_the_job_syncs_again(tmp_path):
     (label / "verdicts.json").touch()
     lib.sync("u", [job])
     assert lib.label_phrases("u", ds) == {"blue bin": 2, "cup": 2, "paper bin": 2}
+
+
+def test_photos_sorted_into_labels_do_not_reuse_an_unlabeled_dataset(tmp_path):
+    """The same photos, first raw, then in label folders: the labels make a dataset of their own (the raw one
+    had none to give), and a photo on two sides counts once."""
+    lib = Library(tmp_path, tmp_path / "cache")
+    raw = job_with(tmp_path, "raw", ["red", "blue"])
+    lib.sync("u", [raw])
+    job = Job(tmp_path / "jobs" / "lab")
+    photos(job.input / "lab" / "cat", ["red"])
+    photos(job.input / "lab" / "dog", ["blue"])
+    photos(job.input / "tst" / "cat", ["red"])
+    (job.root / "spec.json").write_text(json.dumps({"classes": [], "user_data": {"labeled": "lab", "test": "tst"}}))
+    lib.sync("u", [job])
+    sets = {d["name"]: d for d in lib.datasets("u")}
+    assert sets["lab"]["labels"] == ["cat", "dog"] and sets["raw"]["labels"] == []
+    assert sets["lab"]["photos"] == 2 and sets["lab"]["splits"] == {"test": 1, "train": 2}

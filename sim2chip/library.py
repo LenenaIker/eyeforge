@@ -187,11 +187,14 @@ class Library:
             return
         keys = sorted({k for k, *_ in rows})
         # Photos this owner already has in one dataset (the chat's, or another job's with the same photos): the
-        # job uses the smallest such dataset and nothing new is made.
+        # job uses the smallest such dataset and nothing new is made. Not one without the labels the job gave
+        # them (the same photos sorted into folders would lose their labels).
+        labeled = {(k, lab) for k, _, _, lab in rows if lab}
         same, size = None, None
         for (ds,) in self.db.execute("SELECT id FROM datasets WHERE owner = ?", (owner,)).fetchall():
-            have = {k for (k,) in self.db.execute("SELECT key FROM photos WHERE dataset = ?", (ds,)).fetchall()}
-            if set(keys) <= have and (size is None or len(have) < size):
+            got = self.db.execute("SELECT key, label FROM photos WHERE dataset = ?", (ds,)).fetchall()
+            have = {k for k, _ in got}
+            if set(keys) <= have and labeled <= set(got) and (size is None or len(have) < size):
                 same, size = ds, len(have)
         if same is None:  # photos added to a job (the live test, "Make it better") join the dataset it used
             for (ds,) in self.db.execute("SELECT item FROM uses WHERE job = ? AND kind = 'dataset'", (job.name,)).fetchall():
@@ -201,6 +204,8 @@ class Library:
                     return
         if same is None:
             same = _id(owner, "dataset", *keys)
+            if self.owns(owner, "dataset", same):  # the same photos without these labels: a dataset of their own
+                same = _id(owner, "dataset", *keys, *sorted(f"{k}:{lab}" for k, lab in labeled))
             if self._removed(owner, same):  # the owner deleted it: a later sync does not bring it back
                 return
             created = min((p.stat().st_mtime for p in (job.spec_path, job.root / "request.json") if p.exists()),
@@ -529,12 +534,16 @@ class Library:
         todo = [f for f in photos if keys[f] not in kept]
         out = [{**n["data"], "photo": f.name} for f in photos if (n := kept.get(keys[f]))]
         if todo and run is not None:
-            by_name = {f.name: f for f in todo}
+            # Answers come back by file name: one name in two subfolders cannot tell its photos apart, so those
+            # answers are used but not kept (asked again next time) rather than kept on the wrong photo.
+            names = [f.name for f in todo]
+            by_name = {f.name: f for f in todo if names.count(f.name) == 1}
             for d in run(todo):
                 f = by_name.get(d.get("photo"))
                 if f is not None:
                     self.note(owner, keys[f], SCENE, classes, {k: v for k, v in d.items() if k != "photo"},
                               model=model)
+                if d.get("photo") in names:
                     out.append(d)
         return out
 
@@ -723,12 +732,13 @@ class Library:
         for ds, name, created, labeled in self.db.execute(
                 "SELECT id, name, created, labeled FROM datasets WHERE owner = ? ORDER BY created DESC", (owner,)):
             splits = dict(self.db.execute("SELECT split, COUNT(*) FROM photos WHERE dataset = ? GROUP BY split", (ds,)))
+            n = self.db.execute("SELECT COUNT(DISTINCT key) FROM photos WHERE dataset = ?", (ds,)).fetchone()[0]
             sample = [k for (k,) in self.db.execute("SELECT key FROM photos WHERE dataset = ? ORDER BY key LIMIT 4",
                                                     (ds,))]
             labels = [l for (l,) in self.db.execute("SELECT DISTINCT label FROM photos WHERE dataset = ? AND label "
                                                     "IS NOT NULL ORDER BY label", (ds,))]
             out.append({"id": ds, "name": name, "created": created, "labeled": bool(labeled),
-                        "photos": sum(splits.values()), "splits": splits, "labels": labels, "sample": sample,
+                        "photos": n, "splits": splits, "labels": labels, "sample": sample,
                         "jobs": self._used("dataset", ds), "profile": self.profile(owner, ds)})
         return out
 
