@@ -160,8 +160,8 @@ class JobService:
                 else:
                     self._calibrate_in_cloud(job)
                 state.write_text(json.dumps({"state": "ready"}))
-                if self.warm is not None:
-                    self.warm.touch(who=job.name)  # the user checks the photos now: keep the GPU for what follows
+                if self.warm is not None:  # the prefetch follows at once; the user's check itself needs no GPU
+                    warm_mod.note(self.home, "check", job.name)
                     self.prefetch(job)
             except Exception as e:  # shown on the job page, with the option to train anyway
                 state.write_text(json.dumps({"state": "failed", "error": str(e)[:300]}))

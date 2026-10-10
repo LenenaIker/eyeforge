@@ -5,7 +5,8 @@ weights), and a calibration round is half a minute of work. The server asks for 
 uploads photos in the interview (the start-up hides behind the questions), keeps it while they check the
 teacher, and every run of a job (calibration rounds, the prefetch of the teacher's answers, training) goes to it
 as a task instead of a job of its own. Tasks of several users run side by side on it. It stops by itself after
-IDLE_S without tasks once the server's keep-alive has passed, or at HOURS.
+IDLE_S after its last task (user, 2026-10-10: no keep-alive after work, measured unused), or at HOURS. The
+keep-alive covers only the wait for a first task: one asked for before the last task started is spent.
 
 The server and the GPU talk through the cache bucket, under warm/<id>/ (the job's own data stays in its bucket):
 
@@ -33,10 +34,11 @@ from pathlib import Path
 from . import config
 
 PREFIX = "warm"
-# Shorter than the start-up (about 4.4 min) on purpose, the user's call (2026-10-05): a user back within a few
-# minutes pays a visible start-up. docs/politica_gpu.md; logs/warm_events.jsonl measures how often (gaps()).
-IDLE_S = float(config.env("SIM2CHIP_WARM_IDLE_S", "120"))   # without tasks, past the keep-alive: stop
-KEEP_S = float(config.env("SIM2CHIP_WARM_KEEP_S", "300"))   # what an upload or a calibration round buys
+# Stop right after the work (user, 2026-10-10): on 7 GPUs of eyeforge.app no task ever came during the 2 to 5 min
+# kept after the last one (a quarter of the GPU time); the check's rounds need no GPU once SAM 3's answers are
+# prefetched. IDLE_S only bridges tasks sent back to back (a round, then its prefetch: 6 to 12 s apart).
+IDLE_S = float(config.env("SIM2CHIP_WARM_IDLE_S", "20"))    # without tasks, past the keep-alive: stop
+KEEP_S = float(config.env("SIM2CHIP_WARM_KEEP_S", "300"))   # an upload or a new job waits this long for a first task
 HOURS = int(config.env("SIM2CHIP_WARM_HOURS", "2"))         # the job's timeout, a cap on any forgotten GPU
 PARALLEL = 2      # tasks at once (two users); more queue
 POLL_S = 3        # how often the GPU and a waiting run look at the bucket
@@ -92,9 +94,18 @@ def usable(store, bucket: str, wid: str) -> bool:
 
 def keep_alive(store, bucket: str, wid: str, seconds: float) -> None:
     """Stay up at least `seconds` from now (never shortens an earlier promise)."""
-    until = time.time() + seconds
+    now = time.time()
     old = read(store, bucket, key(wid, "keepalive.json")) or {}
-    put(store, bucket, key(wid, "keepalive.json"), {"until": max(until, old.get("until", 0))})
+    put(store, bucket, key(wid, "keepalive.json"), {"until": max(now + seconds, old.get("until", 0)), "t": now})
+
+
+def keep_until(doc: dict | None, last_started: float | None) -> float:
+    """Until when a keep-alive holds the GPU: a promise made before the last task started was for that task
+    (or one before it), and is spent."""
+    doc = doc or {}
+    if last_started is not None and doc.get("t", 0) <= last_started:
+        return 0.0
+    return doc.get("until", 0.0)
 
 
 def submit(store, bucket: str, wid: str, task: dict) -> None:
@@ -239,7 +250,7 @@ class WarmGPU:
         self.watch()
 
     def touch(self, seconds: float = KEEP_S, who: str | None = None) -> None:
-        """The user is still around (a calibration round to check): keep the GPU that long."""
+        """The user is still around: keep the GPU that long (for a first task; see keep_until)."""
         note(self.home, "keep", who, why="touch")
         def go():
             try:

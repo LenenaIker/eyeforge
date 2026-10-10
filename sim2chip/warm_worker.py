@@ -8,7 +8,8 @@ looks for tasks every POLL_S seconds and runs up to PARALLEL at once, each as `c
 with the code its run uploaded (a server deployed meanwhile sends the new code) and the shared cache, which keeps
 the teachers' answers, the weights and the asset files between tasks. A task that trains PicoDet waits for that
 kit, unpacked in the background after start-up. The task's output goes to its job bucket as logs/<task log>.
-It stops after warm.IDLE_S without tasks once the keep-alive has passed, or shortly before its job's timeout.
+It stops warm.IDLE_S after its last task (a keep-alive asked for after that task started holds it longer), or
+shortly before its job's timeout.
 """
 from __future__ import annotations
 
@@ -88,6 +89,7 @@ def main() -> int:
     CACHE.mkdir(parents=True, exist_ok=True)
     tasks: dict[str, Task] = {}
     finished: set[str] = set()
+    last_started: float | None = None  # when the last task started: keep-alives older than it are spent
 
     def beat(state: str) -> None:
         try:
@@ -141,11 +143,12 @@ def main() -> int:
             tasks[tid] = Task(spec)
             warm.put(store, bucket, warm.key(wid, "running", f"{tid}.json"), {"t": time.time()})
             tasks[tid].thread.start()
+            last_started = time.time()
             say(f"task {tid} ({spec['job']} {' '.join(spec.get('args', []))}) started")
         waiting = [k for k in pending if Path(k).stem not in tasks and Path(k).stem not in finished]
         if tasks:
             last_busy = time.time()
-        keep = (warm.read(store, bucket, warm.key(wid, "keepalive.json")) or {}).get("until", 0)
+        keep = warm.keep_until(warm.read(store, bucket, warm.key(wid, "keepalive.json")), last_started)
         idle = not tasks and not waiting and time.time() > max(last_busy + warm.IDLE_S, keep)
         if idle or (time.time() > deadline and not tasks):
             if stopping:  # a second look after saying so: a task sent meanwhile is still taken

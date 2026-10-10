@@ -255,13 +255,15 @@ def test_start_writes_the_worker_and_its_script(tmp_path, monkeypatch):
     assert env["S2C_ENVS"].count("https://") == 3 and "picodet" in env["S2C_ENVS_LATE"]
     script = (tmp_path / "warm" / "warm.nebius.sh").read_text()
     assert "sim2chip.warm_worker" in script and warm.LATE_READY in script and "TF_FORCE_GPU_ALLOW_GROWTH" in script
-    # Isaac Sim's image: whole runs that render go to it too, from the first labels to the model
-    assert be.cli.jobs[0]["image"].endswith("eyeforge-isaac:t1") and "SIM2CHIP_ISAAC_PYTHON" in script
+    # The light image (starts 2.2 min sooner): runs that render start their own Isaac Sim job.
+    assert be.cli.jobs[0]["image"].endswith("eyeforge-light:t1") and "SIM2CHIP_ISAAC_PYTHON" not in script
     warm.worker_file(tmp_path).write_text(json.dumps({**w, "job_id": "aijob-warm"}))  # the fake CLI's running job
-    assert be.warm_for(Cache(tmp_path / "cache"), nebius.worker_runtime(True)) is not None
-    warm.worker_file(tmp_path).write_text(json.dumps({"wid": w["wid"], "job_id": "aijob-warm"}))  # an older GPU
     assert be.warm_for(Cache(tmp_path / "cache"), nebius.worker_runtime(True)) is None
     assert be.warm_for(Cache(tmp_path / "cache"), nebius.worker_runtime(False)) is not None
+    # A GPU started in Isaac Sim's image (2026-10-09 to 10-10) takes those runs too.
+    isaac = nebius.worker_runtime(True).image
+    warm.worker_file(tmp_path).write_text(json.dumps({**w, "job_id": "aijob-warm", "image": isaac}))
+    assert be.warm_for(Cache(tmp_path / "cache"), nebius.worker_runtime(True)) is not None
     assert ("sim2chip-cache", warm.key(w["wid"], "code.tgz")) in store.objects
 
 
@@ -288,3 +290,13 @@ def test_gaps_follow_a_user_from_session_to_job(tmp_path, monkeypatch):
     warm.note(tmp_path, "keep", "session:b", why="photos uploaded")  # never trains
     warm.note(tmp_path, "keep", "table", why="touch")
     assert warm.gaps(tmp_path) == {"gaps": [240.0], "abandoned": 2}
+
+
+def test_a_keep_alive_is_spent_by_the_task_it_waited_for():
+    """The GPU stops right after its work (user, 2026-10-10): a keep-alive asked for before the last task started
+    was for that task; one asked for after it (another user uploading photos) still holds the GPU."""
+    assert warm.keep_until({"until": 500.0, "t": 100.0}, None) == 500.0  # no task yet: wait for the first
+    assert warm.keep_until({"until": 500.0, "t": 100.0}, 200.0) == 0.0   # spent by the task started at 200
+    assert warm.keep_until({"until": 500.0, "t": 300.0}, 200.0) == 500.0  # asked for after it
+    assert warm.keep_until({"until": 500.0}, 200.0) == 0.0               # from before this rule: spent
+    assert warm.keep_until(None, None) == 0.0

@@ -554,7 +554,8 @@ def test_photos_in_the_interview_warm_up_a_gpu_and_rounds_with_answers_skip_it(t
             break
         time.sleep(0.02)
     assert st["calibration"] == {"state": "ready"}
-    assert ("start", "calibration") in gpu.calls and ("touch",) in gpu.calls
+    # The check needs no GPU: nothing keeps it up for the user (it stops after the prefetch).
+    assert ("start", "calibration") in gpu.calls and ("touch",) not in gpu.calls
     assert not (tmp_path / "jobs" / r["job"] / "logs" / "pipeline.log").exists()  # no cloud run was launched
 
 

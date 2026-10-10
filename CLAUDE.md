@@ -28,7 +28,7 @@ Detalle, subprocesos opcionales y tareas abiertas en `TODO.md`.
 5. **Entrenamiento del modelo pequeño (alumno)** con sintético + datos del usuario, cuantizado int8.
 6. **Evaluación en test real y export** para el hardware (ESP32-CAM: TFLite Micro).
 
-Desarrollo en la RTX 3090 local; el producto final lanza los trabajos en **Nebius AI Cloud (L40S)**. GPU caliente compartida (`sim2chip/warm.py`, decisión del usuario 2026-10-04): se pide al subir fotos en la entrevista, recibe como tareas las rondas de calibración, el prefetch de respuestas de SAM 3 y el entrenamiento de varios usuarios a la vez, y se apaga sola tras 2 min sin tareas pasado el keep-alive de 5 min por subida o ronda (usuario, 2026-10-05; tope 2 h). Sin ella, un trabajo de Nebius por ejecución, que se apaga al terminar.
+Desarrollo en la RTX 3090 local; el producto final lanza los trabajos en **Nebius AI Cloud (L40S)**. GPU caliente compartida (`sim2chip/warm.py`, decisión del usuario 2026-10-04): se pide al subir fotos en la entrevista, recibe como tareas las rondas de calibración, el prefetch de respuestas de SAM 3 y el entrenamiento de varios usuarios a la vez, y se apaga en cuanto acaba su última tarea (20 s de margen; usuario, 2026-10-10: el keep-alive tras el trabajo nunca se usó). El keep-alive de 5 min solo cubre la espera hasta la primera tarea tras subir fotos o crear el modelo; tope 2 h. Arranca con la imagen ligera (`eyeforge-light`, ~92 s en Nebius frente a ~226 s la de Isaac); las ejecuciones con sintético piden su propia GPU con Isaac. Sin ella, un trabajo de Nebius por ejecución, que se apaga al terminar.
 
 ## Decisiones y restricciones
 

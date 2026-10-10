@@ -668,7 +668,9 @@ class NebiusBackend:
         self.store.put(cache_bucket, warm.key(wid, "code.tgz"), code_archive())
         script = home / "warm" / "warm.nebius.sh"
         script.parent.mkdir(parents=True, exist_ok=True)
-        runtime = worker_runtime(True)  # Isaac Sim's image: calibration, training and render on one GPU
+        # The light image: Isaac Sim's starts 2.2 min slower at Nebius (226 s against 92 s, 2026-10-10) and, the GPU
+        # stopping after its tasks, a run with synthetic images starts its own Isaac job anyway.
+        runtime = worker_runtime(False)
         isaac = runtime.python == RUNTIMES["isaac"].python
         script.write_text(warm_script(isaac))
         env = {"S2C_CACHE_BUCKET": cache_bucket, "SIM2CHIP_REGION": REGION, "S2C_WARM_ID": wid,
