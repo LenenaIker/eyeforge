@@ -13,8 +13,13 @@ class Scripted:
         self.actions, self.seen = list(actions), []
 
     def chat(self, messages, model, purpose, **kw):
+        if purpose == "english_queries" and not (self.actions and isinstance(self.actions[0], dict)
+                                                 and self.actions[0].get("_english")):
+            # Words already in English stay as they are; a test that translates scripts {"_english": {...}}.
+            return json.dumps({t: t for t in json.loads(messages[-1]["content"].split("Terms: ", 1)[1])})
         self.seen.append(messages[-1]["content"])
-        return json.dumps(self.actions.pop(0))
+        action = self.actions.pop(0)
+        return json.dumps(action.get("_english", action) if isinstance(action, dict) else action)
 
 
 GOOD = {"name": "barn", "classes": [{"id": "cow", "description": "cows", "size_m": {"measure": "length",
@@ -193,12 +198,12 @@ def test_no_photo_models_on_a_server_without_them():
     photos = {**GOOD, "classes": [{**GOOD["classes"][0], "assets": {"source": "photos", "photos": "user_data",
                                                                      "queries": ["cow"]}}], "user_data": {"raw": "x"}}
     client = Scripted([{"pick_photos": {"class": "cow", "query": "cow", "folder": "/tmp"}}, {"spec": photos},
-                       {"cow": "cow"}, {"spec": GOOD}])  # the third answers the English query check
+                       {"spec": GOOD}])
     s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}), photo_models=False)
     t = s.reply("cows, here are my photos")
     assert t.kind == "confirm" and t.spec.classes[0].assets.photos is None
     assert "cannot be made from the user's photos" in client.seen[1]  # pick_photos refused
-    assert "cannot be made from the user's photos" in client.seen[3]  # photo-made spec refused
+    assert "cannot be made from the user's photos" in client.seen[2]  # photo-made spec refused
     assert "cannot be made from the user's photos" in s.messages[0]["content"]
 
 
@@ -313,7 +318,7 @@ def test_counting_names_keep_only_english():
     cls = {"id": "pot", "size_m": {"measure": "length", "range": [0.1, 0.5]},
            "names": ["maceta", "flower pot"]}
     spec = {"name": "pots", "task": "count", "background_class": "empty", "classes": [cls], "user_data": {"raw": "x"}}
-    client = Scripted([{"spec": spec}, {"maceta": "flower pot", "flower pot": "flower pot"}])
+    client = Scripted([{"spec": spec}, {"_english": {"maceta": "flower pot", "flower pot": "flower pot"}}])
     t = interview.Session(client, "m", interview.CategoryIndex(counts={})).reply("cuenta mis macetas")
     assert t.kind == "confirm" and t.spec.classes[0].names == ["flower pot"]
 
@@ -359,3 +364,40 @@ def test_a_dataset_id_is_never_a_3d_model():
     right = spec_mod.from_dict({"name": "x", "classes": [{**cls, "assets": {"source": "library",
                                                                              "models": ["library:bbbbbbbbbbbbbbbb"]}}]})
     assert "search" in _dataset_as_model(S(), wrong) and _dataset_as_model(S(), right) is None
+
+
+def test_class_ids_go_into_english_everywhere_the_spec_names_them():
+    cls = {"id": "contenedor_azul", "description": "contenedores azules", "names": ["blue bin"]}
+    spec = {"name": "bins", "classes": [cls, {**cls, "id": "nada", "names": ["nothing"]},
+                                        {**cls, "id": "cubo", "names": ["bucket"]}],
+            "user_data": {"labeled": "/x", "class_map": {"contenedor_azul": ["azul"], "nada": ["vacio"]}}}
+    client = Scripted([{"_english": {"contenedor azul": "blue bin", "nada": "nothing", "cubo": "blue bin",
+                                     "blue bin": "blue bin", "nothing": "nothing", "bucket": "bucket"}}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}))
+    s._english_queries(spec)
+    assert [c["id"] for c in spec["classes"]] == ["blue_bin", "nothing", "cubo"]  # never two classes one id
+    assert spec["user_data"]["class_map"] == {"blue_bin": ["azul"], "nothing": ["vacio"]}
+    assert any("contenedor_azul -> blue_bin" in m["content"] for m in s.messages)
+
+
+def test_a_dataset_labeled_for_other_classes_is_asked_about_once():
+    """A spec that labels a library dataset for classes it was never labeled for goes back to the model, which
+    must ask the user; after the user answers, the same spec is proposed."""
+    ds = "a7d9ef2d4b43c27b"
+    blue = {"id": "blue_bin", "description": "blue bins", "names": ["blue bin"]}
+    litter = {"id": "litter", "description": "litter", "names": ["litter"]}
+    spec = {"name": "bins", "task": "count", "background_class": "empty", "classes": [blue, litter],
+            "user_data": {"raw": f"library:{ds}"}}
+    client = Scripted([{"spec": spec}, {"say": "It is labeled for blue bins: keep those or add litter?"},
+                       {"spec": spec}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}))
+    s.use_library("- a dataset", {ds}, datasets={ds}, labelings={ds: [
+        {"task": "count", "classes": ["paper_bin"], "phrases": {"paper_bin": "blue bin"}, "background": "empty"}]})
+    t = s.reply("count bins and litter in my street photos")
+    assert t.kind == "say" and "Labels of dataset" in client.seen[1] and "litter" in client.seen[1]
+    assert "blue_bin" not in client.seen[1].split("needs")[1]  # labeled before under another id, same name
+    assert s.reply("add litter").kind == "confirm"
+    # The classes it was labeled for: no question.
+    only = {**spec, "classes": [blue]}
+    assert interview.Session(client, "m", interview.CategoryIndex(counts={})).relabel_question(
+        interview.spec_mod.from_dict(only)) is None

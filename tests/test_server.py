@@ -643,6 +643,23 @@ def test_the_check_asks_only_about_classes_not_checked_before(app, tmp_path):
     assert not r.get("calibrating") and app.launched
 
 
+def test_labeling_a_dataset_puts_the_class_ids_in_english(app, tmp_path, monkeypatch):
+    """The names typed on the Datasets page become English ids, and for counting the teacher's English names."""
+    from PIL import Image
+
+    from sim2chip import library, teacher
+
+    lib = library.Library(tmp_path, tmp_path / "cache")
+    f = tmp_path / "scratch" / "p.jpg"
+    f.parent.mkdir()
+    Image.new("RGB", (64, 64), (200, 0, 0)).save(f, "JPEG")
+    ds = lib.new_dataset("local", "street", [f])
+    monkeypatch.setattr(teacher, "english_phrases", lambda meaning, client=None: {"c0": ["blue bin", "blue container"]})
+    r = app.post(f"/api/library/datasets/{ds}/label", json={"task": "count", "classes": ["contenedor azul"]}).json()
+    cls = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["classes"]
+    assert cls == [{**cls[0], "id": "blue_bin", "description": "contenedor azul", "names": ["blue bin", "blue container"]}]
+
+
 def test_a_dataset_labeled_before_for_the_same_classes_needs_no_check(app, tmp_path):
     """The teacher's labels of a library dataset, kept from an earlier job with the same task and classes: the
     new job takes that job's class names (same phrases for the teacher) and starts without a check."""

@@ -579,8 +579,9 @@ class Library:
                                               (kind, item)).fetchall()]
 
     def labelings(self, ds: str) -> list[dict]:
-        """How earlier jobs had the teacher label this dataset, newest first: {job, task, classes (ids),
-        background, checked (photos the user corrected), models}. Only jobs that went past the teacher's check
+        """How earlier jobs had the teacher label this dataset, newest first: {job, task, classes (ids), phrases
+        (count: the English phrase the teacher looked for, per class), background, checked (photos the user
+        corrected), models}. Only jobs that went past the teacher's check
         (a check left open is no labeling the user accepted). A job with the same task and classes gets the
         same labels again without a check (server.follow_labeling). models: per class or prop of the job, its
         3D model search queries and the models kept for it, so a new job can find them again."""
@@ -599,7 +600,10 @@ class Library:
                 queries = (c.get("assets") or {}).get("queries") if "assets" in c else c.get("queries")
                 if queries:
                     models[c["id"]] = {"queries": queries, "kept": int(kept.get(c["id"]) or 0)}
-            out.append({"job": job, "task": spec.get("task"), "classes": [c["id"] for c in spec.get("classes", [])],
+            ids = [c["id"] for c in spec.get("classes", [])]
+            learned = (_load(root / "label" / "teacher.json") or {}).get("phrases") or {}
+            out.append({"job": job, "task": spec.get("task"), "classes": ids,
+                        "phrases": {c: learned.get(c, [c.replace("_", " ")])[0] for c in ids},
                         "background": spec.get("background_class"),
                         "checked": len(set(fixes.get("labels") or {}) | set(fixes.get("points") or {})),
                         "models": models, "t": (root / "request.json").stat().st_mtime})

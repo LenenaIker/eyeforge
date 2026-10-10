@@ -485,30 +485,33 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return spec_mod.from_dict(data)
 
     def follow_labeling(parsed: spec_mod.Spec, owner: str) -> spec_mod.Spec:
-        """A library dataset labeled before for the same task and class ids (library.labelings): the classes take
-        that job's names and descriptions, so the teacher looks for the very same things and its kept answers
-        and labels apply (user, 2026-10-09: a dataset's labels are not asked for again)."""
-        ids = {c.id for c in parsed.classes}
+        """A library dataset labeled before for the same task (library.labelings): each class with the id of an
+        earlier one takes that job's names and descriptions, so the teacher looks for the very same things and
+        its kept answers and labels apply (user, 2026-10-09: a dataset's labels are not asked for again;
+        2026-10-10: class by class, the other classes are labeled anew)."""
+        data, changed = json.loads(parsed.to_json()), False
         for src in interview_sources(parsed.user_data.raw):
             ds = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(src))
             if not ds or not lib.owns(owner, "dataset", ds.group(1)):
                 continue
-            for done in lib.labelings(ds.group(1)):
-                if done["task"] != parsed.task or set(done["classes"]) != ids \
-                        or done["background"] != parsed.background_class:
+            for done in lib.labelings(ds.group(1)):  # newest first
+                if done["task"] != parsed.task or done["background"] != parsed.background_class:
                     continue
                 before = {c["id"]: c for c in json.loads((home / "jobs" / done["job"] / "request.json").read_text())
                           ["classes"]}
-                data = json.loads(parsed.to_json())
                 for c in data["classes"]:
-                    c["description"] = before[c["id"]].get("description") or c["description"]
-                    c["names"] = before[c["id"]].get("names") or c.get("names")
-                    if c.get("assets") and before[c["id"]].get("assets"):  # names come from the queries too
-                        c["assets"]["queries"] = before[c["id"]]["assets"].get("queries") or c["assets"].get("queries")
-                        c["assets"]["categories"] = before[c["id"]]["assets"].get("categories") or \
-                            c["assets"].get("categories")
-                return spec_mod.from_dict(data)
-        return parsed
+                    if c["id"] not in before or c.get("_followed"):
+                        continue
+                    b = before[c["id"]]
+                    c["description"] = b.get("description") or c["description"]
+                    c["names"] = b.get("names") or c.get("names")
+                    if c.get("assets") and b.get("assets"):  # names come from the queries too
+                        c["assets"]["queries"] = b["assets"].get("queries") or c["assets"].get("queries")
+                        c["assets"]["categories"] = b["assets"].get("categories") or c["assets"].get("categories")
+                    c["_followed"] = changed = True
+        for c in data["classes"]:
+            c.pop("_followed", None)
+        return spec_mod.from_dict(data) if changed else parsed
 
     def to_check(parsed: spec_mod.Spec, owner: str, job: Job) -> list[str]:
         """The classes the teacher's check must ask about, none when the photos are labeled already (user,
@@ -623,7 +626,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             sessions[sid].use_library(*lib.for_chat(owner), kit=chosen,
                                       notes=functools.partial(lib.describe, owner), open_dataset=open_dataset,
                                       labeled={d["id"] for d in lib.datasets(owner) if d["labels"]},
-                                      datasets={d["id"] for d in lib.datasets(owner)})
+                                      datasets={d["id"] for d in lib.datasets(owner)},
+                                      labelings={d["id"]: lib.labelings(d["id"]) for d in lib.datasets(owner)})
 
     locks: dict[str, threading.Lock] = {}
 
@@ -928,11 +932,16 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if task == "classify" and len(names) < 2:
             raise HTTPException(400, "classify needs at least two names to choose among")
         ds_name = next((d["name"] for d in lib.datasets(owner) if d["id"] == item), "photos")
+        # Class ids in English whatever the user typed (user, 2026-10-10), and for counting the English names the
+        # teacher looks for, as the chat writes them: labels of the same thing are found again by any later job.
+        from . import teacher
+        english = teacher.english_phrases({f"c{i}": n for i, n in enumerate(names)}) or {}
         classes = []
-        for n in names:
-            cid = re.sub(r"[^a-z0-9]+", "_", n.lower()).strip("_") or f"class_{len(classes)}"
+        for i, n in enumerate(names):
+            phrases = english.get(f"c{i}") or []
+            cid = re.sub(r"[^a-z0-9]+", "_", (phrases[0] if phrases else n).lower()).strip("_") or f"class_{len(classes)}"
             if cid not in [c["id"] for c in classes]:
-                classes.append({"id": cid, "description": n})
+                classes.append({"id": cid, "description": n, **({"names": phrases} if phrases and task == "count" else {})})
         data = {"name": f"label {ds_name}", "task": "count" if task == "count" else "roi_classification",
                 "classes": classes, "user_data": {"raw": f"library:{item}"}}
         try:

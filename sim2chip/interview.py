@@ -48,7 +48,11 @@ Before any question, reread the user's messages: never ask what they already ans
 What the spec must settle (decide it; ask only as said above):
 - What the camera must recognize and what counts as "nothing". On a microcontroller 2 to 5 coarse classes
   work best: suggest merging classes it cannot tell apart at low resolution. Bigger devices allow more
-  and finer classes.
+  and finer classes. Class ids are short English snake_case words whatever language the user speaks
+  ("blue_bin", never "contenedor_azul"). Name a class by what the camera sees, a color or a shape, not by
+  what it means ("blue_bin", not "paper_bin"): what a color stands for changes from place to place and the
+  camera cannot know it. Never a catch-all class ("other_trash", "misc"): the teacher finds only things
+  with a name; name the things instead, or leave them out.
 - The task. "roi_classification" (default) says which class the picture shows, or none. "task": "count"
   says how many objects of each class are in the picture and where: use it when the user wants to count, or
   when several objects appear at once (a balcony with pots, a flock), even if they never say "count": to find,
@@ -451,6 +455,12 @@ the ids listed here.
 {items}
 """
 
+RELABEL = """[Labels of dataset {ds}] The teacher already labeled this dataset ({task}) for: {old}. The proposed
+spec also needs {new}, never labeled in it: the teacher would mark {them} on every photo and the user would check
+a few photos. Do not propose the spec yet. In the user's language, tell them which classes the dataset is
+already labeled with and ask whether to keep those or to add or use the new ones (the labeled ones are reused at
+no cost, the same English names find them again). Then propose what they choose."""
+
 RESEARCH = """
 You can look facts up on the web: {{"research": "<one precise question>"}} returns a short answer and its sources.
 Use it instead of guessing when a number matters and you are not sure of it: the real size of an object or a
@@ -521,6 +531,18 @@ def summary(s: spec_mod.Spec) -> str:
 
 FIRST_QUESTION = "Describe what your camera should see / Describe qué debe ver tu cámara:"
 CONFIRM = "Is this right? / ¿Es correcto? (yes/sí, or tell me what to change / o dime qué cambiar)"
+
+
+def _rename_classes(spec: dict, renamed: dict[str, str]) -> None:
+    """Class ids renamed everywhere a spec names them: the classes, the background class and the class map."""
+    for c in spec.get("classes") or []:
+        if isinstance(c, dict) and c.get("id") in renamed:
+            c["id"] = renamed[c["id"]]
+    if spec.get("background_class") in renamed:
+        spec["background_class"] = renamed[spec["background_class"]]
+    ud = spec.get("user_data")
+    if isinstance(ud, dict) and isinstance(ud.get("class_map"), dict):
+        ud["class_map"] = {renamed.get(k, k): v for k, v in ud["class_map"].items()}
 
 
 def _unknown_categories(session, s: spec_mod.Spec) -> str | None:
@@ -615,6 +637,7 @@ class Session:
         self.goal = ""  # the user's first message: what the photo analysis looks for
         self.analysed: set[str] = set()  # folders already analysed
         self.settled: list[list[str]] = []  # query lists of the job being revised (see revise)
+        self.settled_ids: set[str] = set()  # its class ids, kept as they are
         # What the current turn is doing, step by step, for a front end to show while it waits (see _step).
         # `activity_id` is the caller's id for the turn, so a poll never shows the steps of the previous one.
         self.activity: list[dict] = []
@@ -622,15 +645,21 @@ class Session:
         self.library_ids: set[str] = set()  # library items this chat may reference (see use_library)
         self.photo_notes = None  # (photos, classes, run) -> descriptions, the kept ones reused (library)
         self.open_dataset = None  # library dataset id -> a folder of its photos this session may read
+        self.labelings: dict[str, list[dict]] = {}  # library dataset id -> library.labelings
+        self.replies = 0  # the user's messages so far
+        self.relabel_asked: dict[str, int] = {}  # dataset id -> self.replies when the user was to be asked
 
     def use_library(self, items: str, ids: set[str], kit: str | None = None, notes=None, open_dataset=None,
-                    labeled: set[str] | None = None, datasets: set[str] | None = None) -> None:
+                    labeled: set[str] | None = None, datasets: set[str] | None = None,
+                    labelings: dict[str, list[dict]] | None = None) -> None:
         """Tell the model what the user's library holds (kits and datasets, see LIBRARY); kit: the name of the kit
         the user chose to start from. notes: keeps and reuses photo descriptions (Library.describe);
         open_dataset(id): a folder with a dataset's photos, so describe_scene can measure it for this goal;
         labeled: the datasets with labels of their own, the only ones a spec may give as "labeled"; datasets: every
-        dataset id, never a 3D model."""
+        dataset id, never a 3D model; labelings: per dataset, how the teacher labeled it before
+        (library.labelings), so the user is asked before a spec labels it for other classes (relabel_question)."""
         self.library_ids = set(ids)
+        self.labelings = labelings or {}
         self.dataset_ids = set(datasets or ())
         self.labeled_ids = set(labeled or ())
         self.photo_notes, self.open_dataset = notes, open_dataset
@@ -691,6 +720,7 @@ class Session:
         if self.finished:
             raise RuntimeError("the interview is over")
         self.goal = self.goal or user_text[:400]
+        self.replies += 1
         if self.proposed is not None:
             if is_yes(user_text):
                 self.finished = True
@@ -708,6 +738,7 @@ class Session:
         self.goal = "; ".join(f"{c.id}: {c.description}" for c in spec.classes)[:400]
         self.settled = [c.assets.queries for c in spec.classes if c.assets and c.assets.queries] + \
             [p.queries for p in spec.props if p.queries]
+        self.settled_ids = {c.id for c in spec.classes} | ({spec.background_class} if spec.background_class else set())
         self.messages.append({"role": "user", "content": (
             "[The user already trained a model with the spec below and wants to change something. Ask nothing "
             "that the spec already answers. When they say what to change, change only that, keep everything "
@@ -963,15 +994,57 @@ class Session:
                 self._note(f"The spec is invalid: {e}. Fix it and send it again.")
             return None
         self._end(step)
+        if ask := self.relabel_question(s):  # not a mistake to fix: the user decides, so it is no invalid spec
+            self._note(ask)
+            return None
         self.proposed = s
         intro = str(action.get("say") or "").strip()
         return Turn("confirm", (intro + "\n\n" if intro else "") + summary(s), s, intro=intro)
 
+    def relabel_question(self, s: spec_mod.Spec) -> str | None:
+        """A library dataset the teacher labeled before, now with classes it was never labeled for (another English
+        name): the model must tell the user which classes it is labeled with and ask, once, before proposing.
+        In code, as Nemotron ignored the same request in LIBRARY (basura_counter, 2026-10-10: other class ids
+        went to a full check of every photo without a word)."""
+        from . import teacher
+        raw = s.user_data.raw if isinstance(s.user_data.raw, list) else [s.user_data.raw]
+        task = "counts objects" if s.task == "count" else "one label per photo"
+        now = {c: p[0] for c, p in teacher.phrases(s).items()} if s.task == "count" else {c: c for c in s.labels}
+        for src in raw:
+            ds = re.fullmatch(r"(?:library:)?([0-9a-f]{16})", str(src or ""))
+            done = [l for l in self.labelings.get(ds.group(1), []) if l["task"] == s.task] if ds else []
+            if not done:
+                continue
+            old = {p for l in done for p in (l.get("phrases") or {}).values()} if s.task == "count" else \
+                {c for l in done for c in l["classes"] + ([l["background"]] if l.get("background") else [])}
+            new = [c for c, p in now.items() if p not in old]
+            asked = self.relabel_asked.get(ds.group(1))
+            if not new or (asked is not None and self.replies > asked):
+                continue
+            self.relabel_asked[ds.group(1)] = self.replies
+            return RELABEL.format(ds=ds.group(1), task=task, old=", ".join(sorted(old)),
+                                  new=", ".join(f"{c} ({now[c]})" if now[c] != c else c for c in new),
+                                  them="it" if len(new) == 1 else "them")
+        return None
+
     def _english_queries(self, spec: dict) -> None:
         """Put an English name first in every search query list. The prompt asks for English, but the model
         sometimes keeps the user's language ("maceta", "silla de terraza", 2026-09-27): the 3D model search
-        then finds little and the photo detector (OWLv2, English only) finds nothing. The original stays after."""
+        then finds little and the photo detector (OWLv2, English only) finds nothing. The original stays after.
+        Class ids go into English too, in the same call (user, 2026-10-10: ids always in English)."""
         from .llm import parse_json
+
+        classes = [c for c in spec.get("classes") or [] if isinstance(c, dict) and isinstance(c.get("id"), str)]
+        ids = [c["id"] for c in classes] + ([spec["background_class"]] if isinstance(spec.get("background_class"), str)
+                                            else [])
+
+        def own(i: str) -> set[str]:  # the class's English names: an id that is one of them is English already
+            c = next((c for c in classes if c["id"] == i), {})
+            a = c.get("assets") if isinstance(c.get("assets"), dict) else {}
+            return {str(t).lower() for k in ("queries", "categories") for t in a.get(k) or []} | \
+                {str(t).lower() for t in c.get("names") or []}
+        id_terms = {i: i.replace("_", " ") for i in ids
+                    if i not in self.settled_ids and i.replace("_", " ").lower() not in own(i)}
 
         lists = [a["queries"] for c in spec.get("classes") or [] if isinstance(a := c.get("assets"), dict)
                  and isinstance(a.get("queries"), list)]
@@ -983,7 +1056,7 @@ class Session:
         # Revising a job: lists kept as they were are already settled. Rewording them (railings -> railing)
         # would change the spec and send the job back to searching 3D models and rendering for nothing.
         lists = [qs for qs in lists if qs not in self.settled]
-        terms = sorted({q for qs in lists for q in qs if isinstance(q, str) and q.strip()})
+        terms = sorted({q for qs in lists for q in qs if isinstance(q, str) and q.strip()} | set(id_terms.values()))
         if not terms:
             return
         msg = [{"role": "user", "content": ENGLISH_PROMPT + json.dumps(terms, ensure_ascii=False)}]
@@ -1010,6 +1083,16 @@ class Session:
                     if t.strip().lower() not in {o.lower() for o in out}:
                         out.append(t.strip())
             qs[:] = out
+        renamed = {}
+        for i, term in id_terms.items():
+            en = names.get(term)
+            new = re.sub(r"[^a-z0-9]+", "_", en.lower()).strip("_") if isinstance(en, str) else ""
+            if new and new != i and new not in ids and new not in renamed.values():
+                renamed[i] = new
+        if renamed:
+            _rename_classes(spec, renamed)
+            self._note("Class ids are always in English: " + ", ".join(f"{a} -> {b}" for a, b in renamed.items())
+                       + ". Use these ids from now on.")
 
     def _research(self, question: str) -> None:
         """A web search for the model; logged with the model calls so the job's usage shows it."""
