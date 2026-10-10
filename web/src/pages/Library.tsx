@@ -60,7 +60,12 @@ function Empty({ icon, title, children, action }: { icon: ReactNode; title: stri
   );
 }
 
-const newModel = <ButtonLink to="/app" className="h-10 px-4 text-sm"><Plus className="h-4 w-4" /> New model</ButtonLink>;
+const newModel = <NewModelLink />;
+
+// A new chat, not the one left open (Interview keeps it while the user looks at other pages).
+function NewModelLink() {
+  return <ButtonLink to="/app" state={{ fresh: Date.now() }} className="h-10 px-4 text-sm"><Plus className="h-4 w-4" /> New model</ButtonLink>;
+}
 
 function Score({ m }: { m: NonNullable<ModelCard["model"]> }) {
   if (m.score == null) return null;
@@ -390,7 +395,7 @@ export function Kits() {
                     {[[k.datasets.length, "dataset"], [k.objects.length, "object"], [k.scenes.length, "scene"]]
                       .map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(" · ")}
                   </div>
-                  <ButtonLink to={`/app?kit=${k.id}`} variant="secondary" className="mt-3 h-10 w-full text-sm">
+                  <ButtonLink to={`/app?kit=${k.id}`} state={{ fresh: Date.now() }} variant="secondary" className="mt-3 h-10 w-full text-sm">
                     <Plus className="h-4 w-4" /> New model with this kit
                   </ButtonLink>
                 </div>

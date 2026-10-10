@@ -709,3 +709,12 @@ def test_a_dataset_labeled_before_for_the_same_classes_needs_no_check(app, tmp_p
     r = app.post("/api/jobs", data={"spec": json.dumps(as_model)})
     assets = json.loads((tmp_path / "jobs" / r.json()["job"] / "request.json").read_text())["classes"][0]["assets"]
     assert r.status_code == 200 and assets["source"] == "search" and assets["queries"] == ["cow"] and not assets["models"]
+
+
+def test_a_finished_turn_can_be_picked_up_after_the_request_was_cut(app):
+    """Cloudflare cuts a chat request after 100 s while the turn goes on: the web gets its answer from activity."""
+    sid = app.post("/api/interview").json()["session"]
+    turn = app.post(f"/api/interview/{sid}?act=t1", json={"text": "cows"}).json()
+    got = app.get(f"/api/interview/{sid}/activity?act=t1").json()
+    assert got["turn"] == turn and turn["text"] == "Where is the camera?"
+    assert "turn" not in app.get(f"/api/interview/{sid}/activity?act=t2").json()  # another turn: still running

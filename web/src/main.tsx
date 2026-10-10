@@ -1,15 +1,16 @@
 import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Route, Routes, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Route, Routes, useLocation, useSearchParams } from "react-router-dom";
 import "./index.css";
 import Landing from "./pages/Landing";
 import AppShell from "./pages/AppShell";
 import Interview from "./pages/Interview";
 
-// A new chat when "?revise=<job>" or "?kit=<id>" comes or goes: they are different conversations.
+// A new chat when "?revise=<job>" or "?kit=<id>" comes or goes (different conversations) or "New model" is pressed.
 function FreshInterview() {
   const [params] = useSearchParams();
-  return <Interview key={`${params.get("revise") ?? ""}|${params.get("kit") ?? ""}`} />;
+  const fresh = (useLocation().state as { fresh?: number } | null)?.fresh ?? "";
+  return <Interview key={`${params.get("revise") ?? ""}|${params.get("kit") ?? ""}|${fresh}`} />;
 }
 import JobPage from "./pages/Job";
 import { Datasets, Kits, Models, Objects, Scenes } from "./pages/Library";

@@ -845,6 +845,11 @@ class Session:
                 self._note(f"describe_scene: {ref.group(1)} is not one of the listed datasets.")
                 return
             folder = self.open_dataset(ref.group(1)) or folder
+            # A library dataset was described when it was added (its profile, scene_profile.GENERAL): those kept
+            # descriptions answer at once. Asked anew for this goal's classes, 15 photos took the vision model
+            # over 100 s and the chat's request timed out (2026-10-10).
+            from .scene_profile import GENERAL
+            req = {**req, "classes": GENERAL}
         if self.scene_profiler is None:
             self._note("describe_scene is not available here; keep the default open ground scene.")
         elif self._foreign(folder):

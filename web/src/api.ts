@@ -156,8 +156,10 @@ export const reply = (sid: string, text: string, act?: string) =>
   api<Turn>(`/api/interview/${sid}${actQuery(act)}`, json({ text }));
 export const pick = (sid: string, files: string[], cls: string, act?: string) =>
   api<Turn>(`/api/interview/${sid}/pick${actQuery(act)}`, json({ files, class: cls }));
+// Once the turn is over, its answer too (turn, or error and status): the web's own request may have been cut.
 export const activity = (sid: string, act: string) =>
-  api<{ steps: Step[]; now: number }>(`/api/interview/${sid}/activity?act=${encodeURIComponent(act)}`);
+  api<{ steps: Step[]; now: number; turn?: Turn; error?: string; status?: number }>(
+    `/api/interview/${sid}/activity?act=${encodeURIComponent(act)}`);
 const actQuery = (act?: string) => (act ? `?act=${encodeURIComponent(act)}` : "");
 export const thumbUrl = (sid: string, file: string) => `/api/interview/${sid}/thumb?file=${encodeURIComponent(file)}`;
 

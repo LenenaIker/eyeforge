@@ -658,7 +658,17 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return re.fullmatch(r"[0-9a-f]{32}", sid or "") is not None and f.exists() \
             and f.read_text().strip() == owner_of(request)
 
-    def guarded(sid: str, fn, *args, act: str | None = None):
+    # The last answer of each chat's turn, {sid: {"act", "turn" | "error", "owner"}}: a proxy gives up on a turn
+    # that runs long (Cloudflare: 100 s, HTTP 524; a library dataset measured anew took longer, 2026-10-10) while
+    # the turn goes on here, and the web picks its answer up from interview_activity.
+    answers: dict[str, dict] = {}
+
+    def answered(sid: str, act: str | None, out: dict, request: Request) -> dict:
+        if act:
+            answers[sid] = {"act": act, "turn": out, "owner": owner_of(request)}
+        return out
+
+    def guarded(sid: str, fn, *args, act: str | None = None, request: Request | None = None):
         """One call at a time per interview (a double submit would interleave two model turns), and the
         right status: 502 when the model service fails, 409 when the interview is already over.
         act: the front end's id for this turn, under which its steps are shown (see interview_activity)."""
@@ -672,11 +682,16 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             if hasattr(session, "begin"):
                 session.begin(act)
             try:
-                return fn(*args)
-            except LLMError as e:
-                raise HTTPException(502, f"model service: {e}") from None
-            except RuntimeError as e:
-                raise HTTPException(409, str(e)) from None
+                try:
+                    return fn(*args)
+                except LLMError as e:
+                    raise HTTPException(502, f"model service: {e}") from None
+                except RuntimeError as e:
+                    raise HTTPException(409, str(e)) from None
+            except HTTPException as e:
+                if act and request is not None:
+                    answers[sid] = {"act": act, "error": e.detail, "status": e.status_code, "owner": owner_of(request)}
+                raise
             finally:
                 meter_chat(sid)
 
@@ -700,16 +715,23 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     @app.post("/api/interview/{sid}")
     def interview_reply(sid: str, body: dict, request: Request, act: str | None = None):
         session = chat_of(sid, request)
-        return turn_out(sid, guarded(sid, session.reply, str(body.get("text", "")), act=act))
+        return answered(sid, act, turn_out(sid, guarded(sid, session.reply, str(body.get("text", "")), act=act,
+                                                        request=request)), request)
 
     @app.get("/api/interview/{sid}/activity")
     def interview_activity(sid: str, act: str, request: Request):
         """What the turn `act` is doing right now: its steps so far (thinking, searching, checking the setup),
         polled by the web while it waits. No lock: it must answer while the turn holds it. `now` lets the
-        client time running steps with the server's clock."""
-        session = chat_of(sid, request)
+        client time running steps with the server's clock. Once the turn is over, its answer too ("turn", or
+        "error" and "status"), for a web whose request a proxy cut."""
+        done = answers.get(sid)
+        if done and done["act"] == act and done["owner"] == owner_of(request):
+            done = {k: v for k, v in done.items() if k in ("turn", "error", "status")}
+            session = sessions.get(sid)  # gone once the chat is over
+        else:
+            done, session = {}, chat_of(sid, request)
         steps = list(getattr(session, "activity", [])) if getattr(session, "activity_id", None) == act else []
-        return {"steps": [dict(s) for s in steps], "now": time.time()}
+        return {"steps": [dict(s) for s in steps], "now": time.time(), **done}
 
     @app.post("/api/interview/{sid}/photos")
     def interview_photos(sid: str, request: Request, purpose: str = Form("training"), cls: str = Form(""),
@@ -739,8 +761,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if more:
             return {"stored": n}
         n = max(n, total)
-        return {**turn_out(sid, guarded(sid, session.add_photos, str(folder), n, purpose, cls or None,
-                                         act=act)), "photos": n}
+        return answered(sid, act, {**turn_out(sid, guarded(sid, session.add_photos, str(folder), n, purpose,
+                                                           cls or None, act=act, request=request)), "photos": n},
+                        request)
 
     @app.get("/api/interview/{sid}/thumb")
     def interview_thumb(sid: str, file: str, request: Request):
@@ -753,8 +776,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     @app.post("/api/interview/{sid}/pick")
     def interview_pick(sid: str, body: dict, request: Request, act: str | None = None):
         session = chat_of(sid, request)
-        return turn_out(sid, guarded(sid, session.choose, [str(f) for f in body.get("files") or []],
-                                     str(body.get("class", "")), act=act))
+        return answered(sid, act, turn_out(sid, guarded(sid, session.choose, [str(f) for f in body.get("files") or []],
+                                                        str(body.get("class", "")), act=act, request=request)),
+                        request)
 
     def budget_left() -> None:
         problem = jobs.over_budget()

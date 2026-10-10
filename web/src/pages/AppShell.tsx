@@ -118,7 +118,7 @@ function Sidebar({ engine, onClose }: { engine?: string; onClose?: () => void })
         <Logo />
         {onClose && <button onClick={onClose} aria-label="Close menu" className="rounded-lg p-1.5 text-muted hover:bg-gray-100"><X className="h-5 w-5" /></button>}
       </div>
-      <Button size="sm" className="my-3" onClick={() => navigate("/app")}><Plus className="h-4 w-4" /> New model</Button>
+      <Button size="sm" className="my-3" onClick={() => navigate("/app", { state: { fresh: Date.now() } })}><Plus className="h-4 w-4" /> New model</Button>
       {NAV.map((group, i) => (
         <div key={i} className="mb-2">
           {group.title && <div className="px-3 pt-3 pb-1.5 text-xs font-medium tracking-wide text-muted/80 uppercase">{group.title}</div>}

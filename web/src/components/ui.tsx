@@ -27,10 +27,10 @@ export function Button({ variant = "primary", size = "md", className, ...rest }:
   );
 }
 
-export function ButtonLink({ to, children, variant = "primary", className }:
-  { to: string; children: ReactNode; variant?: Variant; className?: string }) {
+export function ButtonLink({ to, children, variant = "primary", className, state }:
+  { to: string; children: ReactNode; variant?: Variant; className?: string; state?: unknown }) {
   return (
-    <Link to={to} className={cx(
+    <Link to={to} state={state} className={cx(
       "inline-flex h-12 items-center justify-center gap-2 rounded-[var(--radius-control)] px-6 font-medium transition-colors",
       VARIANTS[variant], className)}>
       {children}

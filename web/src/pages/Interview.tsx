@@ -1,6 +1,6 @@
 import { ArrowUp, Check, ChevronRight, ImagePlus, LoaderCircle, Pencil, Sparkles, Upload, X } from "lucide-react";
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import * as API from "../api";
 import type { RevisePlan, Spec, Step, Turn } from "../api";
 import { Button, Card, Notice, Spinner, cx } from "../components/ui";
@@ -11,34 +11,76 @@ import { useApp } from "./AppShell";
 type Msg = { id: number; from: "bot" | "me" | "sys"; text: string; photos?: string[]; turn?: Turn };
 let nextId = 0;
 
+// The chat as it was, kept while the user looks at other pages and across a reload of the tab: one per
+// conversation (a new model, a kit, a model being changed). "New model" starts a fresh one. pending: a turn that
+// was still running when the user left, whose answer the server keeps (API.activity) for when they come back.
+type Saved = { session: string | null; msgs: Msg[]; text: string; spec: Spec | null; proposal: Spec | null;
+               photoRequest: Turn["request"] | null; realPhotos: number; pending: { act: string; label: string } | null };
+const chats = new Map<string, Saved>();
+
+function loadChat(key: string): Saved | null {
+  if (chats.has(key)) return chats.get(key)!;
+  try {
+    const kept = sessionStorage.getItem(key);
+    return kept ? JSON.parse(kept) : null;
+  } catch { return null; }
+}
+
+function saveChat(key: string, chat: Saved | null) {
+  if (chat) chats.set(key, chat); else chats.delete(key);
+  try {
+    // Photo previews are page-only addresses: a reload drops them, the messages stay.
+    if (chat) sessionStorage.setItem(key, JSON.stringify({ ...chat, msgs: chat.msgs.map(({ photos: _, ...m }) => m) }));
+    else sessionStorage.removeItem(key);
+  } catch { /* private mode or full: kept for this page only */ }
+}
+
 export default function Interview() {
   const { config, refreshJobs } = useApp();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const revising = params.get("revise");  // a trained job whose setup the user wants to change
   const kit = revising ? null : params.get("kit");  // a kit of the library the new model starts from
+  const key = `eyeforge.chat.${revising ? `revise.${revising}` : kit ? `kit.${kit}` : "new"}`;
+  const fresh = (useLocation().state as { fresh?: number } | null)?.fresh;  // "New model": forget the last chat
+  const [saved] = useState(() => {
+    if (fresh) saveChat(key, null);
+    const chat = loadChat(key);
+    if (chat) nextId = Math.max(nextId, ...chat.msgs.map((m) => m.id + 1));
+    return chat;
+  });
   const [kitName, setKitName] = useState<string | null>(null);
   useEffect(() => {
     if (kit) API.getLibrary().then((l) => setKitName(l.kits.find((k) => k.id === kit)?.name ?? null)).catch(() => {});
   }, [kit]);
   const [plan, setPlan] = useState<RevisePlan | null>(null);  // what a revision would run again
-  const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [text, setText] = useState("");
+  const [msgs, setMsgs] = useState<Msg[]>(saved?.msgs ?? []);
+  const [text, setText] = useState(saved?.text ?? "");
   const [busy, setBusy] = useState<string | null>(null);  // what we are waiting for, shown as a typing bubble
   const [live, setLive] = useState<Live | null>(null);    // the steps of the turn in progress, polled
-  const [spec, setSpec] = useState<Spec | null>(null);          // the setup to train, with the user's tweaks
-  const [proposal, setProposal] = useState<Spec | null>(null);  // as the interview proposed it
-  const [photoRequest, setPhotoRequest] = useState<Turn["request"] | null>(null);
-  const [realPhotos, setRealPhotos] = useState(0);  // training photos uploaded in this interview
+  const [spec, setSpec] = useState<Spec | null>(saved?.spec ?? null);          // the setup to train, with the user's tweaks
+  const [proposal, setProposal] = useState<Spec | null>(saved?.proposal ?? null);  // as the interview proposed it
+  const [photoRequest, setPhotoRequest] = useState<Turn["request"] | null>(saved?.photoRequest ?? null);
+  const [realPhotos, setRealPhotos] = useState(saved?.realPhotos ?? 0);  // training photos uploaded in this interview
+  const [pending, setPending] = useState<Saved["pending"]>(saved?.pending ?? null);  // the turn running
   const [dragging, setDragging] = useState(false);
   const [trainError, setTrainError] = useState<string | null>(null);
-  const session = useRef<string | null>(null);
+  const session = useRef<string | null>(saved?.session ?? null);
+  const mounted = useRef(true);
   const starting = useRef(false);  // "Looks good" and Train could both launch the same run
   const fileInput = useRef<HTMLInputElement>(null);
   const textInput = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
   const push = (m: Omit<Msg, "id">) => setMsgs((all) => [...all, { ...m, id: nextId++ }]);
+  useEffect(() => {
+    saveChat(key, { session: session.current, msgs, text, spec, proposal, photoRequest, realPhotos, pending });
+  }, [msgs, text, spec, proposal, photoRequest, realPhotos, pending]);
+  useEffect(() => {
+    mounted.current = true;
+    if (saved?.pending && session.current) ask(saved.pending.label, null, saved.pending.act);  // left mid-turn
+    return () => { mounted.current = false; };
+  }, []);
   useEffect(() => {
     if (!config || msgs.length) return;
     if (!revising) { push({ from: "bot", text: config.first_question }); return; }
@@ -60,32 +102,50 @@ export default function Interview() {
   };
 
   // One turn of the interview. While it runs, its steps (thinking, searching, checking the setup) are polled
-  // under an id made up here, so the user sees it working instead of a bare "Thinking".
-  async function ask(label: string, call: (act: string) => Promise<Turn>) {
-    const act = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  // under an id made up here, so the user sees it working instead of a bare "Thinking". call null: a turn that
+  // was running when the user left the page (resumed: its id), whose answer the server kept.
+  async function ask(label: string, call: ((act: string) => Promise<Turn>) | null, resumed?: string) {
+    const act = resumed ?? Math.random().toString(36).slice(2) + Date.now().toString(36);
     setBusy(label);
     setLive(null);
+    setPending({ act, label });
     let polling = true;
+    const kept: { answer: { turn?: Turn; error?: string } | null } = { answer: null };  // as the server kept it
     const poll = async () => {
       while (polling) {
         if (session.current) {
           try {
             const r = await API.activity(session.current, act);
-            if (polling) setLive({ steps: r.steps, offset: Date.now() / 1000 - r.now });
+            if (r.turn || r.error) kept.answer = r;
+            else if (polling && mounted.current) setLive({ steps: r.steps, offset: Date.now() / 1000 - r.now });
           } catch { /* a missed poll only delays the next update */ }
         }
         await new Promise((ok) => setTimeout(ok, 700));
       }
     };
+    const wait = async () => {
+      const until = Date.now() + 10 * 60_000;
+      while (!kept.answer && Date.now() < until) await new Promise((ok) => setTimeout(ok, 1000));
+      return kept.answer;
+    };
     poll();
+    let answer: { turn?: Turn; error?: string } | null;
     try {
-      showTurn(await call(act));
+      answer = call ? { turn: await call(act) } : await wait();
     } catch (e) {
-      push({ from: "sys", text: `Something went wrong: ${(e as Error).message}` });
+      // The proxy in front of the server gives up on a long turn (Cloudflare: 100 s, HTTP 524) or the network
+      // drops, while the turn goes on there: wait for its answer instead of losing it.
+      const status = e instanceof API.ApiError ? e.status : 0;
+      answer = [0, 504, 524].includes(status) ? await wait() : null;
+      if (!answer) answer = { error: (e as Error).message };
     }
     polling = false;
+    if (!mounted.current) return;  // on another page: the chat picks the answer up when the user comes back
     setLive(null);
     setBusy(null);
+    setPending(null);
+    if (answer?.turn) showTurn(answer.turn);
+    else push({ from: "sys", text: `Something went wrong: ${answer?.error ?? "no answer from the server; please try again"}` });
   }
 
   function showTurn(t: Turn) {
@@ -139,10 +199,12 @@ export default function Interview() {
     try {
       if (revising) {
         await API.reviseJob(revising, s, false, sid);
+        saveChat(key, null);  // over: "Chat" opens a new one
         navigate(`/app/job/${revising}`);
         return;
       }
       const r = await API.createJob(s, true, sid);  // with raw photos, the user first checks the teacher
+      saveChat(key, null);
       refreshJobs();
       navigate(`/app/job/${r.job}`);
     } catch (e) {
@@ -198,7 +260,7 @@ export default function Interview() {
           </button>
           <textarea ref={textInput} rows={1} value={text} onChange={(e) => setText(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                    placeholder={revising ? "e.g. run it on an ESP32-CAM, or the camera is 5 m high" : "e.g. count the flower pots on balconies, camera on a street lamp"}
+                    placeholder={revising ? "What should change?" : "What do you want to forge?"}
                     className="max-h-40 min-h-11 flex-1 resize-none bg-transparent px-1 py-2.5 text-[16px] outline-none placeholder:text-gray-400" />
           <Button onClick={() => send()} disabled={!text.trim() || !!busy} className="h-11 w-11 shrink-0 px-0" aria-label="Send">
             <ArrowUp className="h-5 w-5" />
