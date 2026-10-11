@@ -206,7 +206,8 @@ def scene_frames(ctx: Context, out, first: int) -> list[dict]:
     for i, fr in enumerate(json.loads((src / "frames.json").read_text())):
         f = first + i
         shutil.copyfile(src / fr["file"], out / f"rgb_{f:04d}.png")
-        labels.append({"frame": f, "class": fr["boxes"][0][0] if fr["boxes"] else ctx.spec.background_class,
+        cls = fr["class"] if "class" in fr else fr["boxes"][0][0] if fr["boxes"] else ctx.spec.background_class
+        labels.append({"frame": f, "class": cls,
                        "context": "photo", "scene": fr["scene"], "boxes": fr["boxes"]})
     if labels:
         ctx.log(f"{len(labels)} frames from the user's place ({len({lab['scene'] for lab in labels})} scenes)")

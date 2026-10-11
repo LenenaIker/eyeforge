@@ -39,7 +39,8 @@ STEP_TIMEOUT_S = 30 * 60
 MIN_SUPPORT = 0.03  # share of the photo the support must cover
 LONG_SIDE = 1344    # the photo's long side in the scene (bg_prepare.py's default)
 # What compose() writes into a scene folder: one job's layout, not part of the scene the library keeps.
-COMPOSED = ("isaac", "report.json", "sheet.jpg", "scene.glb", "sheet_isaac.jpg", "review.jpg", "review.json")
+COMPOSED = ("isaac", "report.json", "sheet.jpg", "scene.glb", "sheet_isaac.jpg", "review.jpg", "review.json",
+            "groups.json")
 
 
 class Stop(Exception):
@@ -133,10 +134,11 @@ def build(flow: Flow, photo: Path, targets: list[str], sunny: bool = False) -> d
             "objects": made}
 
 
-def compose(flow: Flow, views: int, seed: int) -> list[dict]:
+def compose(flow: Flow, views: int, seed: int, groups: dict[str, str] | None = None, empty: float = 0.0) -> list[dict]:
     """New views of a built scene: its things placed again at random (seed), rendered by Isaac on the photo and
-    labelled. Returns [{"file": isaac/render_NN.png, "boxes": [{"box", "name", "role"}]}], the photo's own layout
-    (view 0) left out; empty when the VLM review rejects the views."""
+    labelled. groups ({thing's name: group}): each view shows the things of one group only (things in no group
+    always), or of none in a share `empty` of the views. Returns [{"file": isaac/render_NN.png, "boxes": [{"box",
+    "name", "role"}]}], the photo's own layout (view 0) left out; empty when the VLM review rejects the views."""
     d = flow.d
     plan = flow.json("plan.json")
     import shutil
@@ -147,9 +149,13 @@ def compose(flow: Flow, views: int, seed: int) -> list[dict]:
             shutil.rmtree(p)
         elif p.exists():
             p.unlink()
+    one = []
+    if groups is not None:
+        (d / "groups.json").write_text(json.dumps(groups))
+        one = ["--groups", d / "groups.json", "--empty", empty]
     flow.run("S.5_build", "mesh", "bg_build.py", ["--dir", d, "--meshes", d / "assets", "--views", views, "--seed", seed,
                                                   "--solid", ",".join(plan.get("solid") or []),
-                                                  "--fixed", ",".join(plan.get("fixed") or []), "--stack", "0.2"])
+                                                  "--fixed", ",".join(plan.get("fixed") or []), "--stack", "0.2", *one])
     flow.run("S.6_isaac", "isaac", "bg_isaac.py", ["--dir", d])
     flow.run("S.6_labels", "mesh", "view_labels.py", ["--dir", d])
     if flow.run("S.7_review", "sam3", "bg_review.py", ["--dir", d], ok=(0, 3)) == 3:

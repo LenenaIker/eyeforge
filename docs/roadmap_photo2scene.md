@@ -15,7 +15,7 @@ El objetivo del sintético (usuario, desde el principio): **escenas que se parez
 
 ## Estado para retomar (2026-10-11)
 
-- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo); A.2 (plantilla y etapas de modelos 3D apagadas, fotos obligatorias, motivo en informe y web; hoja `compare/A2_sin_plantilla.html`); A.3 (filtro de parecido en render, `sim2chip/likeness.py`; hoja `compare/A3_filtro_parecido.html`); A.4 (re-medida con 3 ejecuciones por brazo, `scripts/arms_a4.sh`; hoja `compare/A4_remedida.html`). B.1 (análisis de fotos, hoja `compare/B1_analisis_fotos.html`). B.2 (cámara constante, hoja `compare/B2_camara_constante.html`). B.3 (foto más limpia, hoja `compare/B3_foto_limpia.html`, falta revisión del usuario). Siguiente: B.4. Medir siempre con 3 ejecuciones por brazo (usuario, 2026-10-11) por el ruido de PicoDet (±0,03 a 0,05 con la misma entrada).
+- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo); A.2 (plantilla y etapas de modelos 3D apagadas, fotos obligatorias, motivo en informe y web; hoja `compare/A2_sin_plantilla.html`); A.3 (filtro de parecido en render, `sim2chip/likeness.py`; hoja `compare/A3_filtro_parecido.html`); A.4 (re-medida con 3 ejecuciones por brazo, `scripts/arms_a4.sh`; hoja `compare/A4_remedida.html`). B.1 (análisis de fotos, hoja `compare/B1_analisis_fotos.html`). B.2 (cámara constante, hoja `compare/B2_camara_constante.html`). B.3 (foto más limpia, hoja `compare/B3_foto_limpia.html`, falta revisión del usuario). B.4 (soporte al clasificar, hoja `compare/B4_soporte_clasificar.html`). Siguiente: B.5 (antes, M.3 con el usuario). Medir siempre con 3 ejecuciones por brazo (usuario, 2026-10-11) por el ruido de PicoDet (±0,03 a 0,05 con la misma entrada).
 - El interruptor es `stages/base.py: TEMPLATE` (False). Los tests de la maquinaria que aún usan la plantilla como ejemplo la encienden con el fixture `template_on`. Ruido entre ejecuciones medido en A.2: unos 0,03 de F1 en las botellas (mismo trabajo, 0,672 y 0,705).
 - Pruebas: home `runs/p2s_test` (`/media/lenena-iker/Crucial/runs/eyeforge/p2s_test`). Trabajos `jobs/grass` (copia del de la web local, para no tocar el original), `jobs/bottles_scene` (24 fotos) y `jobs/bottles_few` (8). Resultados en `arms.log`. Los scripts de brazos (`arms.sh`, `arms_grass.sh`) cambian `generation.frames`, `photo_scenes` y `training.seeds` en el spec del trabajo y lanzan `python -m sim2chip --home <home> run <spec> --job <job>` con el Python de `edge-sdg`; copias en `runs/p2s_test/scripts/`.
 - Hojas de comparación para el usuario: `runs/p2s_test/compare/` (A.0 en `A0_cesped.html`).
@@ -82,7 +82,7 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 |---|---|---|
 | Objetos de internet (búsqueda, VLM) | de las etapas de modelos 3D a photo2scene: mezclados con los de la foto en la imitación (M.1) y como sustitutos en las copias de la extrapolación (M.2); la revisión compara con los objetos del usuario | [ ] |
 | SAM 3D para fotos del objeto solo | fotos que sube el usuario a objetos de su biblioteca (en lugar de TRELLIS) | [ ] |
-| photo2scene en todas las tareas | `scene_from_photo` también para clasificar y regiones, con etiquetas por tarea (B.4) | [ ] |
+| photo2scene en todas las tareas | `scene_from_photo` también para clasificar y regiones, con etiquetas por tarea (B.4) | [x] (ruta de soporte; superficies en B.5) |
 | Ruta de superficie como clase | nueva ruta de photo2scene (B.5) | [ ] |
 | Rutas de calle y habitación | del experimento al paquete del producto (C.1 a C.5); la extrapolación copia en espejo y cambia superficies y objetos (M.2) | [ ] |
 | Elección de ruta | del análisis de fotos de la entrevista a photo2scene (C.3) | [ ] |
@@ -135,11 +135,21 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
   - `SceneFromPhoto._pick` (versión 2 de la etapa): las 6 primeras del orden de antes, puntuadas de 0 a 10 por el modelo de escena; el empate lo rompe el orden de antes. Notas en la caché (`cache/scene_pick/`) por foto y clases. Sin respuesta, se queda el orden de antes.
   - [ ] Check: con las botellas elige una foto que pase la revisión a ojo. 8 fotos: la 41 (7/10), claramente buena. 24 fotos: la 19 (4/10) en vez de la 13 (3/10, botellas pegadas); empata con la 22 y la 24, y la 24 parece algo más limpia. Falta la revisión del usuario en la hoja `runs/p2s_test/compare/B3_foto_limpia.html`.
   - [x] Check: la elección queda en el registro con su motivo ("picked photo 19 (19.jpg): 4/10, ...").
-- [ ] **B.4 La ruta de soporte en clasificar y regiones**: quitar el límite de solo contar (`scene_from_photo.py:55`). Las etiquetas salen del tipo de tarea:
+- [x] **B.4 La ruta de soporte en clasificar y regiones**: quitar el límite de solo contar (`scene_from_photo.py:55`). Las etiquetas salen del tipo de tarea:
   - una etiqueta por imagen al clasificar;
   - regiones o puntos según la tarea.
-  - Check: tests de las salidas de cada tarea.
-  - Check: un trabajo de clasificar con objetos sobre una mesa llega de principio a fin.
+  - Decisiones del usuario (2026-10-11):
+    - Objeto o superficie lo dice el VLM. Se pregunta al puntuar las fotos candidatas (B.3, campo `things`), porque un dataset de la biblioteca se describe en la entrevista antes de elegir las clases. Si la mayoría dice superficie, no hay escena y el motivo es "your classes are surfaces or areas...".
+    - Al clasificar, una clase por vista (`bg_build.py --groups`, y vistas sin clase si hay clase de fondo, en la proporción `generation.empty_ratio`). Al contar puede haber varias.
+    - Prueba de principio a fin con las fotos de botellas, etiquetadas por foto por SigLIP (crema solar frente a botella de agua).
+  - Consecuencia mía de la segunda decisión: al clasificar se construye una escena por clase, desde una foto de esa clase. Con una sola escena, las clases que no salen en la foto no tendrían vistas.
+  - Fallos encontrados por el camino y corregidos:
+    - El profesor llamó crema solar a una foto con solo una figurita, y el VLM le dio 9/10. Ahora cada clase se puntúa con sus palabras, una foto sin la clase va al final, y si una foto no da escena se prueba la siguiente de su clase (`BUILD_TRIES = 2`).
+    - Con una sola botella en una mesa grande, las vistas la dejaban cortada o fuera del encuadre, y la revisión rechazó la escena (nota 2). Ahora `bg_build.py` elige primero la cámara y coloca cada objeto donde esa cámara lo ve entero. Esto cambia también las vistas al contar: se mide en B.6.
+    - Al parar una ejecución, los procesos de entrenamiento quedan huérfanos con memoria de GPU y la siguiente se queda sin memoria. Pendiente: que `run_stage` cierre su pool al recibir la señal.
+  - Visto a ojo y sin arreglar: en la escena de botellas de agua hay cajas sobre cosas que no son botellas (base de una cafetera, un embudo). Es de la construcción de la escena, también al contar.
+  - [x] Check: tests de las salidas de cada tarea (`tests/test_scene_pick.py`: vistas de una clase, vista sin clase como fondo o fuera, superficies sin escena, reintento; `test_template_off.py`).
+  - [x] Check: un trabajo de clasificar con objetos sobre una mesa llega de principio a fin (`jobs/bottles_classify`, 2 escenas, 40 vistas, 19 y 20 recortes). 3 ejecuciones por brazo: solo fotos 0,925 ± 0,008, con escenas 0,914 ± 0,010, igual dentro del ruido (24 fotos de test, etiquetas del profesor). El césped (regiones) queda como superficie en 17 de 17 fotos y da el motivo. Hoja: `runs/p2s_test/compare/B4_soporte_clasificar.html`.
 - [ ] **B.5 Ruta nueva, superficie como clase** (el caso del césped):
   - Imitación: nuevos encuadres y mezclas a partir de las superficies del propio usuario. La fase 1 segmenta cada clase de superficie en sus fotos, y la fase 2 compone vistas nuevas con esas texturas, la luz y la cámara medidas.
   - Extrapolación: bordes nuevos entre las superficies del usuario para border, y proporciones nuevas.

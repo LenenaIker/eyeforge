@@ -1,5 +1,8 @@
 """Crops of the region of interest at the model's input size, from the synthetic renders.
 
+Frames from the user's own place (render "context": "photo", scene_from_photo) are whole views with one class each,
+like the user's photos: each is taken whole. The rest is the scene template's (off, base.TEMPLATE):
+
 Targets: crop around the tight bbox with a random margin. Background frames: boxes drawn from the target
 boxes of this same render (size, aspect and height in the image, jittered), so where and how big a crop
 is tells nothing about its class, whatever the scene (a road, a balcony, a table).
@@ -20,7 +23,7 @@ MIN_SIDE = 0.2  # of the model's input size: a target smaller than this in the r
 
 class Crops(Stage):
     name = "crops"
-    version = "2"  # background boxes from the target boxes, not a road-sized band
+    version = "3"  # 2: background boxes from the target boxes, not a road-sized band; 3: whole photo2scene views
     runtime = "cpu"
     uses = ("hardware", "background_class", "generation", "look")
     after = ("render",)
@@ -62,6 +65,12 @@ class Crops(Stage):
         empty = []
         for lab in labels:
             f, cls = lab["frame"], lab["class"]
+            if lab.get("context") == "photo":
+                if cls:
+                    with Image.open(src / f"rgb_{f:04d}.png") as im:
+                        img = im.convert("RGB")
+                    save(img, (0, 0, *img.size), cls, f"{f:05d}.png")
+                continue
             if cls == bg:
                 empty.append(f)
                 continue

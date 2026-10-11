@@ -442,6 +442,10 @@ def main():
                          'view keeps them where the photo has them, only the camera moves (a copy of the scene)')
     ap.add_argument('--max-empty', type=float, default=0.08,
                     help='largest unrendered fraction of a new view (filled by inpainting)')
+    ap.add_argument('--groups', default=None,
+                    help='JSON file {thing name: group}: each new view shows the things of one group only (things in '
+                         'no group always), for one label per image when classifying')
+    ap.add_argument('--empty', type=float, default=0.0, help='with --groups: share of views with no group at all')
     args = ap.parse_args()
     d = args.dir
     rng = np.random.default_rng(args.seed)
@@ -587,6 +591,16 @@ def main():
         print(f'{len(anchored)} fixed objects kept in place', flush=True)
     if args.layout == 'shuffle':
         print(f'{len(lib)} of {len(replica)} objects shuffled in new views', flush=True)
+    # One group per view (--groups): each replica object's group by its name in flow_assets.py's catalogue.
+    group_of = {}
+    if args.groups:
+        groups = json.load(open(args.groups))
+        cat = os.path.join(d, 'assets.json')
+        rows = json.load(open(cat))['assets'] if os.path.exists(cat) else []
+        group_of = {r: groups.get(rows[j]['name'] if j < len(rows) else str(phrases[j]))
+                    for r, (j, _, _) in enumerate(replica)}
+        shown = sorted({group_of[e[0]] for e in lib + anchored} - {None})
+        print(f'one group per view among {shown}, {args.empty:.0%} with none', flush=True)
     # For Isaac (bg_isaac.py): view 0 is the replica from the photo camera, then every accepted new view.
     bg_eye, dep_eye, _ = rend.render(eye, bg_mesh, [], n)
     isaac_views = [{'pose': eye.tolist(), 'objects': [[i, tf.tolist()] for i, (_, _, tf) in enumerate(replica)],
@@ -606,16 +620,47 @@ def main():
     print('new views', flush=True)
     while views < args.views and tries < 50 * args.views:
         tries += 1
+        # Turns are capped so the camera moves at most --max-move metres sideways: a few degrees in a street
+        # (objects 5 m away), the full --yaw on a table. Parallax beyond that tears or smears the background.
+        yaw_cap = min(args.yaw, math.degrees(args.max_move / np.linalg.norm(pivot)))
+        step = args.max_move / np.linalg.norm(pivot)  # the same metric cap for moving in/out and up/down
+        yaw = rng.uniform(-yaw_cap, yaw_cap)
+        lift = rng.uniform(-0.5 * min(step, 0.1), min(step, 0.2))
+        dist = rng.uniform(max(0.75, 1 - step), min(1.05, 1 + 0.25 * step))
+        rot = trimesh.transformations.rotation_matrix(math.radians(yaw), up)[:3, :3]
+        reach = np.linalg.norm(pivot)
+        pose = np.eye(4)
+        pose[:3, :3] = rot @ trimesh.transformations.rotation_matrix(rng.normal(0, 0.03), up)[:3, :3]
+        pose[:3, 3] = pivot + rot @ (-pivot) * dist + up * lift * reach
+        # Objects stand where this camera sees them whole: placed anywhere on a big table, a lone bottle was cut by
+        # the frame or out of it in most views (sun cream, 2026-10-11).
+        R, T = pose[:3, :3], pose[:3, 3]
+
+        def whole(p, hh, margin=0.03):
+            c = (np.stack([p, p + n * hh]) - T) @ R
+            if (c[:, 2] <= 0).any():
+                return False
+            u, v = fx * c[:, 0] / c[:, 2] + cx, fy * c[:, 1] / c[:, 2] + cy
+            return bool(((u > margin * w) & (u < (1 - margin) * w) & (v > margin * h) & (v < (1 - margin) * h)).all())
         placed, objs, ids = [], [], []
+        if args.groups:
+            pick = None if not shown or rng.random() < args.empty else shown[rng.integers(len(shown))]
+            keep = lambda r: group_of.get(r) in (None, pick)  # noqa: E731
+        else:
+            keep = lambda r: True  # noqa: E731
         if args.layout == 'photo':  # the replica as it is; the loop below then has nothing to place
             objs, ids = [(obj, tf) for _, obj, tf in replica], list(range(len(replica)))
         else:  # fixed objects first, so the shuffled ones keep clear of their footprint
             for r, obj, tf, mi in anchored:
+                if not keep(r):
+                    continue
                 placed.append([mi['base'], mi['width_m'], mi['height_m'], False, False])
                 objs.append((obj, tf))
                 ids.append(r)
         for i in rng.permutation(len(lib)) if args.layout == 'shuffle' else []:
             r, obj, hh, ww = lib[i]
+            if not keep(r):
+                continue
             # Piles: some objects go on top of a placed one at least as wide, which then carries nothing else.
             tops = [q for q in placed if q[3] and q[4] and q[1] >= 0.8 * ww]
             if tops and rng.random() < args.stack:
@@ -631,24 +676,12 @@ def main():
                 continue
             for _ in range(50):
                 p = cand[rng.integers(len(cand))]
-                if all(np.linalg.norm(p - q[0]) > (ww + q[1]) / 2 + 0.01 for q in placed if q[0] @ n + dd < 1e-3):
+                if whole(p, hh) and all(np.linalg.norm(p - q[0]) > (ww + q[1]) / 2 + 0.01 for q in placed if q[0] @ n + dd < 1e-3):
                     k = rng.uniform(0.95, 1.05)
                     placed.append([p, ww * k, hh * k, True, flat_top(obj)])
                     objs.append((obj, place(obj, p, n, hh * k, ww * k, rng.uniform(0, 2 * math.pi))))
                     ids.append(r)
                     break
-        # Turns are capped so the camera moves at most --max-move metres sideways: a few degrees in a street
-        # (objects 5 m away), the full --yaw on a table. Parallax beyond that tears or smears the background.
-        yaw_cap = min(args.yaw, math.degrees(args.max_move / np.linalg.norm(pivot)))
-        step = args.max_move / np.linalg.norm(pivot)  # the same metric cap for moving in/out and up/down
-        yaw = rng.uniform(-yaw_cap, yaw_cap)
-        lift = rng.uniform(-0.5 * min(step, 0.1), min(step, 0.2))
-        dist = rng.uniform(max(0.75, 1 - step), min(1.05, 1 + 0.25 * step))
-        rot = trimesh.transformations.rotation_matrix(math.radians(yaw), up)[:3, :3]
-        reach = np.linalg.norm(pivot)
-        pose = np.eye(4)
-        pose[:3, :3] = rot @ trimesh.transformations.rotation_matrix(rng.normal(0, 0.03), up)[:3, :3]
-        pose[:3, 3] = pivot + rot @ (-pivot) * dist + up * lift * reach
         col, dep, _ = rend.render(pose, bg_mesh, objs, n)
         empty = dep == 0
         if empty.mean() > args.max_empty:  # camera left the reconstructed area
