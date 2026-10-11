@@ -15,7 +15,7 @@ El objetivo del sintético (usuario, desde el principio): **escenas que se parez
 
 ## Estado para retomar (2026-10-11)
 
-- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo); A.2 (plantilla y etapas de modelos 3D apagadas, fotos obligatorias, motivo en informe y web; hoja `compare/A2_sin_plantilla.html`); A.3 (filtro de parecido en render, `sim2chip/likeness.py`; hoja `compare/A3_filtro_parecido.html`). Siguiente: A.4 (re-medir), con varias ejecuciones por brazo por el ruido de PicoDet (±0,03 a 0,05 con la misma entrada).
+- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo); A.2 (plantilla y etapas de modelos 3D apagadas, fotos obligatorias, motivo en informe y web; hoja `compare/A2_sin_plantilla.html`); A.3 (filtro de parecido en render, `sim2chip/likeness.py`; hoja `compare/A3_filtro_parecido.html`); A.4 (re-medida con 3 ejecuciones por brazo, `scripts/arms_a4.sh`; hoja `compare/A4_remedida.html`). Siguiente: B.1. Medir siempre con 3 ejecuciones por brazo (usuario, 2026-10-11) por el ruido de PicoDet (±0,03 a 0,05 con la misma entrada).
 - El interruptor es `stages/base.py: TEMPLATE` (False). Los tests de la maquinaria que aún usan la plantilla como ejemplo la encienden con el fixture `template_on`. Ruido entre ejecuciones medido en A.2: unos 0,03 de F1 en las botellas (mismo trabajo, 0,672 y 0,705).
 - Pruebas: home `runs/p2s_test` (`/media/lenena-iker/Crucial/runs/eyeforge/p2s_test`). Trabajos `jobs/grass` (copia del de la web local, para no tocar el original), `jobs/bottles_scene` (24 fotos) y `jobs/bottles_few` (8). Resultados en `arms.log`. Los scripts de brazos (`arms.sh`, `arms_grass.sh`) cambian `generation.frames`, `photo_scenes` y `training.seeds` en el spec del trabajo y lanzan `python -m sim2chip --home <home> run <spec> --job <job>` con el Python de `edge-sdg`; copias en `runs/p2s_test/scripts/`.
 - Hojas de comparación para el usuario: `runs/p2s_test/compare/` (A.0 en `A0_cesped.html`).
@@ -49,6 +49,8 @@ Con estos números se compara cada fase. Mismo test y 5 semillas, como en la pru
 | Botellas, 8 fotos (contar) | 0,672 | escena de soporte: 0,702; plantilla: 0,570 |
 | Césped grass/border/no_grass (regiones) | 0,724 ± 0,024 | plantilla: 0,329 ± 0,143 (5 semillas) |
 | Calle (por elegir, C.0) | por medir | sin datos |
+
+A.4 (3 ejecuciones por brazo, la referencia buena desde ahora): botellas 24 fotos, solo fotos 0,779 ± 0,011 y escena 0,764 ± 0,031; botellas 8 fotos, solo fotos 0,697 ± 0,013 y escena 0,691 ± 0,023; césped tras A.1, solo fotos 0,814 ± 0,015.
 
 ---
 
@@ -99,9 +101,9 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 
 - [x] **A.0 Línea base del césped** (hecho: 0,724 frente a 0,329; hoja en `runs/p2s_test/compare/A0_cesped.html`): el mismo trabajo, solo con fotos, con 5 semillas.
   - Check: queda una cifra anotada en la tabla de arriba.
-- [x] **A.1 Sin clase de fondo inventada** (`interview._drop_background_class`; falta comprobarlo en un trabajo nuevo) cuando las clases del usuario cubren toda la foto (clasificar y regiones). Es la regla de `CLAUDE.md` del 2026-09-30.
+- [x] **A.1 Sin clase de fondo inventada** (`interview._drop_background_class`; comprobado en A.4 en el trabajo del césped) cuando las clases del usuario cubren toda la foto (clasificar y regiones). Es la regla de `CLAUDE.md` del 2026-09-30.
   - Check: test que demuestra que una spec de regiones con clases de superficie no tiene `background_class`.
-  - Check: el trabajo del césped no tiene recortes "empty".
+  - [x] Check: el trabajo del césped no tiene recortes "empty" (exporta grass, border y no_grass). Efecto lateral: el profesor reetiqueta las fotos y coincide más con las etiquetas a mano del usuario (56 de 69 frente a 51).
 - [x] **A.2 La plantilla deja de ser relleno** (decisión 0.2): sin escena válida, no entra sintético de plantilla. Tanto el informe como la web dicen "sin sintético: motivo". Las etapas de modelos 3D de internet también se apagan hasta que M.1 las conecte (usuario, 2026-10-11). Resultado: césped 0,735 ± 0,026 (solo fotos, motivo en la página), botellas 0,778 y 0,672 (sin cambio fuera del ruido). Hoja: `runs/p2s_test/compare/A2_sin_plantilla.html`.
   - [x] Check: test de render con escena desactivada y fotos del usuario, que no debe dar frames de plantilla (`tests/test_template_off.py`).
   - [x] Check: la página del trabajo muestra el motivo (captura sin cabeza en la hoja; falta que el usuario lo vea en su navegador).
@@ -109,10 +111,13 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
   - Lo que se aleja de la distribución de las fotos no entra en el entrenamiento.
   - El umbral sale de las propias fotos: la distancia que hay entre fotos reales de train.
   - [x] Check: en el césped elimina los cielos, los interiores de modelos y los colores lisos (revisión a ojo con una hoja de aceptados y rechazados). Sobre los 333 frames de plantilla del A.0 deja 1 (umbral 0,783); quedan fuera también céspedes de textura plausibles (0,75-0,77). Falta tu revisión a ojo de la hoja.
-  - [ ] Check: en las botellas mantiene la mayoría de los frames de escena (sí: 20 de 20 en ambos), y la nota no baja de 0,801 / 0,702 (no comprobable así: con la misma entrada que A.2 dio 0,779 y 0,659; las ejecuciones repetidas de 8 fotos dan 0,672, 0,705 y 0,659, y 0,801 / 0,702 eran una sola ejecución con 1 frame de plantilla más).
+  - [ ] Check: en las botellas mantiene la mayoría de los frames de escena (sí: 20 de 20 en ambos), y la nota no baja de 0,801 / 0,702 (no comprobable así: con la misma entrada que A.2 dio 0,779 y 0,659; las ejecuciones repetidas de 8 fotos dan 0,672, 0,705 y 0,659, y 0,801 / 0,702 eran una sola ejecución con 1 frame de plantilla más). Medido en A.4 con 3 ejecuciones: 0,764 y 0,691, lo mismo que solo fotos dentro del ruido.
   - [x] Check: el informe dice cuántos frames entraron y cuántos se quedaron fuera (`report.json`: `synthetic.kept`, `synthetic.left_out`; `render/likeness.json` con la similitud de cada frame).
-- [ ] **A.4 Re-medir el césped y las botellas** con A.1 a A.3.
-  - Check: el césped no queda por debajo de solo fotos (A.0).
+- [x] **A.4 Re-medir el césped y las botellas** con A.1 a A.3. 3 ejecuciones por brazo de 5 semillas cada una (media ± desviación de las 3 notas). Hoja: `runs/p2s_test/compare/A4_remedida.html`.
+  - Botellas, 24 fotos: escena 0,764 ± 0,031 frente a solo fotos 0,779 ± 0,011.
+  - Botellas, 8 fotos: escena 0,691 ± 0,023 frente a solo fotos 0,697 ± 0,013.
+  - Conclusión: los 20 frames de la ruta de soporte no ayudan ni perjudican de forma medible. Las referencias de una sola ejecución (0,832 y 0,801) eran ruido.
+  - [x] Check: el césped no queda por debajo de solo fotos (A.0). Es solo fotos por construcción (sin ruta para regiones): 0,814 ± 0,015. No es comparable con el 0,724 del A.0 porque A.1 cambió las etiquetas del profesor, y con ellas train y test.
 
 ## Fase B: ruta de soporte para todas las tareas y superficie como clase (~2 días)
 
