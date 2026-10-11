@@ -206,3 +206,20 @@ def test_a_step_the_model_can_do_without_is_left_out(tmp_path):
     be = InProcess(fail={"scene"})
     make(tmp_path / "place", photos, [Fake("scene", skippable="with photos"), render]).run(be, log=lambda m: None)
     assert be.ran == ["scene", "render"] and not open_job(tmp_path / "place", "job").dropped("render")
+
+
+def test_render_leaves_out_the_scene_frames_of_a_run_that_had_them(tmp_path):
+    """Scenes turned off: the frames an earlier run left in scene_from_photo/ are not this spec's."""
+    from sim2chip.stages.render import scene_frames
+    spec = from_dict({**SPEC, "task": "count", "user_data": {"raw": "photos"},
+                      "camera": {"pitch_deg": [60, 85]}})
+    ctx = Context(spec, open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
+    src = ctx.job.stage_dir("scene_from_photo")
+    (src / "s").mkdir(parents=True)
+    (src / "s" / "v.png").write_bytes(b"png")
+    (src / "frames.json").write_text(json.dumps([{"file": "s/v.png", "scene": "s", "boxes": [["cow", 0, 0, 9, 9]]}]))
+    out = tmp_path / "render"
+    out.mkdir()
+    assert len(scene_frames(ctx, out, 0)) == 1
+    spec.generation.photo_scenes = False
+    assert scene_frames(ctx, out, 0) == []

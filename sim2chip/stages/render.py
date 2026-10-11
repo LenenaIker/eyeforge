@@ -163,8 +163,10 @@ def _new_stage():
 
 def scene_frames(ctx: Context, out, first: int) -> list[dict]:
     """The frames scene_from_photo rendered in the user's own place, numbered from `first` on."""
+    from .scene_from_photo import SceneFromPhoto
     src = ctx.job.stage_dir("scene_from_photo")
-    if not (src / "frames.json").exists():
+    # A run that turned the scenes off leaves the last run's frames in the folder: not this spec's.
+    if not SceneFromPhoto().enabled(ctx.spec) or not (src / "frames.json").exists():
         return []
     import shutil
     labels = []
