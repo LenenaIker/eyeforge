@@ -73,6 +73,8 @@ export default function JobPage() {
       </div>
       {error && <Notice tone="bad">Lost contact with the server, retrying: {error}</Notice>}
       {news && <Notice>{news}</Notice>}
+      {(s.no_synthetic ?? s.report?.no_synthetic) && !s.labeling && !s.calibration &&
+        <Notice>No synthetic images: {s.no_synthetic ?? s.report?.no_synthetic}. The model learns from your photos alone.</Notice>}
       {s.labeling && !s.calibration ? <Labeling s={s} /> : s.calibration ? <Calibration s={s} reviewKey={reviewKey} onRerun={restart} /> :
         (s.running || !s.report || failed) && <Progress s={s} failed={failed} onRerun={restart} />}
       {s.report && <Result job={s.job} r={s.report} usd={s.cloud_usd} version={s.version} />}

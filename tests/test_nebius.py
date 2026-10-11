@@ -85,7 +85,7 @@ def backend(store, final="COMPLETED", max_usd=10.0):
     return NebiusBackend(dry_run=False, max_usd=max_usd, cli=FakeCLI(store, final), store=store, poll_s=0)
 
 
-def test_stage_runs_as_job_and_brings_back_small_results(job, tmp_path):
+def test_stage_runs_as_job_and_brings_back_small_results(job, tmp_path, template_on):
     store = FakeStore()
     b = backend(store)
     b.run_stage(BY_NAME["render"], job, Cache(job.root.parent / "cache"), "fp")
@@ -199,7 +199,7 @@ class ListingStore(FakeStore):
         return n
 
 
-def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
+def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch, template_on):
     from sim2chip.pipeline import Pipeline
     from sim2chip.spec import from_dict
 

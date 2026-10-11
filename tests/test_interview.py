@@ -28,7 +28,8 @@ class Scripted:
 
 
 GOOD = {"name": "barn", "classes": [{"id": "cow", "description": "cows", "size_m": {"measure": "length",
-        "range": [2, 2.5]}, "assets": {"categories": ["cow"], "count": 10}}], "qa": {"mode": "auto"}}
+        "range": [2, 2.5]}, "assets": {"categories": ["cow"], "count": 10}}], "qa": {"mode": "auto"},
+        "user_data": {"raw": "photos"}}
 
 
 def test_interview_flow():
@@ -67,7 +68,7 @@ def test_is_yes():
         assert not interview.is_yes(a), a
 
 
-def test_scene_tags_are_checked():
+def test_scene_tags_are_checked(template_on):
     scene = {"template": "generic", "sky_tags": ["moon"], "ground_tags": ["grass"]}
     fixed = {"template": "generic", "sky_tags": ["forest"], "ground_tags": ["grass"]}
     client = Scripted([{"spec": {**GOOD, "scene": scene}}, {"spec": {**GOOD, "scene": fixed}}])
@@ -105,7 +106,7 @@ def test_walls_are_not_ground():
     assert "not a floor" in interview.check_scene(s.scene)
 
 
-def test_interview_proposes_the_users_own_photos_for_3d(tmp_path):
+def test_interview_proposes_the_users_own_photos_for_3d(tmp_path, template_on):
     from PIL import Image
     photos = tmp_path / "phone"
     photos.mkdir()
@@ -152,7 +153,7 @@ def test_photo_steps_count_photos_when_the_helper_can():
     assert s._counting(lambda folder: folder, step, "g") == "g"  # helpers without progress still work
 
 
-def test_interview_asks_for_photos_when_none_fit(tmp_path):
+def test_interview_asks_for_photos_when_none_fit(tmp_path, template_on):
     (tmp_path / "phone").mkdir()
     pick = {"pick_photos": {"class": "pot", "query": "flower pot", "folder": str(tmp_path / "phone")}}
     ask = {"photos": {"for": "3d", "class": "pot", "say": "Do you have a clear photo of the pot?"}}
@@ -216,7 +217,8 @@ def test_spec_sent_with_text_is_proposed():
     cats = interview.CategoryIndex(counts={"cow": 62})
     good = {"name": "barn", "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
                                          "assets": {"categories": ["cow"], "count": 4}},
-                                        {"id": "empty", "description": "no cow"}]}  # background listed too
+                                        {"id": "empty", "description": "no cow"}],  # background listed too
+            "user_data": {"raw": "photos"}}
     s = interview.Session(Scripted([{"say": "Here is the setup, check it.", "spec": good}]), "m", cats)
     turn = s.reply("go")
     assert turn.kind == "confirm" and turn.spec.name == "barn" and turn.spec.labels == ["empty", "cow"]
@@ -307,7 +309,7 @@ def test_counting_asks_for_english_names_for_sam3():
     assert t.kind == "confirm" and t.spec.classes[0].names == ["flower pot"]
 
 
-def test_a_failed_photo_check_lets_the_user_choose(tmp_path):
+def test_a_failed_photo_check_lets_the_user_choose(tmp_path, template_on):
     """The vision model timed out on every photo (2026-09-30): that is not "no photo shows the pot"."""
     photos = [str(tmp_path / f"{i}.jpg") for i in range(3)]
     ranker = lambda f, q: [{"file": p, "score": 0.0, "reason": interview.NO_VERDICT[1]} for p in photos]
@@ -328,7 +330,7 @@ def test_counting_names_keep_only_english():
     assert t.kind == "confirm" and t.spec.classes[0].names == ["flower pot"]
 
 
-def test_no_synthetic_images_means_no_3d_stages():
+def test_no_synthetic_images_means_no_3d_stages(template_on):
     """frames 0 with models built from photos (2026-09-30) ran the 3D stages for nothing."""
     from sim2chip.spec import from_dict
     from sim2chip.stages import STAGES

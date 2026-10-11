@@ -93,7 +93,7 @@ def test_unknown_dependency(tmp_path):
         make(tmp_path, stages=[Fake("x", after=("nope",))])
 
 
-def test_real_stage_registry_plans(tmp_path):
+def test_real_stage_registry_plans(tmp_path, template_on):
     from sim2chip.stages import STAGES
     spec = {**SPEC, "user_data": {"labeled": "photos"}}
     pipe = Pipeline(from_dict(spec), open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
@@ -126,7 +126,7 @@ def test_context_hardware(tmp_path):
     assert ctx.hardware.input_size == 96
 
 
-def test_generated_assets_feed_fetch(tmp_path):
+def test_generated_assets_feed_fetch(tmp_path, template_on):
     from sim2chip.stages import STAGES
     spec = from_dict(SPEC)
     plain = Pipeline(spec, open_job(tmp_path, "a"), Cache(tmp_path / "cache")).fingerprints()
@@ -138,7 +138,7 @@ def test_generated_assets_feed_fetch(tmp_path):
     assert "generate_assets" not in plain and fps["fetch_assets"] != plain["fetch_assets"]
 
 
-def test_powered_by_says_where_it_really_runs():
+def test_powered_by_says_where_it_really_runs(template_on):
     from sim2chip.stages import BY_NAME
     spec = from_dict({**SPEC, "qa": {"mode": "auto"}})
     assert BY_NAME["render"].powered_by(spec, "local") == "NVIDIA Isaac Sim | local GPU"

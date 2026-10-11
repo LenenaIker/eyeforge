@@ -29,7 +29,8 @@ class Points(Stage):
     skippable = "with photos"
 
     def enabled(self, spec) -> bool:
-        return spec.task == "count" and spec.synthetic
+        from .render import Render
+        return spec.task == "count" and Render().enabled(spec)
 
     def run(self, ctx: Context) -> dict:
         import numpy as np

@@ -15,7 +15,8 @@ El objetivo del sintético (usuario, desde el principio): **escenas que se parez
 
 ## Estado para retomar (2026-10-11)
 
-- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo). Servidor local apagado. Siguiente: A.2 (apagar la plantilla y exigir fotos en la entrevista).
+- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo); A.2 (plantilla y etapas de modelos 3D apagadas, fotos obligatorias, motivo en informe y web; hoja `compare/A2_sin_plantilla.html`). Siguiente: A.3 (filtro de parecido).
+- El interruptor es `stages/base.py: TEMPLATE` (False). Los tests de la maquinaria que aún usan la plantilla como ejemplo la encienden con el fixture `template_on`. Ruido entre ejecuciones medido en A.2: unos 0,03 de F1 en las botellas (mismo trabajo, 0,672 y 0,705).
 - Pruebas: home `runs/p2s_test` (`/media/lenena-iker/Crucial/runs/eyeforge/p2s_test`). Trabajos `jobs/grass` (copia del de la web local, para no tocar el original), `jobs/bottles_scene` (24 fotos) y `jobs/bottles_few` (8). Resultados en `arms.log`. Los scripts de brazos (`arms.sh`, `arms_grass.sh`) cambian `generation.frames`, `photo_scenes` y `training.seeds` en el spec del trabajo y lanzan `python -m sim2chip --home <home> run <spec> --job <job>` con el Python de `edge-sdg`; copias en `runs/p2s_test/scripts/`.
 - Hojas de comparación para el usuario: `runs/p2s_test/compare/` (A.0 en `A0_cesped.html`).
 - Sin desplegar: `600d872`, `afb9c86`, `ff6a9a9`, `46b74a0`, `ec640c1` y los de este roadmap. Deploy solo con el visto bueno del usuario.
@@ -59,15 +60,15 @@ Cómo se retira: **apagar ahora** (deja de ejecutarse, el código sigue) y **bor
 
 | Pieza | Dónde | Apagar | Borrar |
 |---|---|---|---|
-| Plantilla road | `sim2chip/scenes/road.py` | [ ] | [ ] |
-| Plantilla generic | `sim2chip/scenes/generic.py`, `skies.py`, `scatter.py` | [ ] | [ ] |
-| Plantilla places (fachada, balcón, habitación) | `sim2chip/scenes/places*.py` | [ ] | [ ] |
-| Render de la plantilla en Isaac (render solo recoge los frames de photo2scene) | `stages/render.py` | [ ] | [ ] |
-| Cielos y texturas de Poly Haven para la plantilla | `fetch_assets.scene_assets`, `polyhaven.py` | [ ] | [ ] |
-| Generados desde fotos con TRELLIS v1 (lo sustituye SAM 3D, ver Conectar) | `stages/generate_assets.py`, entorno y kit `trellis` | [ ] | [ ] |
+| Plantilla road | `sim2chip/scenes/road.py` | [x] (A.2) | [ ] |
+| Plantilla generic | `sim2chip/scenes/generic.py`, `skies.py`, `scatter.py` | [x] (A.2) | [ ] |
+| Plantilla places (fachada, balcón, habitación) | `sim2chip/scenes/places*.py` | [x] (A.2) | [ ] |
+| Render de la plantilla en Isaac (render solo recoge los frames de photo2scene) | `stages/render.py` | [x] (A.2) | [ ] |
+| Cielos y texturas de Poly Haven para la plantilla | `fetch_assets.scene_assets`, `polyhaven.py` | [x] (A.2, también el control de etiquetas de Poly Haven de la entrevista) | [ ] |
+| Generados desde fotos con TRELLIS v1 (lo sustituye SAM 3D, ver Conectar) | `stages/generate_assets.py`, entorno y kit `trellis` | [x] (A.2; la entrevista ya no pide fotos para 3D) | [ ] |
 | Listas manuales de revisión y modos `none`/`manual` (queda solo `auto`) | `QASpec`, `data/usd/exclude.txt`, 4 specs de `specs/` | [ ] | [ ] |
 | `sim2chip match` y el ajuste de aspecto (`spec.look`) | `match.py`, `look.py`, `points.py`, `crops.py` | [ ] | [ ] |
-| "Solo sintético": sin fotos del usuario no se entrena | entrevista, `spec.py` (validación) | [ ] | n/a |
+| "Solo sintético": sin fotos del usuario no se entrena | entrevista, `spec.py` (`no_photos`, fuera de `validate` para que los trabajos viejos sigan cargando) | [x] (A.2) | n/a |
 | Clase de fondo inventada al clasificar con etiquetas del usuario | `interview._drop_background_class` | [x] (A.1) | n/a |
 | Campos del spec que solo usa la plantilla (`scene.template`, `weather`, `sky_tags`, `wall_tags`, `railings`, `ground_patches`, `edge_tags`, `distractors`, `generation.frames`, `empty_ratio`, `camera.target_fill`): revisar uno a uno cuáles siguen haciendo falta | `spec.py`, prompt de la entrevista | [ ] | [ ] |
 
@@ -85,7 +86,7 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 | Elección de ruta | del análisis de fotos de la entrevista a photo2scene (C.3) | [ ] |
 | Reparto 90/10 | imitación y extrapolación en render (D) | [ ] |
 | Filtro de parecido | entre el sintético y el entrenamiento (A.3) | [ ] |
-| Aviso "sin sintético: motivo" | del trabajo al informe y a la web (A.2, F.2) | [ ] |
+| Aviso "sin sintético: motivo" | del trabajo al informe y a la web (A.2, F.2) | [ ] (A.2 hecho: `render.no_synthetic`, `report.json` y aviso en la página; falta F.2) |
 | Kits de Nebius | entornos y pesos de photo2scene (E) | [ ] |
 
 ### Decisiones abiertas del mapa
@@ -101,9 +102,9 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 - [x] **A.1 Sin clase de fondo inventada** (`interview._drop_background_class`; falta comprobarlo en un trabajo nuevo) cuando las clases del usuario cubren toda la foto (clasificar y regiones). Es la regla de `CLAUDE.md` del 2026-09-30.
   - Check: test que demuestra que una spec de regiones con clases de superficie no tiene `background_class`.
   - Check: el trabajo del césped no tiene recortes "empty".
-- [ ] **A.2 La plantilla deja de ser relleno** (decisión 0.2): sin escena válida, no entra sintético de plantilla. Tanto el informe como la web dicen "sin sintético: motivo".
-  - Check: test de render con escena desactivada y fotos del usuario, que no debe dar frames de plantilla.
-  - Check: la página del trabajo muestra el motivo.
+- [x] **A.2 La plantilla deja de ser relleno** (decisión 0.2): sin escena válida, no entra sintético de plantilla. Tanto el informe como la web dicen "sin sintético: motivo". Las etapas de modelos 3D de internet también se apagan hasta que M.1 las conecte (usuario, 2026-10-11). Resultado: césped 0,735 ± 0,026 (solo fotos, motivo en la página), botellas 0,778 y 0,672 (sin cambio fuera del ruido). Hoja: `runs/p2s_test/compare/A2_sin_plantilla.html`.
+  - [x] Check: test de render con escena desactivada y fotos del usuario, que no debe dar frames de plantilla (`tests/test_template_off.py`).
+  - [x] Check: la página del trabajo muestra el motivo (captura sin cabeza en la hoja; falta que el usuario lo vea en su navegador).
 - [ ] **A.3 Filtro final de parecido**, igual para todas las tareas: cada frame sintético se compara con las fotos de train del usuario mediante embeddings de SigLIP 2 (el profesor que ya existe).
   - Lo que se aleja de la distribución de las fotos no entra en el entrenamiento.
   - El umbral sale de las propias fotos: la distancia que hay entre fotos reales de train.

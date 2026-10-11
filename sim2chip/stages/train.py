@@ -29,6 +29,8 @@ from pathlib import Path
 
 from ..tasks import task_of
 from .base import Context, Stage
+from .crops import Crops
+from .points import Points
 
 PARALLEL_SEEDS = int(os.environ.get("SIM2CHIP_PARALLEL_SEEDS", "3"))
 # Real photos per class under which only the last layer learns (with no synthetic images). Fine-tuning the
@@ -39,7 +41,7 @@ DATA_FILE = "_train_set.pkl"  # the training arrays, handed to the seed processe
 
 class Train(Stage):
     name = "train"
-    version = "12"  # 12: no synthetic images left over from a run that had them; 11: real photos repeated for PicoDet too, more when the synthetic set misses classes; 3: blur from the hardware profile; 4: turns and tilts, last layer only with few photos; 5: same for count; 6: one steady count threshold; 7: count density output; 8: EfficientNetV2-B0 on generic; 9: PicoDet-S for count on generic; 10: PicoDet 600 steps in long epochs, seeds in parallel
+    version = "13"  # 13: no leftover synthetic frames in the head recipe either, synthetic as the crops and points stages decide; 12: no synthetic images left over from a run that had them; 11: real photos repeated for PicoDet too, more when the synthetic set misses classes; 3: blur from the hardware profile; 4: turns and tilts, last layer only with few photos; 5: same for count; 6: one steady count threshold; 7: count density output; 8: EfficientNetV2-B0 on generic; 9: PicoDet-S for count on generic; 10: PicoDet 600 steps in long epochs, seeds in parallel
     runtime = "tf"
     gpu = "any"
     max_hours = 2
@@ -108,8 +110,8 @@ class Train(Stage):
         if table.exists():
             real = [(ctx.job.root / v["source"], v["points"]) for _, v in sorted(json.loads(table.read_text()).items())]
         table = ctx.job.stage_dir("points") / "points.json"
-        # Only when the spec asks for synthetic images: a job that turned them off keeps its old points/ folder.
-        if ctx.spec.synthetic and table.exists() and not ctx.job.dropped("points"):
+        # Only when this spec makes synthetic images: a job that turned them off keeps its old points/ folder.
+        if Points().enabled(ctx.spec) and table.exists() and not ctx.job.dropped("points"):
             synth = [(table.parent / "images" / n, p) for n, p in sorted(json.loads(table.read_text()).items())]
         if not real and not synth:
             raise ValueError("nothing to train on: no synthetic frames and no marked photos")
@@ -154,7 +156,7 @@ class Train(Stage):
         synth_dir = ctx.job.stage_dir("crops")
         real_dir = ctx.job.stage_dir("ingest") / "train"
         xs, ys, n_synth = [], [], 0
-        if ctx.spec.synthetic and synth_dir.exists() and not ctx.job.dropped("crops"):
+        if Crops().enabled(ctx.spec) and synth_dir.exists() and not ctx.job.dropped("crops"):
             x, y = tu.load_dir(synth_dir, labels, size)
             xs.append(x), ys.append(y)
             n_synth = len(x)
@@ -183,7 +185,7 @@ class Train(Stage):
         empty = (np.zeros((0, size, size, 3), np.uint8), np.zeros((0, size, size), np.uint8), [])
         xs, ms, ps = empty
         synth = ctx.job.stage_dir("points")
-        if (synth / "points.json").exists():
+        if Points().enabled(ctx.spec) and (synth / "points.json").exists() and not ctx.job.dropped("points"):
             xs, ms, _, ps = tu.load_points(synth, labels, size)
         xr, mr, pr = empty
         real = ctx.job.stage_dir("ingest") / "train"

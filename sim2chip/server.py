@@ -30,6 +30,7 @@ from .version import engine
 from .job_service import CALIBRATION, CALIBRATION_PHOTOS, LABELING, JobService, cloud_spent
 from . import spec as spec_mod
 from .pipeline import Pipeline
+from .stages.render import no_synthetic
 from .workspace import IMAGE_EXT, Cache, Job, content_key, current_version, last_engine, open_job, snapshot, versions
 
 DOWNLOADS = {"model.tflite", "labels.txt", "model_int8.tflite", "model_data.h", "report.json"}
@@ -880,6 +881,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             parsed = spec_mod.from_dict(data)
         except (json.JSONDecodeError, spec_mod.SpecError) as e:
             raise HTTPException(400, f"invalid spec: {e}") from None
+        if why := spec_mod.no_photos(parsed):
+            raise HTTPException(400, f"invalid spec: {why}")
         check_paths(parsed, request)
         # The same setup sent twice (a double click, "Looks good" and Train together) must not pay for two runs.
         same = json.loads(parsed.to_json())
@@ -1506,6 +1509,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
             parsed = spec_mod.from_dict(json.loads(spec))
         except (json.JSONDecodeError, spec_mod.SpecError) as e:
             raise HTTPException(400, f"invalid spec: {e}") from None
+        if why := spec_mod.no_photos(parsed):
+            raise HTTPException(400, f"invalid spec: {why}")
         check_paths(parsed, request, job)
         old = spec_mod.load(latest_spec(job))
         changed = [k for k, v in json.loads(parsed.to_json()).items()
@@ -1879,7 +1884,8 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
             "usage": usage.summary(job, usage.saved_prices(home / "cache"), config.gpu_name()),
             "version": {**current_version(job), "engine": last_engine(job)}, "versions": [{k: v for k, v in m.items() if k != "report_key"}
                                                           for m in versions(job)],
-            "report": json.loads(report.read_text()) if fresh and report.exists() else None}
+            "report": json.loads(report.read_text()) if fresh and report.exists() else None,
+            "no_synthetic": no_synthetic(spec, job)}
 
 
 def serve(home: Path, backend: str, host: str, port: int, max_usd: float | None, public: bool = False,

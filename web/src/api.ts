@@ -60,6 +60,7 @@ export type Report = {
   shipped_test?: { score: number; count_mae?: number } | null;
   advice?: string[];  // what most likely held the score back, in plain words
   left_out?: { stage: string; reason: string }[];  // steps that failed and the run went on without
+  no_synthetic?: string;  // why this model learned from the user's photos alone
   // The model this one replaced, scored on the same test photos (or why it could not be).
   // then: its score when it was trained, which differs when the test photos or their labels changed since.
   previous?: { version: number; score?: number; now?: number; count_mae?: number; now_count_mae?: number;
@@ -91,6 +92,7 @@ export type Status = {
   phase: string | null;
   timing: { started_at: number | null; elapsed_s: number | null; eta_s: number | null } | null;
   report: Report | null;
+  no_synthetic?: string | null;  // why the model learns from the user's photos alone (no synthetic images)
   version: Version | null;  // the model export holds or the run in progress will make
   versions: Version[];      // earlier models, oldest first
   usage?: Usage;

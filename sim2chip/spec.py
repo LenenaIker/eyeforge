@@ -508,6 +508,17 @@ def _validate_scene(spec: Spec) -> None:
                             "these; add scene.sky_tags to take skies from Poly Haven")
 
 
+def no_photos(spec: Spec) -> str | None:
+    """Why the spec cannot train: no photos of the user's. Synthetic images alone did not train a usable model (spike,
+    2026-09-23) and are made from the user's photos now (photo2scene), so without photos nothing trains (user,
+    2026-10-11). Not part of validate: older specs without photos still load, to show their jobs."""
+    ud = spec.user_data
+    if ud.labeled or ud.raw:
+        return None
+    return ("user_data: EyeForge needs the user's photos (user_data.raw or user_data.labeled); synthetic images "
+            "alone do not train a model")
+
+
 def _validate_user_data(spec: Spec) -> None:
     raw = spec.user_data.raw
     if isinstance(raw, list):

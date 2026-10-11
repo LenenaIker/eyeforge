@@ -11,6 +11,7 @@ import math
 import random
 
 from ..spec import MEASURES
+from . import base
 from .base import Context, Stage
 
 VIEWS = [(35, 0.35), (145, 0.35), (270, 0.12), (215, 1.1)]  # (azimuth deg, relative elevation)
@@ -28,7 +29,7 @@ class PreviewAssets(Stage):
     skippable = "with photos"
 
     def enabled(self, spec) -> bool:
-        return spec.qa.mode == "auto" and spec.synthetic
+        return spec.qa.mode == "auto" and spec.synthetic and base.TEMPLATE
 
     def run(self, ctx: Context) -> dict:
         import shutil

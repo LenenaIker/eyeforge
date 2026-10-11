@@ -3,8 +3,8 @@ by earlier jobs (input/scenes.json, from the library) are composed again with th
 built from a training photo first, and the library keeps it for the next jobs. Counting on one working surface
 seen from above only (the support route); a photo that does not fit is noted as failed and not tried again.
 
-The frames join the template's in render. The scene photos stay out of the test (ingest.scene_photos), and the
-new one is picked among the photos ingest put in training.
+Render collects the frames (the scene template is off, base.TEMPLATE). The scene photos stay out of the test
+(ingest.scene_photos), and the new one is picked among the photos ingest put in training.
 
 Output: scene_from_photo/scenes.json  the scenes built here, for the library (library.take_scenes)
         scene_from_photo/frames.json  [{"file", "scene", "boxes": [[class, x0, y0, x1, y1], ...]}] (pixels)
@@ -35,6 +35,23 @@ def _link(src, dst):
         shutil.copy2(src, dst)
 
 
+def no_route(spec) -> str | None:
+    """Why no photo2scene route fits this spec, in the user's words, or None when one does. So far only the support
+    route: counting on one surface seen from above (the photo analysis sets the camera's pitch then)."""
+    from ..tasks import task_of
+    if not spec.synthetic:
+        return "the setup asks for your photos only"
+    if not spec.generation.photo_scenes:
+        return "rebuilding your place is turned off in the setup"
+    if not task_of(spec).points:
+        return "EyeForge rebuilds places only for counting so far"
+    if not spec.user_data.raw:
+        return "rebuilding your place needs unsorted photos of it"
+    if not spec.camera.pitch_deg:
+        return "your photos do not look down on one surface, the only kind of place EyeForge rebuilds so far"
+    return None
+
+
 class SceneFromPhoto(Stage):
     name = "scene_from_photo"
     version = "1"
@@ -50,10 +67,7 @@ class SceneFromPhoto(Stage):
     results = ("*.json", "*/**/*")  # the scenes built here go to the library whole
 
     def enabled(self, spec) -> bool:
-        from ..tasks import task_of
-        # The support route: one surface seen from above (the photo analysis sets the camera's pitch then).
-        return (spec.synthetic and spec.generation.photo_scenes and task_of(spec).points and bool(spec.user_data.raw)
-                and bool(spec.camera.pitch_deg))
+        return no_route(spec) is None
 
     def run(self, ctx: Context) -> dict:
         from .. import photo2scene as p2s

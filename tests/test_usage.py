@@ -13,7 +13,7 @@ def write(path, recs):
     path.write_text("".join(json.dumps(r) + "\n" for r in recs))
 
 
-def test_summary(tmp_path):
+def test_summary(tmp_path, template_on):
     job = Job(tmp_path / "j")
     write(job.logs / "interview_usage.jsonl", [
         {"model": "nvidia/nemotron-3-super-120b-a12b", "purpose": "interview", "prompt_tokens": 1_000_000,

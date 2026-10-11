@@ -1,4 +1,8 @@
-"""Synthetic dataset: one target (or none) per frame, placed by the scene template from the spec, with the
+"""Synthetic dataset. With the scene template off (base.TEMPLATE, the default since 2026-10-11) it only collects
+the frames scene_from_photo made in the user's own place, on the CPU; a job with none trains on the photos alone
+and no_synthetic says why. What follows is the template, kept until phase C of docs/roadmap_photo2scene.md.
+
+Template: one target (or none) per frame, placed by the scene template from the spec, with the
 spec's background props scattered around it. With scene.contexts, some frames are instead a building front,
 a balcony or a room (scenes/places.py) with the targets on its floors, railings and sills. For the count
 task, 0 to generation.max_targets targets per frame, spread around the point the camera looks at.
@@ -13,10 +17,12 @@ from __future__ import annotations
 import json
 import math
 import random
+import shutil
 from dataclasses import dataclass, field
 
 from ..spec import MEASURES, camera_distance
 from ..tasks import task_of
+from . import base
 from .base import Context, Stage
 
 
@@ -51,22 +57,51 @@ def expose(path) -> bool:
 
 class Render(Stage):
     name = "render"
-    version = "6"  # v6: the frames of the user's place (scene_from_photo); v5: fewer frames when some classes have no 3D model; v2: paint, empty-frame distance and camera aim from the spec; v3: masonry parapets;
+    version = "7"  # v7: the template off, the user's place only; v6: the frames of the user's place (scene_from_photo); v5: fewer frames when some classes have no 3D model; v2: paint, empty-frame distance and camera aim from the spec; v3: masonry parapets;
     # v4: sun behind the camera in most frames, room lamp, auto exposure and nearly black frames dropped
-    runtime = "isaac"
-    uses_cache = True
-    gpu = "rtx"
-    max_hours = 2
     uses = ("scene", "camera", "generation", "classes", "props", "background_class", "task")
     after = ("qa_assets", "fetch_assets", "scene_from_photo")  # fetch_assets: scene.json with skies and ground textures
-    extra = ("scene_from_photo",)  # without the user's place, the template's frames alone
     skippable = "with photos"
 
+    # The template renders in Isaac Sim; without it the stage only copies files. Read when asked, so a test can
+    # turn the template on.
+    @property
+    def runtime(self):
+        return "isaac" if base.TEMPLATE else "cpu"
+
+    @property
+    def gpu(self):
+        return "rtx" if base.TEMPLATE else None
+
+    @property
+    def uses_cache(self):
+        return base.TEMPLATE
+
+    @property
+    def max_hours(self):
+        return 2 if base.TEMPLATE else 1
+
+    @property
+    def extra(self):  # the template without the user's place renders its own frames alone
+        return ("scene_from_photo",) if base.TEMPLATE else ()
+
     def enabled(self, spec) -> bool:
-        return spec.synthetic
+        from .scene_from_photo import SceneFromPhoto
+        return spec.synthetic if base.TEMPLATE else SceneFromPhoto().enabled(spec)
 
     def run(self, ctx: Context) -> dict:
-        import shutil
+        if not base.TEMPLATE:
+            out = ctx.job.stage_dir(self.name)
+            shutil.rmtree(out, ignore_errors=True)
+            out.mkdir(parents=True)
+            labels = scene_frames(ctx, out, 0)
+            (out / "labels.json").write_text(json.dumps(labels, indent=1))
+            if not labels:
+                ctx.log("no frames from the user's place: the model learns from the photos alone")
+            return {"frames": len(labels)}
+        return self.template(ctx)
+
+    def template(self, ctx: Context) -> dict:
 
         import omni.replicator.core as rep
         from omni.kit.app import get_app
@@ -168,7 +203,6 @@ def scene_frames(ctx: Context, out, first: int) -> list[dict]:
     # A run that turned the scenes off leaves the last run's frames in the folder: not this spec's.
     if not SceneFromPhoto().enabled(ctx.spec) or not (src / "frames.json").exists():
         return []
-    import shutil
     labels = []
     for i, fr in enumerate(json.loads((src / "frames.json").read_text())):
         f = first + i
@@ -178,6 +212,29 @@ def scene_frames(ctx: Context, out, first: int) -> list[dict]:
     if labels:
         ctx.log(f"{len(labels)} frames from the user's place ({len({lab['scene'] for lab in labels})} scenes)")
     return labels
+
+
+def no_synthetic(spec, job=None) -> str | None:
+    """Why the model learns from the user's photos alone, in their words, or None when synthetic images go into
+    training. With a job, also what its run found: a step left out, or no scene from any photo tried."""
+    from .scene_from_photo import no_route
+    if base.TEMPLATE:
+        return None if spec.synthetic else "the setup asks for your photos only"
+    why = no_route(spec)
+    if why or job is None:
+        return why
+    step = "crops" if spec.task == "roi_classification" else "points"
+    for name in ("scene_from_photo", "render", step):
+        if left := job.dropped(name):
+            return f"rebuilding your place failed ({left})"
+    labels = job.stage_dir("render") / "labels.json"
+    if labels.exists() and not json.loads(labels.read_text()):
+        tried = job.stage_dir("scene_from_photo") / "scenes.json"
+        built = json.loads(tried.read_text()) if tried.exists() else []
+        whys = [b["why"] for b in built if b.get("status") == "failed"]
+        return (f"no photo made a scene ({whys[0]})" if whys else
+                "no photo was left to rebuild your place from (the ones tried before made no scene)")
+    return None
 
 
 def real_counts(ctx: Context) -> list[int]:

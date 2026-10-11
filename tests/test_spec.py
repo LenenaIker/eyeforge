@@ -114,7 +114,7 @@ def test_props_parse_and_size_of():
             from_dict({**base, "props": [bad]})
 
 
-def test_empty_props_keep_fingerprints():
+def test_empty_props_keep_fingerprints(template_on):
     from sim2chip.pipeline import Pipeline
     from sim2chip.workspace import Cache, Job
     base = {"name": "x", "classes": [{"id": "car", "size_m": {"measure": "length", "range": [3, 5]},

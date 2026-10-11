@@ -23,8 +23,8 @@ from typing import Callable
 from . import hardware, spec as spec_mod
 
 SYSTEM = """You are the setup assistant of EyeForge (eyeforge.app). EyeForge trains a small vision model
-(it classifies or counts) that runs on the user's own device, sized to it (from a $10 ESP32-CAM to a Jetson or a PC), from synthetic
-images rendered with 3D models plus a few real photos from the user. Microcontroller users get a model ready
+(it classifies or counts) that runs on the user's own device, sized to it (from a $10 ESP32-CAM to a Jetson or a PC), from the
+user's own photos plus synthetic images rebuilt from them. Microcontroller users get a model ready
 to flash; users without a device just download it.
 Your job: interview the user and write the job spec. The users are not vision experts: they know their
 problem and their place, not datasets or models. Be brief and friendly, in the user's language.
@@ -36,8 +36,8 @@ places and their shares, walls, weather, ground, props, distractors, camera heig
 sources, test photos (part of their unsorted photos is kept aside for the test automatically).
 When the user gives photos, the system analyses 16 of them with a vision model and sends you a photo analysis
 (what each photo shows, the objects' size, what is around them, the places, light and floor): base the spec on it.
-Do not ask for confirmation along the way. When you know what to detect and have the photo analysis (or know
-there are no photos), send the spec directly, with one or two plain sentences in the user's language on what you
+Do not ask for confirmation along the way. When you know what to detect and have the photo analysis, send the
+spec directly, with one or two plain sentences in the user's language on what you
 saw in their photos and what the synthetic images will show: {{"say": "...", "spec": {{...}}}}. The user sees
 them above a summary and confirms once.
 
@@ -85,7 +85,8 @@ What the spec must settle (decide it; ask only as said above):
   are "raw": the teacher model labels them and also finds the ones without the object (background class).
   You are told each folder's layout (subfolders and photo counts) as soon as the user names it: never ask the
   user how their photos are organised. Folder layouts are checked again when you send the spec.
-  A few real photos improve accuracy a lot compared with synthetic images only; say so. For an honest score,
+  Photos are required: the model learns from them and the synthetic images are rebuilt from them, so without
+  photos there is no model; say so if the user has none, and send no spec until they give some. For an honest score,
   suggest a separate labeled test folder (user_data.test) with photos taken on another day or place.
 - Real-world size of each class: from the photo analysis, or typical sizes you know.
 
@@ -660,6 +661,14 @@ def _scene_problem(session, s: spec_mod.Spec) -> str | None:
     return session.scene_check(s.scene) if session.scene_check else None
 
 
+def _no_photos_problem(session, s: spec_mod.Spec) -> str | None:
+    if spec_mod.no_photos(s):
+        return ("the spec has no photos of the user's: EyeForge trains only with them (synthetic images alone do not "
+                "train a model). Ask the user for photos from their camera or place with the photos action "
+                '("for": "training") and put them in user_data.raw')
+    return None
+
+
 def _photo_models_problem(session, s: spec_mod.Spec) -> str | None:
     if not session.photo_models and any(c.assets and c.assets.photos for c in s.classes):
         return NO_PHOTO_MODELS.strip()
@@ -667,7 +676,8 @@ def _photo_models_problem(session, s: spec_mod.Spec) -> str | None:
 
 
 # What a proposed spec must pass beyond spec.validate, in order: the first problem goes back to the model.
-SPEC_CHECKS = (_unknown_categories, _foreign_folders, _library_refs, _dataset_as_model, _scene_problem, lambda _, s: check_photos(s),
+SPEC_CHECKS = (_no_photos_problem, _unknown_categories, _foreign_folders, _library_refs, _dataset_as_model,
+               _scene_problem, lambda _, s: check_photos(s),
                lambda _, s: sam3_names_problem(s), lambda _, s: catch_all_problem(s), _photo_models_problem,
                lambda session, s: session.sizes_problem(s))
 
@@ -688,9 +698,13 @@ class Session:
     def __init__(self, client, model: str, categories: CategoryIndex, max_turns: int = 60, scene_check=None,
                  photo_ranker=None, uploads: Path | None = None, scene_profiler=None, photo_models: bool = True,
                  uploads_only: bool = False, researcher=None):
+        from .stages import base as stages
         self.client, self.model, self.categories, self.max_turns = client, model, categories, max_turns
-        # False where 3D models cannot be made from photos (the Nebius backend has no TRELLIS runtime yet).
-        self.photo_models = photo_models
+        # False where 3D models cannot be made from photos (the Nebius backend has no TRELLIS runtime yet), and
+        # while the scene template, the only user of those models, is off.
+        self.photo_models = photo_models and stages.TEMPLATE
+        if not stages.TEMPLATE:  # the scene's skies and ground textures were the template's
+            scene_check = None
         # True on a public server: only photos uploaded in this chat, never a folder of the server's disk.
         self.uploads_only = uploads_only
         self.researcher = researcher  # question -> {"answer", "sources"} (research.searcher), or None

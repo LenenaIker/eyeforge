@@ -11,7 +11,7 @@ from sim2chip import interview  # noqa: E402
 from sim2chip.server import create_app  # noqa: E402
 
 GOOD = {"name": "Barn Cam", "classes": [{"id": "cow", "description": "cows", "size_m": {"measure": "length",
-        "range": [2, 2.5]}, "assets": {"categories": ["cow"], "count": 10}}]}
+        "range": [2, 2.5]}, "assets": {"categories": ["cow"], "count": 10}}], "user_data": {"raw": "photos"}}
 
 
 class Scripted:
@@ -101,7 +101,7 @@ def test_interview_over_http(app):
     assert app.post(f"/api/interview/{sid}", json={"text": "x"}).status_code == 404
 
 
-def test_job_with_photos_runs_and_reports(app, tmp_path):
+def test_job_with_photos_runs_and_reports(app, tmp_path, template_on):
     files = [("photos", ("a.jpg", b"jpg", "image/jpeg")), ("photos", ("notes.txt", b"hi", "text/plain"))]
     r = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}, files=files)
     assert r.status_code == 200 and r.json() == {"job": "barn_cam", "photos": 1}
@@ -112,7 +112,8 @@ def test_job_with_photos_runs_and_reports(app, tmp_path):
     assert ud["raw"] == f"labeling_{ud['labeling']}" and (job / "input" / "labeling.json").exists()
     assert app.launched[0][0] == "barn_cam" and app.launched[0][2] == "nebius"
     # The same spec again is a new job: it must not overwrite barn_cam.
-    assert app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"] == "barn_cam_2"
+    other = {**GOOD, "user_data": {"raw": "more"}}  # the same setup again while it runs is that run
+    assert app.post("/api/jobs", data={"spec": json.dumps(other)}).json()["job"] == "barn_cam_2"
 
     s = app.get("/api/jobs/barn_cam").json()
     states = {st["name"]: st["state"] for st in s["stages"]}
@@ -383,7 +384,7 @@ def test_the_same_setup_sent_twice_runs_once(app):
     assert again["job"] == first["job"] and again["already_running"] and len(app.launched) == 1
 
 
-def test_timing_estimates_the_time_left_from_earlier_runs(app, tmp_path):
+def test_timing_estimates_the_time_left_from_earlier_runs(app, tmp_path, template_on):
     import time
     old = tmp_path / "jobs" / "old" / "logs"
     old.mkdir(parents=True)
@@ -395,13 +396,13 @@ def test_timing_estimates_the_time_left_from_earlier_runs(app, tmp_path):
     job = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"]
     s = app.get(f"/api/jobs/{job}").json()
     assert s["timing"]["elapsed_s"] < 5
-    # Nothing ran yet: upload, the GPU wait and fetch_assets (running, just started) are left; render never
-    # ran on Nebius, so it adds nothing.
-    assert 265 <= s["timing"]["eta_s"] <= 270
+    # Nothing ran yet: upload, the GPU wait, label and fetch_assets (running, just started) are left; render
+    # never ran on Nebius, so it adds nothing.
+    assert 365 <= s["timing"]["eta_s"] <= 370
     logs = tmp_path / "jobs" / job / "logs"
     (logs / "timeline.jsonl").write_text(json.dumps({"t": time.time(), "step": "upload job", "seconds": 8,
                                                      "where": "local"}) + "\n")
-    assert 255 <= app.get(f"/api/jobs/{job}").json()["timing"]["eta_s"] <= 260
+    assert 355 <= app.get(f"/api/jobs/{job}").json()["timing"]["eta_s"] <= 360
 
 
 def test_public_visitors_only_see_their_own_jobs(tmp_path):

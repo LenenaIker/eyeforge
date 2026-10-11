@@ -16,6 +16,7 @@ import urllib.request
 from pathlib import Path
 
 from ..scenes.skies import SKIES
+from . import base
 from .base import Context, Stage
 
 # Licenses that allow commercial use and derivatives (attribution is listed in the export report).
@@ -43,7 +44,7 @@ class FetchAssets(Stage):
     version = "5"
 
     def enabled(self, spec) -> bool:
-        return spec.synthetic
+        return spec.synthetic and base.TEMPLATE  # its 3D models fed the scene template only
 
     @staticmethod
     def searched(spec) -> list[dict]:

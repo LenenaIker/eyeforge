@@ -31,6 +31,8 @@ def _pipeline(args, create: bool) -> Pipeline:
 
 
 def cmd_run(args) -> int:
+    if why := spec_mod.no_photos(spec_mod.load(args.spec)):
+        raise SystemExit(why)
     pipe = _pipeline(args, create=True)
     for item in args.input:
         name, _, path = item.partition("=")

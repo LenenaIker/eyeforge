@@ -20,7 +20,7 @@ from ..tasks import recipe_of, task_of
 
 class Export(Stage):
     name = "export"
-    version = "9"  # 4: fixed batch 1 in the .tflite files (live test in the browser); 5: shipped_test; 6: advice; 7: crowd advice; 8: density output; 9: count detector
+    version = "10"  # 4: fixed batch 1 in the .tflite files (live test in the browser); 5: shipped_test; 6: advice; 7: crowd advice; 8: density output; 9: count detector; 10: why no synthetic images
     runtime = "cpu"
     results = ("*",)
     after = ("train", "evaluate", "qa_assets")
@@ -84,6 +84,9 @@ class Export(Stage):
         left_out = [{"stage": st.name, "reason": why} for st in STAGES if (why := ctx.job.dropped(st.name))]
         if left_out:  # steps the run went on without (Pipeline._drop)
             report["left_out"] = left_out
+        from .render import no_synthetic
+        if why := no_synthetic(ctx.spec, ctx.job):  # the model learned from the user's photos alone
+            report["no_synthetic"] = why
         (out / "report.json").write_text(json.dumps(report, indent=2))
         ctx.log(f"exported seed {seed}: {kb} KB, labels {ctx.spec.labels}")
         return {"seed": int(seed), "model_kb": kb}

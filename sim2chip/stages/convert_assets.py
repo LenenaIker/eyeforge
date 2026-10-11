@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 
 from ..spec import MEASURES
+from . import base
 from .base import Context, Stage
 
 NORM_VERSION = 3  # bump when normalize() or the converter changes
@@ -43,7 +44,7 @@ class ConvertAssets(Stage):
     version = str(NORM_VERSION)
 
     def enabled(self, spec) -> bool:
-        return spec.synthetic
+        return spec.synthetic and base.TEMPLATE  # its 3D models fed the scene template only
 
     def run(self, ctx: Context) -> dict:
         manifest = json.loads((ctx.job.stage_dir("fetch_assets") / "manifest.json").read_text())

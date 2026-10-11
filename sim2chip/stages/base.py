@@ -10,6 +10,11 @@ from ..spec import Spec
 from ..workspace import Cache, Job
 from ..workspace import say
 
+# The scene template (scenes/: open ground, places, road) with internet 3D models is off: synthetic images come
+# from photo2scene only, and a job no route fits trains on the user's photos alone (user, 2026-10-11; roadmap
+# docs/roadmap_photo2scene.md, A.2). Its code goes after phase C, once the extrapolation shows what it still needs.
+TEMPLATE = False
+
 
 @dataclass
 class Context:
