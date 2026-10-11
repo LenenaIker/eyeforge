@@ -15,7 +15,7 @@ El objetivo del sintético (usuario, desde el principio): **escenas que se parez
 
 ## Estado para retomar (2026-10-11)
 
-- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo); A.2 (plantilla y etapas de modelos 3D apagadas, fotos obligatorias, motivo en informe y web; hoja `compare/A2_sin_plantilla.html`); A.3 (filtro de parecido en render, `sim2chip/likeness.py`; hoja `compare/A3_filtro_parecido.html`); A.4 (re-medida con 3 ejecuciones por brazo, `scripts/arms_a4.sh`; hoja `compare/A4_remedida.html`). B.1 (análisis de fotos, hoja `compare/B1_analisis_fotos.html`). B.2 (cámara constante, hoja `compare/B2_camara_constante.html`). B.3 (foto más limpia, hoja `compare/B3_foto_limpia.html`, falta revisión del usuario). B.4 (soporte al clasificar, hoja `compare/B4_soporte_clasificar.html`). Siguiente: B.5 (antes, M.3 con el usuario). Medir siempre con 3 ejecuciones por brazo (usuario, 2026-10-11) por el ruido de PicoDet (±0,03 a 0,05 con la misma entrada).
+- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo); A.2 (plantilla y etapas de modelos 3D apagadas, fotos obligatorias, motivo en informe y web; hoja `compare/A2_sin_plantilla.html`); A.3 (filtro de parecido en render, `sim2chip/likeness.py`; hoja `compare/A3_filtro_parecido.html`); A.4 (re-medida con 3 ejecuciones por brazo, `scripts/arms_a4.sh`; hoja `compare/A4_remedida.html`). B.1 (análisis de fotos, hoja `compare/B1_analisis_fotos.html`). B.2 (cámara constante, hoja `compare/B2_camara_constante.html`). B.3 (foto más limpia, hoja `compare/B3_foto_limpia.html`, falta revisión del usuario). B.4 (soporte al clasificar, hoja `compare/B4_soporte_clasificar.html`). B.6 (botellas re-medidas, hoja `compare/B6_botellas.html`). M.3 decidido. Siguiente: B.5. Medir siempre con 3 ejecuciones por brazo (usuario, 2026-10-11) por el ruido de PicoDet (±0,03 a 0,05 con la misma entrada).
 - El interruptor es `stages/base.py: TEMPLATE` (False). Los tests de la maquinaria que aún usan la plantilla como ejemplo la encienden con el fixture `template_on`. Ruido entre ejecuciones medido en A.2: unos 0,03 de F1 en las botellas (mismo trabajo, 0,672 y 0,705).
 - Pruebas: home `runs/p2s_test` (`/media/lenena-iker/Crucial/runs/eyeforge/p2s_test`). Trabajos `jobs/grass` (copia del de la web local, para no tocar el original), `jobs/bottles_scene` (24 fotos) y `jobs/bottles_few` (8). Resultados en `arms.log`. Los scripts de brazos (`arms.sh`, `arms_grass.sh`) cambian `generation.frames`, `photo_scenes` y `training.seeds` en el spec del trabajo y lanzan `python -m sim2chip --home <home> run <spec> --job <job>` con el Python de `edge-sdg`; copias en `runs/p2s_test/scripts/`.
 - Hojas de comparación para el usuario: `runs/p2s_test/compare/` (A.0 en `A0_cesped.html`).
@@ -95,7 +95,7 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 
 - [x] **M.1** (usuario, 2026-10-11) En la imitación entran los objetos de la foto del usuario **y modelos de internet parecidos** de la misma clase (la revisión mira que se parezcan a los suyos, no solo que sean de la clase).
 - [x] **M.2** (usuario, 2026-10-11) La extrapolación parte de la escena imitada y la amplía, sobre todo con copias en espejo: una esquina pasa a cruce y un lado de calle a calle completa. En la copia se cambian las superficies (materiales y colores) para que no sea un espejo perfecto, y se pueden cambiar objetos por modelos parecidos de internet.
-- [ ] **M.3** Superficie como clase (césped): en principio una ruta de photo2scene, pero sus medidas y herramientas (tamaño de objetos, mallas, colocación) puede que no apliquen. Pendiente de pensarlo con el usuario antes de B.5.
+- [x] **M.3** Superficie como clase (césped): en principio una ruta de photo2scene, pero sus medidas y herramientas (tamaño de objetos, mallas, colocación) puede que no apliquen. Decisiones del usuario (2026-10-11): la imitación es un **reencuadre 3D** (cada foto como suelo 3D con su profundidad, renderizado desde cámaras nuevas dentro del rango medido, sin objetos), y la etiqueta de cada vista sale de las **máscaras** de SAM 3 (regla fijada con las etiquetas a mano del césped como verdad).
 
 ## Fase A: dejar de hacer daño (~1 día)
 
@@ -156,8 +156,12 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
   - Sin objetos de internet.
   - Check: hoja de muestras revisada a ojo por el usuario.
   - Check: el césped igual o mejor que solo fotos (A.0).
-- [ ] **B.6 Re-medir las botellas** con B.1 a B.4.
-  - Check: no queda por debajo de A.4.
+- [x] **B.6 Re-medir las botellas** con B.1 a B.4. 3 ejecuciones por brazo (`scripts/arms_b6.sh`). Hoja: `runs/p2s_test/compare/B6_botellas.html`.
+  - Botellas, 24 fotos: escena 0,764 ± 0,022 (foto 19, elegida por el VLM) frente a solo fotos 0,795 ± 0,024.
+  - Botellas, 8 fotos: escena 0,695 ± 0,017 (foto 41) frente a solo fotos 0,661 ± 0,014.
+  - El brazo de solo fotos, con la misma entrada que en A.4, se movió de 0,779 a 0,795 y de 0,697 a 0,661: entre tandas el ruido también llega a 0,03. Ninguna diferencia es firme; con pocas fotos la escena parece ayudar algo y con más no.
+  - Visto a ojo: algún objeto sale aún cortado por el borde (la comprobación de B.4 mira base y altura, no el ancho), y hay cajas sobre cosas que no son botellas (cafeteras, vasos negros). Esto último es lo siguiente que más pesa en la calidad de las escenas al contar.
+  - [x] Check: no queda por debajo de A.4 (0,764 igual; 0,695 frente a 0,691).
 
 ## Fase C: calle e interior completas en el producto (~3-4 días)
 
