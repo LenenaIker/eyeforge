@@ -32,6 +32,7 @@ Desarrollo en la RTX 3090 local; el producto final lanza los trabajos en **Nebiu
 
 ## Decisiones y restricciones
 
+- **Sintético = photo2scene** (usuario, 2026-10-11; `docs/roadmap_photo2scene.md`). photo2scene son tres fases: extracción, imitación de la foto y extrapolación a escena completa (la ruta de soporte es solo un atajo). Reparto: 90 % imitación y 10 % extrapolación. Si ninguna ruta encaja, solo fotos del usuario y aviso. La plantilla genérica se retira. Nunca más "solo sintético": sin fotos del usuario no se entrena. Tras cada punto importante, una hoja de comparación para el usuario con su ruta.
 - **GPU en la nube: L40S, no H100/H200.** Isaac Sim necesita GPUs RTX (con RT cores) para renderizar; H100/H200 no los tienen.
 - **El pipeline no depende de que todo salga bien** (usuario, 2026-10-09): lo no esencial que falla se deja fuera con aviso y la ejecución sigue (`Stage.skippable`: la rama sintética cuando hay fotos del usuario, la evaluación siempre; un objeto 3D roto se salta solo él). El informe y la web dicen qué se dejó fuera.
 - **Assets 3D son el riesgo principal.** "Detecta cualquier cosa" requiere modelos 3D de cualquier cosa. Alcance del hackathon: catálogo cerrado de 10-20 clases con assets existentes (NVIDIA SimReady, Objaverse) + modo híbrido con fotos reales para lo demás. No prometer "cualquier objeto".

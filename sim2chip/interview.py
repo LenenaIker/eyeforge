@@ -421,6 +421,11 @@ any disk, so never ask for a folder path and use only the folders you are told a
 def _drop_background_class(spec: dict) -> None:
     """The model sometimes lists the background ("empty") as one more class (2026-09-27); the pipeline adds it by
     itself, so drop it instead of rejecting the whole spec."""
+    # A classification on a labeling of the user's: their classes already cover every photo (the labeling has no
+    # background either, server.teach). The chat kept "empty" for lawn / border / no grass (2026-10-11) and the
+    # synthetic filled it with bare ground, against the user's labels.
+    if spec.get("task", "roi_classification") != "count" and (spec.get("user_data") or {}).get("labeling"):
+        spec["background_class"] = None
     bg = spec.get("background_class", "empty")
     if bg is None:
         return

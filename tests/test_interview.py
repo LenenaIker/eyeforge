@@ -468,6 +468,20 @@ def test_an_english_id_is_not_renamed_by_a_longer_wording():
     assert spec["classes"][0]["id"] == "cat" and spec["background_class"] == "empty"
 
 
+def test_a_classification_on_the_users_labels_has_no_background_class():
+    labels = {"raw": "library:a7d9ef2d4b43c27b", "labeling": "654f69c500ee4a24"}
+    surfaces = {"task": "roi_classification", "background_class": "empty", "user_data": labels,
+                "classes": [{"id": "grass"}, {"id": "border"}, {"id": "no_grass"}]}
+    interview._drop_background_class(surfaces)
+    assert surfaces["background_class"] is None and len(surfaces["classes"]) == 3
+    counting = {"task": "count", "background_class": "empty", "user_data": labels, "classes": [{"id": "pot"}]}
+    interview._drop_background_class(counting)
+    assert counting["background_class"] == "empty"
+    unlabeled = {"background_class": "empty", "user_data": {"raw": "photos"}, "classes": [{"id": "cat"}]}
+    interview._drop_background_class(unlabeled)
+    assert unlabeled["background_class"] == "empty"
+
+
 def test_a_dataset_the_user_names_is_looked_at_first_and_never_searched_on_the_web():
     ds, other = "a7d9ef2d4b43c27b", "8c1b568d88d029d2"
     cards = {ds: {**card(["blue bin"]), "name": "Chat photos 09 Oct 2026 15:16"},
