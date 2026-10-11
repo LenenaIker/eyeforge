@@ -23,6 +23,13 @@ from .base import Context, Stage
 
 VIEWS = 20           # new views per scene and job
 BUILD_PER_JOB = 1    # scenes built by one job when the dataset has none ready
+PICK_AMONG = 6       # typical photos the vision model rates for the scene; the cleanest is built (roadmap B.3)
+PICK_S = 120         # the rating's deadline: photos without an answer by then keep their place after the rated
+PICK_PROMPT = """We will rebuild the place in this photo in 3D and move the {targets} around in it to make training
+images, so we want the cleanest photo of the place. Judge only this: every {targets} whole in the frame (not cut by
+the photo's edges, not hidden behind something), none overlapping or touching another, few other things around them,
+and the surface they stand on clearly visible. Answer only with JSON:
+{{"score": <0 to 10, 10 the cleanest>, "why": "<one short sentence>"}}"""
 
 
 def _link(src, dst):
@@ -54,7 +61,7 @@ def no_route(spec) -> str | None:
 
 class SceneFromPhoto(Stage):
     name = "scene_from_photo"
-    version = "1"
+    version = "2"  # 2: the vision model picks the cleanest photo
     runtime = "cpu"   # it runs each step in the Python that has its models (photo2scene.PYTHONS)
     gpu = "rtx"
     max_hours = 2
@@ -91,7 +98,7 @@ class SceneFromPhoto(Stage):
             frames += self._compose(ctx, p2s.Flow(d, usage, ctx.log), s["id"], phrases)
         if not given.get("ready"):
             tried = set(given.get("failed_photos", []))
-            for pid, photo in self._candidates(ctx, tried)[:BUILD_PER_JOB]:
+            for pid, photo in self._pick(ctx, self._candidates(ctx, tried), targets)[:BUILD_PER_JOB]:
                 # Built in the cache (by photo and classes): a run that fails later, or is tried again, does not
                 # pay the erase and the meshes twice.
                 work = ctx.cache.root / "scenes" / f"{content_key(photo)}-{cache_key(targets)}"
@@ -165,6 +172,62 @@ class SceneFromPhoto(Stage):
                 if n and t and n[-1] == t[-1] and set(t) <= set(n):
                     return cls
         return None
+
+    @staticmethod
+    def _pick(ctx: Context, candidates: list[tuple[int, Path]], targets: list[str]) -> list[tuple[int, Path]]:
+        """The first PICK_AMONG candidates rated by the vision model for a clean scene (objects whole, apart, little
+        clutter), the best first; the order of _candidates breaks ties and places the photos it could not rate. The
+        typical count alone picked photos with cut or stacked bottles (2026-10-11). Ratings are kept in the cache
+        by photo and classes."""
+        from ..llm import PHOTO_CALL, REASONING_TOKENS, Client, LLMError, ask_json, image_part, map_within
+        from PIL import Image, ImageOps
+
+        head = candidates[:PICK_AMONG]
+        if len(head) < 2:
+            return candidates
+        store = ctx.cache.root / "scene_pick"
+        store.mkdir(parents=True, exist_ok=True)
+        what = " or ".join(targets) or "objects"
+        client = None
+
+        def rate(item):
+            nonlocal client
+            pid, photo = item
+            kept = store / f"{content_key(photo)}-{cache_key(targets)}.json"
+            if kept.exists():
+                return json.loads(kept.read_text())
+            client = client or Client(usage_log=ctx.job.logs / "llm_usage.jsonl")
+            small = store / f"{content_key(photo)}.jpg"
+            with Image.open(photo) as im:
+                im = ImageOps.exif_transpose(im).convert("RGB")
+                im.thumbnail((768, 768))
+                im.save(small, quality=88)
+            msg = [{"role": "user", "content": [{"type": "text", "text": PICK_PROMPT.format(targets=what)},
+                                                image_part(small)]}]
+            try:
+                v = ask_json(client, msg, client.model_for("scene"), "scene_pick",
+                             lambda v: isinstance(v.get("score"), (int, float)), tries=1, temperature=0.0,
+                             max_tokens=REASONING_TOKENS, **PHOTO_CALL)
+            except LLMError:
+                return None
+            finally:
+                small.unlink(missing_ok=True)
+            if v:
+                v = {"score": float(v["score"]), "why": str(v.get("why") or "")}
+                kept.write_text(json.dumps(v))
+            return v
+
+        rated = map_within(rate, head, PICK_S)
+        if not any(rated):
+            ctx.log("the photo check did not answer: the scene photo is the one with the most typical count")
+            return candidates
+        order = sorted(range(len(head)), key=lambda i: (-(rated[i] or {"score": -1})["score"], i))
+        for rank, i in enumerate(order):
+            pid, photo = head[i]
+            r = rated[i]
+            ctx.log(f"{'picked' if rank == 0 else 'also rated'} photo {pid} ({photo.name}): "
+                    + (f"{r['score']:g}/10, {r['why']}" if r else "no answer"))
+        return [head[i] for i in order] + candidates[PICK_AMONG:]
 
     @staticmethod
     def _candidates(ctx: Context, tried: set[int]) -> list[tuple[int, Path]]:
