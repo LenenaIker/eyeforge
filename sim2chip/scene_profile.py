@@ -127,9 +127,9 @@ def aggregate(descriptions: list[dict], general: bool = False) -> dict:
         # Photos that look down at a surface (a table, a lawn, a conveyor) are that surface seen from above,
         # whatever room or street it is in: open ground with the surface's own texture, the camera looking down
         # from the measured distance (water_container_counter, 2026-10-11: rendered as side views of a room).
-        dist = sorted(float(d["distance_m"]) for d in descriptions if _number(d.get("distance_m")))
+        dist = [float(d["distance_m"]) for d in descriptions if _number(d.get("distance_m"))]
         contexts = [{"kind": "ground", "share": 1.0, "supports": ["ground"],
-                     **({"distance_m": [round(max(0.2, dist[0] * 0.8), 2), round(dist[-1] * 1.25, 2)]} if dist else {})}]
+                     **({"distance_m": _spread(dist, 0.2, camera["steady"])} if dist else {})}]
     else:
         behind = [d for d in descriptions if d["context"] == "ground"]
         for c in contexts:
@@ -141,7 +141,7 @@ def aggregate(descriptions: list[dict], general: bool = False) -> dict:
     rails = Counter({"glass": "bars"}.get(d.get("railing"), d.get("railing")) for d in descriptions)
     out = {"contexts": contexts}
     if camera.get("pitch_deg"):
-        out["camera"] = {k: v for k, v in camera.items() if k != "top_down"}
+        out["camera"] = {k: v for k, v in camera.items() if k not in ("top_down", "steady")}
     out |= _objects_and_light(descriptions, general)
     if walls:
         out["wall_tags"] = walls
@@ -152,23 +152,57 @@ def aggregate(descriptions: list[dict], general: bool = False) -> dict:
 
 
 TOP_DOWN_DEG = 45  # photos looking down more steeply than this, most of them: a surface seen from above
+# A camera that hardly moves between photos (mounted) gets a narrow range around the middle photo instead of the
+# whole spread plus margins, so no angle or distance it never has is made up (roadmap B.2). Steady: most photos
+# close to the median, so one odd estimate does not count. The vision model answers in 5 degree steps; the lawn,
+# taken by hand, had 56 % of its photos within 5 degrees and 44 % within 15 % of the distance (2026-10-11).
+STEADY_SHARE = 0.8
+STEADY_DEG = 5        # pitch this close to the median: the range is the median +-5 degrees
+STEADY_RATIO = 0.15   # distance (height) this close to the median: the range is the median +-10 %
+
+
+def _median(v: list[float]) -> float:
+    v = sorted(v)
+    return (v[(len(v) - 1) // 2] + v[len(v) // 2]) / 2
+
+
+def _steady(v: list[float], near) -> bool:
+    """Are most values near (value, median) the median?"""
+    mid = _median(v)
+    return sum(near(x, mid) for x in v) >= STEADY_SHARE * len(v)
+
+
+def _spread(v: list[float], floor: float, steady: bool) -> list[float]:
+    """A range of distances or heights in meters: the median +-10 % for a steady camera, else the whole spread
+    with margins (0.8 and 1.25 times), never under floor."""
+    if steady:
+        mid = _median(v)
+        return [round(max(floor, mid * 0.9), 2), round(mid * 1.1, 2)]
+    return [round(max(floor, min(v) * 0.8), 2), round(max(v) * 1.25, 2)]
 
 
 def _camera(descriptions: list[dict]) -> dict:
     """The camera of photos that look down at what they show: {"pitch_deg": [min, max], "height_m": [...] (above
-    the surface, from the distance), "top_down": True}; nothing when most photos look ahead (the camera then
-    frames each object by its size)."""
+    the surface, from the distance), "top_down": True, "steady": <a mounted camera: narrow ranges>}; nothing when
+    most photos look ahead (the camera then frames each object by its size)."""
     pairs = [(float(d["camera_pitch_deg"]), float(d["distance_m"]) if _number(d.get("distance_m")) else None)
              for d in descriptions if _number(d.get("camera_pitch_deg"))]
     steep = [(p, dist) for p, dist in pairs if p >= TOP_DOWN_DEG]
     if not pairs or len(steep) / len(descriptions) < 0.5:
         return {}
     pitch = sorted(min(89.0, p) for p, _ in steep)
-    out = {"pitch_deg": [round(max(TOP_DOWN_DEG, pitch[0] - 5)), round(min(89, pitch[-1] + 5))], "top_down": True}
-    heights = sorted(dist * math.sin(math.radians(p)) for p, dist in steep if dist)
+    heights = [dist * math.sin(math.radians(p)) for p, dist in steep if dist]
+    # Steady only when both hold: photos taken by hand from about the same height still tilt the phone.
+    steady = _steady(pitch, lambda x, mid: abs(x - mid) <= STEADY_DEG) and \
+        (not heights or _steady(heights, lambda x, mid: abs(x - mid) <= STEADY_RATIO * mid))
+    if steady:
+        mid = _median(pitch)
+        out = {"pitch_deg": [round(max(TOP_DOWN_DEG, mid - 5)), round(min(89, mid + 5))]}
+    else:
+        out = {"pitch_deg": [round(max(TOP_DOWN_DEG, pitch[0] - 5)), round(min(89, pitch[-1] + 5))]}
     if heights:
-        out["height_m"] = [round(max(0.1, heights[0] * 0.8), 2), round(heights[-1] * 1.25, 2)]
-    return out
+        out["height_m"] = _spread(heights, 0.1, steady)
+    return {**out, "top_down": True, "steady": steady}
 
 
 def _objects_and_light(descriptions: list[dict], general: bool = False) -> dict:

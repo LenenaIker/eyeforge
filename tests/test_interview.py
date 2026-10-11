@@ -566,7 +566,7 @@ def test_the_photo_analysis_goes_into_the_spec_in_code():
     table = [{"context": "indoor", "camera_pitch_deg": 75, "distance_m": 0.5, "supports": ["furniture"],
               "floor": "wood", "light": "indoor", "photo": f"{i}.jpg"} for i in range(4)]
     prof = scene_profile.aggregate(table)
-    assert prof["contexts"] == [{"kind": "ground", "share": 1.0, "supports": ["ground"], "distance_m": [0.4, 0.62]}]
+    assert prof["contexts"] == [{"kind": "ground", "share": 1.0, "supports": ["ground"], "distance_m": [0.45, 0.55]}]
     assert prof["camera"]["pitch_deg"] == [70, 80] and prof["camera"]["height_m"][0] < 0.5
     street = [{"context": "ground", "camera_pitch_deg": 10, "distance_m": 4, "wall_behind": i < 3, "photo": f"{i}.jpg"}
               for i in range(4)]

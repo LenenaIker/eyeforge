@@ -132,6 +132,23 @@ def test_profile_before_the_classes_does_not_size_them():
     assert not {"size_m", "height_m", "objects_per_photo"} & set(scene_profile.aggregate(flat)["suggest"])
 
 
+def test_a_steady_camera_gets_a_narrow_range():
+    """A mounted camera: the vision model's estimates still wobble a step either way, and one photo is way off;
+    the range stays within 5 degrees of the middle and 10 % of its height. Handheld photos keep their spread."""
+    def photos(pitches, dists):
+        return [{"context": "ground", "camera_pitch_deg": p, "distance_m": d} for p, d in zip(pitches, dists)]
+    mounted = scene_profile.aggregate(photos([70, 70, 65, 70, 75, 70, 70, 50, 70, 65],
+                                             [1.0, 1.0, 1.1, 1.0, 0.9, 1.0, 1.0, 2.0, 1.0, 1.0]))
+    lo, hi = mounted["camera"]["pitch_deg"]
+    assert (lo, hi) == (65, 75)
+    h = mounted["camera"]["height_m"]
+    assert h[1] / h[0] < 1.25 and mounted["contexts"][0]["distance_m"] == [0.9, 1.1]
+    # The lawn, photographed by hand (the vision model's answers, 2026-10-11): its whole range stays.
+    lawn = scene_profile.aggregate(photos([60, 60, 60, 60, 65, 65, 70, 70, 70, 70, 75, 75, 80, 80, 85],
+                                          [1.0] * 8 + [1.1, 1.2, 1.2, 1.2, 1.5, 1.5, 1.5]))
+    assert lawn["camera"]["pitch_deg"] == [55, 89]
+
+
 class Scripted:
     def __init__(self, actions):
         self.actions, self.seen = list(actions), []
