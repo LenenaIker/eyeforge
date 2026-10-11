@@ -52,7 +52,8 @@ class SceneFromPhoto(Stage):
     def enabled(self, spec) -> bool:
         from ..tasks import task_of
         # The support route: one surface seen from above (the photo analysis sets the camera's pitch then).
-        return spec.synthetic and task_of(spec).points and bool(spec.user_data.raw) and bool(spec.camera.pitch_deg)
+        return (spec.synthetic and spec.generation.photo_scenes and task_of(spec).points and bool(spec.user_data.raw)
+                and bool(spec.camera.pitch_deg))
 
     def run(self, ctx: Context) -> dict:
         from .. import photo2scene as p2s

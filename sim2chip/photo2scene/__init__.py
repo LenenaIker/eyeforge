@@ -108,16 +108,9 @@ def build(flow: Flow, photo: Path, targets: list[str], sunny: bool = False) -> d
             or not flow.json("plan.json")["one_flat_support"]:
         raise Stop("no single flat support holds the objects: " + flow.json("plan.json").get("reason", ""))
     plan = flow.json("plan.json")
-    # The user's classes by the phrases the teacher uses, then whatever else the VLM saw on the support. A class
-    # named like one of the solids the VLM saw ("bottle", "water bottle") is closed like it: its meshes came out
-    # as hollow discs seen from above otherwise (2026-10-11).
+    # The user's classes by the phrases the teacher uses, then whatever else the VLM saw on the support. (Closing
+    # a class's meshes like the VLM's solids turned a bottle with a handle into a cone, 2026-10-11: left open.)
     objects = list(dict.fromkeys([t.lower() for t in targets] + plan["objects"]))
-    heads = {s.split()[-1] for s in plan.get("solid") or []}
-    solid = list(dict.fromkeys((plan.get("solid") or []) + [t.lower() for t in targets if t.split()[-1] in heads]))
-    if solid != (plan.get("solid") or []):
-        (d / "plan.json").unlink()  # a new file: an old job's copy may be a link to this one
-        (d / "plan.json").write_text(json.dumps({**plan, "solid": solid}, indent=1))
-        plan = flow.json("plan.json")
     flow.run("S.2_prepare", "sam3", "bg_prepare.py", ["--image", image, "--objects", ",".join(objects), "--support",
                                                      plan["support"], "--out", d] + (["--shadows"] if sunny else []),
              ["background.png", "instances.npz"])

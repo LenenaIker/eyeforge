@@ -211,6 +211,8 @@ class GenerationSpec:
     empty_ratio: float = 0.2
     seed: int = 0
     max_targets: int | None = None  # count task: up to this many targets per frame (default 6)
+    # Frames from the user's own place too (scene_from_photo), when their photos fit (count, camera looking down).
+    photo_scenes: bool = True
 
     @property
     def n_targets(self) -> int:
