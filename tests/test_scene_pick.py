@@ -71,8 +71,8 @@ def test_no_answer_keeps_the_typical_order(tmp_path, monkeypatch):
     assert SceneFromPhoto._pick(ctx, photos, ["bottle"]) == (photos, []) and "did not answer" in seen[-1]
 
 
-def test_surfaces_make_no_scene(tmp_path, monkeypatch):
-    """The lawn: the vision model says its classes are surfaces, so no scene is built and the run says why."""
+def test_surfaces_make_no_scene_when_counting(tmp_path, monkeypatch):
+    """The vision model says the classes are surfaces: counting builds no scene and the run says why."""
     from sim2chip import photo2scene
     from sim2chip.stages import label
     from sim2chip.stages.render import no_synthetic
@@ -86,9 +86,8 @@ def test_surfaces_make_no_scene(tmp_path, monkeypatch):
     monkeypatch.setattr(label, "phrases_of", lambda spec, cache, log=print: {"grass": ["grass"]})
     Image.new("RGB", (8, 8)).save(tmp_path / "1.jpg")
     monkeypatch.setattr(SceneFromPhoto, "_candidates", staticmethod(lambda ctx, tried: [("grass", [(1, tmp_path / "1.jpg")])]))
-    spec = from_dict({**SPEC, "task": "roi_classification", "background_class": None,
-                      "classes": [{"id": c, "size_m": {"measure": "length", "range": [1, 2]},
-                                   "assets": {"source": "search", "queries": [c]}} for c in ("grass", "border")]})
+    spec = from_dict({**SPEC, "classes": [{"id": c, "size_m": {"measure": "length", "range": [1, 2]},
+                                           "assets": {"source": "search", "queries": [c]}} for c in ("grass", "border")]})
     job = open_job(tmp_path, "j")
     SceneFromPhoto().run(Context(spec, job, Cache(tmp_path / "cache")))
     (job.stage_dir("render")).mkdir(parents=True)
@@ -133,3 +132,64 @@ def test_a_class_tries_its_next_photo_when_one_makes_no_scene():
         tried.append(pid)
         built.append({"photo_id": pid, "status": "failed" if pid in (1, 2) else "ready"})
     assert tried == [1, 2, 4]  # the first class gives up after BUILD_TRIES photos; the second is ready at once
+
+
+def test_classifying_surfaces_reframes_the_photos(tmp_path, monkeypatch):
+    """The lawn: surfaces, classifying, so the training photos are re-framed and each kept view has its class."""
+    from sim2chip import photo2scene
+    from sim2chip.photo2scene import surface
+    from sim2chip.stages import ingest, label
+
+    class Lawn(Rater):
+        def chat(self, *a, **kw):
+            return json.dumps({"score": 6, "why": "clear", "things": False})
+    monkeypatch.setattr(llm, "Client", Lawn)
+    monkeypatch.setattr(photo2scene, "missing_pythons", lambda: [])
+    monkeypatch.setattr(label, "phrases_of", lambda spec, cache, log=print: {"grass": ["grass"], "edge": ["edge"]})
+    photos = []
+    for i, cls in enumerate(["grass", "edge"]):
+        (tmp_path / cls).mkdir()
+        Image.new("RGB", (8, 8)).save(tmp_path / cls / f"{i}.jpg")
+        photos.append(tmp_path / cls / f"{i}.jpg")
+    monkeypatch.setattr(SceneFromPhoto, "_candidates", staticmethod(lambda ctx, tried: [("grass", [(1, photos[0])])]))
+    monkeypatch.setattr(ingest, "train_photos", lambda ctx: photos)
+    monkeypatch.setattr(surface, "phrases", lambda spec, cache, log=print: ["grass", "concrete"])
+
+    def build(flow, given, found, frames, pitch, height, seed, log=print):
+        assert [c for _, c in given] == ["grass", "edge"] and pitch == (60.0, 90.0)
+        (flow.d / "views").mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8)).save(flow.d / "views" / "0_v00.png")
+        return [{"file": "views/0_v00.png", "source": "0", "class": "grass"}]
+    monkeypatch.setattr(surface, "build", build)
+    spec = from_dict({**SPEC, "task": "roi_classification", "background_class": None,
+                      "classes": [{"id": c, "size_m": {"measure": "length", "range": [1, 2]},
+                                   "assets": {"source": "search", "queries": [c]}} for c in ("grass", "edge")]})
+    job = open_job(tmp_path, "j")
+    SceneFromPhoto().run(Context(spec, job, Cache(tmp_path / "cache")))
+    frames = json.loads((job.stage_dir("scene_from_photo") / "frames.json").read_text())
+    assert frames == [{"file": "surface/views/0_v00.png", "scene": "surface", "boxes": [], "class": "grass"}]
+    assert (job.stage_dir("scene_from_photo") / frames[0]["file"]).exists()
+
+
+def test_a_view_keeps_its_photo_class_while_its_surfaces_say_so(tmp_path):
+    """The rule learnt from the photos' surfaces: a view that still looks like its photo keeps the photo's label, one
+    that looks like another class stays out."""
+    from sim2chip.photo2scene import surface
+
+    class Flow:
+        d = tmp_path
+
+        def run(self, *a, **kw):
+            return 0
+    # Two surfaces, whole and middle shares: grass photos mostly grass, edge photos half and half.
+    grass = lambda g: [g, 1 - g, g, 1 - g]  # noqa: E731
+    made = {"photos": {f"g{i}": {"feats": grass(0.9 + 0.02 * i)} for i in range(3)} |
+                      {f"e{i}": {"feats": grass(0.5 + 0.02 * i)} for i in range(3)},
+            "views": [{"file": "g0_v00.png", "source": "g0", "feats": grass(0.92)},
+                      {"file": "e0_v00.png", "source": "e0", "feats": grass(0.95)},   # the edge framed out
+                      {"file": "e1_v00.png", "source": "e1", "feats": grass(0.48)}]}
+    (tmp_path / "views").mkdir()
+    (tmp_path / "views" / "views.json").write_text(json.dumps(made))
+    photos = [(tmp_path / f"g{i}.jpg", "grass") for i in range(3)] + [(tmp_path / f"e{i}.jpg", "edge") for i in range(3)]
+    views = surface.build(Flow(), photos, ["grass", "concrete"], 12, None, None, 0)
+    assert [(v["source"], v["class"]) for v in views] == [("g0", "grass"), ("e1", "edge")]

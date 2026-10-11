@@ -40,6 +40,7 @@ and the surface they stand on clearly visible. Answer only with JSON:
  "things": <true when the {targets} are separate things one could pick up and move (a bottle, a cup), false when
   they are surfaces or areas (grass, a road, a floor)>}}"""
 SURFACES = "your classes are surfaces or areas, not things to move around; EyeForge cannot rebuild those yet"
+NO_SURFACE_VIEWS = "no new view of your surfaces kept its class"
 
 
 def _link(src, dst):
@@ -69,7 +70,8 @@ def no_route(spec) -> str | None:
 
 class SceneFromPhoto(Stage):
     name = "scene_from_photo"
-    version = "3"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view
+    version = "4"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view;
+    # 4: surfaces re-framed in 3D
     runtime = "cpu"   # it runs each step in the Python that has its models (photo2scene.PYTHONS)
     gpu = "rtx"
     max_hours = 2
@@ -87,6 +89,7 @@ class SceneFromPhoto(Stage):
     def run(self, ctx: Context) -> dict:
         from .. import photo2scene as p2s
         from ..library import SCENES
+        from ..tasks import task_of
         from .label import phrases_of
 
         out = ctx.job.stage_dir(self.name)
@@ -116,9 +119,15 @@ class SceneFromPhoto(Stage):
                 votes += things
             if votes and sum(votes) * 2 < len(votes):
                 ctx.log(f"the vision model sees surfaces, not things, in {len(votes) - sum(votes)} of {len(votes)} "
-                        "photos: no scene")
-                built.append({"photo_id": None, "route": "support", "status": "failed", "why": SURFACES})
+                        "photos")
                 picks = []
+                if task_of(ctx.spec).points:
+                    built.append({"photo_id": None, "route": "support", "status": "failed", "why": SURFACES})
+                else:
+                    views = self._surfaces(ctx, out, usage)
+                    frames += views
+                    built.append({"photo_id": None, "route": "surface", "status": "ready" if views else "failed",
+                                  **({} if views else {"why": NO_SURFACE_VIEWS})})
             for pid, photo in self._tries(picks, built):
                 # Built in the cache (by photo and classes): a run that fails later, or is tried again, does not
                 # pay the erase and the meshes twice.
@@ -147,6 +156,32 @@ class SceneFromPhoto(Stage):
         boxes = sum(len(f["boxes"]) for f in frames)
         ctx.log(f"{len(frames)} frames from the user's place, {boxes} objects")
         return {"frames": len(frames), "objects": boxes, "built": sum(b["status"] == "ready" for b in built)}
+
+    @staticmethod
+    def _surfaces(ctx: Context, out: Path, usage: Path) -> list[dict]:
+        """Classifying surfaces (photo2scene.surface): the training photos re-framed in 3D, each view with its
+        photo's class when the surfaces in it still look like that class. Built in the cache by photos and settings;
+        the views are linked into out/surface."""
+        from .. import photo2scene as p2s
+        from ..photo2scene import surface
+        from .ingest import train_photos
+        photos = [(f, f.parent.name) for f in train_photos(ctx)]
+        if not photos:
+            return []
+        found = surface.phrases(ctx.spec, ctx.cache, ctx.log)
+        cam, gen = ctx.spec.camera, ctx.spec.generation
+        key = cache_key([[content_key(f), c] for f, c in photos] + [found, cam.pitch_deg, cam.height_m, gen.seed,
+                                                                    gen.frames])
+        work = ctx.cache.root / "surfaces" / key
+        ctx.log(f"re-framing {len(photos)} training photos of your surfaces in 3D")
+        views = surface.build(p2s.Flow(work, usage, ctx.log), photos, found, gen.frames, cam.pitch_deg, cam.height_m,
+                              gen.seed, ctx.log)
+        d = out / "surface"
+        shutil.rmtree(d, ignore_errors=True)
+        (d / "views").mkdir(parents=True)
+        for v in views:
+            _link(work / v["file"], d / v["file"])
+        return [{"file": f"surface/{v['file']}", "scene": "surface", "boxes": [], "class": v["class"]} for v in views]
 
     @staticmethod
     def _tries(picks: list[list[tuple[int, Path]]], built: list[dict]):
