@@ -15,7 +15,7 @@ El objetivo del sintético (usuario, desde el principio): **escenas que se parez
 
 ## Estado para retomar (2026-10-11)
 
-- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo); A.2 (plantilla y etapas de modelos 3D apagadas, fotos obligatorias, motivo en informe y web; hoja `compare/A2_sin_plantilla.html`). Siguiente: A.3 (filtro de parecido).
+- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo); A.2 (plantilla y etapas de modelos 3D apagadas, fotos obligatorias, motivo en informe y web; hoja `compare/A2_sin_plantilla.html`); A.3 (filtro de parecido en render, `sim2chip/likeness.py`; hoja `compare/A3_filtro_parecido.html`). Siguiente: A.4 (re-medir), con varias ejecuciones por brazo por el ruido de PicoDet (±0,03 a 0,05 con la misma entrada).
 - El interruptor es `stages/base.py: TEMPLATE` (False). Los tests de la maquinaria que aún usan la plantilla como ejemplo la encienden con el fixture `template_on`. Ruido entre ejecuciones medido en A.2: unos 0,03 de F1 en las botellas (mismo trabajo, 0,672 y 0,705).
 - Pruebas: home `runs/p2s_test` (`/media/lenena-iker/Crucial/runs/eyeforge/p2s_test`). Trabajos `jobs/grass` (copia del de la web local, para no tocar el original), `jobs/bottles_scene` (24 fotos) y `jobs/bottles_few` (8). Resultados en `arms.log`. Los scripts de brazos (`arms.sh`, `arms_grass.sh`) cambian `generation.frames`, `photo_scenes` y `training.seeds` en el spec del trabajo y lanzan `python -m sim2chip --home <home> run <spec> --job <job>` con el Python de `edge-sdg`; copias en `runs/p2s_test/scripts/`.
 - Hojas de comparación para el usuario: `runs/p2s_test/compare/` (A.0 en `A0_cesped.html`).
@@ -85,7 +85,7 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 | Rutas de calle y habitación | del experimento al paquete del producto (C.1 a C.5); la extrapolación copia en espejo y cambia superficies y objetos (M.2) | [ ] |
 | Elección de ruta | del análisis de fotos de la entrevista a photo2scene (C.3) | [ ] |
 | Reparto 90/10 | imitación y extrapolación en render (D) | [ ] |
-| Filtro de parecido | entre el sintético y el entrenamiento (A.3) | [ ] |
+| Filtro de parecido | entre el sintético y el entrenamiento (A.3) | [x] (dentro de render, `likeness.py`) |
 | Aviso "sin sintético: motivo" | del trabajo al informe y a la web (A.2, F.2) | [ ] (A.2 hecho: `render.no_synthetic`, `report.json` y aviso en la página; falta F.2) |
 | Kits de Nebius | entornos y pesos de photo2scene (E) | [ ] |
 
@@ -105,12 +105,12 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 - [x] **A.2 La plantilla deja de ser relleno** (decisión 0.2): sin escena válida, no entra sintético de plantilla. Tanto el informe como la web dicen "sin sintético: motivo". Las etapas de modelos 3D de internet también se apagan hasta que M.1 las conecte (usuario, 2026-10-11). Resultado: césped 0,735 ± 0,026 (solo fotos, motivo en la página), botellas 0,778 y 0,672 (sin cambio fuera del ruido). Hoja: `runs/p2s_test/compare/A2_sin_plantilla.html`.
   - [x] Check: test de render con escena desactivada y fotos del usuario, que no debe dar frames de plantilla (`tests/test_template_off.py`).
   - [x] Check: la página del trabajo muestra el motivo (captura sin cabeza en la hoja; falta que el usuario lo vea en su navegador).
-- [ ] **A.3 Filtro final de parecido**, igual para todas las tareas: cada frame sintético se compara con las fotos de train del usuario mediante embeddings de SigLIP 2 (el profesor que ya existe).
+- [x] **A.3 Filtro final de parecido**, igual para todas las tareas: cada frame sintético se compara con las fotos de train del usuario mediante embeddings de SigLIP 2 (el profesor que ya existe).
   - Lo que se aleja de la distribución de las fotos no entra en el entrenamiento.
   - El umbral sale de las propias fotos: la distancia que hay entre fotos reales de train.
-  - Check: en el césped elimina los cielos, los interiores de modelos y los colores lisos (revisión a ojo con una hoja de aceptados y rechazados).
-  - Check: en las botellas mantiene la mayoría de los frames de escena, y la nota no baja de 0,801 / 0,702.
-  - Check: el informe dice cuántos frames entraron y cuántos se quedaron fuera.
+  - [x] Check: en el césped elimina los cielos, los interiores de modelos y los colores lisos (revisión a ojo con una hoja de aceptados y rechazados). Sobre los 333 frames de plantilla del A.0 deja 1 (umbral 0,783); quedan fuera también céspedes de textura plausibles (0,75-0,77). Falta tu revisión a ojo de la hoja.
+  - [ ] Check: en las botellas mantiene la mayoría de los frames de escena (sí: 20 de 20 en ambos), y la nota no baja de 0,801 / 0,702 (no comprobable así: con la misma entrada que A.2 dio 0,779 y 0,659; las ejecuciones repetidas de 8 fotos dan 0,672, 0,705 y 0,659, y 0,801 / 0,702 eran una sola ejecución con 1 frame de plantilla más).
+  - [x] Check: el informe dice cuántos frames entraron y cuántos se quedaron fuera (`report.json`: `synthetic.kept`, `synthetic.left_out`; `render/likeness.json` con la similitud de cada frame).
 - [ ] **A.4 Re-medir el césped y las botellas** con A.1 a A.3.
   - Check: el césped no queda por debajo de solo fotos (A.0).
 

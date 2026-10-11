@@ -264,6 +264,21 @@ def held_out(ctx: Context) -> set[str]:
     return keys | scene_photos(ctx)
 
 
+def train_photos(ctx: Context) -> list:
+    """The user's photos on the training side, as the files they came from (full size, not the model's input)."""
+    out = ctx.job.stage_dir("ingest")
+    if ctx.spec.task == "count":
+        table = out / "train" / "points.json"
+        rows = json.loads(table.read_text()).values() if table.exists() else []
+        return sorted({ctx.job.root / v["source"] for v in rows if (ctx.job.root / v["source"]).exists()})
+    side = read_split(out)
+    ud = ctx.spec.user_data
+    folders = ([ctx.job.resolve_input(ud.labeled)] if ud.labeled else []) + \
+        ([ctx.job.stage_dir("label")] if ud.raw else [])
+    files = {f for d in folders if d.is_dir() for f in d.rglob("*") if f.suffix.lower() in IMAGE_EXT}
+    return sorted(f for f in files if side.get(content_key(f)) == "train")
+
+
 def scene_photos(ctx: Context) -> set[str]:
     """Content keys of the photos the dataset's scenes were built from (library.export_scenes): their background
     is in the synthetic frames, so a test on them would be too easy."""

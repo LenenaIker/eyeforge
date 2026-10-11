@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 import shutil
 from dataclasses import dataclass, field
@@ -57,25 +58,24 @@ def expose(path) -> bool:
 
 class Render(Stage):
     name = "render"
-    version = "7"  # v7: the template off, the user's place only; v6: the frames of the user's place (scene_from_photo); v5: fewer frames when some classes have no 3D model; v2: paint, empty-frame distance and camera aim from the spec; v3: masonry parapets;
+    version = "8"  # v8: frames unlike the user's photos left out (likeness.py); v7: the template off, the user's place only; v6: the frames of the user's place (scene_from_photo); v5: fewer frames when some classes have no 3D model; v2: paint, empty-frame distance and camera aim from the spec; v3: masonry parapets;
     # v4: sun behind the camera in most frames, room lamp, auto exposure and nearly black frames dropped
     uses = ("scene", "camera", "generation", "classes", "props", "background_class", "task")
-    after = ("qa_assets", "fetch_assets", "scene_from_photo")  # fetch_assets: scene.json with skies and ground textures
+    after = ("qa_assets", "fetch_assets", "scene_from_photo", "ingest")  # fetch_assets: the template's skies and ground
+    # textures; ingest: the training photos the frames are compared with
     skippable = "with photos"
 
-    # The template renders in Isaac Sim; without it the stage only copies files. Read when asked, so a test can
-    # turn the template on.
+    # The template renders in Isaac Sim; without it the stage copies files and compares them with the user's photos
+    # (SigLIP 2, in the teacher's own Python like the label stage). Read when asked, so a test can turn the template on.
     @property
     def runtime(self):
         return "isaac" if base.TEMPLATE else "cpu"
 
     @property
     def gpu(self):
-        return "rtx" if base.TEMPLATE else None
+        return "rtx" if base.TEMPLATE else "any"
 
-    @property
-    def uses_cache(self):
-        return base.TEMPLATE
+    uses_cache = True
 
     @property
     def max_hours(self):
@@ -94,15 +94,14 @@ class Render(Stage):
             out = ctx.job.stage_dir(self.name)
             shutil.rmtree(out, ignore_errors=True)
             out.mkdir(parents=True)
-            labels = scene_frames(ctx, out, 0)
+            labels = like_photos(ctx, out, scene_frames(ctx, out, 0))
             (out / "labels.json").write_text(json.dumps(labels, indent=1))
             if not labels:
-                ctx.log("no frames from the user's place: the model learns from the photos alone")
+                ctx.log("no synthetic frames left: the model learns from the photos alone")
             return {"frames": len(labels)}
         return self.template(ctx)
 
     def template(self, ctx: Context) -> dict:
-
         import omni.replicator.core as rep
         from omni.kit.app import get_app
 
@@ -224,17 +223,56 @@ def no_synthetic(spec, job=None) -> str | None:
     if why or job is None:
         return why
     step = "crops" if spec.task == "roi_classification" else "points"
-    for name in ("scene_from_photo", "render", step):
+    for name, what in (("scene_from_photo", "rebuilding your place failed"),
+                       ("render", "the synthetic images could not be compared with your photos"),
+                       (step, "preparing the synthetic images failed")):
         if left := job.dropped(name):
-            return f"rebuilding your place failed ({left})"
+            return f"{what} ({left})"
     labels = job.stage_dir("render") / "labels.json"
     if labels.exists() and not json.loads(labels.read_text()):
+        like = job.stage_dir("render") / LIKENESS
+        if like.exists() and (n := json.loads(like.read_text())["left_out"]):
+            return f"none of the {n} synthetic images looked like your photos"
         tried = job.stage_dir("scene_from_photo") / "scenes.json"
         built = json.loads(tried.read_text()) if tried.exists() else []
         whys = [b["why"] for b in built if b.get("status") == "failed"]
         return (f"no photo made a scene ({whys[0]})" if whys else
                 "no photo was left to rebuild your place from (the ones tried before made no scene)")
     return None
+
+
+LIKENESS = "likeness.json"  # in render/: how alike each frame is to the user's photos, and which went in
+
+
+def like_photos(ctx: Context, out, labels: list[dict]) -> list[dict]:
+    """The frames that look like the user's training photos (likeness.py); the others stay on disk, out of the
+    labels. Under two training photos there is no threshold and every frame goes in."""
+    from .. import likeness
+    from .ingest import train_photos
+    if not labels:
+        return labels
+    real = train_photos(ctx)
+    if len(real) < 2:
+        ctx.log(f"only {len(real)} training photos to compare with: every synthetic frame goes in")
+        return labels
+    frames = {lab["frame"]: out / f"rgb_{lab['frame']:04d}.png" for lab in labels}
+    timeline = lambda step, seconds: ctx.job.timeline(step, seconds, os.environ.get("SIM2CHIP_RUNS_ON", "local"))  # noqa: E731
+    emb = likeness.embeddings(real + list(frames.values()), ctx.cache.root, ctx.log, timeline)
+    real_emb = [emb[f] for f in real if f in emb]
+    thr = likeness.threshold(real_emb)
+    if thr is None:
+        ctx.log(f"only {len(real_emb)} training photos to compare with: every synthetic frame goes in")
+        return labels
+    shown = [lab for lab in labels if frames[lab["frame"]] in emb]
+    sims = likeness.nearest([emb[frames[lab["frame"]]] for lab in shown], real_emb) if shown else []
+    kept = [lab for lab, s in zip(shown, sims) if s >= thr]
+    (out / LIKENESS).write_text(json.dumps({
+        "threshold": round(thr, 4), "photos": len(real_emb), "kept": len(kept), "left_out": len(labels) - len(kept),
+        "frames": [{"frame": lab["frame"], "similarity": round(s, 4), "kept": s >= thr} for lab, s in zip(shown, sims)]},
+        indent=1))
+    ctx.log(f"{len(kept)} of {len(labels)} synthetic frames look like the {len(real_emb)} training photos (SigLIP 2 "
+            f"similarity to the nearest one at least {thr:.3f}, the least alike pair of neighbours among the photos)")
+    return kept
 
 
 def real_counts(ctx: Context) -> list[int]:
