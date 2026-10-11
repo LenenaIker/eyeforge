@@ -111,6 +111,7 @@ SENT = "sent.json"           # in a job folder: the spec as the web sent it (a d
 SESSION_OWNER = ".owner"     # file in uploads/<session>: who started that chat
 CHAT_VIEW = ".view.json"     # file in uploads/<session>: the chat as the web shows it, to open it again anywhere
 MAX_VIEW_BYTES = 2_000_000
+CHATS = "chats.json"         # in a job folder: the chats that set it up, [{"t", "revision", "msgs": [{"from", "text"}]}]
 SESSION_HOURS = 6  # an interview left open longer is dropped
 # Model calls are logged by purpose, which is the stage name except for qa's two-step strategy and photo2scene.
 PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets", "scene_plan": "scene_from_photo",
@@ -357,6 +358,16 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         with open(job.logs / "interview_usage.jsonl", "a") as f:
             f.write(interview_usage(sid).read_text())
         interview_usage(sid).unlink()  # counted once, even if the chat goes on
+
+    def keep_chat(job: Job, sid: str | None, request: Request, revision: bool = False) -> None:
+        """The chat that wrote this job's spec, as the web last showed it, goes with the job (its page shows it)."""
+        if not sid or not owns_upload(sid, request):
+            return
+        try:
+            view = json.loads((home / "uploads" / sid / CHAT_VIEW).read_text()).get("view") or {}
+        except (OSError, ValueError):
+            return
+        add_chat(job, view, revision)
 
     def start_run(job: Job, request: Path, start: str | None = None, payer: Request | None = None):
         """payer: the HTTP request of the user who pays this run (accounts mode)."""
@@ -899,6 +910,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         req = job.root / "request.json"
         req.write_text(json.dumps({**json.loads(parsed.to_json()), "name": name}, indent=2))
         credit_interview(job, session, request)
+        keep_chat(job, session, request)
         if session:
             warm_mod.note(home, "job", name, session=f"session:{session}")
         if calibrate_first and parsed.user_data.raw and needs_check(job):
@@ -1356,6 +1368,37 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         job = job_of(name, request)
         return status(job, home, running=jobs.running(job), backend=backend)
 
+    @app.get("/api/jobs/{name}/chat")
+    def job_chat(name: str, request: Request):
+        """The chats that set this model up, oldest first."""
+        job = job_of(name, request)
+        if not (job.root / CHATS).exists():
+            find_old_chat(job, request)
+        try:
+            return {"chats": json.loads((job.root / CHATS).read_text())}
+        except (OSError, ValueError):
+            return {"chats": []}
+
+    def find_old_chat(job: Job, request: Request) -> None:
+        """A job made before chats were kept with it: the requester's chat whose setup has its name, if the web
+        still keeps that chat's view (a "New model" drops it)."""
+        try:
+            name = json.loads((job.root / SENT).read_text())["name"]
+        except (OSError, ValueError, KeyError):
+            return
+        uploads = home / "uploads"
+        for d in uploads.iterdir() if uploads.exists() else []:
+            f = d / CHAT_VIEW
+            if not f.is_file() or not owns_upload(d.name, request):
+                continue
+            try:
+                view = json.loads(f.read_text()).get("view") or {}
+            except ValueError:
+                continue
+            if name in {(view.get("spec") or {}).get("name"), (view.get("proposal") or {}).get("name")}:
+                add_chat(job, view)
+                return
+
     @app.get("/api/jobs/{name}/review")
     def review_data(name: str, request: Request):
         job = job_of(name, request)
@@ -1474,6 +1517,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 parsed.user_data.labeling = snap["labeling"]
             parsed = adopt_library(parsed, owner_of(request), job, session)
             credit_interview(job, session, request)
+            keep_chat(job, session, request, revision=True)
         todo = [p.stage.name for p in Pipeline(parsed, job, Cache(home / "cache")).plan() if p.action == "run"]
         if dry or not todo:
             return {"stages": todo, "changed": changed, "rerun_from": None}
@@ -1613,6 +1657,21 @@ def _photo_labels(text: str) -> dict[str, dict]:
                    and all(isinstance(c, (int, float)) and 0 <= c <= 1 for c in p[:2])]
             out[Path(str(name)).name] = {"points": pts}
     return out
+
+
+def add_chat(job: Job, view: dict, revision: bool = False) -> None:
+    """Keep a chat's messages (who and what, no photos or setup cards) in the job folder."""
+    msgs = [{"from": m["from"], "text": str(m.get("text", ""))} for m in view.get("msgs") or []
+            if isinstance(m, dict) and m.get("from") in ("bot", "me", "sys") and m.get("text")]
+    if not msgs:
+        return
+    f = job.root / CHATS
+    try:
+        chats = json.loads(f.read_text())
+    except (OSError, ValueError):
+        chats = []
+    chats.append({"t": round(time.time()), "revision": revision, "msgs": msgs})
+    f.write_text(json.dumps(chats, ensure_ascii=False))
 
 
 def latest_spec(job: Job) -> Path:
@@ -1806,7 +1865,9 @@ def status(job: Job, home: Path, running: bool, backend: str = "local") -> dict:
     cloud_log = job.logs / "cloud_usage.jsonl"
     cost = sum(json.loads(l)["usd_estimate"] for l in cloud_log.read_text().splitlines()) if cloud_log.exists() else 0.0
     report = job.stage_dir("export") / "report.json"
-    fresh = any(st["name"] == "export" and st["state"] == "done" for st in stages)  # not a stale model
+    # The model export holds, unless a run is making a new one. Not running, it shows even when a newer
+    # EyeForge would redo some stages (their code changed): it is still the model the user downloads.
+    fresh = not running or any(st["name"] == "export" and st["state"] == "done" for st in stages)
     calibration = job.root / CALIBRATION
     title = job.root / library.TITLE
     return {"job": job.name, "title": title.read_text().strip() if title.exists() else None,

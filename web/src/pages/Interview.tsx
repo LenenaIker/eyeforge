@@ -570,8 +570,8 @@ function Choice({ options, value, onChange, disabled = {} }: {
 
 const STEP: Record<string, string> = {
   label: "reading your photos", generate_assets: "3D models from photos", ingest: "sorting photos",
-  fetch_assets: "finding 3D models", convert_assets: "preparing models", preview_assets: "checking models",
-  qa_assets: "checking models", scene_from_photo: "rebuilding your place", render: "synthetic images", points: "training data", crops: "training data",
+  fetch_assets: "finding 3D models", convert_assets: "preparing 3D models", preview_assets: "photographing 3D models",
+  qa_assets: "checking 3D models", scene_from_photo: "rebuilding your place", render: "synthetic images", points: "training data", crops: "training data",
   train: "training", evaluate: "testing", export: "packing",
 };
 

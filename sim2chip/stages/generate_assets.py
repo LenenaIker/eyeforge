@@ -124,5 +124,5 @@ class GenerateAssets(Stage):
         per_class = {}
         for m in manifest:
             per_class[m["class"]] = per_class.get(m["class"], 0) + 1
-        ctx.log(f"{len(manifest)} generated models {per_class}")
+        ctx.log(f"{len(manifest)} generated 3D models {per_class}")
         return {"models": per_class}

@@ -154,7 +154,7 @@ class QAAssets(Stage):
                     f"the synthetic images show the other classes")
         no_props = [p.id for p in ctx.spec.props if not per_class.get(p.id)]
         if no_props:
-            ctx.log(f"WARNING: no usable models for props {no_props}, scenes will lack them")
+            ctx.log(f"WARNING: no usable 3D models for props {no_props}, scenes will lack them")
         (ctx.out(self.name) / "assets.json").write_text(json.dumps(kept, indent=1))
         ctx.log(f"{len(kept)} of {len(assets)} assets kept (mode {qa.mode}): {per_class}")
         return {"kept": per_class, "dropped": len(assets) - len(kept)}

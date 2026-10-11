@@ -754,3 +754,26 @@ def test_an_open_chat_comes_back_in_another_tab_until_a_new_one(app):
     app.delete("/api/interview/open", params={"key": "eyeforge.chat.new"})
     assert app.get("/api/interview/open", params={"key": "eyeforge.chat.new"}).json() == {}
     assert app.put("/api/interview/0123456789abcdef0123456789abcdef/view", json={"key": "k", "view": {}}).status_code == 404
+
+
+def test_job_keeps_its_chat_and_shows_its_model_when_stages_are_stale(app, tmp_path, monkeypatch):
+    sid = app.post("/api/interview").json()["session"]
+    view = {"msgs": [{"id": 0, "from": "bot", "text": "What should it see?"}, {"id": 1, "from": "me", "text": "cows"},
+                     {"id": 2, "from": "bot", "text": "", "turn": {"kind": "confirm"}}], "spec": GOOD}
+    app.put(f"/api/interview/{sid}/view", json={"key": "eyeforge.chat.new", "view": view})
+    assert app.post("/api/jobs", data={"spec": json.dumps(GOOD), "session": sid}).json()["job"] == "barn_cam"
+    chats = app.get("/api/jobs/barn_cam/chat").json()["chats"]
+    assert [m["text"] for m in chats[0]["msgs"]] == ["What should it see?", "cows"] and not chats[0]["revision"]
+    # A job made before chats were kept with it finds its chat by the setup's name, while the view is there.
+    job = tmp_path / "jobs" / "barn_cam"
+    (job / "chats.json").unlink()
+    assert len(app.get("/api/jobs/barn_cam/chat").json()["chats"]) == 1
+
+    # The model export holds, though no stage is done for this version of the code: hidden only while a run goes.
+    (job / "export").mkdir()
+    (job / "export" / "report.json").write_text(json.dumps({"metric": "accuracy", "val_score": 0.5}))
+    assert app.get("/api/jobs/barn_cam").json()["report"] is None
+    monkeypatch.setattr(FakeProc, "poll", lambda self: 0)
+    s = app.get("/api/jobs/barn_cam").json()
+    assert not s["running"] and s["report"]["val_score"] == 0.5
+    assert {st["state"] for st in s["stages"]} != {"done"}

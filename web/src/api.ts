@@ -230,6 +230,8 @@ export function addPhotos(job: string, files: File[], note: string, labels: Reco
 
 export const listJobs = () => api<{ jobs: string[] }>("/api/jobs");
 export const jobStatus = (job: string) => api<Status>(`/api/jobs/${job}`);
+export type JobChat = { t: number; revision: boolean; msgs: { from: "bot" | "me" | "sys"; text: string }[] };
+export const jobChat = (job: string) => api<{ chats: JobChat[] }>(`/api/jobs/${job}/chat`);
 export const getReview = (job: string) => api<Review>(`/api/jobs/${job}/review`);
 export const cancelJob = (job: string) => api(`/api/jobs/${job}/cancel`, { method: "POST" });
 // A stopped or failed job again, from where it stopped (what finished is reused).

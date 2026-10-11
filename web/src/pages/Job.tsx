@@ -13,8 +13,8 @@ import ReviewPanel from "./Review";
 
 const FRIENDLY: Record<string, string> = {
   label: "Reading your photos", generate_assets: "Building 3D models from your photos", ingest: "Sorting your photos",
-  fetch_assets: "Finding 3D models", convert_assets: "Preparing the models", preview_assets: "Photographing the models",
-  qa_assets: "Checking the models", scene_from_photo: "Rebuilding your place in 3D", render: "Generating synthetic images", points: "Preparing training data",
+  fetch_assets: "Finding 3D models", convert_assets: "Preparing the 3D models", preview_assets: "Photographing the 3D models",
+  qa_assets: "Checking the 3D models", scene_from_photo: "Rebuilding your place in 3D", render: "Generating synthetic images", points: "Preparing training data",
   crops: "Preparing training data", train: "Training", evaluate: "Testing on your real photos", export: "Packing the model",
 };
 const POLL_MS = 5000;
@@ -74,12 +74,13 @@ export default function JobPage() {
       {error && <Notice tone="bad">Lost contact with the server, retrying: {error}</Notice>}
       {news && <Notice>{news}</Notice>}
       {s.labeling && !s.calibration ? <Labeling s={s} /> : s.calibration ? <Calibration s={s} reviewKey={reviewKey} onRerun={restart} /> :
-        (s.running || !s.report) && <Progress s={s} failed={failed} onRerun={restart} />}
+        (s.running || !s.report || failed) && <Progress s={s} failed={failed} onRerun={restart} />}
       {s.report && <Result job={s.job} r={s.report} usd={s.cloud_usd} version={s.version} />}
       {!s.running && s.report && <Improve job={s.job} counting={s.report.task === "count"} onRerun={restart} />}
       {s.report && s.usage && (s.usage.models.length > 0 || s.usage.gpu.length > 0) && <UsagePanel u={s.usage} />}
       {s.report && s.versions.length > 0 && <Versions job={s.job} versions={s.versions} />}
       {!s.calibration && !s.labeling && !s.running && (s.report || failed) && <ReviewPanel key={reviewKey} job={s.job} onRerun={restart} />}
+      {!s.labeling && <ChatPanel job={s.job} reload={reviewKey} />}
     </div>
   );
 }
@@ -465,6 +466,34 @@ function UsagePanel({ u }: { u: Usage }) {
           </li>
         ))}
       </ul>
+    </Card>
+  );
+}
+
+// The chats that set this model up (the first one and any change of setup), as the user saw them.
+function ChatPanel({ job, reload }: { job: string; reload: number }) {
+  const [chats, setChats] = useState<API.JobChat[]>([]);
+  useEffect(() => { API.jobChat(job).then((r) => setChats(r.chats)).catch(() => setChats([])); }, [job, reload]);
+  if (!chats.length) return null;
+  return (
+    <Card className="p-5">
+      <details>
+        <summary className="cursor-pointer font-semibold">The chat that set it up{chats.length > 1 ? ` (${chats.length})` : ""}</summary>
+        <div className="mt-4 space-y-6">
+          {chats.map((c, i) => (
+            <div key={c.t} className="space-y-3">
+              {chats.length > 1 && <p className="text-xs font-medium uppercase tracking-wide text-muted">
+                {i === 0 ? "First setup" : "Change of setup"} · {new Date(c.t * 1000).toLocaleString()}</p>}
+              {c.msgs.map((m, k) => m.from === "sys" ? <p key={k} className="text-center text-sm text-muted">{m.text}</p> : (
+                <div key={k} className={cx("flex", m.from === "me" && "justify-end")}>
+                  <p className={cx("max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm", m.from === "me"
+                    ? "rounded-tr-sm bg-brand-600 text-white" : "rounded-tl-sm bg-gray-50 ring-1 ring-line")}>{m.text}</p>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </details>
     </Card>
   );
 }

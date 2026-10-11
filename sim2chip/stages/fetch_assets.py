@@ -74,7 +74,7 @@ class FetchAssets(Stage):
                             "source": info.get("url"), "glb": str(dst.relative_to(ctx.cache.root)),
                             **({"role": role} if role else {})})
         if out:
-            ctx.log(f"{len(out)} models from the user's library")
+            ctx.log(f"{len(out)} 3D models from the user's library")
         return out
 
     def run(self, ctx: Context) -> dict:
@@ -95,7 +95,7 @@ class FetchAssets(Stage):
         per_class = {}
         for m in manifest:
             per_class[m["class"]] = per_class.get(m["class"], 0) + 1
-        ctx.log(f"{len(manifest)} models {per_class}, {n_sky} skies, {len(scene['ground'])} ground textures")
+        ctx.log(f"{len(manifest)} 3D models {per_class}, {n_sky} skies, {len(scene['ground'])} ground textures")
         return {"models": per_class}
 
     @staticmethod
@@ -176,7 +176,7 @@ class FetchAssets(Stage):
                 if m["uid"] in paths else None
         missing = [m["uid"] for m in manifest if not m["glb"]]
         if missing:
-            ctx.log(f"{len(missing)} models failed to download and are dropped")
+            ctx.log(f"{len(missing)} 3D models failed to download and are dropped")
         return [m for m in manifest if m["glb"]]
 
     def scene_assets(self, ctx: Context) -> dict:

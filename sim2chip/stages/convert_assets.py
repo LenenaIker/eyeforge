@@ -114,7 +114,7 @@ def _glb2usd(ctx: Context, todo: list[tuple[Path, str]]) -> list[tuple[Path, str
         if err:
             ctx.log(f"glb2usd could not convert {glb.name}: {err[1].strip().splitlines()[-1]}")
             failed.append((glb, uid))
-    ctx.log(f"glb2usd: {len(todo) - len(failed)} of {len(todo)} models converted in {time.time() - t0:.1f} s")
+    ctx.log(f"glb2usd: {len(todo) - len(failed)} of {len(todo)} 3D models converted in {time.time() - t0:.1f} s")
     return failed
 
 
@@ -144,7 +144,7 @@ def _normalize_all(ctx: Context, todo: list[tuple[Path, Path]]) -> None:
     for (raw, _), err in zip(todo, errors):
         if err:
             ctx.log(f"could not normalize {raw.name}, left out: {err}")
-    ctx.log(f"normalized {len(todo)} models in {time.time() - t0:.1f} s")
+    ctx.log(f"normalized {len(todo)} 3D models in {time.time() - t0:.1f} s")
 
 
 def _asset_converter(ctx: Context, todo: list[tuple[Path, str]]) -> None:
@@ -157,10 +157,10 @@ def _asset_converter(ctx: Context, todo: list[tuple[Path, str]]) -> None:
     try:
         exe = LocalBackend().interpreter("isaac")
     except FileNotFoundError as e:
-        ctx.log(f"{len(todo)} models left out: {e}")
+        ctx.log(f"{len(todo)} 3D models left out: {e}")
         return
     pairs = [[str(glb), str(ctx.cache.usd_raw / f"{uid}.usd")] for glb, uid in todo]
-    ctx.log(f"{len(pairs)} models to Isaac Sim's Asset Converter")
+    ctx.log(f"{len(pairs)} 3D models to Isaac Sim's Asset Converter")
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH")]))}
     # The pairs go in a file: one argv string is capped at 128 KiB on Linux.
     pairs_file = ctx.out("convert_assets") / "_isaac_pairs.json"
@@ -168,7 +168,7 @@ def _asset_converter(ctx: Context, todo: list[tuple[Path, str]]) -> None:
     r = subprocess.run(exe + ["-m", "sim2chip.isaac_convert", str(pairs_file)], env=env, cwd=REPO)
     pairs_file.unlink(missing_ok=True)
     if r.returncode:
-        ctx.log(f"Isaac Sim's Asset Converter exited with {r.returncode}: models it did not write are left out")
+        ctx.log(f"Isaac Sim's Asset Converter exited with {r.returncode}: 3D models it did not write are left out")
 
 
 def world_points(stage, max_pts: int = 60000):

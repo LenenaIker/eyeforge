@@ -86,7 +86,7 @@ class PreviewAssets(Stage):
         items = []
         flat = [a for a in assets if a["dims"][MEASURES.index(ctx.spec.size_of(a["class"]).measure)] <= 0]
         if flat:  # converted before convert_assets skipped them: no size to scale by, no preview
-            ctx.log(f"skipping {len(flat)} flat models: {[a['uid'] for a in flat]}")
+            ctx.log(f"skipping {len(flat)} flat 3D models: {[a['uid'] for a in flat]}")
             assets = [a for a in assets if a not in flat]
         for i, a in enumerate(assets):
             size = ctx.spec.size_of(a["class"])
