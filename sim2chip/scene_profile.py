@@ -37,17 +37,18 @@ We will rebuild places like this one in 3D to make training images, so describe 
 Answer only with JSON:
 {{"description": "<two or three sentences: what the photo shows, where those objects are, the light, where the
   camera stands>",
- "count": <how many of those objects are visible, 0 if none>,
+ "count": <how many of those objects are visible, 0 if none; null when they are surfaces or areas (grass, road,
+  floor) rather than separate things>,
  "size_m": <their typical size in meters, the longest side seen from above; judge from things of known size:
-  doors are about 2 m high, railings about 1 m, chair seats about 0.45 m, bricks 0.25 m>,
- "height_m": <their typical height in meters>,
+  doors are about 2 m high, railings about 1 m, chair seats about 0.45 m, bricks 0.25 m; null for surfaces or areas>,
+ "height_m": <their typical height in meters; null for surfaces or areas>,
  "camera_height_m": <height of the camera above the floor it stands on, meters>,
  "camera_pitch_deg": <how far down the camera looks, degrees: 0 straight ahead, 90 straight down at the surface>,
  "wall_behind": <true when a wall, fence or building stands right behind the objects, within about 2 m>,
  "others": [up to 6 other movable things standing near them on the same surfaces, English nouns: "chair",
   "watering can", "bicycle"; not parts of the building (shutters, awnings, lamps, windows) and not vehicles],
  "objects": [every kind of object that stands out in the photo, those above included, up to 8:
-  {{"name": "<English noun, singular>", "count": <how many>}}],
+  {{"name": "<English noun, singular>", "count": <how many>, "size_m": <typical longest side, meters>}}],
  "background": "<what is under and behind the objects, a few English words: dark wooden table, white wall>",
  "floor": "<what those objects stand on, one or two English words: tiles, concrete, grass, wood, asphalt>",
  "light": "sun" | "overcast" | "evening" | "night" | "indoor",
@@ -100,9 +101,10 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
         shutil.rmtree(tmp, ignore_errors=True)  # late threads then fail on their own, harmlessly
 
 
-def aggregate(descriptions: list[dict]) -> dict:
+def aggregate(descriptions: list[dict], general: bool = False) -> dict:
     """Scene fields from the descriptions: contexts with their share of photos (rare ones dropped), camera
-    distances per context, supports seen, the wall materials and railing styles seen."""
+    distances per context, supports seen, the wall materials and railing styles seen. general: descriptions made
+    before anyone chose the classes (GENERAL), whose count and size are of whatever stood out."""
     n = len(descriptions)
     if not n:
         return {}
@@ -140,7 +142,7 @@ def aggregate(descriptions: list[dict]) -> dict:
     out = {"contexts": contexts}
     if camera.get("pitch_deg"):
         out["camera"] = {k: v for k, v in camera.items() if k != "top_down"}
-    out |= _objects_and_light(descriptions)
+    out |= _objects_and_light(descriptions, general)
     if walls:
         out["wall_tags"] = walls
     railings = [r for r, _ in rails.most_common() if r in RAILINGS]
@@ -169,9 +171,11 @@ def _camera(descriptions: list[dict]) -> dict:
     return out
 
 
-def _objects_and_light(descriptions: list[dict]) -> dict:
+def _objects_and_light(descriptions: list[dict], general: bool = False) -> dict:
     """Scene fields for the floor and the weather, and under "suggest" what belongs elsewhere in the spec:
-    the objects' size (the class), the camera height, props, objects per photo and the photo descriptions."""
+    the objects' size (the class), the camera height, props, objects per photo and the photo descriptions.
+    general: no size or count for the class, only per thing seen (a lawn's most numerous thing is its leaves:
+    35 per photo of 0.08-0.75 m were proposed for the class grass, 2026-10-11)."""
     n, out, sug = len(descriptions), {}, {}
 
     def spread(key, lo=0.8, hi=1.25):
@@ -187,22 +191,27 @@ def _objects_and_light(descriptions: list[dict]) -> dict:
     light = Counter(d.get("light") for d in descriptions)
     if weather := [LIGHT_WEATHER[w] for w, k in light.most_common() if w in LIGHT_WEATHER and k / n >= MIN_SHARE]:
         out["weather"] = weather
-    if size := spread("size_m"):
+    if not general and (size := spread("size_m")):
         sug["size_m"] = {"measure": "length", "range": size}
-    if height := spread("height_m"):
+    if not general and (height := spread("height_m")):
         sug["height_m"] = height
     if cam := spread("camera_height_m", 0.9, 1.1):
         sug["camera_height_m"] = cam
     counts = sorted(int(float(d["count"])) for d in descriptions if _number(d.get("count")))
-    if counts:
+    if counts and not general:
         sug["objects_per_photo"] = {"median": counts[len(counts) // 2], "max": counts[-1]}
     others = Counter(o.strip().lower() for d in descriptions for o in set(d.get("others") or []) if isinstance(o, str))
     sug["props"] = [o for o, k in others.most_common(6) if k / n >= MIN_OTHER]
     seen = Counter(o["name"].strip().lower() for d in descriptions for o in _objects(d))
-    sug["seen"] = [{"name": name, "share": round(k / n, 2),
-                    "count": sorted(o["count"] for d in descriptions for o in _objects(d)
-                                    if o["name"].strip().lower() == name)[(k - 1) // 2]}
-                   for name, k in seen.most_common(10) if k / n >= MIN_OTHER]
+    sug["seen"] = []
+    for name, k in seen.most_common(10):
+        if k / n < MIN_OTHER:
+            continue
+        mine = [o for d in descriptions for o in _objects(d) if o["name"].strip().lower() == name]
+        thing = {"name": name, "share": round(k / n, 2), "count": sorted(o["count"] for o in mine)[(k - 1) // 2]}
+        if sizes := sorted(float(o["size_m"]) for o in mine if _number(o.get("size_m"))):
+            thing["size_m"] = sizes[(len(sizes) - 1) // 2]
+        sug["seen"].append(thing)
     backs = Counter(str(d["background"]).strip().lower() for d in descriptions if d.get("background"))
     sug["backgrounds"] = [b for b, _ in backs.most_common(4)]
     if light.get("indoor", 0) / n >= 0.5:
@@ -277,7 +286,7 @@ def profile_folder(folder: Path, classes: str, client, model: str, progress=None
             d = kept[:SAMPLE]
     if d is None:
         d = notes(sample(photos), classes, run) if notes else run(photos)
-    prof = aggregate(d)
+    prof = aggregate(d, general=classes == GENERAL)
     return prof, summary(prof, len(d))
 
 

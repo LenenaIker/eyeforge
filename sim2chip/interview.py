@@ -986,8 +986,10 @@ class Session:
             photos = "\n".join(sug.pop("photos", []))
             self._note(f"[Photo analysis of the user's photos in {folder}] {text}\nWhat each photo shows:\n{photos}\n"
                        f"Scene fields to use (template generic): {json.dumps(fields)}\nAlso measured: "
-                       f"{json.dumps(sug)} (size_m for the class, camera_height_m for camera.height_m, props: things "
-                       "around the objects, to search as props when they cannot be mistaken for the class). Use all "
+                       f"{json.dumps(sug)} (size_m for the class; seen: every kind of thing that stood out, with its share "
+                       "of photos, count and size: a class takes a seen thing's size only when it is that class, and "
+                       "surfaces or areas (grass, road, floor) have no size; camera_height_m for camera.height_m, "
+                       "props: things around the objects, to search as props when they cannot be mistaken for the class). Use all "
                        "this in the spec without asking the user about it; tell them in one plain sentence what you saw.")
 
     # The model's actions, in the order they are looked for in its answer, and the method that handles each. A

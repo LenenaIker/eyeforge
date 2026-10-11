@@ -115,6 +115,23 @@ def test_profile_aggregate():
     assert "75% building fronts" in scene_profile.summary(prof, 12)
 
 
+def test_profile_before_the_classes_does_not_size_them():
+    """A lawn described before anyone chose the classes: its most numerous thing is the leaves, whose count and
+    size must not be proposed for the class (grass got 35 per photo of 0.08-0.75 m, 2026-10-11)."""
+    lawn = [{"context": "ground", "count": 35, "size_m": s, "height_m": 0.01, "distance_m": 1.5,
+             "objects": [{"name": "leaf", "count": 35, "size_m": s}, {"name": "grass", "count": 1, "size_m": 5}]}
+            for s in (0.08, 0.1, 0.75)]
+    sug = scene_profile.aggregate(lawn, general=True)["suggest"]
+    assert not {"size_m", "height_m", "objects_per_photo"} & set(sug)
+    assert {"name": "leaf", "share": 1.0, "count": 35, "size_m": 0.1} in sug["seen"]
+    # Described for the user's classes, the size and count are of those classes.
+    sug = scene_profile.aggregate(lawn)["suggest"]
+    assert sug["size_m"]["range"] == [0.06, 0.94] and sug["objects_per_photo"] == {"median": 35, "max": 35}
+    # Surfaces answer null: nothing proposed either.
+    flat = [{**d, "count": None, "size_m": None, "height_m": None} for d in lawn]
+    assert not {"size_m", "height_m", "objects_per_photo"} & set(scene_profile.aggregate(flat)["suggest"])
+
+
 class Scripted:
     def __init__(self, actions):
         self.actions, self.seen = list(actions), []

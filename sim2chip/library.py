@@ -899,7 +899,7 @@ class Library:
         found = self.describe(owner, files, scene_profile.GENERAL, run, model)
         if not found:
             return None
-        prof = scene_profile.aggregate(found)
+        prof = scene_profile.aggregate(found, general=True)
         text = scene_profile.dataset_summary(prof, len(found))
         with self.lock:
             self.db.execute("INSERT OR REPLACE INTO profile VALUES (?, ?, ?, ?, ?)",

@@ -15,7 +15,7 @@ El objetivo del sintético (usuario, desde el principio): **escenas que se parez
 
 ## Estado para retomar (2026-10-11)
 
-- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo); A.2 (plantilla y etapas de modelos 3D apagadas, fotos obligatorias, motivo en informe y web; hoja `compare/A2_sin_plantilla.html`); A.3 (filtro de parecido en render, `sim2chip/likeness.py`; hoja `compare/A3_filtro_parecido.html`); A.4 (re-medida con 3 ejecuciones por brazo, `scripts/arms_a4.sh`; hoja `compare/A4_remedida.html`). Siguiente: B.1. Medir siempre con 3 ejecuciones por brazo (usuario, 2026-10-11) por el ruido de PicoDet (±0,03 a 0,05 con la misma entrada).
+- Hecho: decisiones 0.1 a 0.4 y M.1, M.2; A.0 (medida); A.1 (código y test, sin probar aún en un trabajo nuevo); A.2 (plantilla y etapas de modelos 3D apagadas, fotos obligatorias, motivo en informe y web; hoja `compare/A2_sin_plantilla.html`); A.3 (filtro de parecido en render, `sim2chip/likeness.py`; hoja `compare/A3_filtro_parecido.html`); A.4 (re-medida con 3 ejecuciones por brazo, `scripts/arms_a4.sh`; hoja `compare/A4_remedida.html`). B.1 (análisis de fotos, hoja `compare/B1_analisis_fotos.html`). Siguiente: B.2. Medir siempre con 3 ejecuciones por brazo (usuario, 2026-10-11) por el ruido de PicoDet (±0,03 a 0,05 con la misma entrada).
 - El interruptor es `stages/base.py: TEMPLATE` (False). Los tests de la maquinaria que aún usan la plantilla como ejemplo la encienden con el fixture `template_on`. Ruido entre ejecuciones medido en A.2: unos 0,03 de F1 en las botellas (mismo trabajo, 0,672 y 0,705).
 - Pruebas: home `runs/p2s_test` (`/media/lenena-iker/Crucial/runs/eyeforge/p2s_test`). Trabajos `jobs/grass` (copia del de la web local, para no tocar el original), `jobs/bottles_scene` (24 fotos) y `jobs/bottles_few` (8). Resultados en `arms.log`. Los scripts de brazos (`arms.sh`, `arms_grass.sh`) cambian `generation.frames`, `photo_scenes` y `training.seeds` en el spec del trabajo y lanzan `python -m sim2chip --home <home> run <spec> --job <job>` con el Python de `edge-sdg`; copias en `runs/p2s_test/scripts/`.
 - Hojas de comparación para el usuario: `runs/p2s_test/compare/` (A.0 en `A0_cesped.html`).
@@ -121,8 +121,10 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 
 ## Fase B: ruta de soporte para todas las tareas y superficie como clase (~2 días)
 
-- [ ] **B.1 Análisis de fotos, clases correctas**: el VLM mide las clases del usuario y no lo más numeroso de la foto. En el césped midió las hojas: "35 por foto, 0,08-0,75 m".
-  - Check: con el césped, el perfil no propone el tamaño de las hojas para grass.
+- [x] **B.1 Análisis de fotos, clases correctas**: el VLM mide las clases del usuario y no lo más numeroso de la foto. En el césped midió las hojas: "35 por foto, 0,08-0,75 m".
+  - Causa: un dataset de la biblioteca se describe antes de elegir las clases (`scene_profile.GENERAL`) y la entrevista tomaba el tamaño y el número de "lo que destaque" como los de la clase.
+  - Arreglo (`scene_profile.py`): en la descripción general, tamaño y número solo por cosa vista (`seen`, ahora con `size_m`); la entrevista sabe que una clase toma el tamaño de una cosa vista solo si es esa clase, y que las superficies no tienen tamaño. Con clases, el VLM responde null para superficies.
+  - [x] Check: con el césped, el perfil no propone el tamaño de las hojas para grass (VLM real, 16 fotos: antes 0,08-0,22 m y 30 por foto, ahora nada; las botellas conservan 0,12-0,31 m). Hoja: `runs/p2s_test/compare/B1_analisis_fotos.html`.
 - [ ] **B.2 Cámara según lo constante que sea** (idea del usuario): se mide cuánto varían el ángulo y la distancia entre fotos.
   - Si varían poco (cámara montada), el rango es estrecho y no se inventan ángulos nuevos.
   - Si varían, se usa el rango medido.
