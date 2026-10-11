@@ -135,10 +135,12 @@ def test_a_class_tries_its_next_photo_when_one_makes_no_scene():
 
 
 def test_classifying_surfaces_reframes_the_photos(tmp_path, monkeypatch):
-    """The lawn: surfaces, classifying, so the training photos are re-framed and each kept view has its class."""
+    """The lawn: surfaces, classifying, so the training photos are re-framed and each kept view has its class (with
+    the surface route on; it is off until it helps)."""
     from sim2chip import photo2scene
     from sim2chip.photo2scene import surface
-    from sim2chip.stages import ingest, label
+    from sim2chip.stages import ingest, label, scene_from_photo
+    monkeypatch.setattr(scene_from_photo, "SURFACE_ROUTE", True)
 
     class Lawn(Rater):
         def chat(self, *a, **kw):
@@ -153,10 +155,9 @@ def test_classifying_surfaces_reframes_the_photos(tmp_path, monkeypatch):
         photos.append(tmp_path / cls / f"{i}.jpg")
     monkeypatch.setattr(SceneFromPhoto, "_candidates", staticmethod(lambda ctx, tried: [("grass", [(1, photos[0])])]))
     monkeypatch.setattr(ingest, "train_photos", lambda ctx: photos)
-    monkeypatch.setattr(surface, "phrases", lambda spec, cache, log=print: ["grass", "concrete"])
 
-    def build(flow, given, found, frames, pitch, height, seed, log=print):
-        assert [c for _, c in given] == ["grass", "edge"] and pitch == (60.0, 90.0)
+    def build(flow, given, frames, pitch, height, seed, classify, min_conf, log=print):
+        assert [c for _, c in given] == ["grass", "edge"] and pitch == (60.0, 90.0) and min_conf == 0.6
         (flow.d / "views").mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (8, 8)).save(flow.d / "views" / "0_v00.png")
         return [{"file": "views/0_v00.png", "source": "0", "class": "grass"}]
@@ -165,31 +166,39 @@ def test_classifying_surfaces_reframes_the_photos(tmp_path, monkeypatch):
                       "classes": [{"id": c, "size_m": {"measure": "length", "range": [1, 2]},
                                    "assets": {"source": "search", "queries": [c]}} for c in ("grass", "edge")]})
     job = open_job(tmp_path, "j")
+    job.stage_dir("label").mkdir(parents=True)
+    (job.stage_dir("label") / "teacher.json").write_text(json.dumps({"centres": {"grass": [1, 0], "edge": [0, 1]}}))
     SceneFromPhoto().run(Context(spec, job, Cache(tmp_path / "cache")))
     frames = json.loads((job.stage_dir("scene_from_photo") / "frames.json").read_text())
     assert frames == [{"file": "surface/views/0_v00.png", "scene": "surface", "boxes": [], "class": "grass"}]
     assert (job.stage_dir("scene_from_photo") / frames[0]["file"]).exists()
 
 
-def test_a_view_keeps_its_photo_class_while_its_surfaces_say_so(tmp_path):
-    """The rule learnt from the photos' surfaces: a view that still looks like its photo keeps the photo's label, one
-    that looks like another class stays out."""
+class FakeFlow:
+    """Runs no step: the test writes what the steps would."""
+    def __init__(self, d):
+        self.d = d
+
+    def run(self, *a, **kw):
+        return 0
+
+
+def test_a_view_keeps_its_photo_class_when_the_teacher_agrees(tmp_path, monkeypatch):
+    """Re-framed views keep their photo's class only when the teacher, with what it learnt from the user, gives them
+    that class sure enough; joined grounds take the teacher's class (a tenth of the views)."""
     from sim2chip.photo2scene import surface
-
-    class Flow:
-        d = tmp_path
-
-        def run(self, *a, **kw):
-            return 0
-    # Two surfaces, whole and middle shares: grass photos mostly grass, edge photos half and half.
-    grass = lambda g: [g, 1 - g, g, 1 - g]  # noqa: E731
-    made = {"photos": {f"g{i}": {"feats": grass(0.9 + 0.02 * i)} for i in range(3)} |
-                      {f"e{i}": {"feats": grass(0.5 + 0.02 * i)} for i in range(3)},
-            "views": [{"file": "g0_v00.png", "source": "g0", "feats": grass(0.92)},
-                      {"file": "e0_v00.png", "source": "e0", "feats": grass(0.95)},   # the edge framed out
-                      {"file": "e1_v00.png", "source": "e1", "feats": grass(0.48)}]}
+    monkeypatch.setattr(surface, "MIX_SHARE", 0.5)
     (tmp_path / "views").mkdir()
-    (tmp_path / "views" / "views.json").write_text(json.dumps(made))
-    photos = [(tmp_path / f"g{i}.jpg", "grass") for i in range(3)] + [(tmp_path / f"e{i}.jpg", "edge") for i in range(3)]
-    views = surface.build(Flow(), photos, ["grass", "concrete"], 12, None, None, 0)
-    assert [(v["source"], v["class"]) for v in views] == [("g0", "grass"), ("e1", "edge")]
+    (tmp_path / "views" / "views.json").write_text(json.dumps({"photos": {}, "views": [
+        {"file": "g0_v00.png", "source": "g0"}, {"file": "e0_v00.png", "source": "e0"},
+        {"file": "e1_v00.png", "source": "e1"}]}))
+    (tmp_path / "mix").mkdir()
+    (tmp_path / "mix" / "mix.json").write_text(json.dumps([
+        {"file": "mix_000.png", "a": "g0", "b": "e0"}, {"file": "mix_001.png", "a": "g1", "b": "e1"}]))
+    said = {"g0_v00.png": ("grass", 0.9), "e0_v00.png": ("grass", 0.9),  # the edge framed out of sight
+            "e1_v00.png": ("edge", 0.5),                                  # not sure enough
+            "mix_000.png": ("edge", 0.8), "mix_001.png": ("edge", 0.3)}
+    photos = [(tmp_path / "g0.jpg", "grass"), (tmp_path / "e0.jpg", "edge"), (tmp_path / "e1.jpg", "edge")]
+    views = surface.build(FakeFlow(tmp_path), photos, 12, None, None, 0, lambda files: [said[f.name] for f in files],
+                          0.6)
+    assert [(v["file"], v["class"]) for v in views] == [("views/g0_v00.png", "grass"), ("mix/mix_000.png", "edge")]

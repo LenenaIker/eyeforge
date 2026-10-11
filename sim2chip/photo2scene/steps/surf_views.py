@@ -1,15 +1,12 @@
-"""Surface route, step 2: each photo re-framed in 3D (roadmap B.5). MoGe-2 turns the photo into a depth mesh coloured
+"""Surface route, step 1: each photo re-framed in 3D (roadmap B.5). MoGe-2 turns the photo into a depth mesh coloured
 by itself; new cameras look at the same ground from other angles, heights and turns within the measured camera range,
-and only views that stay inside the rebuilt part are kept. A second render of the mesh coloured by pixel coordinates
-says which photo pixel each view pixel shows, so the photo's surface masks (surf_masks.py) carry over to the view.
-Run in the scene env (MoGe and pyrender):
+and only views that stay inside the rebuilt part are kept. Run in the scene env (MoGe and pyrender):
 
-    PYOPENGL_PLATFORM=egl python surf_views.py --photos photos.txt --masks masks/ --out views/ --views 4 \
+    PYOPENGL_PLATFORM=egl python surf_views.py --photos photos.txt --out views/ --views 4 \
         [--pitch 50,89] [--height 0.4,1.4] [--seed 0]
 
-Writes <out>/<stem>_vNN.png and <out>/views.json: {"photos": {stem: {"feats", "pitch_deg", "height_m"}},
-"views": [{"file", "source", "feats", "pitch_deg", "height_m"}]}, where feats lists, per mask phrase, the share of the
-image it covers, then the share of the middle half (the same numbers for the photo and its views).
+Writes <out>/<stem>_vNN.png and <out>/views.json: {"photos": {stem: {"pitch_deg", "height_m"}},
+"views": [{"file", "source", "pitch_deg", "height_m"}]}.
 """
 import argparse
 import json
@@ -36,21 +33,9 @@ MAX_TURN = 25     # degrees a view turns about the vertical
 MAX_TILT = 10     # degrees a view's pitch moves from the photo's
 
 
-def feats(masks, where=None):
-    """Per phrase, the share of the pixels it covers, then the share in the middle half; where: valid pixels."""
-    m = masks if where is None else masks & where[None]
-    n = where.sum() if where is not None else masks[0].size
-    h, w = masks.shape[1:]
-    mid = (slice(h // 4, 3 * h // 4), slice(w // 4, 3 * w // 4))
-    nm = where[mid].sum() if where is not None else masks[0][mid].size
-    return [float(x) for x in m.sum((1, 2)) / max(n, 1)] + \
-           [float(x) for x in m[:, mid[0], mid[1]].sum((1, 2)) / max(nm, 1)]
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--photos', required=True)
-    ap.add_argument('--masks', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--views', type=int, default=4)
     ap.add_argument('--pitch', default=None, help='lo,hi: the measured pitch range, degrees (90 straight down)')
@@ -66,7 +51,6 @@ def main():
     out = {'photos': {}, 'views': []}
     for path in [line.strip() for line in open(args.photos) if line.strip()]:
         stem = os.path.splitext(os.path.basename(path))[0]
-        masks = np.load(os.path.join(args.masks, stem + '.npz'))['masks']
         photo = ImageOps.exif_transpose(Image.open(path)).convert('RGB')
         photo.thumbnail((SIDE, SIDE))
         img = np.asarray(photo)
@@ -81,14 +65,11 @@ def main():
         # table seen from 0.5 m).
         n, d, inl = fit_plane(sel, tol=0.02 * float(np.median(sel[:, 2])))
         pitch0 = math.degrees(math.asin(min(1.0, abs(float(n[2])))))
-        out['photos'][stem] = {'feats': feats(masks), 'pitch_deg': round(pitch0, 1), 'height_m': round(float(d), 3)}
+        out['photos'][stem] = {'pitch_deg': round(pitch0, 1), 'height_m': round(float(d), 3)}
         if inl < 0.5:  # not one ground: rough terrain or a wall; no view is trusted
             print(stem, f'no single ground ({inl:.0%} of points on the plane)', flush=True)
             continue
         mesh = grid_mesh(pts, img, valid, step=2, max_jump=0.06)
-        ys, xs = np.mgrid[0:h, 0:w]
-        coord = np.stack([xs * 255 // max(w - 1, 1), ys * 255 // max(h - 1, 1), np.full_like(xs, 255)], -1).astype(np.uint8)
-        cmesh = grid_mesh(pts, coord, valid, step=2, max_jump=0.06)
         rend = Renderer(w, h, fx, fy, cx, cy)
         # The ground point the photo looks at: its middle ray hits the plane there.
         t = -d / float(np.array([0, 0, 1.0]) @ n)
@@ -117,15 +98,9 @@ def main():
             if empty.mean() > MAX_EMPTY:
                 continue
             col = cv2.inpaint(col, empty.astype(np.uint8), 5, cv2.INPAINT_TELEA)
-            cmap = rend.render(pose, cmesh, [], n)[0]
-            ok = (cmap[..., 2] > 128) & ~empty
-            mh, mw = masks.shape[1:]
-            src = masks[:, np.minimum(cmap[..., 1].astype(int) * mh // 256, mh - 1),
-                        np.minimum(cmap[..., 0].astype(int) * mw // 256, mw - 1)]
             name = f'{stem}_v{made:02d}.png'
             Image.fromarray(col).save(os.path.join(args.out, name))
-            out['views'].append({'file': name, 'source': stem, 'feats': feats(src, ok), 'pitch_deg': round(pitch, 1),
-                                 'height_m': round(height, 3)})
+            out['views'].append({'file': name, 'source': stem, 'pitch_deg': round(pitch, 1), 'height_m': round(height, 3)})
             made += 1
         rend.r.delete()  # one GL context at a time: the next photo's opens its own
         print(stem, f'pitch {pitch0:.0f} deg, height {d:.2f} m, {made} views in {tries} tries', flush=True)

@@ -17,6 +17,7 @@ Output: scene_from_photo/scenes.json  the scenes built here, for the library (li
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import statistics
@@ -41,6 +42,11 @@ and the surface they stand on clearly visible. Answer only with JSON:
   they are surfaces or areas (grass, a road, a floor)>}}"""
 SURFACES = "your classes are surfaces or areas, not things to move around; EyeForge cannot rebuild those yet"
 NO_SURFACE_VIEWS = "no new view of your surfaces kept its class"
+# The surface route (photo2scene.surface) is off until it helps: the lawn with re-framed views and new borders scored
+# 0.771 against 0.814 with the photos alone (roadmap B.5; the user's decision, 2026-10-11). Off, surfaces get no
+# scene and say why.
+# SIM2CHIP_SURFACE_ROUTE=1 turns it on to measure it.
+SURFACE_ROUTE = os.environ.get("SIM2CHIP_SURFACE_ROUTE") == "1"
 
 
 def _link(src, dst):
@@ -121,7 +127,7 @@ class SceneFromPhoto(Stage):
                 ctx.log(f"the vision model sees surfaces, not things, in {len(votes) - sum(votes)} of {len(votes)} "
                         "photos")
                 picks = []
-                if task_of(ctx.spec).points:
+                if task_of(ctx.spec).points or not SURFACE_ROUTE:
                     built.append({"photo_id": None, "route": "support", "status": "failed", "why": SURFACES})
                 else:
                     views = self._surfaces(ctx, out, usage)
@@ -159,26 +165,32 @@ class SceneFromPhoto(Stage):
 
     @staticmethod
     def _surfaces(ctx: Context, out: Path, usage: Path) -> list[dict]:
-        """Classifying surfaces (photo2scene.surface): the training photos re-framed in 3D, each view with its
-        photo's class when the surfaces in it still look like that class. Built in the cache by photos and settings;
-        the views are linked into out/surface."""
-        from .. import photo2scene as p2s
+        """Classifying surfaces (photo2scene.surface): the training photos re-framed in 3D and joined in pairs, each
+        view labelled by the teacher with what it learnt from the user's corrections. Built in the cache by photos
+        and settings; the views are linked into out/surface."""
+        from .. import likeness, photo2scene as p2s, teacher
         from ..photo2scene import surface
         from .ingest import train_photos
         photos = [(f, f.parent.name) for f in train_photos(ctx)]
-        if not photos:
+        learned = ctx.job.stage_dir("label") / "teacher.json"
+        centre = json.loads(learned.read_text()).get("centres") if learned.exists() else None
+        if not photos or not centre:
+            ctx.log("no training photos with the teacher's learnt classes: no views of your surfaces")
             return []
-        found = surface.phrases(ctx.spec, ctx.cache, ctx.log)
+
+        def classify(files):
+            emb = likeness.embeddings(files, ctx.cache.root, ctx.log)
+            return [teacher.nearest(emb[f], centre) if f in emb else (None, 0.0) for f in files]
         cam, gen = ctx.spec.camera, ctx.spec.generation
-        key = cache_key([[content_key(f), c] for f, c in photos] + [found, cam.pitch_deg, cam.height_m, gen.seed,
-                                                                    gen.frames])
+        key = cache_key([[content_key(f), c] for f, c in photos] + [cam.pitch_deg, cam.height_m, gen.seed, gen.frames])
         work = ctx.cache.root / "surfaces" / key
         ctx.log(f"re-framing {len(photos)} training photos of your surfaces in 3D")
-        views = surface.build(p2s.Flow(work, usage, ctx.log), photos, found, gen.frames, cam.pitch_deg, cam.height_m,
-                              gen.seed, ctx.log)
+        views = surface.build(p2s.Flow(work, usage, ctx.log), photos, gen.frames, cam.pitch_deg, cam.height_m,
+                              gen.seed, classify, ctx.spec.user_data.label_min_confidence, ctx.log)
         d = out / "surface"
         shutil.rmtree(d, ignore_errors=True)
         (d / "views").mkdir(parents=True)
+        (d / "mix").mkdir()
         for v in views:
             _link(work / v["file"], d / v["file"])
         return [{"file": f"surface/{v['file']}", "scene": "surface", "boxes": [], "class": v["class"]} for v in views]

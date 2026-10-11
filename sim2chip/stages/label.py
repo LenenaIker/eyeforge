@@ -37,9 +37,10 @@ NO_ANSWER = "no_answer"  # the teacher failed on the photo: left out, asked agai
 
 class Label(Stage):
     name = "label"
-    version = "6"  # 2: SAM 3 instead of a vision model on Token Factory; 3: SigLIP 2 for classification;
+    version = "7"  # 2: SAM 3 instead of a vision model on Token Factory; 3: SigLIP 2 for classification;
     # 4: count, one class per object (SigLIP 2 tells apart classes SAM 3 found on the same object);
-    # 5: count, the user's corrections per class; 6: the user's truth from the job's labeling
+    # 5: count, the user's corrections per class; 6: the user's truth from the job's labeling; 7: classify keeps
+    # the learnt centres
     runtime = "cpu"  # the teachers run in their own Python (teacher.py); this process plans and writes
     gpu = "any"
     reads_input = True
@@ -163,8 +164,10 @@ class Label(Stage):
                 v = {**v, "teacher": v["class"], "teacher_confidence": v["confidence"],
                      "class": fixes[key], "confidence": 1.0, "judge": "user"}
             verdicts[key] = {**v, "assigned": v["class"]}
+        # The centres go with it: new images the user never saw (photo2scene's views of their surfaces) are labelled
+        # by the same learnt criterion (scene_from_photo).
         learned = {"model": teacher.SIGLIP_MODEL, "prompts": prompts, "examples": n, "used_examples": used,
-                   "note": teacher.explain_examples(n, used)}
+                   "note": teacher.explain_examples(n, used), "centres": centre}
         return verdicts, learned, {"examples": n}
 
     def _tell_apart(self, ctx, photo: dict, dets: dict[str, list[dict]], fix_points: dict) -> dict[str, list[dict]]:
