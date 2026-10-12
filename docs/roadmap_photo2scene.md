@@ -212,11 +212,13 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 
 ## Fase F: web (~1 día)
 
-- [ ] **F.1 Página Scenes**: la escena con sus objetos, la ruta y, si falló, por qué.
+- [x] **F.1 Página Scenes**: la escena con sus objetos, la ruta y, si falló, por qué.
+  - Hecho (2026-10-12, `9a03d99`, hoja `compare/F_web.html`): las fallidas salen con la foto en gris y el motivo. Arreglado de paso: la biblioteca seguía en la versión 5 y borraba la tabla de escenas cada vez que se abría.
 - [ ] **F.2 En la página del trabajo**:
   - muestras del sintético que entró y del que el filtro dejó fuera;
   - reparto imitación / extrapolación;
   - "sin sintético: motivo" cuando corresponda.
+  - Hecho (2026-10-12, `9a03d99`, hoja `compare/F_web.html`): panel "Synthetic images" con lo que entró, el reparto por fase (soporte siempre imitación; calle y habitación, extrapolación; superficie, imitación salvo los suelos unidos), lo que dejó fuera cada filtro con muestras y el motivo si no entró nada.
   - Check: lo revisa el usuario en el navegador.
 
 ## Fase G: cierre
