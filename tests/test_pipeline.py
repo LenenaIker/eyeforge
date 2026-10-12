@@ -109,11 +109,9 @@ def test_real_stage_registry_plans(tmp_path, template_on):
                      Cache(tmp_path / "cache"))
     names = [p.stage.name for p in count.plan()]
     assert "points" in names and "crops" not in names and "label" in names
-    assert "scene_from_photo" not in names  # the camera is not looking down at one surface
-    down = from_dict({**SPEC, "task": "count", "user_data": {"raw": "photos"}})
-    down.camera.pitch_deg = (60.0, 85.0)
-    assert "scene_from_photo" in [p.stage.name for p in Pipeline(down, open_job(tmp_path, "j6"),
-                                                                   Cache(tmp_path / "cache")).plan()]
+    assert "scene_from_photo" in names  # counting, the photos tell the route: a street or a room too
+    level = Pipeline(from_dict({**SPEC, "user_data": {"raw": "photos"}}), open_job(tmp_path, "j6"), Cache(tmp_path / "cache"))
+    assert "scene_from_photo" not in [p.stage.name for p in level.plan()]  # classifying needs one surface from above
     # The count task changes what the task-aware stages fingerprint; the default task changes nothing.
     assert from_dict(SPEC).section("task") is None
     assert count.fingerprints()["render"] != Pipeline(from_dict({**SPEC, "user_data": {"raw": "photos"}}),

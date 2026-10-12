@@ -1,10 +1,13 @@
 """Synthetic frames from the user's own place (photo2scene, docs/plan_photo2scene.md): the dataset's scenes built
 by earlier jobs (input/scenes.json, from the library) are composed again with this job's seed; with none, one is
-built from a training photo first, and the library keeps it for the next jobs. One working surface seen from above
-only (the support route), with classes that are things to move around, not surfaces (the vision model says so when
-it rates the photos); a photo that does not fit is noted as failed and not tried again. Counting views hold any of
-the classes; classifying views hold one class each (or none, for the background class), and every class gets its
-own scene, from a photo of it.
+built from a training photo first, and the library keeps it for the next jobs. The photo's route (roadmap C.3): the
+vision model's observation and rules in code (photo2scene.place.observe) send one working surface seen from above to
+the support route, a street or a room to the place routes (photo2scene.place), and anything else (night, a square
+without a template) nowhere; a photo that does not fit is noted as failed with why, not tried again, and the next
+one is tried. Classes that are surfaces, not things to move around, take the surface route (the vision model says
+so when it rates the photos). Counting views hold any of the classes; classifying views hold one class each (or
+none, for the background class), and every class gets its own scene, from a photo of it; classifying is on the
+support route only so far.
 
 Render collects the frames (the scene template is off, base.TEMPLATE). The scene photos stay out of the test
 (ingest.scene_photos), and the new one is picked among the photos ingest put in training.
@@ -49,6 +52,18 @@ NO_SURFACE_VIEWS = "no new view of your surfaces kept its class"
 SURFACE_ROUTE = os.environ.get("SIM2CHIP_SURFACE_ROUTE") == "1"
 
 
+ROUTES = {"support": "support", "village_street_day": "street", "indoor_floor": "room"}  # flow_route.py's routes
+
+
+def _not_kept(folder: str, names: list[str]) -> set[str]:
+    """What the library does not keep of a scene: its logs and one job's views (a place's populated/, the support
+    route's isaac/; a place's own isaac/ folders are the place)."""
+    out = {n for n in names if n in ("logs", "populated")}
+    if (Path(folder) / "plan.json").exists():  # the support route's scene folder
+        out |= {"isaac"} & set(names)
+    return out
+
+
 def _link(src, dst):
     """A scene's file into the job: a hard link when it can (the files are hundreds of MB), else a copy. Every
     step that changes a file writes a new one, so the source never changes under the link."""
@@ -60,24 +75,26 @@ def _link(src, dst):
 
 
 def no_route(spec) -> str | None:
-    """Why no photo2scene route fits this spec, in the user's words, or None when one does. So far only the support
-    route: things on one surface seen from above (the photo analysis sets the camera's pitch then). Whether the
-    classes are things or surfaces only the photos tell (SceneFromPhoto._pick)."""
+    """Why no photo2scene route fits this spec, in the user's words, or None when one does. Counting, the photos
+    tell (a surface from above, a street or a room: SceneFromPhoto.run). Classifying, only the support route so far:
+    things on one surface seen from above (the photo analysis sets the camera's pitch then). Whether the classes are
+    things or surfaces only the photos tell (SceneFromPhoto._pick)."""
+    from ..tasks import task_of
     if not spec.synthetic:
         return "the setup asks for your photos only"
     if not spec.generation.photo_scenes:
         return "rebuilding your place is turned off in the setup"
     if not spec.user_data.raw:
         return "rebuilding your place needs unsorted photos of it"
-    if not spec.camera.pitch_deg:
+    if not spec.camera.pitch_deg and not task_of(spec).points:
         return "your photos do not look down on one surface, the only kind of place EyeForge rebuilds so far"
     return None
 
 
 class SceneFromPhoto(Stage):
     name = "scene_from_photo"
-    version = "4"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view;
-    # 4: surfaces re-framed in 3D
+    version = "5"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view;
+    # 4: surfaces re-framed in 3D; 5: streets and rooms
     runtime = "cpu"   # it runs each step in the Python that has its models (photo2scene.PYTHONS)
     gpu = "rtx"
     max_hours = 2
@@ -95,6 +112,7 @@ class SceneFromPhoto(Stage):
     def run(self, ctx: Context) -> dict:
         from .. import photo2scene as p2s
         from ..library import SCENES
+        from ..photo2scene import place
         from ..tasks import task_of
         from .label import phrases_of
 
@@ -139,23 +157,30 @@ class SceneFromPhoto(Stage):
                 # pay the erase and the meshes twice.
                 work = ctx.cache.root / "scenes" / f"{content_key(photo)}-{cache_key(targets)}"
                 ctx.log(f"building a scene from photo {pid} ({photo.name})")
+                route = "none"  # out of scope until the observation says otherwise
                 try:
-                    summary = p2s.build(p2s.Flow(work, usage, ctx.log), photo, targets)
+                    flow = p2s.Flow(work, usage, ctx.log)
+                    route = ROUTES.get(place.observe(flow, photo)["route"], "support")
+                    ctx.log(f"photo {pid} takes the {route} route")
+                    if route != "support" and not task_of(ctx.spec).points:
+                        raise p2s.Stop(f"classifying in a {route} is not built yet, only on a surface seen from above")
+                    summary = (p2s.build if route == "support" else place.build)(flow, photo, targets)
                 except p2s.Stop as e:
                     ctx.log(f"photo {pid} makes no scene: {e}")
-                    built.append({"photo_id": pid, "route": "support", "status": "failed", "why": str(e)})
+                    built.append({"photo_id": pid, "route": route, "status": "failed", "why": str(e)})
                     continue
                 d = out / f"photo_{pid}"
                 shutil.rmtree(d, ignore_errors=True)
-                shutil.copytree(work, d, ignore=shutil.ignore_patterns("logs", "isaac"), copy_function=_link)
+                shutil.copytree(work, d, ignore=_not_kept, copy_function=_link)
                 flow = p2s.Flow(d, usage, ctx.log)
                 cards = self._cards(d)
                 objects = [{**a, "concept": self._class_of(a["name"], phrases) or a["name"],
                             **({"card": cards[a["index"]]} if a["index"] in cards else {})} for a in summary["objects"]]
-                built.append({"photo_id": pid, "route": "support", "status": "ready", "dir": d.name,
-                              "name": f"{summary['plan']['support'].capitalize()} from photo {pid}",
-                              "thumb": f"{d.name}/photo.png", "info": {"plan": summary["plan"]},
-                              "objects": objects})
+                where = summary["plan"]["support"] if route == "support" else route
+                built.append({"photo_id": pid, "route": route, "status": "ready", "dir": d.name,
+                              "name": f"{where.capitalize()} from photo {pid}", "thumb": f"{d.name}/photo.png",
+                              "info": {"plan": summary["plan"]} if route == "support" else
+                              {k: summary[k] for k in ("template", "hdri_group")}, "objects": objects})
                 frames += self._compose(ctx, flow, d.name, phrases)
         (out / SCENES).write_text(json.dumps(built, indent=1))
         (out / "frames.json").write_text(json.dumps(frames, indent=1))
@@ -210,8 +235,13 @@ class SceneFromPhoto(Stage):
         """This job's views of one scene, with the boxes of the user's classes only. Classifying, each view shows
         one class (its things of other classes left out), or none in a share of views when there is a background
         class; a view whose one class is out of sight is left out."""
-        from ..photo2scene import compose
+        from ..photo2scene import compose, place
         from ..tasks import task_of
+        if (flow.d / "extended").is_dir():  # a street or a room (counting only so far)
+            return [{"file": f"{scene}/{v['file']}", "scene": scene,
+                     "boxes": [[cls, *b["box"]] for b in v["boxes"] if b.get("role") == "target"
+                               and (cls := self._class_of(b["name"], phrases))]}
+                    for v in place.compose(flow, ctx.spec.generation.seed)]
         groups, empty = None, 0.0
         if not task_of(ctx.spec).points:
             cat = flow.d / "assets.json"

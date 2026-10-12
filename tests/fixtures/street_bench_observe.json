@@ -1,0 +1,725 @@
+{
+ "basque_street": {
+  "final": {
+   "outdoor": true,
+   "time_of_day": "day",
+   "weather": "overcast",
+   "camera_height": "pedestrian",
+   "ground_flat": "flat",
+   "place": "village_street",
+   "layout": "straight_street",
+   "route": "village_street_day",
+   "template": "straight_street",
+   "hdri_group": "countryside",
+   "horizon_y": 0.55,
+   "camera_height_m": 1.5,
+   "ground": [
+    {
+     "phrase": "asphalt road",
+     "material": "asphalt"
+    },
+    {
+     "phrase": "sidewalk",
+     "material": "paving slabs"
+    }
+   ],
+   "ground_support": {
+    "asphalt road": 3,
+    "sidewalk": 3
+   },
+   "surroundings": [
+    {
+     "phrase": "house",
+     "count": 3,
+     "note": "the rightmost house is cut off by the right border; the left houses sit partly behind hedges"
+    },
+    {
+     "phrase": "hedge",
+     "count": 3,
+     "note": "hedges stand in front of the houses and may merge with them"
+    },
+    {
+     "phrase": "low wall",
+     "count": 2,
+     "note": "low walls under the hedges and the fence"
+    },
+    {
+     "phrase": "fence",
+     "count": 2,
+     "note": "fence and gate in front of the hedge and house on the right"
+    }
+   ],
+   "surroundings_support": {
+    "house": 3,
+    "hedge": 3,
+    "low wall": 3,
+    "fence": 1
+   },
+   "objects": [
+    {
+     "phrase": "car",
+     "count": 1
+    }
+   ],
+   "objects_support": {
+    "car": 3
+   },
+   "far": [
+    "houses at the end of the street"
+   ],
+   "far_support": {
+    "houses at the end of the street": 2
+   },
+   "observation": "The photo shows a quiet village street in soft, overcast daylight, shot from pedestrian height looking along the road. On the right a row of white houses with red-tiled roofs, shutters and balconies stands behind a low wall, hedges and a wooden fence and gate. A dark SUV is parked on the left edge of the road next to a trimmed hedge. The asphalt road fills the foreground and curves gently to the left, where more white houses and hedges recede into the distance. The sky is a pale, hazy white with no visible sun or strong shadows.",
+   "reason": "A flat, daylight village street with houses on one side and no corner fits the village_street_day route, extended by repeating the visible side into a straight_street."
+  },
+  "unsure": [],
+  "model": "Qwen/Qwen3.8-27B"
+ },
+ "church_corner": {
+  "final": {
+   "outdoor": true,
+   "time_of_day": "day",
+   "weather": "sunny",
+   "camera_height": "pedestrian",
+   "ground_flat": "flat",
+   "place": "village_street",
+   "layout": "corner",
+   "route": "village_street_day",
+   "template": "crossroads",
+   "hdri_group": "countryside",
+   "horizon_y": 0.62,
+   "camera_height_m": 1.5,
+   "ground": [
+    {
+     "phrase": "asphalt road",
+     "material": "asphalt"
+    },
+    {
+     "phrase": "paved sidewalk",
+     "material": "paving slabs"
+    }
+   ],
+   "ground_support": {
+    "asphalt road": 3,
+    "paved sidewalk": 2
+   },
+   "surroundings": [
+    {
+     "phrase": "church",
+     "count": 1,
+     "note": "tall stone building with bell tower, fully in frame"
+    },
+    {
+     "phrase": "house",
+     "count": 2,
+     "note": "white house on the right is cut by the right border; central stone building fully visible"
+    },
+    {
+     "phrase": "hedge",
+     "count": 1,
+     "note": "low trimmed hedge in front of the white house, not merged"
+    },
+    {
+     "phrase": "low stone wall",
+     "count": 1,
+     "note": "far left, partly cut by the left border"
+    },
+    {
+     "phrase": "stone monument",
+     "count": 1,
+     "note": "column on a stepped plinth at the corner, medium size"
+    }
+   ],
+   "surroundings_support": {
+    "church": 3,
+    "house": 3,
+    "hedge": 3,
+    "low stone wall": 3,
+    "stone monument": 1
+   },
+   "objects": [
+    {
+     "phrase": "car",
+     "count": 2
+    },
+    {
+     "phrase": "person",
+     "count": 1
+    }
+   ],
+   "objects_support": {
+    "car": 3,
+    "person": 3
+   },
+   "far": [
+    "distant low buildings"
+   ],
+   "far_support": {
+    "distant low buildings": 3
+   },
+   "observation": "A sunlit village street corner seen from pedestrian height, looking across a wide asphalt road with white lane markings toward a row of buildings. On the left stands a stone church with a tall bell tower topped by a cross; in the centre is a stone building with a tiled roof and notice boards on its wall; on the right is a white house with a tiled roof, chimney and a trimmed hedge in front of it. A small stone monument on a stepped plinth sits at the corner near the white house, and a low stone wall runs along the far left. A red car and a dark van are parked on the left, and a single person stands near the church; the road there curves and rises slightly out of view. The sky is clear blue with strong midday shadows, and the ground is essentially flat.",
+   "reason": "A daylight village street corner with buildings on the corner block fits the village_street_day route with the crossroads template and the countryside HDRI."
+  },
+  "unsure": [],
+  "model": "Qwen/Qwen3.8-27B"
+ },
+ "corner_timber": {
+  "final": {
+   "outdoor": true,
+   "time_of_day": "day",
+   "weather": "sunny",
+   "camera_height": "pedestrian",
+   "ground_flat": "flat",
+   "place": "village_street",
+   "layout": "straight_street",
+   "route": "village_street_day",
+   "template": "straight_street",
+   "hdri_group": "countryside",
+   "horizon_y": 0.45,
+   "camera_height_m": 1.6,
+   "ground": [
+    {
+     "phrase": "asphalt road",
+     "material": "asphalt"
+    },
+    {
+     "phrase": "sidewalk",
+     "material": "paving slabs"
+    }
+   ],
+   "ground_support": {
+    "asphalt road": 3,
+    "sidewalk": 2
+   },
+   "surroundings": [
+    {
+     "phrase": "house",
+     "count": 3,
+     "note": "the main half-timbered building is fully visible; the left house is partly cut by the left border; the right house is cut by the right border and merges with the hillside behind it"
+    },
+    {
+     "phrase": "low wall",
+     "count": 1,
+     "note": "the plastered wall stands in front of the main house, risk of merging with the house behind it"
+    },
+    {
+     "phrase": "fence",
+     "count": 1,
+     "note": "wooden slat fence on the right is cut by the right border"
+    },
+    {
+     "phrase": "tree",
+     "count": 1,
+     "note": "trees on the right edge are partly cut by the border"
+    }
+   ],
+   "surroundings_support": {
+    "house": 3,
+    "low wall": 1,
+    "fence": 2,
+    "tree": 1
+   },
+   "objects": [
+    {
+     "phrase": "bench",
+     "count": 1
+    },
+    {
+     "phrase": "car",
+     "count": 1
+    }
+   ],
+   "objects_support": {
+    "bench": 3,
+    "car": 3
+   },
+   "far": [
+    "hillside vineyard",
+    "trees"
+   ],
+   "far_support": {
+    "hillside vineyard": 1,
+    "trees": 2
+   },
+   "observation": "A wide daylight shot of a village street taken from pedestrian height, looking across an asphalt road at the buildings on the far side. A large half-timbered building with a steep tiled roof and a long flower-filled balcony dominates the centre, set behind a low plastered wall with a wooden gate. To the left stands a smaller white half-timbered house with green shutters; to the right another white house sits on a terraced green hillside. Bright sun casts crisp shadows onto the road, and the sky is clear blue. The road runs diagonally across the foreground with a narrow sidewalk along the building side.",
+   "reason": "Daylight village street seen across one road with buildings on the side and no corner, so the village_street_day route with a straight_street template and countryside sky fits."
+  },
+  "unsure": [],
+  "model": "Qwen/Qwen3.8-27B"
+ },
+ "facade_car": {
+  "final": {
+   "outdoor": true,
+   "time_of_day": "day",
+   "weather": "sunny",
+   "camera_height": "pedestrian",
+   "ground_flat": "flat",
+   "place": "village_street",
+   "layout": "straight_street",
+   "route": "village_street_day",
+   "template": "straight_street",
+   "hdri_group": "countryside",
+   "horizon_y": 0.55,
+   "camera_height_m": 1.4,
+   "ground": [
+    {
+     "phrase": "asphalt road",
+     "material": "asphalt"
+    },
+    {
+     "phrase": "sidewalk",
+     "material": "concrete"
+    }
+   ],
+   "ground_support": {
+    "asphalt road": 3,
+    "sidewalk": 3
+   },
+   "surroundings": [
+    {
+     "phrase": "building",
+     "count": 2,
+     "note": "the long facade and the gabled brick block on the left are both cut by the photo borders"
+    },
+    {
+     "phrase": "metal railing",
+     "count": 1,
+     "note": "a run of railing along the sidewalk, cut by the left border"
+    }
+   ],
+   "surroundings_support": {
+    "building": 1,
+    "metal railing": 1
+   },
+   "objects": [
+    {
+     "phrase": "car",
+     "count": 1
+    },
+    {
+     "phrase": "scooter",
+     "count": 1
+    },
+    {
+     "phrase": "trash bin",
+     "count": 1
+    }
+   ],
+   "objects_support": {
+    "car": 3,
+    "scooter": 3,
+    "trash bin": 3
+   },
+   "far": [],
+   "far_support": {},
+   "observation": "The photo shows a long brick building facade, likely an old workshop, with an arched doorway, a painted sign reading 'MAISON DES OEUVRES', and several closed roller shutters, its lower wall painted white. The camera stands on an asphalt road at pedestrian height, looking across the street toward the building. A paved sidewalk with a low metal railing runs in front of the building, with a parked scooter and a trash bin on the left. A blue hatchback car is parked along the curb on the right side of the frame. The light is bright and sunny under a clear blue sky, casting sharp shadows to the right. The ground is flat, made of the asphalt road in the foreground and the sidewalk just beyond it.",
+   "reason": "A flat, pedestrian-height street with a building along one side and no visible corner, so the village_street_day route with a straight_street template and a countryside sky."
+  },
+  "unsure": [],
+  "model": "Qwen/Qwen3.8-27B"
+ },
+ "night_market": {
+  "final": {
+   "outdoor": true,
+   "time_of_day": "night",
+   "weather": "overcast",
+   "camera_height": "pedestrian",
+   "ground_flat": "flat",
+   "place": "city_street",
+   "layout": null,
+   "route": "out_of_scope",
+   "template": "none",
+   "hdri_group": "urban",
+   "horizon_y": 0.48,
+   "camera_height_m": 1.5,
+   "ground": [
+    {
+     "phrase": "paved street",
+     "material": "paving stones"
+    }
+   ],
+   "ground_support": {
+    "paved street": 2
+   },
+   "surroundings": [
+    {
+     "phrase": "building",
+     "count": 4,
+     "note": "shopfront facades along both sides; some cut by the left and right borders"
+    },
+    {
+     "phrase": "market stall",
+     "count": 5,
+     "note": "tent-like wooden stalls with sloped roofs, several merged with trees, signs and people behind them"
+    }
+   ],
+   "surroundings_support": {
+    "building": 2,
+    "market stall": 3
+   },
+   "objects": [
+    {
+     "phrase": "bicycle",
+     "count": 3
+    },
+    {
+     "phrase": "person",
+     "count": 3
+    },
+    {
+     "phrase": "sign",
+     "count": 4
+    },
+    {
+     "phrase": "trash bin",
+     "count": 1
+    }
+   ],
+   "objects_support": {
+    "bicycle": 3,
+    "person": 3,
+    "sign": 3,
+    "trash bin": 3
+   },
+   "far": [
+    "buildings across the street"
+   ],
+   "far_support": {
+    "buildings across the street": 1
+   },
+   "observation": "A town street at night, lit by dense strings of warm Christmas lights and glowing star ornaments strung overhead, with several illuminated shop signs (a perfume shop, a telecom sign, a church-union sign, an optician). The camera sits at pedestrian height looking across a wet, reflective paved street or small square. A row of wooden Christmas-market stalls with sloped roofs lines the far side, flanked by bare trees and small firs, while shopfronts with lit windows run along the right. Motion-blurred pedestrians walk across the foreground and a few bicycles are parked at the right edge. The ground is dark and glossy with reflected light, and the sky above the buildings is black.",
+   "reason": "The scene is at night and is dominated by a Christmas market under tents, both of which the builder lists as out of scope."
+  },
+  "unsure": [
+   "layout"
+  ],
+  "model": "Qwen/Qwen3.8-27B"
+ },
+ "night_street": {
+  "final": {
+   "outdoor": true,
+   "time_of_day": "night",
+   "weather": "sunny",
+   "camera_height": "pedestrian",
+   "ground_flat": "flat",
+   "place": "village_street",
+   "layout": "straight_street",
+   "route": "out_of_scope",
+   "template": "none",
+   "hdri_group": "countryside",
+   "horizon_y": 0.45,
+   "camera_height_m": 1.6,
+   "ground": [
+    {
+     "phrase": "asphalt road",
+     "material": "asphalt"
+    },
+    {
+     "phrase": "sidewalk",
+     "material": "paving stones"
+    }
+   ],
+   "ground_support": {
+    "asphalt road": 3,
+    "sidewalk": 2
+   },
+   "surroundings": [
+    {
+     "phrase": "house",
+     "count": 2,
+     "note": "left building cut by the left border; right white building partly cut by the right border"
+    },
+    {
+     "phrase": "tree",
+     "count": 1,
+     "note": "large tree cut by the top and right borders"
+    },
+    {
+     "phrase": "hedge",
+     "count": 2,
+     "note": "low hedge beds, one near the centre and one on the right, not merged with buildings"
+    },
+    {
+     "phrase": "stone monument",
+     "count": 1,
+     "note": "free-standing plinth, not cut by the border"
+    }
+   ],
+   "surroundings_support": {
+    "house": 2,
+    "tree": 3,
+    "hedge": 3,
+    "stone monument": 2
+   },
+   "objects": [
+    {
+     "phrase": "bench",
+     "count": 1
+    },
+    {
+     "phrase": "sign",
+     "count": 2
+    },
+    {
+     "phrase": "trash bin",
+     "count": 1
+    }
+   ],
+   "objects_support": {
+    "bench": 3,
+    "sign": 3,
+    "trash bin": 2
+   },
+   "far": [
+    "hillside",
+    "distant street lights",
+    "buildings at the end of the street"
+   ],
+   "far_support": {
+    "hillside": 1,
+    "distant street lights": 1,
+    "buildings at the end of the street": 2
+   },
+   "observation": "A village street at night, viewed from pedestrian height looking along a gently curving asphalt road. On the left a multi-storey building with balconies and flower boxes runs beside a paved sidewalk; on the right a large leafy tree, a stone monument on a plinth, low hedges, a small white building with a red door, and a bench. Warm street lamps cast pools of light on the road, while the sky above is dark blue with stars and thin clouds. In the distance the road bends toward a dark hillside and a faint line of lights.",
+   "reason": "The scene is at night, and the builder's street routes require daylight, so it is out of scope."
+  },
+  "unsure": [],
+  "model": "Qwen/Qwen3.8-27B"
+ },
+ "straight_road": {
+  "final": {
+   "outdoor": true,
+   "time_of_day": "day",
+   "weather": "overcast",
+   "camera_height": "pedestrian",
+   "ground_flat": "flat",
+   "place": "village_street",
+   "layout": "straight_street",
+   "route": "village_street_day",
+   "template": "straight_street",
+   "hdri_group": "countryside",
+   "horizon_y": 0.55,
+   "camera_height_m": 1.5,
+   "ground": [
+    {
+     "phrase": "asphalt road",
+     "material": "asphalt"
+    },
+    {
+     "phrase": "paved sidewalk",
+     "material": "concrete slabs"
+    }
+   ],
+   "ground_support": {
+    "asphalt road": 3,
+    "paved sidewalk": 1
+   },
+   "surroundings": [
+    {
+     "phrase": "building",
+     "count": 2,
+     "note": "left building is cut by the left border and the right building is cut by the right border"
+    },
+    {
+     "phrase": "hedge",
+     "count": 2,
+     "note": "left bush is partly cut by the bottom-left border; right hedge is continuous along the road"
+    },
+    {
+     "phrase": "tree",
+     "count": 1,
+     "note": "branches are cut by the top and right borders"
+    }
+   ],
+   "surroundings_support": {
+    "building": 2,
+    "hedge": 3,
+    "tree": 3
+   },
+   "objects": [
+    {
+     "phrase": "bicycle",
+     "count": 3
+    },
+    {
+     "phrase": "trash bin",
+     "count": 1
+    },
+    {
+     "phrase": "sign",
+     "count": 3
+    }
+   ],
+   "objects_support": {
+    "bicycle": 3,
+    "trash bin": 2,
+    "sign": 2
+   },
+   "far": [
+    "mountains",
+    "trees",
+    "buildings"
+   ],
+   "far_support": {
+    "mountains": 3,
+    "trees": 1,
+    "buildings": 1
+   },
+   "observation": "The photo shows a village street in daylight under a cloudy sky, viewed from pedestrian height along an asphalt road with a dashed center line. On the left is a multi-story building with shop fronts, balconies and flower boxes, with a paved sidewalk and low bushes in front. On the right are buildings including a fire station, a green trash bin, a street lamp, and a low hedge bordering the road. Parked bicycles stand near the left shop, and banners and signs are visible farther down the street. Distant forested hills or mountains rise behind the street, with more buildings and trees at the far end.",
+   "reason": "This is a flat daylight village street with buildings and hedges on both sides, so the straight_street village route with a countryside sky is appropriate."
+  },
+  "unsure": [],
+  "model": "Qwen/Qwen3.8-27B"
+ },
+ "straight_whitewash": {
+  "final": {
+   "outdoor": true,
+   "time_of_day": "day",
+   "weather": "overcast",
+   "camera_height": "pedestrian",
+   "ground_flat": "flat",
+   "place": "village_street",
+   "layout": "straight_street",
+   "route": "village_street_day",
+   "template": "straight_street",
+   "hdri_group": "countryside",
+   "horizon_y": 0.57,
+   "camera_height_m": 1.5,
+   "ground": [
+    {
+     "phrase": "concrete street",
+     "material": "concrete"
+    },
+    {
+     "phrase": "sidewalk",
+     "material": "concrete"
+    }
+   ],
+   "ground_support": {
+    "concrete street": 3,
+    "sidewalk": 1
+   },
+   "surroundings": [
+    {
+     "phrase": "house",
+     "count": 5,
+     "note": "left row of houses are adjacent and may merge; the right white house is cut by the right border"
+    },
+    {
+     "phrase": "wall",
+     "count": 1,
+     "note": "long yellow wall on the right, cut by the border"
+    }
+   ],
+   "surroundings_support": {
+    "house": 3,
+    "wall": 2
+   },
+   "objects": [
+    {
+     "phrase": "dog",
+     "count": 1
+    }
+   ],
+   "objects_support": {
+    "dog": 3
+   },
+   "far": [
+    "hillside",
+    "trees"
+   ],
+   "far_support": {
+    "hillside": 2,
+    "trees": 2
+   },
+   "observation": "The photo shows a narrow paved village street seen from pedestrian height, looking straight down its length toward a green hillside. The light is flat and overcast, with a white sky and low cloud clinging to the hill. On the left, a row of small colorful houses with wooden doors and tiled eaves lines the street, separated from it by a low curb and a sidewalk strip. On the right stands a white house with a green door and a hanging lantern, backed by a long yellow wall. The concrete street is flat and empty except for a small dog standing in the middle distance, with the hill and scattered trees far beyond the street's end.",
+   "reason": "An overcast daylight village street with buildings on both sides and no corner fits village_street_day, extended with the straight_street template and a countryside HDRI."
+  },
+  "unsure": [],
+  "model": "Qwen/Qwen3.8-27B"
+ },
+ "terrace_row": {
+  "final": {
+   "outdoor": true,
+   "time_of_day": "day",
+   "weather": "sunny",
+   "camera_height": "pedestrian",
+   "ground_flat": "flat",
+   "place": "village_street",
+   "layout": "straight_street",
+   "route": "village_street_day",
+   "template": "straight_street",
+   "hdri_group": "countryside",
+   "horizon_y": 0.7,
+   "camera_height_m": 1.6,
+   "ground": [
+    {
+     "phrase": "asphalt road",
+     "material": "asphalt"
+    },
+    {
+     "phrase": "sidewalk",
+     "material": "paving slabs"
+    },
+    {
+     "phrase": "grass",
+     "material": "grass"
+    }
+   ],
+   "ground_support": {
+    "asphalt road": 3,
+    "sidewalk": 3,
+    "grass": 2
+   },
+   "surroundings": [
+    {
+     "phrase": "house",
+     "count": 10,
+     "note": "continuous terrace, likely merged into one or a few instances; the right gable is a clean instance but the far houses are tiny and recede to the border"
+    },
+    {
+     "phrase": "tree",
+     "count": 2,
+     "note": "left tree partly cut by the left border; the right trees stand behind the house and may merge with it"
+    },
+    {
+     "phrase": "hedge",
+     "count": 1,
+     "note": "low hedge far left across the street, small and distant"
+    }
+   ],
+   "surroundings_support": {
+    "house": 3,
+    "tree": 3,
+    "hedge": 2
+   },
+   "objects": [
+    {
+     "phrase": "car",
+     "count": 2
+    },
+    {
+     "phrase": "lamppost",
+     "count": 1
+    }
+   ],
+   "objects_support": {
+    "car": 3,
+    "lamppost": 1
+   },
+   "far": [
+    "trees at the end of the street",
+    "distant buildings on the left"
+   ],
+   "far_support": {
+    "trees at the end of the street": 2,
+    "distant buildings on the left": 1
+   },
+   "observation": "A sunlit street scene in a small town, shot from pedestrian height across the road toward a long row of white terraced houses with dark-framed windows and small window awnings. The nearest house shows its gable end to the right, bearing a large circular stone relief plaque dated 1907. An asphalt road runs along the left, separated from the houses by a paved sidewalk with a curb and a black lamppost. A strip of grass and a few trees sit to the right of the gable, while a larger tree, more trees and low buildings appear far down the street on the left. The sky is clear blue and strong shadows fall on the gable wall, indicating bright midday sun.",
+   "reason": "A flat, sunlit village street with a row of houses on one side and no visible corner fits the village_street_day route with the straight_street template and the countryside sky."
+  },
+  "unsure": [],
+  "model": "Qwen/Qwen3.8-27B"
+ }
+}

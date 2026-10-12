@@ -28,14 +28,16 @@ def test_photo2scene_runs_without_the_template_stages():
 
 
 def test_no_route_means_no_synthetic_stages_and_a_reason():
-    # Classifying takes the support route too (roadmap B.4); level photos still have none.
+    # Classifying takes the support route too (roadmap B.4); level photos still have none classifying.
     classify = {**COUNT, "task": "roi_classification"}
     assert {"scene_from_photo", "render", "crops"} <= set(enabled(classify)) and no_synthetic(from_dict(classify)) is None
     assert not {"scene_from_photo", "render", "crops"} & set(enabled({**classify, "camera": {}}))
     off = {**COUNT, "generation": {"photo_scenes": False}}
     assert "render" not in enabled(off) and "turned off" in no_synthetic(from_dict(off))
+    # Counting, level photos (a street, a room) have the place routes: the photos tell (roadmap C.3).
     level = {**COUNT, "camera": {}}
-    assert "render" not in enabled(level) and "look down" in no_synthetic(from_dict(level))
+    assert "render" in enabled(level) and no_synthetic(from_dict(level)) is None
+    assert "look down" in no_synthetic(from_dict({**classify, "camera": {}}))
     assert no_synthetic(from_dict({**COUNT, "generation": {"frames": 0}})) == "the setup asks for your photos only"
     assert no_synthetic(from_dict(COUNT)) is None
 

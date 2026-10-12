@@ -95,3 +95,75 @@ def test_the_steps_need_nothing_from_the_experiments():
     for f in STEPS.glob("*.py"):
         code = [line for line in f.read_text().splitlines() if line.lstrip().startswith(("import", "from", "sys.path"))]
         assert not [line for line in code if "experiments" in line], f.name
+
+
+def test_the_stage_routes_each_photo(tmp_path, monkeypatch):
+    """Counting: a night photo is out of scope and noted with why, the next photo is a street and gets the place
+    route, its views counted with the user's classes (roadmap C.3)."""
+    from sim2chip import llm, photo2scene
+    from sim2chip.spec import from_dict
+    from sim2chip.stages import Context, label
+    from sim2chip.stages.scene_from_photo import SceneFromPhoto
+    from sim2chip.workspace import Cache, open_job
+
+    class Rater:
+        def __init__(self, usage_log=None):
+            pass
+
+        def model_for(self, role):
+            return "m"
+
+        def chat(self, *a, **kw):
+            return json.dumps({"count": 2, "score": 7, "why": "clear", "things": True})
+    photos = []
+    for i in (1, 2):
+        Image.new("RGB", (8, 8), (i, 0, 0)).save(tmp_path / f"{i}.jpg")
+        photos.append((i, tmp_path / f"{i}.jpg"))
+    routes = {photos[0][1]: None, photos[1][1]: "village_street_day"}
+
+    def observe(flow, photo):
+        if routes[photo] is None:
+            raise Stop("the photo is out of scope: night")
+        return {"route": routes[photo]}
+
+    def build(flow, photo, targets):
+        (flow.d / "extended").mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8)).save(flow.d / "photo.png")
+        import numpy as np
+        np.savez(flow.d / "assets.npz", masks=np.zeros((0, 8, 8), bool))
+        return {"route": "village_street_day", "template": "crossroads", "hdri_group": "countryside", "objects": []}
+    composed = []
+    monkeypatch.setattr(llm, "Client", Rater)
+    monkeypatch.setattr(photo2scene, "missing_pythons", lambda: [])
+    monkeypatch.setattr(photo2scene, "build", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("support")))
+    monkeypatch.setattr(place, "observe", observe)
+    monkeypatch.setattr(place, "build", build)
+    monkeypatch.setattr(place, "compose", lambda flow, seed: composed.append(seed) or [
+        {"file": "populated/isaac/render_01.png", "boxes": [{"box": [1, 1, 5, 5], "name": "car", "role": "target"},
+                                                            {"box": [2, 2, 3, 3], "name": "bench", "role": "distractor"}]}])
+    monkeypatch.setattr(label, "phrases_of", lambda spec, cache, log=print: {"car": ["car"]})
+    monkeypatch.setattr(SceneFromPhoto, "_candidates", staticmethod(lambda ctx, tried: [(None, photos)]))
+    spec = from_dict({"name": "r", "task": "count", "user_data": {"raw": "photos"},
+                      "classes": [{"id": "car", "names": ["car"], "size_m": {"measure": "height", "range": [1.4, 1.9]},
+                                   "assets": {"source": "search", "queries": ["car"]}}]})
+    job = open_job(tmp_path, "j")
+    SceneFromPhoto().run(Context(spec, job, Cache(tmp_path / "cache")))
+    out = job.stage_dir("scene_from_photo")
+    scenes = json.loads((out / "scenes.json").read_text())
+    assert [(s["photo_id"], s["route"], s["status"]) for s in scenes] == [(1, "none", "failed"), (2, "street", "ready")]
+    assert "night" in scenes[0]["why"] and scenes[1]["info"]["template"] == "crossroads"
+    frames = json.loads((out / "frames.json").read_text())
+    assert frames == [{"file": "photo_2/populated/isaac/render_01.png", "scene": "photo_2", "boxes": [["car", 1, 1, 5, 5]]}]
+
+
+def test_the_street_bench_routes_by_rule():
+    """The 9 street bench photos as Qwen3.8-27B observed them (2026-10-12): the 7 by day take the street route with a
+    template that is built, the 2 at night are out of scope (roadmap C.3)."""
+    import sys
+    sys.path.insert(0, str(STEPS))
+    from flow_route import route
+    seen = json.loads((Path(__file__).parent / "fixtures" / "street_bench_observe.json").read_text())
+    got = {n: route(o) for n, o in seen.items()}
+    assert {n for n, r in got.items() if r["route"] == "out_of_scope"} == {"night_market", "night_street"}
+    day = {n: r for n, r in got.items() if r["route"] != "out_of_scope"}
+    assert len(day) == 7 and all(r["route"] == "village_street_day" and r["template_built"] for r in day.values())
