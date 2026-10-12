@@ -7,7 +7,7 @@ view 0 is rendered with it from then on. Without it a random sun lit the main ho
 came out white (basque_street, 2026-10-07): per-object colour gains would have baked that shadow into the
 colours. Run in the `trellis2` env:
 
-    PYOPENGL_PLATFORM=egl python experiments/scene3d/flow_light.py --dir data/street_test/flow/basque_street
+    PYOPENGL_PLATFORM=egl python sim2chip/photo2scene/steps/flow_light.py --dir data/street_test/flow/basque_street
 
 Writes <dir>/light.json (every light's score) and the chosen light into place/isaac/scene.json.
 """

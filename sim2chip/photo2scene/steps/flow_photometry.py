@@ -18,7 +18,7 @@ the photo, before any VLM looks at it, and per-object colour fixes.
 
 Run in the `trellis2` env:
 
-    PYOPENGL_PLATFORM=egl python experiments/scene3d/flow_photometry.py --dir data/street_test/flow/basque_street
+    PYOPENGL_PLATFORM=egl python sim2chip/photo2scene/steps/flow_photometry.py --dir data/street_test/flow/basque_street
 
 Writes <dir>/photometry.json and <dir>/photometry.jpg (photo | render | error map with the worst objects).
 With --apply (default --mode relative), first the objects out of proportion are brought back to the others'

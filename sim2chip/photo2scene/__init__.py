@@ -1,10 +1,10 @@
 """photo2scene in the product (docs/plan_photo2scene.md): a place for the synthetic frames from one of the user's
 photos, built once and reused by later jobs on the same dataset.
 
-Only the support route so far (one working surface seen from above: a table, a lawn, the ground close up). The
-photo stays the background, its movable things are erased and meshed, and every job places them again at random
-on the rebuilt support plane and renders new views composited on the photo. The street and room routes still
-live in experiments/scene3d/photo2scene.py.
+The support route here (one working surface seen from above: a table, a lawn, the ground close up): the photo
+stays the background, its movable things are erased and meshed, and every job places them again at random on the
+rebuilt support plane and renders new views composited on the photo. The street and room routes, a whole place
+rebuilt from the photo, are in place.py; surfaces seen from above in surface.py.
 
 Each step is a script in steps/, run in the Python that has its models (the step scripts' docstrings say which):
     sam3   SAM 3 and the VLM calls (the teachers' Python, SIM2CHIP_SAM3_PYTHON)
@@ -34,7 +34,7 @@ PYTHONS = {"sam3": "SIM2CHIP_SAM3_PYTHON", "mesh": "SIM2CHIP_SCENE_PYTHON", "era
            "isaac": "SIM2CHIP_ISAAC_PYTHON"}
 # Where the steps find their weights and code, passed on when set (.env or the worker's environment).
 PASS_ON = ("HF_HOME", "HF_HUB_CACHE", "TORCH_HOME", "MOGE_ROOT", "MOGE_DEPS", "MOGE_CKPT", "SIM2CHIP_SAM3D_DIR",
-           "SIM2CHIP_LAMA", "SIM2CHIP_PLAN_MODEL", "SIM2CHIP_REVIEW_MODEL")
+           "SIM2CHIP_LAMA", "SIM2CHIP_PLAN_MODEL", "SIM2CHIP_OBSERVE_MODEL", "SIM2CHIP_REVIEW_MODEL")
 STEP_TIMEOUT_S = 30 * 60
 MIN_SUPPORT = 0.03  # share of the photo the support must cover
 LONG_SIDE = 1344    # the photo's long side in the scene (bg_prepare.py's default)

@@ -4,7 +4,7 @@ new cameras inside it. Each camera stands at a person's or a robot's height, cle
 furniture, and looks at one of the photo's pieces of furniture or along a wall, slightly down. Run in the
 `trellis2` env:
 
-    python experiments/scene3d/room_template.py --scene data/scene3d_test/flow/home_office/place \
+    python sim2chip/photo2scene/steps/room_template.py --scene data/scene3d_test/flow/home_office/place \
         --out data/scene3d_test/flow/home_office/extended --views 16
 
 Writes <out>/isaac/scene.json and meshes.npz (view 0 is still the photo camera) and <out>/photo.png.

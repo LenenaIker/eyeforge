@@ -3,7 +3,7 @@ piece_isaac.py) is checked on its own. Code first (catalog entry 5: a view almos
 wall or a dull exposure), then closed yes/no questions to the VLM, one picture each. A failing view is left out
 of the views handed to Replicator; the place passes when most views pass. Any env:
 
-    python experiments/scene3d/flow_check_views.py --dir data/street_test/flow/corner_timber/extended
+    python sim2chip/photo2scene/steps/flow_check_views.py --dir data/street_test/flow/corner_timber/extended
 
 Reads <dir>/isaac/render_NN.png (view 0, the photo's camera, is skipped: phase 2 judged it); writes
 <dir>/views.json ({"views": [{"view", "stats", "answers", "keep", "why"}], "kept", "share", "ok"}).
@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
 

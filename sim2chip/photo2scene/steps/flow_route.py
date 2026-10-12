@@ -2,7 +2,7 @@
 (flow_observe.py). The VLM's own route and template are only compared: when they disagree with the rules the
 photo goes to a person instead of being forced into a scene. Any env:
 
-    python experiments/scene3d/flow_route.py --dir data/street_test/flow/basque_street
+    python sim2chip/photo2scene/steps/flow_route.py --dir data/street_test/flow/basque_street
 
 Writes <dir>/route.json: {"route", "template", "hdri_group", "checks": {name: bool}, "why": [...]}.
 Exit code 3 when the photo is out of scope or unsure (the driver stops there).

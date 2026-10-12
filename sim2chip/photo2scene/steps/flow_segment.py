@@ -5,7 +5,7 @@ cut by the border, or mostly inside another instance. Each candidate that passes
 check (flow_check_masks.py). In a room (--from-split) the candidates are the things scene_split.py measured
 as scene, from their boxes. Run in the `teacher-sam3` env:
 
-    python experiments/scene3d/flow_segment.py --dir data/street_test/flow/basque_street
+    python sim2chip/photo2scene/steps/flow_segment.py --dir data/street_test/flow/basque_street
 
 Writes <dir>/env_candidates.npz (masks, phrases, scores), <dir>/env_candidates.json (per candidate: phrase,
 score, area, borders touched, gate verdict and why) and <dir>/env_check/cand_NN.jpg.
@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw
 from transformers import Sam3Model, Sam3Processor, Sam3TrackerModel, Sam3TrackerProcessor
 
 import sys  # noqa: E402
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'sim2chip', 'photo2scene', 'steps'))  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 from bg_prepare import segment
 
 

@@ -9,12 +9,12 @@ Two retries, both local to the candidate:
   street test Qwen once dropped a clean main house.
 Run in the `teacher-sam3` env (the repair needs SAM 3):
 
-    python experiments/scene3d/flow_check_masks.py --dir data/street_test/flow/basque_street [--model ...]
+    python sim2chip/photo2scene/steps/flow_check_masks.py --dir data/street_test/flow/basque_street [--model ...]
 
 Reads <dir>/env_candidates.npz and <dir>/background.png; writes <dir>/env_masks.json ({"candidates": [{"index",
 "phrase", "answers", "keep", "why", "repaired", "second"}], "model"}), <dir>/env_masks.npz (the final masks of
 the kept ones) and <dir>/env_check/cand_NN[_fix].jpg.
-Model: --model, else SIM2CHIP_REVIEW_MODEL, else Qwen3.8-27B; --second (Kimi-K3).
+Model: --model, else SIM2CHIP_REVIEW_MODEL, else Qwen3.8-27B; --second (Kimi-K2.6, K3 stopped taking images on 2026-10-11).
 """
 import argparse
 import json
@@ -26,14 +26,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
 from flow_segment import picture  # noqa: E402
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'sim2chip', 'photo2scene', 'steps'))  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 
 MODEL = 'Qwen/Qwen3.8-27B'
-SECOND = 'moonshotai/Kimi-K3'
+SECOND = 'moonshotai/Kimi-K2.6'
 QUESTIONS = {
     'one_thing': ('Does the highlighted region cover one single {p} (a row of attached {p}s that form one block '
                   'also counts)?', 'yes'),

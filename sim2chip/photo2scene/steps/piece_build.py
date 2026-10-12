@@ -23,7 +23,7 @@ import trimesh
 from PIL import Image, ImageDraw
 
 import sys  # noqa: E402
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'sim2chip', 'photo2scene', 'steps'))  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 from bg_build import fit_plane, look_at_cv, photo_replica, place, points_from_depth
 
 

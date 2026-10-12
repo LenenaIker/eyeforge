@@ -7,7 +7,7 @@ mask in the photo (IoU) and its depth against MoGe's on that mask. For the whole
 MoGe's. A mesh that fails is listed to be dropped; the flow rebuilds without it (a dropped mesh is a valid fix).
 Run in the `trellis2` env:
 
-    PYOPENGL_PLATFORM=egl python experiments/scene3d/flow_gates.py --dir data/street_test/flow/corner_timber
+    PYOPENGL_PLATFORM=egl python sim2chip/photo2scene/steps/flow_gates.py --dir data/street_test/flow/corner_timber
 
 Reads <dir>/place/isaac/{scene.json,meshes.npz}, <dir>/env_masks.npz, <dir>/depth_background.npz,
 <dir>/ground.npz; writes <dir>/gates.json and <dir>/gates.jpg (render silhouettes over the photo).

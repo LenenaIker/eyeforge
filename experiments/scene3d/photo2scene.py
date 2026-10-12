@@ -97,11 +97,11 @@ class Flow:
 def phase1(f, until):
     d, s3 = f.d, HERE
     # 1.1 Observe: closed fields, 3 samples voted.
-    f.run('1.1_observe', 'sam3', [s3 / 'flow_observe.py', '--image', f.image, '--out', d], ['observe.json'])
+    f.run('1.1_observe', 'sam3', [STEPS / 'flow_observe.py', '--image', f.image, '--out', d], ['observe.json'])
     obs = jload(d, 'observe.json')
     f.check('1.1_observe', True, {'unsure': obs['unsure'], 'route_vlm': obs['final']['route']})
     # 1.2 Route: rules in code.
-    code = f.run('1.2_route', 'sam3', [s3 / 'flow_route.py', '--dir', d]
+    code = f.run('1.2_route', 'sam3', [STEPS / 'flow_route.py', '--dir', d]
                  + (['--force', f.force_route] if f.force_route else []), ['route.json'], ok_codes=(0, 3))
     r = jload(d, 'route.json')
     if not f.check('1.2_route', code == 0, {k: r[k] for k in ('route', 'template', 'hdri_group')},
@@ -120,7 +120,7 @@ def phase1(f, until):
         # 1.3a in a room: every thing as a whole object (VLM boxes, SAM 3 masks), measured on the photo's depth;
         # the big ones are scene, the small ones and the user's classes are erased (scene_split.py). A street
         # still erases the observation's movable objects: a car is big and is the target there.
-        f.run('1.3a_things', 'sam3', [s3 / 'flow_things.py', '--image', f.image, '--dir', d, '--targets', f.targets],
+        f.run('1.3a_things', 'sam3', [STEPS / 'flow_things.py', '--image', f.image, '--dir', d, '--targets', f.targets],
               ['things.json', 'things.npz'])
         f.run('1.3a_depth_photo', 'mesh', [STEPS / 'bg_depth.py', '--dir', d, '--only', 'photo'], ['depth_photo.npz'])
         f.run('1.3a_split', 'sam3', [STEPS / 'scene_split.py', '--dir', d], ['split.json', 'objects.npz'])
@@ -147,16 +147,16 @@ def phase1(f, until):
     # 1.4b Everything erased becomes an asset for the generator (targets and distractors). It needs only the
     # erase, the support masks and the photo's depth, so it runs before any later gate can stop the flow.
     assets(f, '1.4b')
-    f.run('1.4_camera', 'trellis', [s3 / 'flow_camera.py', '--dir', d], ['camera.json'], ok_codes=(0, 3))
+    f.run('1.4_camera', 'trellis', [STEPS / 'flow_camera.py', '--dir', d], ['camera.json'], ok_codes=(0, 3))
     cam = jload(d, 'camera.json')
     if not f.check('1.4_camera', cam['ok'], cam['checks'], '; '.join(cam['why'])):
         return False
     if until == '1.4':
         return True
     # 1.3b Surroundings: SAM 3 candidates on the erased photo, gates in code, then the VLM per candidate.
-    f.run('1.3b_segment', 'sam3', [s3 / 'flow_segment.py', '--dir', d] + (['--from-split'] if room else []),
+    f.run('1.3b_segment', 'sam3', [STEPS / 'flow_segment.py', '--dir', d] + (['--from-split'] if room else []),
           ['env_candidates.npz'])
-    f.run('1.3c_check_masks', 'sam3', [s3 / 'flow_check_masks.py', '--dir', d], ['env_masks.json'])
+    f.run('1.3c_check_masks', 'sam3', [STEPS / 'flow_check_masks.py', '--dir', d], ['env_masks.json'])
     em = jload(d, 'env_masks.json')
     kept = [c for c in em['candidates'] if c['keep']]
     if not f.check('1.3c_check_masks', bool(kept), {'kept': [c['phrase'] for c in kept],
@@ -193,9 +193,9 @@ def phase1(f, until):
                 rec['status'] = 'redo'
     else:
         return f.check('1.5a_sam3d', False, {'missing': missing}, 'meshes still missing after dropping instances')
-    f.run('1.5b_refine', 'trellis', [s3 / 'flow_refine.py', '--dir', d] + (['--axis-scale'] if f.axis_scale else []),
+    f.run('1.5b_refine', 'trellis', [STEPS / 'flow_refine.py', '--dir', d] + (['--axis-scale'] if f.axis_scale else []),
           ['refine.json'])
-    f.run('1.5c_check_meshes', 'trellis', [s3 / 'flow_check_meshes.py', '--dir', d], ['meshes.json'])
+    f.run('1.5c_check_meshes', 'trellis', [STEPS / 'flow_check_meshes.py', '--dir', d], ['meshes.json'])
     ms = jload(d, 'meshes.json')['meshes']
     kept = [x for x in ms if x['keep']]
     if not f.check('1.5c_check_meshes', bool(kept), {'kept': [(x['index'], x['phrase']) for x in kept],
@@ -266,10 +266,10 @@ def phase2(f, until):
     """Imitation: the place from the photo's camera, without its movable objects, checked against the photo."""
     d, s3 = f.d, HERE
     r = jload(d, 'route.json')
-    f.run('2.1a_surfaces', 'sam3', [s3 / 'piece_surfaces.py', '--dir', d], ['surfaces.npz'])
+    f.run('2.1a_surfaces', 'sam3', [STEPS / 'piece_surfaces.py', '--dir', d], ['surfaces.npz'])
     # Streets get facades over what the photo shows; a room is closed with the walls it does not show.
     kind = '--outdoor' if r['route'] == 'village_street_day' else '--indoor'
-    f.run('2.1b_pieces', 'trellis', [s3 / 'piece_build.py', '--dir', d, kind, '--views', '0', '--depth',
+    f.run('2.1b_pieces', 'trellis', [STEPS / 'piece_build.py', '--dir', d, kind, '--views', '0', '--depth',
                                      'background'], ['pieces.json', 'isaac/scene.json'])
     keep = [x['index'] for x in jload(d, 'meshes.json')['meshes'] if x['keep']]
     # The meshes the gates dropped in an earlier run stay dropped when the flow resumes (a redo starts afresh).
@@ -279,13 +279,13 @@ def phase2(f, until):
     keep = [i for i in keep if i not in gone.get('dropped', [])]
     # 2.2 Surroundings meshes into the place, then the geometric gates; a mesh that fails is dropped once.
     for attempt in range(2):
-        f.run(f'2.2a_env_{attempt}', 'trellis', [s3 / 'env_add.py', '--env', d / 'meshes', '--scene', d,
+        f.run(f'2.2a_env_{attempt}', 'trellis', [STEPS / 'env_add.py', '--env', d / 'meshes', '--scene', d,
                                                  '--out', d / 'place', '--fill-ground', '--photo-texture',
                                                  '--keep',
                                                  ','.join(map(str, keep))]
               # A facade a house mesh stands on is replaced by it; furniture against a room wall is not.
               + (['--drop-covered-walls'] if kind == '--outdoor' else []), ['place/isaac/scene.json'])
-        f.run(f'2.2b_gates_{attempt}', 'trellis', [s3 / 'flow_gates.py', '--dir', d], ['gates.json'])
+        f.run(f'2.2b_gates_{attempt}', 'trellis', [STEPS / 'flow_gates.py', '--dir', d], ['gates.json'])
         g = jload(d, 'gates.json')
         drop = [i for i in g['drop'] if i in keep]
         if not drop or attempt == 1:
@@ -302,15 +302,15 @@ def phase2(f, until):
         return False
     # 2.3 Light and sky: the route's HDRI group.
     hdri = ROOT / 'data' / 'hdri' / ('urban' if r['hdri_group'] == 'urban' else '')
-    f.run('2.3_render', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri],
+    f.run('2.3_render', 'isaac', [STEPS / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri],
           ['place/isaac/render_00.png'])
     # 2.3b The photo's light, by measurement: view 0 under a fixed set of lights, the closest one kept.
-    f.run('2.3b_sweep', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri, '--sweep'],
+    f.run('2.3b_sweep', 'isaac', [STEPS / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri, '--sweep'],
           ['place/isaac/sweep/lights.json'])
-    f.run('2.3b_light', 'trellis', [s3 / 'flow_light.py', '--dir', d], ['light.json'])
+    f.run('2.3b_light', 'trellis', [STEPS / 'flow_light.py', '--dir', d], ['light.json'])
     lt = jload(d, 'light.json')
     f.check('2.3b_light', True, {'best': lt['best'], 'worst_de': lt['worst_de']})
-    f.run('2.3c_render', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri], [])
+    f.run('2.3c_render', 'isaac', [STEPS / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri], [])
     # 2.4a Photometry against the photo: objects out of proportion to the photo-textured floor first, then grey
     # world (flow_photometry.py --mode relative); two rounds,
     # a round kept only if the colour difference goes down.
@@ -321,19 +321,19 @@ def phase2(f, until):
     if (d / 'photometry.json').exists() and not (d / 'place/isaac/orig_scene.json').exists():
         (d / 'photometry.json').unlink()
     for rnd in range(2):
-        f.run(f'2.4a_photometry_{rnd}', 'trellis', [s3 / 'flow_photometry.py', '--dir', d, '--apply'], [])
+        f.run(f'2.4a_photometry_{rnd}', 'trellis', [STEPS / 'flow_photometry.py', '--dir', d, '--apply'], [])
         ph = jload(d, 'photometry.json')
         first = first or ph
         if ph['ok'] or not ph.get('applied'):
             break
-        f.run(f'2.4a_render_{rnd}', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri], [])
-    f.run('2.4a_photometry_final', 'trellis', [s3 / 'flow_photometry.py', '--dir', d, '--out', 'photometry_final'],
+        f.run(f'2.4a_render_{rnd}', 'isaac', [STEPS / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri], [])
+    f.run('2.4a_photometry_final', 'trellis', [STEPS / 'flow_photometry.py', '--dir', d, '--out', 'photometry_final'],
           [])
     fin = jload(d, 'photometry_final.json')
     if fin['mean_de'] > first['mean_de'] and (d / 'place/isaac/orig_scene.json').exists():
         for name in ('scene.json', 'meshes.npz'):  # the gains made it worse: back to the original colours
             (d / 'place/isaac' / name).write_bytes((d / 'place/isaac' / f'orig_{name}').read_bytes())
-        f.run('2.4a_render_revert', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri], [])
+        f.run('2.4a_render_revert', 'isaac', [STEPS / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri], [])
         fin = first
     if not fin['checks']['exposure within 0.8-1.25']:
         # The place's views will be exposed by this much more or less (piece_isaac.py "exposure_scale").
@@ -355,8 +355,8 @@ def phase2(f, until):
                 sc = json.load(open(p))
                 sc['exposure_0'] = float(gain0 * min(4.0, max(0.25, fin['exposure'])))
                 json.dump(sc, open(p, 'w'))
-        f.run('2.4a_render_exposure', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri], [])
-        f.run('2.4a_photometry_exposed', 'trellis', [s3 / 'flow_photometry.py', '--dir', d, '--out',
+        f.run('2.4a_render_exposure', 'isaac', [STEPS / 'piece_isaac.py', '--dir', d / 'place', '--hdri-dir', hdri], [])
+        f.run('2.4a_photometry_exposed', 'trellis', [STEPS / 'flow_photometry.py', '--dir', d, '--out',
                                                      'photometry_final'], [])
         fin = jload(d, 'photometry_final.json')
     if not f.check('2.4a_photometry', fin['mean_de'] <= 35,
@@ -365,7 +365,7 @@ def phase2(f, until):
                    f"colours far from the photo (mean delta E {fin['mean_de']})"):
         return False
     # 2.4 Side by side with the photo, closed questions in both orders.
-    f.run('2.4_compare', 'sam3', [s3 / 'flow_compare.py', '--dir', d], ['compare.json'])
+    f.run('2.4_compare', 'sam3', [STEPS / 'flow_compare.py', '--dir', d], ['compare.json'])
     c = jload(d, 'compare.json')
     return f.check('2.4_compare', c['ok'], c['answers'], 'failed: ' + ', '.join(c['failed']))
 
@@ -376,21 +376,21 @@ def phase3(f, until):
     r = jload(d, 'route.json')
     t = r['template']
     if t == 'crossroads':
-        f.run('3.2_extend', 'trellis', [s3 / 'crossroad.py', '--scene', d / 'place', '--photo-scene', d, '--out',
+        f.run('3.2_extend', 'trellis', [STEPS / 'crossroad.py', '--scene', d / 'place', '--photo-scene', d, '--out',
                                         d / 'extended', '--no-objects', '--views', '16'], ['extended/isaac/scene.json'])
     elif t == 'straight_street':
-        f.run('3.2_extend', 'trellis', [s3 / 'street_template.py', '--scene', d / 'place', '--photo-scene', d,
+        f.run('3.2_extend', 'trellis', [STEPS / 'street_template.py', '--scene', d / 'place', '--photo-scene', d,
                                         '--out', d / 'extended', '--views', '16'], ['extended/isaac/scene.json'])
     elif t == 'room':
-        f.run('3.2_extend', 'trellis', [s3 / 'room_template.py', '--scene', d / 'place', '--out', d / 'extended',
+        f.run('3.2_extend', 'trellis', [STEPS / 'room_template.py', '--scene', d / 'place', '--out', d / 'extended',
                                         '--views', '16'], ['extended/isaac/scene.json'])
     else:
         return f.check('3.1_template', False, {'template': t}, f'template {t} not built yet')
     f.check('3.1_template', True, {'template': t})
     hdri = ROOT / 'data' / 'hdri' / ('urban' if r['hdri_group'] == 'urban' else '')
-    f.run('3.4a_render', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'extended', '--hdri-dir', hdri],
+    f.run('3.4a_render', 'isaac', [STEPS / 'piece_isaac.py', '--dir', d / 'extended', '--hdri-dir', hdri],
           ['extended/sheet_isaac.jpg'])
-    f.run('3.4b_views', 'sam3', [s3 / 'flow_check_views.py', '--dir', d / 'extended']
+    f.run('3.4b_views', 'sam3', [STEPS / 'flow_check_views.py', '--dir', d / 'extended']
           + (['--indoor'] if t == 'room' else []), ['extended/views.json'])
     v = jload(d, 'extended/views.json')
     if not f.check('3.4b_views', v['ok'], {'kept': v['kept'], 'share': v['share'],
@@ -399,8 +399,8 @@ def phase3(f, until):
         return False
     # 3.5 The erased things come back at random in every kept view (a new draw per view), rendered and labelled:
     # boxes for the targets and the distractors, none for the place's own furniture.
-    f.run('3.5_populate', 'trellis', [s3 / 'flow_populate.py', '--dir', d], ['populated/isaac/scene.json'])
-    f.run('3.5_render', 'isaac', [s3 / 'piece_isaac.py', '--dir', d / 'populated', '--hdri-dir', hdri],
+    f.run('3.5_populate', 'trellis', [STEPS / 'flow_populate.py', '--dir', d], ['populated/isaac/scene.json'])
+    f.run('3.5_render', 'isaac', [STEPS / 'piece_isaac.py', '--dir', d / 'populated', '--hdri-dir', hdri],
           ['populated/sheet_isaac.jpg'])
     f.run('3.5_labels', 'trellis', [STEPS / 'view_labels.py', '--dir', d / 'populated'], ['populated/isaac/labels.json'])
     p = jload(d, 'populated/populate.json')

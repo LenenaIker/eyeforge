@@ -4,7 +4,7 @@ against the route (a pedestrian camera stands 0.5 to 4 m up, level within a few 
 VLM's own horizon guess from the observation (when its samples agree): a far miss means MoGe or the ground mask
 went wrong, and the scene would be built tilted or sunk. Any env with numpy:
 
-    python experiments/scene3d/flow_camera.py --dir data/street_test/flow/basque_street
+    python sim2chip/photo2scene/steps/flow_camera.py --dir data/street_test/flow/basque_street
 
 Writes <dir>/camera.json: {"ok", "height_m", "pitch_deg", "roll_deg", "horizon_y", "horizon_y_vlm",
 "horizon_vlm_spread", "ground_inliers", "checks", "why"}. Exit code 3 when a check fails.
@@ -17,7 +17,7 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'sim2chip', 'photo2scene', 'steps'))  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 from bg_build import fit_plane
 
 HEIGHT = {'ground': (0.05, 1.0), 'pedestrian': (0.5, 4.0), 'raised': (2.0, 15.0)}

@@ -4,7 +4,7 @@ ICP with scale (Umeyama on closest points, the mesh seen from the camera), and a
 silhouette IoU on its mask goes up. (With Mira-Scene's gravity placement it took a house from IoU 0.008 to 0.65,
 basque_street 2026-10-07.) Run in the `trellis2` env:
 
-    PYOPENGL_PLATFORM=egl python experiments/scene3d/flow_refine.py --dir data/street_test/flow/basque_street
+    PYOPENGL_PLATFORM=egl python sim2chip/photo2scene/steps/flow_refine.py --dir data/street_test/flow/basque_street
 
 Writes <dir>/meshes/scene_refined.glb (each mesh in the OpenGL photo camera frame, named object_NNN by its mask)
 and <dir>/refine.json (IoU per mesh: SAM 3D's pose, refined).

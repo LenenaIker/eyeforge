@@ -19,7 +19,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--dir", required=True)
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--sweep", action="store_true", help="view 0 under a fixed set of lights, to isaac/sweep/")
-ap.add_argument("--hdri-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../data/hdri"))
+ap.add_argument("--hdri-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../data/hdri"))
 args = ap.parse_args()
 
 app = SimulationApp({"headless": True})

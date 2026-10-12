@@ -5,7 +5,7 @@ both. The VLM lists each thing with a box and picks the scale (a desk with its l
 prompt (Sam3TrackerModel) turns each box into a mask. The support phrases from the observation are segmented
 too (ground.npz), for the floor plane. Run in the `teacher-sam3` env:
 
-    python experiments/scene3d/flow_things.py --image data/scene3d_test/photos/user_desk.jpg \
+    python sim2chip/photo2scene/steps/flow_things.py --image data/scene3d_test/photos/user_desk.jpg \
         --dir data/scene3d_test/flow/user_desk [--targets "dog,cat"]
 
 Writes <dir>/photo.png (long side 1344, as bg_prepare.py), things.json ({"things": [{"name", "box", "on",
@@ -22,10 +22,10 @@ import torch
 from PIL import Image, ImageOps
 from transformers import Sam3Model, Sam3Processor, Sam3TrackerModel, Sam3TrackerProcessor
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'sim2chip', 'photo2scene', 'steps'))  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 from bg_prepare import segment
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from sim2chip.llm import Client, ask_json, image_part  # noqa: E402
 

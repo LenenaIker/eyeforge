@@ -5,11 +5,13 @@ voted: enums by majority, phrase lists from the answer that agrees most with the
 disagree on indoor/outdoor or the time of day, the photo is marked unsure and the route sends it to a person.
 Any env:
 
-    python experiments/scene3d/flow_observe.py --image data/street_test/images/basque_street.jpg --out <dir>
+    python sim2chip/photo2scene/steps/flow_observe.py --image data/street_test/images/basque_street.jpg --out <dir>
 
 Writes <dir>/observe.json: {"final": {...}, "votes": {...}, "samples": [...], "unsure": [...], "model"}.
 Exit code 1 when fewer than two samples gave a usable answer.
-Model: --model, else SIM2CHIP_PLAN_MODEL, else Kimi-K3.
+Model: --model, else SIM2CHIP_OBSERVE_MODEL, else Qwen3.8-27B. K3 stopped taking images on Token Factory
+(2026-10-11); on the 9 street bench photos and home_office Kimi-K2.6 put the horizon 0.19 image heights off
+MoGe's on average (6 of 7 misses beyond the camera check's 0.15), Qwen 0.06 (1 of 7, 2026-10-12).
 """
 import argparse
 import json
@@ -19,11 +21,11 @@ from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[1]
+ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT))
 from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
 
-MODEL = 'moonshotai/Kimi-K3'
+MODEL = 'Qwen/Qwen3.8-27B'
 ENUMS = {
     'outdoor': [True, False],
     'time_of_day': ['day', 'dusk_or_dawn', 'night'],
@@ -125,7 +127,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--image', required=True)
     ap.add_argument('--out', required=True)
-    ap.add_argument('--model', default=os.environ.get('SIM2CHIP_PLAN_MODEL', MODEL))
+    ap.add_argument('--model', default=os.environ.get('SIM2CHIP_OBSERVE_MODEL', MODEL))
     ap.add_argument('--samples', type=int, default=3)
     ap.add_argument('--temperature', type=float, default=0.6)
     args = ap.parse_args()

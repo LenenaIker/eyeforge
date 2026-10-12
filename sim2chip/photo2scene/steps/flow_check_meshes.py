@@ -4,7 +4,7 @@ question (one answer changed between runs on the mask check): is it recognisable
 pieces of something else, is it a solid shape rather than a sheet. A mesh that fails is left out of the scene
 (this replaces the hand-picked `crossroad.py --drop`). Run in the `trellis2` env:
 
-    PYOPENGL_PLATFORM=egl python experiments/scene3d/flow_check_meshes.py --dir data/street_test/flow/corner_timber
+    PYOPENGL_PLATFORM=egl python sim2chip/photo2scene/steps/flow_check_meshes.py --dir data/street_test/flow/corner_timber
 
 Writes <dir>/mesh_check/mesh_NNN.jpg and <dir>/meshes.json ({"meshes": [{"node", "phrase", "answers", "keep",
 "why"}], "model"}).
@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
 from env_add import env_meshes, turntable  # noqa: E402

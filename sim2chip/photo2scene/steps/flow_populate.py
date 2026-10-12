@@ -12,7 +12,7 @@ A placement must be seen by the view's camera (depth test) and big enough there.
 
 Run in the `trellis2` env:
 
-    PYOPENGL_PLATFORM=egl python experiments/scene3d/flow_populate.py --dir data/scene3d_test/flow/user_desk
+    PYOPENGL_PLATFORM=egl python sim2chip/photo2scene/steps/flow_populate.py --dir data/scene3d_test/flow/user_desk
 
 Reads <dir>/extended/isaac/{scene.json,meshes.npz}, <dir>/assets.json and <dir>/assets/sam3d/; writes
 <dir>/populated/isaac/{scene.json,meshes.npz} (the place's objects plus the assets, "roles" per object) for

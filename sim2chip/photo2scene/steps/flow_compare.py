@@ -5,7 +5,7 @@ position bias; an answer counts only when both orders agree, otherwise it is "un
 (flow_gates.py) ran before; this catches what code does not see (a sky on its side, a wall where the street
 should go on, a desert sky behind a town). Any env:
 
-    python experiments/scene3d/flow_compare.py --dir data/street_test/flow/corner_timber [--model ...]
+    python sim2chip/photo2scene/steps/flow_compare.py --dir data/street_test/flow/corner_timber [--model ...]
 
 Reads <dir>/background.png and <dir>/place/isaac/render_00.png; writes <dir>/compare_{ab,ba}.jpg and
 <dir>/compare.json ({"answers": {q: yes|no|unsure}, "raw", "failed", "ok", "model"}).
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
 
