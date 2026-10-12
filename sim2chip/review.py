@@ -106,7 +106,8 @@ def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str =
                                       job.stage_dir("generate_assets") / a["class"] / f"{a['uid']}.png")
                           if p.exists()), None)
             out["assets"].append({"uid": a["uid"], "class": a["class"], "role": a.get("role", "target"),
-                                  "name": a.get("name"), "generated": bool(a.get("generated")),
+                                  "name": a.get("name"), "author": a.get("author"),
+                                  "generated": bool(a.get("generated")),
                                   "kept": a["uid"] in kept, "decision": r.get("decision"),
                                   "reason": r.get("reason", ""), "judge": r.get("judge"),
                                   "image": rel(image) if image else None})

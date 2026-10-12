@@ -1,4 +1,4 @@
-import { RotateCcw, X } from "lucide-react";
+import { Box, ImageOff, RotateCcw, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import * as API from "../api";
 import type { Fixes, Point, Review } from "../api";
@@ -118,6 +118,7 @@ export default function ReviewPanel({ job, onRerun, calibrating = false, labelin
           const keep = a.uid in fixes.assets ? fixes.assets[a.uid] === "keep" : a.kept;
           return (
             <Tile key={a.uid} src={a.image && media(a.image)} changed={a.uid in fixes.assets} title={`${a.name ?? a.uid}: ${a.reason}`}
+                  empty={<AssetName a={a} />}
                   dim={!keep} onClick={() => { const next = keep ? "discard" : "keep"; set("assets", a.uid, (next === "keep") === a.kept ? undefined : next); }}>
               <Badge tone={keep ? "good" : "bad"}>{keep ? "kept" : "dropped"}</Badge>
               <span className="truncate text-xs text-muted">{a.class}{a.role === "prop" ? " (prop)" : ""}</span>
@@ -181,21 +182,38 @@ export default function ReviewPanel({ job, onRerun, calibrating = false, labelin
   );
 }
 
+// A 3D model without a picture (the steps that photograph models did not run for it): at least what it is.
+function AssetName({ a }: { a: Review["assets"][number] }) {
+  return <>
+    <Box className="h-8 w-8" strokeWidth={1.25} />
+    <span className="line-clamp-2 text-sm font-medium text-ink">{a.name ?? a.class}</span>
+    {a.author && <span className="text-xs text-muted">by {a.author}</span>}
+  </>;
+}
+
 function Hint({ children }: { children: ReactNode }) {
   return <p className="text-sm text-muted">{children}</p>;
 }
 
-function Tile({ src, overlay, children, onClick, changed, dim, title }: {
+function Tile({ src, overlay, children, onClick, changed, dim, title, empty }: {
   src?: string | null; overlay?: ReactNode; children?: ReactNode; onClick?: () => void; changed?: boolean; dim?: boolean;
-  title?: string;
+  title?: string; empty?: ReactNode;
 }) {
   const Tag = onClick ? "button" : "div";
+  // A picture that does not load left an empty box of no height, with only the marks over it in a thin strip
+  // (a count job's test results, 2026-10-12): it shows a placeholder instead, without the marks.
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [src]);
+  const shows = !!src && !broken;
   return (
     <Card className={cx("overflow-hidden text-left", changed && "ring-2 ring-ember-500", onClick && "transition hover:shadow-md")}>
       <Tag onClick={onClick} title={title} className="block w-full">
         <div className={cx("relative bg-gray-100", dim && "opacity-40")}>
-          {src ? <img src={src} alt="" loading="lazy" className="block w-full" /> : <div className="aspect-square" />}
-          {overlay}
+          {shows ? <img src={src!} alt="" loading="lazy" className="block w-full" onError={() => setBroken(true)} />
+            : <div className="flex aspect-square flex-col items-center justify-center gap-2 p-3 text-center text-gray-400">
+                {empty ?? <><ImageOff className="h-8 w-8" strokeWidth={1.25} /><span className="text-xs">Picture not available</span></>}
+              </div>}
+          {shows && overlay}
         </div>
         {children && <div className="flex items-center justify-between gap-2 px-3 py-2">{children}</div>}
       </Tag>

@@ -105,7 +105,7 @@ export type Review = {
   photos: { key: string; image: string | null; points?: Point[]; teacher_points?: Point[]; unsure?: boolean;
             label?: string; teacher?: string; confidence?: number; reason: string; judge: string;
             corrected: boolean }[];
-  assets: { uid: string; class: string; role: string; name?: string; generated: boolean; kept: boolean;
+  assets: { uid: string; class: string; role: string; name?: string; author?: string | null; generated: boolean; kept: boolean;
             decision?: string; reason: string; judge?: string; image: string | null }[];
   renders: string[];
   // count (count task): the model's count by class, from its density output; older models have none.
