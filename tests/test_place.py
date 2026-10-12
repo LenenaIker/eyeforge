@@ -112,6 +112,7 @@ def test_the_stage_routes_each_photo(tmp_path, monkeypatch):
     from sim2chip import llm, photo2scene
     from sim2chip.spec import from_dict
     from sim2chip.stages import Context, label
+    from sim2chip.stages import scene_from_photo as sfp
     from sim2chip.stages.scene_from_photo import SceneFromPhoto
     from sim2chip.workspace import Cache, open_job
 
@@ -144,6 +145,7 @@ def test_the_stage_routes_each_photo(tmp_path, monkeypatch):
     composed = []
     monkeypatch.setattr(llm, "Client", Rater)
     monkeypatch.setattr(photo2scene, "missing_pythons", lambda: [])
+    monkeypatch.setattr(sfp, "STREET_ROUTE", True)
     monkeypatch.setattr(photo2scene, "build", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("support")))
     monkeypatch.setattr(place, "observe", observe)
     monkeypatch.setattr(place, "build", build)
@@ -163,6 +165,13 @@ def test_the_stage_routes_each_photo(tmp_path, monkeypatch):
     assert "night" in scenes[0]["why"] and scenes[1]["info"]["template"] == "crossroads"
     frames = json.loads((out / "frames.json").read_text())
     assert frames == [{"file": "photo_2/populated/isaac/render_01.png", "scene": "photo_2", "boxes": [["car", 1, 1, 5, 5]]}]
+    # The street route off (the default since C.6): the street photo makes no scene and says why.
+    monkeypatch.setattr(sfp, "STREET_ROUTE", False)
+    job2 = open_job(tmp_path, "j2")
+    SceneFromPhoto().run(Context(spec, job2, Cache(tmp_path / "cache")))
+    scenes = json.loads((job2.stage_dir("scene_from_photo") / "scenes.json").read_text())
+    assert [(s["route"], s["status"], s["why"]) for s in scenes] == [
+        ("none", "failed", "the photo is out of scope: night"), ("street", "failed", sfp.NO_STREETS)]
 
 
 def test_the_street_bench_routes_by_rule():
@@ -184,6 +193,7 @@ def test_classifying_in_a_street_shows_one_class_per_view(tmp_path, monkeypatch)
     from sim2chip import llm, photo2scene
     from sim2chip.spec import from_dict
     from sim2chip.stages import Context, label
+    from sim2chip.stages import scene_from_photo as sfp
     from sim2chip.stages.scene_from_photo import SceneFromPhoto
     from sim2chip.workspace import Cache, open_job
 
@@ -220,6 +230,7 @@ def test_classifying_in_a_street_shows_one_class_per_view(tmp_path, monkeypatch)
                 {"file": "populated/isaac/render_03.png", "boxes": [box(thing), box("car" if thing == "bus" else "bus")]}]
     monkeypatch.setattr(llm, "Client", Rater)
     monkeypatch.setattr(photo2scene, "missing_pythons", lambda: [])
+    monkeypatch.setattr(sfp, "STREET_ROUTE", True)
     monkeypatch.setattr(photo2scene, "build", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("support")))
     monkeypatch.setattr(place, "observe", lambda flow, photo: {"route": "village_street_day"})
     monkeypatch.setattr(place, "build", build)

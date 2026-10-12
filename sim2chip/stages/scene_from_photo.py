@@ -49,6 +49,11 @@ NO_SURFACE_VIEWS = "no new view of your surfaces kept its class"
 # scene and say why.
 # SIM2CHIP_SURFACE_ROUTE=1 turns it on to measure it.
 SURFACE_ROUTE = os.environ.get("SIM2CHIP_SURFACE_ROUTE") == "1"
+# The street route is off until it helps as well: on the user's roads (counting cars) the likeness filter kept none
+# of the street's views, 0.662 against 0.651 with the photos alone (roadmap C.6; the user's decision, 2026-10-12).
+# Off, a street photo makes no scene and says why. SIM2CHIP_STREET_ROUTE=1 turns it on to measure it.
+STREET_ROUTE = os.environ.get("SIM2CHIP_STREET_ROUTE") == "1"
+NO_STREETS = "streets do not make training images good enough yet"
 
 
 ROUTES = {"support": "support", "village_street_day": "street", "indoor_floor": "room"}  # flow_route.py's routes
@@ -88,8 +93,9 @@ def no_route(spec) -> str | None:
 
 class SceneFromPhoto(Stage):
     name = "scene_from_photo"
-    version = "6"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view;
-    # 4: surfaces re-framed in 3D; 5: streets and rooms; 6: classifying in them, every view of a place kept
+    version = "7"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view;
+    # 4: surfaces re-framed in 3D; 5: streets and rooms; 6: classifying in them, every view of a place kept;
+    # 7: the street route off (C.6)
     runtime = "cpu"   # it runs each step in the Python that has its models (photo2scene.PYTHONS)
     gpu = "rtx"
     max_hours = 2
@@ -157,6 +163,8 @@ class SceneFromPhoto(Stage):
                     flow = p2s.Flow(work, usage, ctx.log)
                     route = ROUTES.get(place.observe(flow, photo)["route"], "support")
                     ctx.log(f"photo {pid} takes the {route} route")
+                    if route == "street" and not STREET_ROUTE:
+                        raise p2s.Stop(NO_STREETS)
                     summary = (p2s.build if route == "support" else place.build)(flow, photo, targets)
                 except p2s.Stop as e:
                     ctx.log(f"photo {pid} makes no scene: {e}")
