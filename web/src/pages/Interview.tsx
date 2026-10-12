@@ -65,6 +65,7 @@ export default function Interview() {
   const [realPhotos, setRealPhotos] = useState(saved?.realPhotos ?? 0);  // training photos uploaded in this interview
   const [pending, setPending] = useState<Saved["pending"]>(saved?.pending ?? null);  // the turn running
   const [dragging, setDragging] = useState(false);
+  const [attached, setAttached] = useState<{ file: File; url: string }[]>([]);  // photos waiting in the composer
   const [trainError, setTrainError] = useState<string | null>(null);
   const session = useRef<string | null>(saved?.session ?? null);
   const mounted = useRef(true);
@@ -186,26 +187,39 @@ export default function Interview() {
     push({ from: "bot", text, turn: t });
   }
 
-  async function send(value = text.trim()) {
-    if (!value || busy) return;
-    push({ from: "me", text: value });
+  // The user's message: the text and the photos attached in the composer, sent together (like a messenger app).
+  // The photos are stored first (the GPU warms up), then the text goes as the turn, so the assistant answers once.
+  async function send() {
+    const value = text.trim(), photos = attached;
+    if ((!value && !photos.length) || busy) return;
+    const req = photoRequest ?? { for: "training" as const, class: null };
+    const purpose = req.for ?? "training";
+    const caption = `${photos.length} photo${photos.length > 1 ? "s" : ""}` +
+                    (purpose === "3d" ? ` of ${req.class || "the object"} for 3D models` : "");
+    push({ from: "me", text: value || caption, ...(photos.length ? { photos: photos.slice(0, 8).map((a) => a.url) } : {}) });
     setText("");
-    await ask("Thinking", async (act) => API.reply(await ensureSession(), value, act));
+    if (photos.length) setAttached([]);
+    await ask(photos.length ? "Uploading your photos" : "Thinking", async (act) => {
+      const sid = await ensureSession();
+      if (photos.length) {
+        const files = await prepareImages(photos.map((a) => a.file));
+        await API.storePhotos(sid, files, purpose, req.class ?? null);
+        if (purpose === "training") setRealPhotos((n) => n + files.length);
+      }
+      return API.reply(sid, value, act);
+    });
   }
 
-  async function addPhotos(list: FileList | File[]) {
+  function addPhotos(list: FileList | File[]) {
     const raw = [...list].filter((f) => f.type.startsWith("image/"));
-    if (!raw.length || busy) return;
-    const req = photoRequest ?? { for: "training" as const, class: null };
-    const previews = raw.slice(0, 8).map((f) => URL.createObjectURL(f));
-    push({ from: "me", text: `${raw.length} photo${raw.length > 1 ? "s" : ""}` +
-                            (req.for === "3d" ? ` of ${req.class || "the object"} for 3D models` : ""), photos: previews });
-    await ask("Uploading your photos", async (act) => {
-      const files = await prepareImages(raw);
-      const t = await API.uploadPhotos(await ensureSession(), files, req.for ?? "training", req.class ?? null, act);
-      if ((req.for ?? "training") === "training") setRealPhotos((n) => n + files.length);
-      return t;
-    });
+    if (!raw.length) return;
+    setAttached((all) => [...all, ...raw.map((file) => ({ file, url: URL.createObjectURL(file) }))]);
+    textInput.current?.focus();
+  }
+
+  function detach(url: string) {
+    URL.revokeObjectURL(url);
+    setAttached((all) => all.filter((a) => a.url !== url));
   }
 
   // Trains the setup as shown, with the user's tweaks in the card (the interview only knows its own proposal).
@@ -276,19 +290,34 @@ export default function Interview() {
       </div>
 
       <div className="sticky bottom-0 -mx-4 border-t border-line bg-canvas/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
-        <div className="flex items-end gap-2 rounded-2xl border border-line bg-white p-2 shadow-sm focus-within:border-brand-500">
-          <button onClick={() => fileInput.current?.click()} disabled={!!busy}
-                  className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-muted hover:bg-gray-100 hover:text-ink"
-                  aria-label="Add photos">
-            <ImagePlus className="h-5 w-5" strokeWidth={1.75} />
-          </button>
-          <textarea ref={textInput} rows={1} value={text} onChange={(e) => setText(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                    placeholder={revising ? "What should change?" : "What do you want to forge?"}
-                    className="max-h-40 min-h-11 flex-1 resize-none bg-transparent px-1 py-2.5 text-[16px] outline-none placeholder:text-gray-400" />
-          <Button onClick={() => send()} disabled={!text.trim() || !!busy} className="h-11 w-11 shrink-0 px-0" aria-label="Send">
-            <ArrowUp className="h-5 w-5" />
-          </Button>
+        <div className="rounded-2xl border border-line bg-white p-2 shadow-sm focus-within:border-brand-500">
+          {attached.length > 0 && (
+            <div className="flex flex-wrap gap-2 px-1 pt-1 pb-2">
+              {attached.map((a) => (
+                <div key={a.url} className="relative">
+                  <img src={a.url} alt="" className="h-16 w-16 rounded-lg object-cover ring-1 ring-line" />
+                  <button onClick={() => detach(a.url)} aria-label="Remove photo"
+                          className="absolute -top-1.5 -right-1.5 grid h-5 w-5 place-items-center rounded-full bg-ink text-white shadow hover:bg-gray-700">
+                    <X className="h-3 w-3" strokeWidth={2.5} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex items-end gap-2">
+            <button onClick={() => fileInput.current?.click()}
+                    className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-muted hover:bg-gray-100 hover:text-ink"
+                    aria-label="Add photos">
+              <ImagePlus className="h-5 w-5" strokeWidth={1.75} />
+            </button>
+            <textarea ref={textInput} rows={1} value={text} onChange={(e) => setText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                      placeholder={revising ? "What should change?" : "What do you want to forge?"}
+                      className="max-h-40 min-h-11 flex-1 resize-none bg-transparent px-1 py-2.5 text-[16px] outline-none placeholder:text-gray-400" />
+            <Button onClick={() => send()} disabled={(!text.trim() && !attached.length) || !!busy} className="h-11 w-11 shrink-0 px-0" aria-label="Send">
+              <ArrowUp className="h-5 w-5" />
+            </Button>
+          </div>
         </div>
         <input ref={fileInput} type="file" accept="image/*" multiple hidden
                onChange={(e) => { if (e.target.files) addPhotos(e.target.files); e.target.value = ""; }} />

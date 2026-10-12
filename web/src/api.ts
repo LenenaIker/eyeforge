@@ -188,13 +188,14 @@ function batches(files: File[]): File[][] {
   return out;
 }
 
-async function sendInBatches<T>(url: string, files: File[], fields: Record<string, string>): Promise<T> {
+// storeOnly: every batch only stores its photos (the chat's next message makes the turn, see storePhotos).
+async function sendInBatches<T>(url: string, files: File[], fields: Record<string, string>, storeOnly = false): Promise<T> {
   const parts = batches(files);
   let last: T | undefined;
   for (const [i, part] of parts.entries()) {
     const form = new FormData();
     Object.entries(fields).forEach(([k, v]) => form.append(k, v));
-    const final = i === parts.length - 1;
+    const final = !storeOnly && i === parts.length - 1;
     form.append("more", String(!final));
     if (final) form.append("total", String(files.length));
     part.forEach((f) => form.append("photos", f, f.name));
@@ -203,8 +204,10 @@ async function sendInBatches<T>(url: string, files: File[], fields: Record<strin
   return last as T;
 }
 
-export function uploadPhotos(sid: string, files: File[], purpose: string, cls: string | null, act?: string) {
-  return sendInBatches<Turn>(`/api/interview/${sid}/photos${actQuery(act)}`, files, { purpose, cls: cls || "" });
+// Photos attached to a chat message: stored in the chat (the GPU warms up) without a turn of their own; the message
+// sent next (reply, even with no text) tells the interview about them, so it answers once, seeing both.
+export function storePhotos(sid: string, files: File[], purpose: string, cls: string | null) {
+  return sendInBatches<{ stored: number }>(`/api/interview/${sid}/photos`, files, { purpose, cls: cls || "" }, true);
 }
 
 // session: the interview that wrote the spec, so the job shows what it used.

@@ -166,6 +166,32 @@ def test_interview_asks_for_photos_when_none_fit(tmp_path, template_on):
     assert t.kind == "say" and "3 photos to build 3D models of class pot" in client.seen[-1]
 
 
+
+def test_photos_attached_to_a_message_make_one_turn_with_the_text(tmp_path):
+    """The web stores attached photos without a turn, then sends the text: the model sees both in one turn,
+    the photos' note before the user's words; photos already told about are not told again."""
+    up = tmp_path / "uploads"
+    (up / "training").mkdir(parents=True)
+    (up / "library_x").mkdir()
+    (up / "library_x" / "z.jpg").write_bytes(b"x")  # a library dataset opened by the chat: not attached
+    for name in ("a.jpg", "b.jpg"):
+        (up / "training" / name).write_bytes(b"x")
+    client = Scripted([{"say": "Nice photos. Where is the camera?"}, {"say": "And at night?"},
+                       {"say": "Got the third one."}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), uploads=up)
+    assert s.reply("count bottles on my desk").kind == "say"
+    users = [m["content"] for m in s.messages if m["role"] == "user"]
+    note = next(i for i, c in enumerate(users) if c.startswith("[The user provided 2 photos from their camera"))
+    assert users.index("count bottles on my desk") > note and s.goal == "count bottles on my desk"
+    s.reply("on a shelf")
+    notes = lambda: [m["content"][:30] for m in s.messages  # noqa: E731
+                     if m["role"] == "user" and m["content"].startswith("[The user provided")]
+    assert len(notes()) == 1
+    (up / "training" / "c.jpg").write_bytes(b"x")
+    s.reply("")  # photos sent without text
+    assert notes() == ["[The user provided 2 photos fr", "[The user provided 1 photos fr"]
+    assert "" not in [m["content"] for m in s.messages]
+
 def test_rejected_specs_stop_and_ask_the_user(tmp_path):
     bad = {**GOOD, "classes": [{**GOOD["classes"][0], "size_m": {"measure": "length", "range": [3, 1]}}]}
     client = Scripted([{"spec": bad}] * interview.MAX_INVALID_SPECS + [{"say": "No encuentro unicornios, ¿vale un caballo?"}])

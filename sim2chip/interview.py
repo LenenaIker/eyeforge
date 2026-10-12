@@ -804,16 +804,24 @@ class Session:
         return fn(*args, progress=progress)
 
     def reply(self, user_text: str) -> Turn:
+        """The user's message, with the photos they attached to it: the web stores them in the chat's uploads
+        (more=true, no turn) and then sends the text, maybe empty, so the model answers once, seeing both."""
         if self.finished:
             raise RuntimeError("the interview is over")
+        attached = self._attached()
+        if attached and not user_text.strip():
+            return self._photos_turn(attached)
         self.goal = self.goal or user_text[:400]
         self.replies += 1
         if self.proposed is not None:
-            if is_yes(user_text):
+            if is_yes(user_text) and not attached:
                 self.finished = True
                 return Turn("done", "", self.proposed)
             self.proposed = None
             user_text = f"The user wants changes: {user_text}"
+        # The photos' notes and analysis go first: the user's words stay the last thing the model reads.
+        for folder, count, purpose, cls in attached:
+            self._tell_photos(folder, count, purpose, cls)
         # Datasets the message names are looked at before the model's turn, not left to it; their cards go before
         # the message, which stays the last thing the model reads (after English notes it answered a Spanish user
         # in English, 4 of 9 chats of the library bench, 2026-10-10).
@@ -877,7 +885,15 @@ class Session:
         """The user uploaded (or pointed to) photos, asked for or not: tell the model and continue."""
         if self.finished:
             raise RuntimeError("the interview is over")
+        return self._photos_turn([(folder, count, purpose, cls)])
+
+    def _photos_turn(self, batches: list[tuple[str, int, str, str | None]]) -> Turn:
         self.proposed = None
+        for folder, count, purpose, cls in batches:
+            self._tell_photos(folder, count, purpose, cls)
+        return self._advance()
+
+    def _tell_photos(self, folder: str, count: int, purpose: str, cls: str | None) -> None:
         what = f"to build 3D models of class {cls}" if purpose == "3d" else "from their camera, unsorted"
         use = f"classes[{cls}].assets.photos" if purpose == "3d" else \
             "user_data.raw (with the dataset or folder already there, if any: a list of both)"
@@ -885,7 +901,29 @@ class Session:
                                                          f"{folder}. Use it as {use}.]"})
         if purpose != "3d":
             self._analyse(folder)
-        return self._advance()
+
+    def _attached(self) -> list[tuple[str, int, str, str | None]]:
+        """Photos stored in this chat's uploads (training/, 3d_<class>/) that no note has told the model about
+        yet: [(folder, new photos, purpose, class)]. Counted from the notes, so it holds after a restore."""
+        if self.uploads is None or not Path(self.uploads).is_dir():
+            return []
+        told: dict[str, int] = {}
+        for m in self.messages:
+            if m.get("role") == "user" and isinstance(m.get("content"), str):
+                for n, folder in re.findall(r"^\[The user provided (\d+) photos .*?, in folder (.+?)\. Use it as ",
+                                            m["content"]):
+                    key = str(Path(folder).resolve())
+                    told[key] = told.get(key, 0) + int(n)
+        out = []
+        for sub in sorted(Path(self.uploads).iterdir()):
+            if not sub.is_dir() or not (sub.name == "training" or sub.name.startswith("3d_")):
+                continue
+            have = sum(1 for f in sub.iterdir() if f.is_file() and not f.name.startswith("."))
+            new = have - told.get(str(sub.resolve()), 0)
+            if new > 0:
+                out.append((str(sub), new, "training" if sub.name == "training" else "3d",
+                            None if sub.name == "training" else sub.name[3:]))
+        return out
 
     def choose(self, files: list[str], cls: str) -> Turn:
         """The user confirmed some of the proposed photos for 3D models: gather them in one folder."""
