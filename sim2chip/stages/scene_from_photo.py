@@ -28,7 +28,7 @@ from pathlib import Path
 from ..workspace import cache_key, content_key
 from .base import Context, Stage
 
-VIEWS = 20           # new views per scene and job
+VIEWS = int(os.environ.get("SIM2CHIP_SCENE_VIEWS", 20))  # new views per scene and job (the variable: to measure doses, D.1)
 BUILD_TRIES = 2      # one scene per job (classifying, per class), from up to this many photos: the next one when a
                      # photo makes none. The vision model rated 9/10 a photo the teacher called sun cream that showed
                      # only a figurine (2026-10-11)

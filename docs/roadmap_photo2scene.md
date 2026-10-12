@@ -198,7 +198,8 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 ## Fase D: el reparto medido (~0,5 día)
 
 - [ ] **D.1 Proporción de sintético**: probar varios repartos de imitación frente a extrapolación (100/0, 90/10 y 80/20) y varias dosis de sintético por foto real, con las botellas y con C.0.
-  - Check: tabla en `experiments/NOTES.md`.
+  - Dosis medida (2026-10-12, hoja `compare/D1_dosis.html`): con 8 fotos el sintético ayuda con 10, 20 o 40 vistas (0,70 frente a 0,66); con 30 fotos, 10 vistas 0,812, 20 vistas 0,764 y solo fotos 0,795, dentro del ruido. Con 40 vistas la revisión del VLM rechazó el juego entero en bottles_scene. El reparto imitación/extrapolación no se puede medir hoy: soporte no tiene extrapolación, calle y superficie están apagadas. Pendiente de decisión del usuario.
+  - [x] Check: tabla en `experiments/NOTES.md`.
   - Check: el valor por defecto queda fijado en el código con su porqué.
 
 ## Fase E: Nebius (~1-2 días)

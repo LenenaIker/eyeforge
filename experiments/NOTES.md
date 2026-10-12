@@ -698,3 +698,17 @@ Cambios: acción `{"dataset": id}` con la ficha al día (`library.dataset_card`:
 Final (9 chats): 9 terminan, 0 piden fotos, contenedores reutilizados 9/9, 0 specs rechazados, 0 reintentos de formato, 10-30 s por chat. Queda que Nemotron traduce a veces "papeleras" como `litter` (otra etiqueta del dataset); el resumen lo muestra para que el usuario lo corrija.
 
 Banco general (`interview_bench`, 20 personas sin biblioteca): specs rechazados por chat de 0,85 a 0,05, de 20,8 a 15,0 s y de 0,0082 a 0,0054 $ por chat. Las discrepancias con lo esperado (0,35) son las de antes (sobre todo `background_class` "empty" en el césped).
+
+## Dosis de sintético de photo2scene (D.1, 2026-10-12)
+
+Botellas, contar, ruta de soporte: vistas nuevas por escena y trabajo (`SIM2CHIP_SCENE_VIEWS`), F1 de puntos en el test real, 3 ejecuciones de 5 semillas por brazo (`p2s_test/scripts/arms_d1.sh`; 20 vistas y solo fotos son de B.6).
+
+| Trabajo | Solo fotos | 10 vistas | 20 vistas | 40 vistas |
+|---|---|---|---|---|
+| bottles_scene (30 fotos) | 0,795 (0,794 / 0,819 / 0,771) | 0,812 (0,824 / 0,825 / 0,788) | 0,764 (0,743 / 0,786 / 0,764) | 0,792 (0,796 / 0,769 / 0,812), sin sintético |
+| bottles_few (8 fotos) | 0,661 (0,664 / 0,673 / 0,645) | 0,703 (0,694 / 0,690 / 0,724) | 0,695 (0,684 / 0,686 / 0,714) | 0,689 (0,720 / 0,627 / 0,719) |
+
+- Con 8 fotos el sintético ayuda con cualquier dosis (+0,03 a +0,04); más vistas no dan más.
+- Con 30 fotos, 10 vistas empatan o mejoran un poco a solo fotos y 20 empeoran un poco; todo dentro del ruido de PicoDet (±0,03 a 0,05).
+- Con 40 vistas en bottles_scene la revisión del VLM (`bg_review.py`) rechazó el juego entero (nota 2, unas botellas y termos estirados): la revisión juzga todas las vistas juntas, así que una dosis mayor arriesga perderlas todas. Ese brazo entrenó solo con fotos.
+- El reparto imitación/extrapolación no se pudo medir: la ruta de soporte no tiene extrapolación, y la calle y la superficie están apagadas.
