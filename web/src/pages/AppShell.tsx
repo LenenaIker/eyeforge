@@ -1,5 +1,5 @@
-import { Box, CircleUser, CreditCard, Cpu, Images, KeyRound, LogOut, Menu, MessageSquare, Mountain, Package, Plus,
-         Shapes, X } from "lucide-react";
+import { Box, ChevronDown, CircleUser, CreditCard, Cpu, Images, KeyRound, LogOut, Menu, MessageSquare, Mountain, Package,
+         Plus, Shapes, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate, useOutletContext } from "react-router-dom";
 import { getConfig, getMe, loginUrl, logout, onAccountChange, unlock, usd, type Config, type Me } from "../api";
@@ -90,7 +90,8 @@ export default function AppShell() {
   );
 }
 
-// An item without `to` heads the items marked sub under it (Assets: objects and scenes).
+// An item without `to` heads the items marked sub under it (Assets: objects and scenes); a click folds them away.
+const FOLDED = "eyeforge.assetsFolded";
 type NavItem = { to?: string; label: string; icon: typeof MessageSquare; sub?: boolean };
 const NAV: { title?: string; items: NavItem[] }[] = [
   { items: [{ to: "/app", label: "Chat", icon: MessageSquare }] },
@@ -109,6 +110,12 @@ function Sidebar({ engine, onClose }: { engine?: string; onClose?: () => void })
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const inJob = pathname.startsWith("/app/job/");  // a model's own page belongs to Models
+  const [folded, setFolded] = useState(() => { try { return localStorage.getItem(FOLDED) === "1"; } catch { return false; } });
+  const fold = () => setFolded((f) => {
+    try { localStorage.setItem(FOLDED, f ? "0" : "1"); } catch { /* private window: only this visit */ }
+    return !f;
+  });
+  const inAssets = pathname.startsWith("/app/assets/");
   const link = ({ isActive }: { isActive: boolean }) => cx(
     "flex h-9 items-center gap-2.5 rounded-lg px-3 text-sm font-medium transition-colors",
     isActive ? "bg-brand-50 text-brand-700" : "text-muted hover:bg-gray-100 hover:text-ink");
@@ -122,14 +129,17 @@ function Sidebar({ engine, onClose }: { engine?: string; onClose?: () => void })
       {NAV.map((group, i) => (
         <div key={i} className="mb-2">
           {group.title && <div className="px-3 pt-3 pb-1.5 text-xs font-medium tracking-wide text-muted/80 uppercase">{group.title}</div>}
-          {group.items.map((it) => it.to ? (
+          {group.items.map((it) => it.to ? (!(it.sub && folded) &&
             <NavLink key={it.to} to={it.to} end className={({ isActive }) => cx(link({ isActive: isActive || (inJob && it.to === "/app/models") }), it.sub && "ml-6")}>
               <it.icon className="h-4 w-4" strokeWidth={1.75} /> {it.label}
             </NavLink>
           ) : (
-            <div key={it.label} className="flex h-9 items-center gap-2.5 px-3 text-sm font-medium text-muted">
+            // A folded heading stays marked while one of its pages is open, so the user still sees where they are.
+            <button key={it.label} onClick={fold} aria-expanded={!folded}
+                    className={cx(link({ isActive: folded && inAssets }), "w-full")}>
               <it.icon className="h-4 w-4" strokeWidth={1.75} /> {it.label}
-            </div>
+              <ChevronDown className={cx("ml-auto h-4 w-4 transition-transform", folded && "-rotate-90")} strokeWidth={1.75} />
+            </button>
           ))}
         </div>
       ))}
