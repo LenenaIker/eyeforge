@@ -1,18 +1,21 @@
 // EyeForge runner for the AI-Thinker ESP32-CAM: reads the model from the "model" partition
-// (model.bin from sim2chip's export stage), runs it on the centre square of each camera frame
+// (model.bin from sim2chip's export stage), runs it on each whole camera frame stretched to the
+// model's square input (as the training photos are, sim2chip/stages/ingest.py)
 // and prints one JSON line per frame on the serial port: the label of a classification model,
-// or the count per class of a count model (with where each object is), plus the square the
+// or the count per class of a count model (with where each object is), plus the picture the
 // model saw as a small JPEG. The ROM and bootloader talk at 115200 baud; this program switches
 // to APP_BAUD first thing, so frames and photos fit through the cable.
 //
 // Lines it prints (the web app reads them, web/src/flash/board.ts):
-//   {"event":"ready","firmware":"1.1.0","crc":"1a2b3c4d","task":"classify","input":96,...,"labels":[...]}
+//   {"event":"ready","firmware":"1.2.0","crc":"1a2b3c4d","task":"classify","input":96,"frame":[320,240],...,"labels":[...]}
 //   {"label":"grass","score":0.91,"ms":1210,"scores":{...},"jpeg":"<base64>"}
 //   {"ms":1300,"counts":{"bottle":3},"points":[[0.42,0.25,"bottle"],...],"jpeg":"<base64>"}
 //   {"event":"photo","w":800,"h":600,"bytes":41234,"capture_ms":610,"jpeg":"<base64>"}
 //   {"event":"photo_sent","bytes":41234,"send_ms":720}   (after the photo, for measuring)
-//   {"event":"error","message":"...","firmware":"1.1.0"}
-// Points are 0-1 on the square the model saw (the centre square of the frame).
+//   {"event":"error","message":"...","firmware":"1.2.0"}
+// Points are 0-1 on the picture the model saw, which is the whole frame stretched to a square, so they
+// are also 0-1 on the whole frame and on a photo from "capture" (same field of view). Up to 1.1.0 the
+// model saw the centre square of the frame instead, and the ready line had no "frame".
 //
 // Commands it reads, one per line: "capture [svga|xga|uxga|qxga]" sends one photo of the whole
 // frame at that size (default uxga), then goes back to inference; "threshold 0.45" sets the
@@ -42,14 +45,14 @@
 #include "tensorflow/lite/schema/schema_generated.h"
 #include "camera_pins.h"
 
-#define FIRMWARE_VERSION "1.1.0"  // tools/copy_web.sh copies it into the web's manifest.json
+#define FIRMWARE_VERSION "1.2.0"  // tools/copy_web.sh copies it into the web's manifest.json
 
 constexpr int APP_BAUD = 921600;
 constexpr size_t ARENA = 512 * 1024;  // PSRAM: the internal RAM has no block this big
 constexpr int MAX_CLASSES = 16;
 constexpr int MAX_POINTS = 64;
 constexpr uint32_t HEADER_MIN = 24;
-constexpr int CROP_QUALITY = 80;   // JPEG quality of the square the model saw
+constexpr int VIEW_QUALITY = 80;   // JPEG quality of the picture the model saw
 constexpr int PHOTO_QUALITY = 12;  // esp32-camera's scale: lower is better
 constexpr int IDLE_MS = 100;       // pause between frames, spent listening for commands
 
@@ -108,8 +111,8 @@ static Model loadModel() {
     return m;
 }
 
-// Inference: QVGA RGB565 (320x240; the centre 240x240 is scaled to the model's side). A photo: JPEG
-// from the sensor itself at the size asked for.
+// Inference: QVGA RGB565 (320x240, stretched whole to the model's side). A photo: JPEG from the sensor
+// itself at the size asked for, the same field of view.
 static esp_err_t initCamera(pixformat_t format = PIXFORMAT_RGB565, framesize_t size = FRAMESIZE_QVGA) {
     camera_config_t c = {};
     c.ledc_channel = LEDC_CHANNEL_0;
@@ -145,28 +148,109 @@ static void writeBase64(const uint8_t* d, size_t n) {
     fwrite(buf, 1, k, stdout);
 }
 
-// RGB565 centre square to the model's input (RGB or grey), quantized with the tensor's own params.
-// crop gets the same pixels as the camera gives them (RGB565, or grey for a grey model) for the JPEG.
-static void toInput(const camera_fb_t* fb, TfLiteTensor* t, int side, int channels, uint8_t* crop) {
-    const int square = std::min((int)fb->width, (int)fb->height);
-    const int x0 = (fb->width - square) / 2, y0 = (fb->height - square) / 2;
+// Pillow's bilinear resize (Image.resize(..., BILINEAR)), as ingest stretches the training photos and
+// web/src/live/resize.ts the phone's frames: a triangle filter whose support grows with the reduction,
+// horizontal pass then vertical, fixed-point weights (22 bits) and 8-bit rounding after each pass. The
+// weights depend only on the sizes, so they are worked out once.
+struct Taps {
+    int in = 0, out = 0, ksize = 0;
+    int* start = nullptr;
+    int* size = nullptr;
+    int32_t* w = nullptr;
+};
+constexpr int PREC_BITS = 22;
+
+static void makeTaps(Taps& t, int in, int out) {
+    if (t.in == in && t.out == out) return;
+    free(t.start); free(t.size); free(t.w);
+    const double scale = (double)in / out, fscale = std::max(scale, 1.0), support = fscale;
+    t.in = in; t.out = out; t.ksize = (int)std::ceil(support) * 2 + 1;
+    t.start = (int*)malloc(out * sizeof(int));
+    t.size = (int*)malloc(out * sizeof(int));
+    t.w = (int32_t*)malloc(out * t.ksize * sizeof(int32_t));
+    if (!t.start || !t.size || !t.w) halt("out of memory");
+    double w[64];
+    for (int x = 0; x < out; x++) {
+        const double center = (x + 0.5) * scale;
+        const int lo = std::max((int)(center - support + 0.5), 0);
+        const int n = std::min((int)(center + support + 0.5), in) - lo;
+        double total = 0;
+        for (int i = 0; i < n && i < 64; i++) {
+            const double d = std::fabs((i + lo - center + 0.5) / fscale);
+            w[i] = d < 1 ? 1 - d : 0;
+            total += w[i];
+        }
+        for (int i = 0; i < t.ksize; i++)
+            t.w[x * t.ksize + i] = i < n && total ? (int32_t)(w[i] / total * (1 << PREC_BITS) + 0.5) : 0;
+        t.start[x] = lo;
+        t.size[x] = std::min(n, t.ksize);
+    }
+}
+
+static inline uint8_t clip8(int32_t v) { v >>= PREC_BITS; return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
+
+// The whole RGB565 frame stretched to the model's side (no crop, as ingest does with the training photos)
+// into rgb (side x side x 3, R G B), then quantized into the model's input with the tensor's own params.
+// view gets the same picture for the preview JPEG: B G R (esp32-camera's RGB888 order), or grey.
+static void toInput(const camera_fb_t* fb, TfLiteTensor* t, int side, int channels, uint8_t* view) {
+    static Taps tx, ty;
+    static uint8_t* row = nullptr;   // one frame row as RGB888
+    static uint8_t* tmp = nullptr;   // horizontal pass: side x frame height x 3
+    static uint8_t* rgb = nullptr;   // vertical pass: side x side x 3
+    static int tmpH = 0;
+    const int w = fb->width, h = fb->height;
+    makeTaps(tx, w, side);
+    makeTaps(ty, h, side);
+    if (!rgb) {
+        row = (uint8_t*)heap_caps_malloc(1600 * 3, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        rgb = (uint8_t*)heap_caps_malloc(side * side * 3, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (tmpH != h) {
+        free(tmp);
+        tmp = (uint8_t*)heap_caps_malloc((size_t)side * h * 3, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        tmpH = h;
+    }
+    if (!row || !rgb || !tmp || w > 1600) halt("out of memory");
+    const int32_t half = 1 << (PREC_BITS - 1);
+    for (int y = 0; y < h; y++) {
+        const uint8_t* src = fb->buf + (size_t)y * w * 2;
+        for (int x = 0; x < w; x++) {
+            const uint16_t p = src[2 * x] << 8 | src[2 * x + 1];
+            row[3 * x] = ((p >> 11) & 31) * 255 / 31;
+            row[3 * x + 1] = ((p >> 5) & 63) * 255 / 63;
+            row[3 * x + 2] = (p & 31) * 255 / 31;
+        }
+        uint8_t* out = tmp + (size_t)y * side * 3;
+        for (int x = 0; x < side; x++) {
+            int32_t r = half, g = half, b = half;
+            const uint8_t* s = row + tx.start[x] * 3;
+            const int32_t* k = tx.w + x * tx.ksize;
+            for (int i = 0; i < tx.size[x]; i++, s += 3) { r += s[0] * k[i]; g += s[1] * k[i]; b += s[2] * k[i]; }
+            out[3 * x] = clip8(r); out[3 * x + 1] = clip8(g); out[3 * x + 2] = clip8(b);
+        }
+    }
+    for (int y = 0; y < side; y++) {
+        const int32_t* k = ty.w + y * ty.ksize;
+        for (int x = 0; x < side; x++) {
+            int32_t r = half, g = half, b = half;
+            const uint8_t* s = tmp + ((size_t)ty.start[y] * side + x) * 3;
+            for (int i = 0; i < ty.size[y]; i++, s += side * 3) { r += s[0] * k[i]; g += s[1] * k[i]; b += s[2] * k[i]; }
+            uint8_t* o = rgb + (y * side + x) * 3;
+            o[0] = clip8(r); o[1] = clip8(g); o[2] = clip8(b);
+        }
+    }
     const float scale = t->params.scale;
     const int zero = t->params.zero_point;
     int8_t* d = t->data.int8;
-    for (int y = 0; y < side; y++) {
-        for (int x = 0; x < side; x++) {
-            const int i = ((y0 + y * square / side) * fb->width + x0 + x * square / side) * 2;
-            const uint16_t p = fb->buf[i] << 8 | fb->buf[i + 1];
-            const int rgb[3] = {((p >> 11) & 31) * 255 / 31, ((p >> 5) & 63) * 255 / 63, (p & 31) * 255 / 31};
-            if (channels == 1) {
-                const int grey = (rgb[0] * 77 + rgb[1] * 150 + rgb[2] * 29) >> 8;
-                *d++ = (int8_t)std::clamp((int)lroundf(grey / scale) + zero, -128, 127);
-                *crop++ = (uint8_t)grey;
-            } else {
-                for (int k = 0; k < 3; k++) *d++ = (int8_t)std::clamp((int)lroundf(rgb[k] / scale) + zero, -128, 127);
-                *crop++ = fb->buf[i];
-                *crop++ = fb->buf[i + 1];
-            }
+    for (int i = 0; i < side * side; i++) {
+        const uint8_t* p = rgb + i * 3;
+        if (channels == 1) {
+            const int grey = (p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8;
+            *d++ = (int8_t)std::clamp((int)lroundf(grey / scale) + zero, -128, 127);
+            *view++ = (uint8_t)grey;
+        } else {
+            for (int k = 0; k < 3; k++) *d++ = (int8_t)std::clamp((int)lroundf(p[k] / scale) + zero, -128, 127);
+            *view++ = p[2]; *view++ = p[1]; *view++ = p[0];
         }
     }
 }
@@ -320,13 +404,13 @@ extern "C" void app_main() {
     if (!output) halt("model outputs do not match its labels");
     const int grid = pointsOut ? (int)lroundf(sqrtf((float)(pointsOut->bytes / model.classes))) : 0;
     float* probs = grid ? (float*)heap_caps_malloc(pointsOut->bytes * sizeof(float), MALLOC_CAP_SPIRAM) : nullptr;
-    const size_t cropBytes = (size_t)model.side * model.side * (channels == 1 ? 1 : 2);
-    uint8_t* crop = (uint8_t*)heap_caps_malloc(cropBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!crop || (grid && !probs)) halt("out of memory");
+    const size_t viewBytes = (size_t)model.side * model.side * (channels == 1 ? 1 : 3);
+    uint8_t* view = (uint8_t*)heap_caps_malloc(viewBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!view || (grid && !probs)) halt("out of memory");
     float threshold = 0.5f;  // sim2chip/counting.py THRESHOLD; the web sends the model's own
 
     printf("{\"event\":\"ready\",\"firmware\":\"" FIRMWARE_VERSION "\",\"crc\":\"%08lx\",\"task\":\"%s\",\"input\":%d,"
-           "\"channels\":%d,\"grid\":%d,\"arena\":%u,\"labels\":[",
+           "\"frame\":[320,240],\"channels\":%d,\"grid\":%d,\"arena\":%u,\"labels\":[",
            (unsigned long)model.crc, model.task == 0 ? "classify" : "count", model.side, channels, grid,
            (unsigned)interpreter.arena_used_bytes());
     for (int c = 0; c < model.classes; c++) printf("%s\"%s\"", c ? "," : "", model.labels[c]);
@@ -341,7 +425,7 @@ extern "C" void app_main() {
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
-        toInput(fb, input, model.side, channels, crop);
+        toInput(fb, input, model.side, channels, view);
         esp_camera_fb_return(fb);
         const int64_t t0 = esp_timer_get_time();
         if (interpreter.Invoke() != kTfLiteOk) halt("inference failed");
@@ -378,8 +462,8 @@ extern "C" void app_main() {
         }
         uint8_t* jpg = nullptr;
         size_t jpgLen = 0;
-        if (fmt2jpg(crop, cropBytes, model.side, model.side, channels == 1 ? PIXFORMAT_GRAYSCALE : PIXFORMAT_RGB565,
-                    CROP_QUALITY, &jpg, &jpgLen)) {
+        if (fmt2jpg(view, viewBytes, model.side, model.side, channels == 1 ? PIXFORMAT_GRAYSCALE : PIXFORMAT_RGB888,
+                    VIEW_QUALITY, &jpg, &jpgLen)) {
             printf(",\"jpeg\":\"");
             writeBase64(jpg, jpgLen);
             printf("\"");

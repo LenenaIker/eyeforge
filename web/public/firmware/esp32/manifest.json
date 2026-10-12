@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "firmware": "1.1.0",
+  "firmware": "1.2.0",
   "board": "ESP32-CAM",
   "hardware": ["esp32cam"],
   "chip": "ESP32",
