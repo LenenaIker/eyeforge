@@ -7,6 +7,12 @@ forbidden by the system prompt, or a repeat of something already answered.
 
     python experiments/interview_bench/bench.py --variants A,B,C --reps 2
     python experiments/interview_bench/bench.py --report       # table of the runs on disk
+    python experiments/interview_bench/bench.py --variants S,U,K,Q --reps 3   # model arms (2026-10-12)
+
+Model arms: "model" replaces Nemotron 3 Super for every call of the Session; "chat_model" splits the work, the
+other model holds the conversation and, when it wants to propose the setup, Nemotron (the Session's model)
+writes the structured spec from the same conversation (SPLIT_NOTE). The split lives only here, in BenchClient:
+the product is unchanged.
 
 Per run: questions before the first spec, user turns, rejected specs, format retries, truncated answers,
 forbidden or repeated questions, spec mismatches against the persona, seconds and dollars of the interview.
@@ -35,7 +41,14 @@ OUT = ROOT / "runs" / "interview_bench"
 MODEL = "nvidia/nemotron-3-super-120b-a12b"
 USER_MODEL = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 JUDGE_MODEL = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+ULTRA = "nvidia/Nemotron-3-Ultra-550b-a55b"
+KIMI = "moonshotai/Kimi-K2.6"
+QWEN = "Qwen/Qwen3.5-397B-A17B"
 MAX_USER_TURNS = 14
+# Reasoning models other than Super: more room, so a long reasoning is not cut (finish "length") and a slow answer
+# is not retried at the client's 120 s.
+ROOMY = {"max_tokens": 16384}
+LONG_TIMEOUT = 300.0
 
 OFF = {"enable_thinking": False}
 LOW = {"enable_thinking": True, "low_effort": True}
@@ -62,7 +75,16 @@ VARIANTS = {
     "CT": {"desc": "C with T 1.0, top_p 0.95",
            "interview": {"max_tokens": 8192, "temperature": 1.0, "top_p": 0.95, "chat_template_kwargs": OFF},
            "short": OFF},
+    # Model arms, 2026-10-12 (docs/tareas_usuario_2026-10-12.md, task 10).
+    "S": {"desc": "Nemotron 3 Super for everything (production, code of 2026-10-12)"},
+    "U": {"desc": "Nemotron 3 Ultra for everything, max 16384", "model": ULTRA, "interview": ROOMY},
+    "K": {"desc": "Kimi K2.6 converses, Nemotron 3 Super writes the spec", "chat_model": KIMI, "chat": ROOMY},
+    "Q": {"desc": "Qwen3.5-397B converses, Nemotron 3 Super writes the spec", "chat_model": QWEN, "chat": ROOMY},
 }
+
+SPLIT_NOTE = ("The setup is ready to propose. Write the spec action now from everything said above, following "
+              "the spec rules of the system prompt (a \"say\" intro in the user's language may go with it). Reply "
+              "with the JSON object only.")
 
 
 class BenchClient:
@@ -75,11 +97,34 @@ class BenchClient:
 
     def chat(self, messages, model, purpose, temperature=0.2, max_tokens=2048, json_mode=False, timeout=None,
              retries=None, thinking=None):
+        chat_model = self.variant.get("chat_model")
+        if purpose != "interview" or not chat_model:
+            return self._call(messages, model, purpose, temperature, max_tokens, json_mode, timeout, retries,
+                              thinking)
+        # Split arm: the other model converses; a spec proposal is rewritten by Nemotron from the conversation.
+        text = self._call(messages, chat_model, purpose, temperature, max_tokens, json_mode, timeout, retries,
+                          thinking, role="chat")
+        try:
+            action = parse_json(text)
+        except ValueError:
+            return text
+        if not (isinstance(action, dict) and "spec" in action):
+            return text
+        return self._call(messages + [{"role": "user", "content": SPLIT_NOTE}], model, purpose, temperature,
+                          max_tokens, json_mode, timeout, retries, thinking, role="spec")
+
+    def _call(self, messages, model, purpose, temperature, max_tokens, json_mode, timeout, retries, thinking,
+              role=None):
         body = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
         if thinking is not None:
             body["chat_template_kwargs"] = {"enable_thinking": thinking}
-        if purpose == "interview":
+        if role == "chat":
+            body |= self.variant.get("chat", {})
+            timeout = LONG_TIMEOUT
+        elif purpose == "interview":
             body |= self.variant.get("interview", {})
+            if "model" in self.variant:
+                timeout = LONG_TIMEOUT
         elif "short" in self.variant:
             body.pop("chat_template_kwargs", None)
             if self.variant["short"]:
@@ -91,7 +136,7 @@ class BenchClient:
         choice = resp["choices"][0]
         u = resp.get("usage") or {}
         self.calls.append({
-            "purpose": purpose, "latency_s": round(time.time() - t0, 2),
+            "purpose": purpose, "model": model, "role": role, "latency_s": round(time.time() - t0, 2),
             "prompt": u.get("prompt_tokens") or 0, "completion": u.get("completion_tokens") or 0,
             "reasoning": (u.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0,
             "cached": (u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0,
@@ -154,10 +199,13 @@ def simulated_user(base: Client, persona, seen: list[dict], prompt: str) -> str:
 
 
 def run_one(persona, variant_name: str, rep: int) -> dict:
-    base = Client()
+    # The simulated user and the judge are logged too, for the money spent on the bench.
+    bench_log = OUT / variant_name / f"{persona['id']}_{rep}.bench.jsonl"
+    bench_log.unlink(missing_ok=True)
+    base = Client(usage_log=bench_log)
     client = BenchClient(base, VARIANTS[variant_name])
     uploads = FIXTURES / "uploads" / f"{variant_name}_{persona['id']}_{rep}"
-    session = interview.Session(client, MODEL, CATS, scene_check=interview.check_scene, photo_ranker=ranker,
+    session = interview.Session(client, VARIANTS[variant_name].get("model", MODEL), CATS, scene_check=interview.check_scene, photo_ranker=ranker,
                                 uploads=uploads, scene_profiler=profiler(persona))
     facts, lang = fx(persona["facts"]), persona["lang"]
     user_prompt = USER_PROMPT.format(facts=facts, lang=lang)
@@ -229,6 +277,8 @@ def run_one(persona, variant_name: str, rep: int) -> dict:
         "messages": session.messages,
     }
     rec["judge"] = judge(base, persona, rec)
+    rec["bench_calls"] = [json.loads(x) for x in bench_log.read_text().splitlines()] if bench_log.exists() else []
+    bench_log.unlink(missing_ok=True)
     return rec
 
 
@@ -294,20 +344,35 @@ def judge(base: Client, persona, rec: dict) -> list[dict]:
 
 
 def price(calls: list[dict], prices: dict) -> float:
-    p = prices.get(MODEL, {"input": 0, "output": 0})
-    return sum(c["prompt"] * p["input"] + c["completion"] * p["output"] for c in calls)
+    """Dollars of the calls, each at its own model's price (runs before 2026-10-12 did not log it: Super)."""
+    zero = {"input": 0, "output": 0}
+    return sum(c["prompt"] * prices.get(c.get("model") or MODEL, zero)["input"]
+               + c["completion"] * prices.get(c.get("model") or MODEL, zero)["output"] for c in calls)
+
+
+def bench_price(rec: dict, prices: dict) -> float:
+    """Dollars of the simulated user and the judge (not part of an interview's cost, part of the bench's)."""
+    return price([{"model": c["model"], "prompt": c.get("prompt_tokens") or 0,
+                   "completion": c.get("completion_tokens") or 0} for c in rec.get("bench_calls", [])], prices)
 
 
 def row(rec: dict, prices: dict) -> dict:
     iv = [c for c in rec["calls"] if c["purpose"] == "interview"]
     verdicts = [v.get("verdict") for v in rec["judge"]]
+    asks = [s["text"] for s in rec["shown"] if s["kind"] in ("say", "photos")]
     return {"outcome": rec["outcome"], "q_before_spec": rec["questions_before_spec"],
             "turns": rec["user_turns"], "rejected": rec["rejected_specs"], "format": rec["format_retries"],
             "truncated": sum(c["finish"] == "length" for c in iv), "forbidden": verdicts.count("forbidden"),
             "repeat": verdicts.count("repeat"), "mismatch": len([m for m in rec["mismatches"] if m != "no spec"]),
             "reasoning": sum(c["reasoning"] for c in iv), "calls": len(iv),
             "llm_s": sum(c["latency_s"] for c in rec["calls"] if not c["purpose"].startswith("bench")),
-            "usd": price(rec["calls"], prices)}
+            "usd": price(rec["calls"], prices), "wall_s": rec.get("wall_s", 0),
+            "confirm_no": rec.get("confirm_rejections", 0),
+            # Length of what the user is asked to read and answer: long, technical messages are harder for a
+            # non-expert (same measure for every arm, no model involved).
+            "ask_chars": sum(map(len, asks)) / len(asks) if asks else 0,
+            "spec_calls": sum(c.get("role") == "spec" for c in iv),
+            "bench_usd": bench_price(rec, prices)}
 
 
 def report(variants: list[str] | None = None) -> None:
@@ -315,7 +380,8 @@ def report(variants: list[str] | None = None) -> None:
     runs = [json.loads(f.read_text()) for f in sorted(OUT.glob("*/*.json"))]
     names = variants or sorted({r["variant"] for r in runs})
     print(f"{'var':5} {'n':>3} {'done':>5} {'q<spec':>6} {'turns':>5} {'rej':>4} {'fmt':>4} {'trunc':>5} "
-          f"{'forb':>4} {'rep':>4} {'mism':>4} {'reas/call':>9} {'s/run':>6} {'$/run':>7}")
+          f"{'forb':>4} {'rep':>4} {'mism':>4} {'reas/call':>9} {'no':>4} {'chars':>5} {'s/run':>6} {'$/run':>7} "
+          f"{'bench$':>7}")
     for v in names:
         rows = [row(r, prices) for r in runs if r["variant"] == v]
         if not rows:
@@ -328,7 +394,10 @@ def report(variants: list[str] | None = None) -> None:
         print(f"{v:5} {n:>3} {done:>5} {sum(qs) / max(1, len(qs)):>6.2f} {mean('turns'):>5.2f} "
               f"{mean('rejected'):>4.2f} {mean('format'):>4.2f} {mean('truncated'):>5.2f} {mean('forbidden'):>4.2f} "
               f"{mean('repeat'):>4.2f} {mean('mismatch'):>4.2f} {sum(r['reasoning'] for r in rows) / calls:>9.0f} "
-              f"{mean('llm_s'):>6.1f} {mean('usd'):>7.4f}")
+              f"{mean('confirm_no'):>4.2f} {mean('ask_chars'):>5.0f} "
+              f"{mean('llm_s'):>6.1f} {mean('usd'):>7.4f} {mean('bench_usd'):>7.4f}")
+    spent = sum(row(r, prices)["usd"] + row(r, prices)["bench_usd"] for r in runs if r["variant"] in names)
+    print(f"spent on these runs (interviews + simulated user + judge): {spent:.2f} $")
     print()
     for v in names:
         for r in runs:

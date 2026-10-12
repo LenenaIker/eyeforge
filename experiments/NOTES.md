@@ -712,3 +712,21 @@ Botellas, contar, ruta de soporte: vistas nuevas por escena y trabajo (`SIM2CHIP
 - Con 30 fotos, 10 vistas empatan o mejoran un poco a solo fotos y 20 empeoran un poco; todo dentro del ruido de PicoDet (±0,03 a 0,05).
 - Con 40 vistas en bottles_scene la revisión del VLM (`bg_review.py`) rechazó el juego entero (nota 2, unas botellas y termos estirados): la revisión juzga todas las vistas juntas, así que una dosis mayor arriesga perderlas todas. Ese brazo entrenó solo con fotos.
 - El reparto imitación/extrapolación no se pudo medir: la ruta de soporte no tiene extrapolación, y la calle y la superficie están apagadas.
+
+## Entrevista: Super, Ultra o conversación partida (2026-10-12)
+
+Banco `experiments/interview_bench/` (tarea 10 de `docs/tareas_usuario_2026-10-12.md`), brazos nuevos S, U, K y Q. En K y Q otro modelo lleva la conversación y, cuando quiere proponer el setup, Nemotron 3 Super escribe el spec desde la misma conversación (solo en el banco, `BenchClient`; el producto no cambia). 6 personas (traffic, pots, boar, bees, cat, chickens) x 3 repeticiones, 18 entrevistas por brazo. Hoja: `runs/p2s_test/compare/entrevista_modelos.html` (`sheet.py`). Gasto total 3,52 $.
+
+| Brazo | terminadas | spec correcto | turnos | prohibidas | s de modelo | $ |
+|---|---|---|---|---|---|---|
+| S: Nemotron 3 Super (producción) | 18/18 | 72 % | 2,11 | 0,06 | 22 | 0,008 |
+| U: Nemotron 3 Ultra | 9/18 | 28 % | 3,94 | 0,33 | 45 | 0,071 |
+| K: Kimi K2.6 conversa, Super spec | 18/18 | 78 % | 1,83 | 0,06 | 157 | 0,071 |
+| Q: Qwen3.5-397B conversa, Super spec | 18/18 | 72 % | 2,44 | 0,56 | 69 | 0,044 |
+
+- Super no sale peor que los brazos partidos en lo medible, y es el más rápido y barato. La ventaja de K es 1 entrevista de 18 (ruido) a 7 veces la latencia y 9 veces el coste.
+- Ultra se sale del papel ("soy un modelo de lenguaje"), entra en bucles de confirmación, deforma el alemán y manda clases como texto. Su primera repetición parecía igual que Super: hace falta repetir.
+- Qwen pregunta lo prohibido (luz, tamaño, rasgos de la gata) y dos veces convirtió el cruce en contar.
+- Fallos de todos los brazos (prompt o código): "solo mis fotos" sale con `frames 2000` (8 de 12 en la gatera), abejas sin `names`, fotos etiquetadas tomadas como crudas.
+- Fallo del producto: `_english_queries` lanza AttributeError con `"classes": ["car", ...]`; debería ser spec inválido. Sin tocar.
+- Decide el usuario; propuesta: mantener Super. Límite: usuarios simulados cooperativos, no reproduce lo que el usuario vio en la web.
