@@ -204,11 +204,11 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 
 ## Fase E: Nebius (~1-2 días)
 
-- [ ] **E.1 Kits**: entornos y pesos de cada paso (SAM 3, SAM 3D Objects, MoGe-2, Qwen-Image-Edit con Lightning y Object-Remover, Isaac) en el bucket de caché, con el sistema actual (tar zstd).
-- [ ] **E.2 Qwen en la L40S**: bf16 si cabe en los 48 GB; si no, nf4.
-  - Check: memoria y tiempo anotados.
-- [ ] **E.3 De principio a fin en Nebius**: un trabajo con soporte y otro con calle.
-  - Check: tiempo y coste por escena anotados, y la escena reutilizada en el segundo trabajo del mismo dataset.
+- [x] **E.1 Kits**: entornos y pesos de cada paso (SAM 3, SAM 3D Objects, MoGe-2, Qwen-Image-Edit con Lightning y Object-Remover, Isaac) en el bucket de caché, con el sistema actual (tar zstd). Hecho 2026-10-12: `scripts/scene_kits.py` y `sim2chip/photo2scene/cloud.py`.
+- [x] **E.2 Qwen en la L40S**: bf16 si cabe en los 48 GB; si no, nf4.
+  - Check: memoria y tiempo anotados. bf16 no cabe (32 GB de RAM del nodo); nf4: 31-33 s por foto, 19 GB de GPU (`experiments/NOTES.md`).
+- [x] **E.3 De principio a fin en Nebius**: un trabajo con soporte y otro con calle.
+  - Check: tiempo y coste por escena anotados, y la escena reutilizada en el segundo trabajo del mismo dataset. Soporte: 21,8 min y 0,34 $ al construir, 7,6 min y 0,20 $ al reutilizar. Calle sin probar (apagada, C.6). Hoja `p2s_test/compare/E_nebius.html`.
 
 ## Fase F: web (~1 día)
 

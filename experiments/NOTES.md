@@ -730,3 +730,32 @@ Banco `experiments/interview_bench/` (tarea 10 de `docs/tareas_usuario_2026-10-1
 - Fallos de todos los brazos (prompt o código): "solo mis fotos" sale con `frames 2000` (8 de 12 en la gatera), abejas sin `names`, fotos etiquetadas tomadas como crudas.
 - Fallo del producto: `_english_queries` lanza AttributeError con `"classes": ["car", ...]`; debería ser spec inválido. Sin tocar.
 - Decide el usuario; propuesta: mantener Super. Límite: usuarios simulados cooperativos, no reproduce lo que el usuario vio en la web.
+
+## photo2scene en Nebius (fase E, 2026-10-12)
+
+Kits y pesos (E.1): `scripts/scene_kits.py` empaqueta con conda-pack los dos entornos conda de photo2scene (mesh: SAM 3D Objects, MoGe-2, pyrender, 7,6 GB en zstd; erase: Qwen-Image-Edit, 3,4 GB) y sube al bucket de caché los pesos (SAM 3D 13,1 GB, MoGe-2, LaMa, DINOv2, Qwen en nf4 18,2 GB, y los repos de Hugging Face como espejo de su caché). `sim2chip/photo2scene/cloud.py` los baja la primera vez que un paso los pide y corre el paso sin internet. SAM 3 y la VLM usan el kit `teacher` de siempre; Isaac, la imagen de Isaac.
+
+Qwen en la L40S (E.2), 3 fotos de botellas, Lightning de 4 pasos:
+
+| Configuración | Cargar | s por foto | GPU pico | RAM pico |
+|---|---|---|---|---|
+| nf4 guardado, descarga a CPU (elegida) | 22 s | 31-33 | 19 GB | 27 GB |
+| nf4 guardado, todo en GPU | 235 s | 12-19 | 24 GB | 14 GB |
+| nf4 cuantizando al cargar (bf16 del repo) | 412 s | 24-35 | 19 GB | 33 GB |
+| transformer bf16 + encoder nf4, en GPU | sin memoria en GPU | | 44 GB | |
+| todo bf16, descarga a CPU | muere por RAM (exit -9) | | | 33 GB |
+
+- bf16 no cabe: el nodo `1gpu-8vcpu-32gb` tiene 32 GB de RAM y el modelo pesa 58 GB. Se queda nf4, como en la 3090, guardado ya cuantizado (`erase_qwen.py --save-nf4`): misma imagen bit a bit que cuantizar al cargar.
+
+De principio a fin (E.3), bottles_few (8 fotos, contar), ruta de soporte, foto 41:
+
+| | scene_from_photo | trabajo entero | coste | F1 test real |
+|---|---|---|---|---|
+| 3090 local | 450 s | | | 0,695 (20 vistas, 3 ejecuciones) |
+| Nebius, construye la escena | 1306 s (535 de bajar kits y pesos) | 35,0 min | 0,90 $ | 0,682 ± 0,019 |
+| Nebius, reutiliza la escena | 454 s (201 del kit mesh) | 21,4 min | 0,55 $ | 0,743 ± 0,031 |
+
+- Escena en Nebius: unos 0,34 $ al construirla y 0,20 $ al reutilizarla. El segundo trabajo no borra ni mallea: solo recoloca, renderiza y revisa con su semilla.
+- Los pasos van algo más lentos que en la 3090 (Isaac 174 s frente a 133; S.4 assets 158 frente a 14, por cargar SAM 3 desde un disco lento). Lo que más pesa es descomprimir el kit mesh en el nodo (168 s; 18 s en local).
+- Calle (`SIM2CHIP_STREET_ROUTE=1`): no probada; está apagada por decisión del usuario y no aporta nada a medir aquí.
+- Gasto de la fase: unos 6,4 $ en 10 trabajos (4 fallaron por cosas que no se veían en local: diffusers pregunta al Hub con un modelo por id aun sin conexión, faltaban las notas .md de los pasos en el código enviado, SAM 3D baja MoGe v1 por su cuenta, y `--from` tras cancelar dejó etapas sin sus salidas).
