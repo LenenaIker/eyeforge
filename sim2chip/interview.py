@@ -1150,7 +1150,9 @@ class Session:
                    + json.dumps(found or "nothing found, try other words"))
 
     def _on_spec(self, action: dict) -> Turn | None:
-        if isinstance(action["spec"], dict):
+        # The fixers read classes as objects; a spec with bare class names (seen in the interview bench,
+        # 2026-10-12) goes straight to the check, which tells the model it is invalid.
+        if isinstance(action["spec"], dict) and all(isinstance(c, dict) for c in action["spec"].get("classes") or []):
             self._english_queries(action["spec"])
             _drop_background_class(action["spec"])
             self._reuse_label_names(action["spec"])

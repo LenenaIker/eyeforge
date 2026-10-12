@@ -203,6 +203,13 @@ def test_rejected_specs_stop_and_ask_the_user(tmp_path):
     assert "size_m.range" in s.transcript.read_text()  # rejections are kept for later
 
 
+def test_bare_class_names_are_sent_back_not_a_crash():
+    """Seen in the interview bench (2026-10-12): "classes": ["car", ...] broke the turn."""
+    client = Scripted([{"spec": {**GOOD, "classes": ["cow"]}}, {"say": "ok"}])
+    t = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62})).reply("cows")
+    assert t.kind == "say" and "classes[0]" in client.seen[-1]
+
+
 def test_endless_rejections_end_the_interview():
     bad = {**GOOD, "classes": [{**GOOD["classes"][0], "size_m": {"measure": "length", "range": [3, 1]}}]}
     client = Scripted([{"spec": bad}] * (interview.MAX_INVALID_SPECS * 2))
