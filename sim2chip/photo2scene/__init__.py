@@ -63,8 +63,10 @@ class Flow:
         self.d.mkdir(parents=True, exist_ok=True)
         (self.d / "logs").mkdir(exist_ok=True)
 
-    def run(self, step: str, python: str, script: str, args: list, outputs: list[str] = (), ok=(0,)) -> int:
-        """One step script, unless all its outputs exist. Returns its exit code; raises when it is not in ok."""
+    def run(self, step: str, python: str, script: str, args: list, outputs: list[str] = (), ok=(0,),
+            must: bool = True) -> int:
+        """One step script, unless all its outputs exist. Returns its exit code; raises when it is not in ok, unless
+        the step is a best effort (must=False: a retry that fills what a first run left out)."""
         if outputs and all((self.d / o).exists() for o in outputs):
             return 0
         env = {**os.environ, **{k: v for k in PASS_ON if (v := config.env(k))}, "PYOPENGL_PLATFORM": "egl",
@@ -83,7 +85,7 @@ class Flow:
         secs = round(time.time() - t0, 1)
         self.steps[step] = {"code": code, "seconds": secs}
         self.log(f"  {step}: exit {code} in {secs:.0f} s")
-        if code not in ok:
+        if code not in ok and must:
             raise RuntimeError(f"{step} failed (exit {code}): {logf.read_text()[-800:]}")
         return code
 
@@ -125,7 +127,9 @@ def build(flow: Flow, photo: Path, targets: list[str], sunny: bool = False) -> d
     flow.run("S.4_meshes", "mesh", "flow_sam3d.py", mesh, ["assets/scene_graph.json"])
     assets = flow.json("assets.json")["assets"]
     if not all((d / a["mesh"]).exists() for a in assets):
-        flow.run("S.4_meshes_retry", "mesh", "flow_sam3d.py", mesh)  # fills what a GPU memory failure left out
+        flow.run("S.4_meshes_retry", "mesh", "flow_sam3d.py", mesh, must=False)  # fills what a GPU memory failure
+        # left out; when it fails again, the things without a mesh are left out (a sign twice out of GPU memory,
+        # 2026-10-12)
     made = [a for a in assets if (d / a["mesh"]).exists()]
     if not any(a["role"] == "target" for a in made):
         raise Stop("none of the user's classes could be taken out of the photo as a 3D model")

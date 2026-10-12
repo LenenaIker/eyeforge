@@ -108,7 +108,7 @@ def build(flow: Flow, photo: Path, targets: list[str]) -> dict:
     flow.run("1.4b_meshes", "mesh", "flow_sam3d.py", mesh, ["assets/scene_graph.json"])
     assets = flow.json("assets.json")["assets"]
     if not all((d / a["mesh"]).exists() for a in assets):
-        flow.run("1.4b_meshes_retry", "mesh", "flow_sam3d.py", mesh)
+        flow.run("1.4b_meshes_retry", "mesh", "flow_sam3d.py", mesh, must=False)  # what fails again is left out
     if flow.run("1.4_camera", "mesh", "flow_camera.py", ["--dir", d], ["camera.json"], ok=(0, 3)) == 3:
         raise Stop("the camera does not fit the route: " + "; ".join(flow.json("camera.json")["why"]))
     # 1.3b, 1.3c The surroundings: SAM 3 candidates on the erased photo, gates in code, the VLM per candidate.
@@ -125,7 +125,8 @@ def build(flow: Flow, photo: Path, targets: list[str]) -> dict:
         n = len(np.load(d / "env_masks.npz")["phrases"])
         have = lambda: {int(p.stem) for p in (d / "meshes/sam3d").glob("[0-9][0-9][0-9].glb")}  # noqa: E731
         if len(have()) < n:
-            flow.run(f"1.5a_sam3d_retry_{attempt}", "mesh", "flow_sam3d.py", ["--dir", d, "--voxels", "sam3d"])
+            flow.run(f"1.5a_sam3d_retry_{attempt}", "mesh", "flow_sam3d.py", ["--dir", d, "--voxels", "sam3d"],
+                     must=False)
         missing = sorted(set(range(n)) - have())
         if not missing:
             break
