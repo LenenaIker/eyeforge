@@ -1,16 +1,18 @@
 // "Flash to my ESP32-CAM": writes our firmware and the job's model.bin onto the board over USB, then shows what the
 // board sees, live, on the same cable. One tap: the device picker opens first (browsers only allow it straight
-// from a tap), then the files download and everything is written in one go (about 80 s on a phone).
+// from a tap), then the files download, the board says which firmware and model it runs, and only what differs
+// is written (everything, about 80 s on a phone; the model alone, less). "Flash everything" skips the check.
 import { Activity, AlertTriangle, Check, Cpu, Loader2, RotateCcw, Square, Usb, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { parseLine, type BoardEvent } from "../flash/board";
-import { flash, flashRoute, FlashError, loadFiles, pickPort, watch, type Files, type Progress } from "../flash/flasher";
+import { logLine, modelCrc, parseLine, planWrite, type BoardEvent, type OnBoard } from "../flash/board";
+import { flash, flashRoute, FlashError, loadFiles, pickPort, probe, watch, type Files, type Progress, type Watching } from "../flash/flasher";
 import { Button, Notice, cx } from "./ui";
 
 type State =
   | { step: "idle" }
   | { step: "picking" }
   | { step: "loading" }
+  | { step: "checking" }
   | { step: "flashing"; progress: Progress }
   | { step: "watching" }
   | { step: "stopped"; error?: string }
@@ -20,18 +22,23 @@ type Live = { ready?: { input: number; labels: string[] }; last?: BoardEvent; er
 
 const MAX_LOG = 400;
 
-export function FlashCard({ job, hardware, modelUrl }: { job: string; hardware: string; modelUrl: string }) {
+// port: a board already picked (the live test's "Flash this model first"); onBoard: what that board said it runs
+// (no need to ask again); onFlashed: what to do once written, instead of watching the board here.
+export function FlashCard({ job, hardware, modelUrl, port: given, onBoard: known, onFlashed, label }: {
+  job: string; hardware: string; modelUrl: string; port?: any; onBoard?: OnBoard; onFlashed?: () => void; label?: string;
+}) {
   const [state, setState] = useState<State>({ step: "idle" });
   const [live, setLive] = useState<Live>({ frames: 0 });
   const [log, setLog] = useState<string[]>([]);
+  const [note, setNote] = useState<string | null>(null);  // what the last flash wrote, when not everything
   const port = useRef<any>(null);
-  const files = useRef<Files | null>(null);
-  const stopWatch = useRef<(() => Promise<void>) | null>(null);
+  const files = useRef<(Files & { model: Uint8Array }) | null>(null);
+  const watching = useRef<Watching | null>(null);
   const route = flashRoute();
 
-  const addLog = (s: string) => setLog((l) => [...l.slice(-MAX_LOG + 1), s]);
+  const addLog = (s: string) => setLog((l) => [...l.slice(-MAX_LOG + 1), logLine(s)]);
 
-  useEffect(() => () => { stopWatch.current?.(); }, []);
+  useEffect(() => () => { watching.current?.stop(); }, []);
   useEffect(() => { files.current = null; }, [job, modelUrl]);
 
   // Keep the screen on and warn before leaving while the board is being written.
@@ -47,26 +54,27 @@ export function FlashCard({ job, hardware, modelUrl }: { job: string; hardware: 
   const startWatch = async () => {
     setLive({ frames: 0 });
     try {
-      stopWatch.current = await watch(port.current, files.current?.manifest.monitorBaud ?? 115200, (line) => {
+      watching.current = await watch(port.current, files.current?.manifest.monitorBaud ?? 115200, (line) => {
         addLog(line);
         const ev = parseLine(line);
         if (ev.kind === "ready") setLive((v) => ({ ...v, ready: { input: ev.input, labels: ev.labels }, error: undefined }));
         else if (ev.kind === "error") setLive((v) => ({ ...v, error: ev.message }));
         else if (ev.kind === "label" || ev.kind === "counts") setLive((v) => ({ ...v, last: ev, error: undefined, frames: v.frames + 1 }));
-      }, (error) => { stopWatch.current = null; setState({ step: "stopped", error }); });
+      }, (error) => { watching.current = null; setState({ step: "stopped", error }); });
       setState({ step: "watching" });
     } catch (e) {
       setState({ step: "failed", error: (e as Error).message, reset: false });
     }
   };
 
-  const start = async () => {
-    await stopWatch.current?.();
-    stopWatch.current = null;
+  const start = async (force = false) => {
+    await watching.current?.stop();
+    watching.current = null;
     setLog([]);
+    setNote(null);
     setState({ step: "picking" });
     try {
-      port.current = await pickPort();
+      port.current = given ?? await pickPort();
       setState({ step: "loading" });
       try {
         files.current ??= await loadFiles(hardware, modelUrl);
@@ -74,10 +82,26 @@ export function FlashCard({ job, hardware, modelUrl }: { job: string; hardware: 
         if (e instanceof FlashError) throw e;
         throw new FlashError(`Could not get the files to write: ${(e as Error).message}. Check the connection and try again.`, "pick");
       }
-      const t0 = Date.now();
-      await flash(port.current, files.current, (progress) => setState({ step: "flashing", progress }), addLog);
-      addLog(`written in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
-      await startWatch();
+      const f = files.current;
+      let onBoard: OnBoard = null;
+      if (!force) {
+        setState({ step: "checking" });
+        onBoard = known !== undefined ? known : await probe(port.current, f.manifest.monitorBaud).catch(() => null);
+        addLog(onBoard ? `board runs firmware ${onBoard.firmware ?? "?"}, model ${onBoard.crc ?? "none"}` : "board did not say what it runs");
+      }
+      const plan = planWrite(onBoard, f.manifest.firmware, modelCrc(f.model), force);
+      const parts = f.parts.filter((p) => (p.name === "model" ? plan.model : plan.firmware));
+      if (!parts.length) {
+        addLog("nothing to write: the board has this firmware and this model");
+        setNote("The board already has this firmware and this model: nothing to write.");
+      } else {
+        setNote(plan.firmware && plan.model ? null : plan.model ? "Only the model was written: the firmware was up to date."
+                                                                 : "Only the firmware was written: the model was already there.");
+        const t0 = Date.now();
+        await flash(port.current, { ...f, parts }, (progress) => setState({ step: "flashing", progress }), addLog);
+        addLog(`written in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+      }
+      if (onFlashed) { setState({ step: "idle" }); onFlashed(); } else await startWatch();
     } catch (e) {
       const err = e as FlashError;
       addLog(`failed: ${err.message}`);
@@ -86,12 +110,12 @@ export function FlashCard({ job, hardware, modelUrl }: { job: string; hardware: 
   };
 
   const stop = async () => {
-    await stopWatch.current?.();
-    stopWatch.current = null;
+    await watching.current?.stop();
+    watching.current = null;
     setState({ step: "stopped" });
   };
 
-  const busy = state.step === "picking" || state.step === "loading" || state.step === "flashing";
+  const busy = state.step === "picking" || state.step === "loading" || state.step === "checking" || state.step === "flashing";
 
   if (!route) {
     return (
@@ -105,19 +129,25 @@ export function FlashCard({ job, hardware, modelUrl }: { job: string; hardware: 
 
   return (
     <div className="mt-3 space-y-3">
-      {state.step === "idle" && (
+      {state.step === "idle" && !given && (
         <p className="text-sm text-muted">
           Plug the ESP32-CAM, on its USB board, into this {route === "usb" ? "phone" : "computer"} with a data
-          cable{route === "usb" ? " (and a USB OTG adapter if the phone needs one)" : ""}, then tap Flash and pick the board. It writes the firmware and your model in about a minute and a
-          half, then shows what the camera sees.
+          cable{route === "usb" ? " (and a USB OTG adapter if the phone needs one)" : ""}, then tap Flash and pick the board. It writes what the board is missing (the firmware and your model
+          take about a minute and a half), then shows what the camera sees.
         </p>
       )}
 
       {(state.step === "idle" || state.step === "failed" || state.step === "stopped") && (
-        <Button className="w-full" onClick={start}>
-          <Zap className="h-4 w-4" /> {state.step === "idle" ? "Flash to my ESP32-CAM" : state.step === "failed" ? "Try again" : "Flash again"}
-        </Button>
+        <>
+          <Button className="w-full" onClick={() => start()}>
+            <Zap className="h-4 w-4" /> {state.step === "idle" ? label ?? "Flash to my ESP32-CAM" : state.step === "failed" ? "Try again" : "Flash again"}
+          </Button>
+          <button onClick={() => start(true)} className="w-full text-center text-xs text-muted underline hover:text-ink">
+            Flash everything (for a board that does not start)
+          </button>
+        </>
       )}
+      {note && state.step !== "failed" && !busy && <p className="flex items-center gap-2 text-sm text-muted"><Check className="h-4 w-4 text-green-600" /> {note}</p>}
 
       {busy && <Working state={state} />}
 
@@ -157,6 +187,9 @@ export function FlashCard({ job, hardware, modelUrl }: { job: string; hardware: 
 function Working({ state }: { state: State }) {
   if (state.step === "picking") {
     return <p className="flex items-center gap-2 text-sm text-muted"><Usb className="h-4 w-4" /> Pick the board in the list the browser shows.</p>;
+  }
+  if (state.step === "checking") {
+    return <p className="flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" /> Checking what the board has</p>;
   }
   if (state.step === "loading") {
     return <p className="flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" /> Getting the firmware and your model</p>;
@@ -199,6 +232,10 @@ function BoardView({ live, watching, error }: { live: Live; watching: boolean; e
       {!last && !live.error && watching && (
         <p className="mt-3 flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" />
           {live.ready ? "Waiting for the first picture" : "Starting the board"}</p>
+      )}
+      {last && "jpeg" in last && last.jpeg && (
+        <img src={`data:image/jpeg;base64,${last.jpeg}`} alt="What the board's camera sees"
+             className="mt-3 h-24 w-24 rounded-lg bg-gray-100 object-cover" />
       )}
       {last?.kind === "label" && (
         <div className="mt-2">

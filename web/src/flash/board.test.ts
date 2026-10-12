@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import raw from "../../public/firmware/esp32/manifest.json";
-import { checkModel, flashable, friendlyError, lineSplitter, parseLine, parseManifest } from "./board";
+import { boardGuess, boardMismatch, planWrite, checkModel, flashable, friendlyError, fromBase64, lineSplitter, logLine, modelCrc, parseLine,
+         parseManifest } from "./board";
 
 const manifest = parseManifest(raw);
 
@@ -57,4 +58,50 @@ it("explains errors in plain words", () => {
   expect(friendlyError(Object.assign(new Error("The device has been lost."), { name: "NetworkError" }), "write"))
     .toMatch(/unplugged/);
   expect(friendlyError(new Error("Unable to claim interface."), "connect")).toMatch(/Another program/);
+});
+
+it("reads the firmware 1.1.0 lines: fingerprint, pictures, points and photos", () => {
+  const ready = parseLine('{"event":"ready","firmware":"1.1.0","crc":"0badf00d","task":"count","input":96,"channels":3,"grid":12,"arena":1,"labels":["bg","bottle"]}');
+  expect(ready).toEqual({ kind: "ready", input: 96, labels: ["bg", "bottle"], firmware: "1.1.0", crc: "0badf00d", task: "count" });
+  expect(parseLine('{"label":"grass","score":0.91,"ms":1210,"scores":{"grass":0.91},"jpeg":"/9j/"}'))
+    .toMatchObject({ kind: "label", label: "grass", jpeg: "/9j/" });
+  expect(parseLine('{"ms":1300,"counts":{"bottle":2},"points":[[0.25,0.5,"bottle"],[0.75,0.5,"bottle"]],"jpeg":"/9j/"}'))
+    .toEqual({ kind: "counts", ms: 1300, counts: { bottle: 2 }, points: [[0.25, 0.5, "bottle"], [0.75, 0.5, "bottle"]], jpeg: "/9j/" });
+  expect(parseLine('{"event":"photo","w":800,"h":600,"bytes":3,"capture_ms":700,"jpeg":"AAEC"}'))
+    .toEqual({ kind: "photo", w: 800, h: 600, bytes: 3, captureMs: 700, jpeg: "AAEC" });
+  expect(parseLine('{"event":"photo_sent","bytes":3,"send_ms":900}')).toEqual({ kind: "photo_sent", bytes: 3, sendMs: 900 });
+  expect(Array.from(fromBase64("AAEC"))).toEqual([0, 1, 2]);
+  expect(logLine("x".repeat(5000))).toMatch(/^x{240}\.\.\. \(5000 characters\)$/);
+});
+
+it("tells whether the board runs this job's model", () => {
+  const blob = new Uint8Array(32);
+  new DataView(blob.buffer).setUint32(12, 0x0badf00d, true);
+  expect(modelCrc(blob)).toBe("0badf00d");
+  const ready = { kind: "ready" as const, input: 96, labels: [], firmware: "1.1.0", crc: "0badf00d" };
+  expect(boardMismatch(ready, "0badf00d", "1.1.0")).toBeNull();
+  expect(boardMismatch(ready, "12345678", "1.1.0")).toMatchObject({ optional: false, reason: /another model/ });
+  expect(boardMismatch(ready, "0badf00d", "1.2.0")).toMatchObject({ optional: true });
+  expect(boardMismatch({ kind: "ready", input: 96, labels: [] }, "0badf00d", "1.1.0")).toMatchObject({ optional: false, reason: /older/ });
+  expect(boardMismatch(null, "0badf00d", "1.1.0")).toMatchObject({ optional: false });
+});
+
+it("starts the check from the board's last frame", () => {
+  expect(boardGuess({ kind: "label", label: "grass", score: 0.8, ms: 1, scores: {} })).toEqual({ points: [], top: { label: "grass", p: 0.8 } });
+  expect(boardGuess({ kind: "counts", ms: 1, counts: {}, points: [[0.1, 0.2, "bottle"]] }))
+    .toEqual({ points: [[0.1, 0.2, "bottle"]], top: null });
+  expect(boardGuess(null)).toEqual({ points: [], top: null });
+});
+
+it("writes only what the board is missing", () => {
+  const both = { firmware: true, model: true };
+  expect(planWrite({ firmware: "1.1.0", crc: "0badf00d" }, "1.1.0", "0badf00d")).toEqual({ firmware: false, model: false });
+  expect(planWrite({ firmware: "1.1.0", crc: "12345678" }, "1.1.0", "0badf00d")).toEqual({ firmware: false, model: true });
+  expect(planWrite({ firmware: "1.0.0", crc: "0badf00d" }, "1.1.0", "0badf00d")).toEqual({ firmware: true, model: false });
+  expect(planWrite({ firmware: "1.1.0" }, "1.1.0", "0badf00d")).toEqual({ firmware: false, model: true });  // no model yet
+  expect(planWrite({}, "1.1.0", "0badf00d")).toEqual(both);  // firmware before 1.1.0
+  expect(planWrite(null, "1.1.0", "0badf00d")).toEqual(both);
+  expect(planWrite({ firmware: "1.1.0", crc: "0badf00d" }, "1.1.0", "0badf00d", true)).toEqual(both);
+  expect(parseLine('{"event":"error","message":"no model flashed","firmware":"1.1.0"}'))
+    .toEqual({ kind: "error", message: "no model flashed", firmware: "1.1.0" });
 });

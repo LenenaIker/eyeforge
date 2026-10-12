@@ -8,6 +8,7 @@ export const BOARDS: Record<string, string> = { esp32cam: "/firmware/esp32" };
 
 export type Part = { name: string; offset: number; file: string };
 export type Manifest = {
+  firmware?: string;      // FIRMWARE_VERSION of firmware/esp32cam/src/main.cpp, which the board says when it starts
   board: string;          // what the user plugs in, e.g. "ESP32-CAM"
   chip: string;           // esptool-js CHIP_NAME the board must report, e.g. "ESP32"
   usb: "usb-serial" | "native";  // a USB to serial chip (CH340) or the chip's own USB
@@ -22,7 +23,7 @@ const num = (v: unknown) => (typeof v === "number" ? v : parseInt(String(v), 16)
 export function parseManifest(raw: any): Manifest {
   if (raw?.format !== 1 || !Array.isArray(raw.parts)) throw new Error("Unknown firmware manifest format.");
   return {
-    board: raw.board, chip: raw.chip, usb: raw.usb ?? "usb-serial",
+    firmware: raw.firmware, board: raw.board, chip: raw.chip, usb: raw.usb ?? "usb-serial",
     parts: raw.parts.map((p: any) => ({ name: p.name, offset: num(p.offset), file: p.file })),
     model: { offset: num(raw.model.offset), maxSize: num(raw.model.max_size), magic: raw.model.magic },
     baud: raw.baud ?? 460800, monitorBaud: raw.monitor_baud ?? 115200,
@@ -42,12 +43,25 @@ export function checkModel(bin: Uint8Array, m: Manifest["model"]): string | null
   return null;
 }
 
-/** One line of the firmware's output (firmware/esp32cam/src/main.cpp prints JSON lines; the boot log is text). */
+/** The model's fingerprint as the board reports it: the CRC-32 in model.bin's header, 8 hex digits. */
+export function modelCrc(bin: Uint8Array): string | null {
+  if (bin.length < 16) return null;
+  const v = new DataView(bin.buffer, bin.byteOffset, bin.byteLength).getUint32(12, true);
+  return v.toString(16).padStart(8, "0");
+}
+
+/** Points of a count model: [x, y, class], 0-1 on the square the model saw (the frame's centre square). */
+export type BoardPoint = [number, number, string];
+
+/** One line of the firmware's output (firmware/esp32cam/src/main.cpp prints JSON lines; the boot log is text).
+ * firmware and crc come from firmware 1.1.0 on (older boards say neither); jpeg is the square the model saw. */
 export type BoardEvent =
-  | { kind: "ready"; input: number; labels: string[] }
-  | { kind: "error"; message: string }
-  | { kind: "label"; label: string; score: number; ms: number; scores: Record<string, number> }
-  | { kind: "counts"; ms: number; counts: Record<string, number> }
+  | { kind: "ready"; input: number; labels: string[]; firmware?: string; crc?: string; task?: string }
+  | { kind: "error"; message: string; firmware?: string }
+  | { kind: "label"; label: string; score: number; ms: number; scores: Record<string, number>; jpeg?: string }
+  | { kind: "counts"; ms: number; counts: Record<string, number>; points?: BoardPoint[]; jpeg?: string }
+  | { kind: "photo"; w: number; h: number; bytes: number; captureMs: number; jpeg: string }
+  | { kind: "photo_sent"; bytes: number; sendMs: number }
   | { kind: "text" };
 
 export function parseLine(line: string): BoardEvent {
@@ -55,11 +69,72 @@ export function parseLine(line: string): BoardEvent {
   if (!t.startsWith("{")) return { kind: "text" };
   let o: any;
   try { o = JSON.parse(t); } catch { return { kind: "text" }; }
-  if (o.event === "ready") return { kind: "ready", input: o.input, labels: o.labels ?? [] };
-  if (o.event === "error") return { kind: "error", message: String(o.message ?? "unknown error") };
-  if (typeof o.label === "string") return { kind: "label", label: o.label, score: o.score, ms: o.ms, scores: o.scores ?? {} };
-  if (o.counts) return { kind: "counts", ms: o.ms, counts: o.counts };
+  const jpeg = typeof o.jpeg === "string" ? { jpeg: o.jpeg as string } : {};
+  if (o.event === "ready") {
+    return { kind: "ready", input: o.input, labels: o.labels ?? [],
+             ...(o.firmware ? { firmware: String(o.firmware) } : {}), ...(o.crc ? { crc: String(o.crc) } : {}),
+             ...(o.task ? { task: String(o.task) } : {}) };
+  }
+  if (o.event === "error") {
+    return { kind: "error", message: String(o.message ?? "unknown error"), ...(o.firmware ? { firmware: String(o.firmware) } : {}) };
+  }
+  if (o.event === "photo" && typeof o.jpeg === "string") {
+    return { kind: "photo", w: o.w, h: o.h, bytes: o.bytes, captureMs: o.capture_ms, jpeg: o.jpeg };
+  }
+  if (o.event === "photo_sent") return { kind: "photo_sent", bytes: o.bytes, sendMs: o.send_ms };
+  if (typeof o.label === "string") return { kind: "label", label: o.label, score: o.score, ms: o.ms, scores: o.scores ?? {}, ...jpeg };
+  if (o.counts) {
+    return { kind: "counts", ms: o.ms, counts: o.counts, ...(Array.isArray(o.points) ? { points: o.points } : {}), ...jpeg };
+  }
   return { kind: "text" };
+}
+
+/** What a log shows of a line: frames and photos carry long base64 pictures. */
+export const logLine = (line: string, max = 240) =>
+  line.length > max ? `${line.slice(0, max)}... (${line.length} characters)` : line;
+
+/** The size the board's photo is asked for when the user saves a frame (see the firmware's "capture"). UXGA
+ * (1600x1200, about 75 KB) went through the cable in 1.25 s at 921600 baud on 2026-10-12, 3.1 s from tap to photo. */
+export const PHOTO_SIZE = "uxga";
+
+/** Why the live test should flash the board first, or null when it runs this job's model on our firmware.
+ * optional: only the firmware version differs, so the board can be tested as it is. */
+export function boardMismatch(ready: Extract<BoardEvent, { kind: "ready" }> | null, crc: string | null,
+                              firmware?: string): { reason: string; optional: boolean } | null {
+  if (!ready) return { reason: "The board did not answer like an EyeForge board with a model.", optional: false };
+  if (!ready.crc || !ready.firmware) {
+    return { reason: "The board runs an older EyeForge firmware that cannot send what it sees.", optional: false };
+  }
+  if (crc && ready.crc !== crc) return { reason: "The board has another model on it.", optional: false };
+  if (firmware && ready.firmware !== firmware) {
+    return { reason: `The board runs EyeForge firmware ${ready.firmware}; this page brings ${firmware}.`, optional: true };
+  }
+  return null;
+}
+
+/** What the board said of its last frame, as the live test's check starts from it. */
+export function boardGuess(ev: BoardEvent | null): { points: BoardPoint[]; top: { label: string; p: number } | null } {
+  if (ev?.kind === "label") return { points: [], top: { label: ev.label, p: ev.score } };
+  if (ev?.kind === "counts") return { points: (ev.points ?? []).map(([x, y, l]): BoardPoint => [x, y, l]), top: null };
+  return { points: [], top: null };
+}
+
+export function fromBase64(b64: string): Uint8Array<ArrayBuffer> {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** What a board says it runs: from its ready line, or only the firmware from an error line (no model yet).
+ * null: it did not answer like our firmware (another program, an old firmware, a blank board). */
+export type OnBoard = { firmware?: string; crc?: string } | null;
+
+/** Which parts to write: the firmware only when the board runs another version (or did not answer), the model
+ * only when its fingerprint differs. force writes everything, for a board in a bad state. */
+export function planWrite(onBoard: OnBoard, firmware: string | undefined, crc: string | null, force = false) {
+  if (force || !onBoard) return { firmware: true, model: true };
+  return { firmware: !firmware || onBoard.firmware !== firmware, model: !crc || onBoard.crc !== crc };
 }
 
 /** Splits a byte stream into lines; feed it chunks, it returns the complete lines. */

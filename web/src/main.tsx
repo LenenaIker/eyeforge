@@ -20,6 +20,7 @@ import Billing from "./pages/Billing";
 import { Privacy, Support, Terms } from "./pages/Legal";
 // The live test pulls in the model runtime: loaded only when someone opens it.
 const Live = lazy(() => import("./pages/Live"));
+const LiveBoard = lazy(() => import("./pages/LiveBoard"));
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -39,6 +40,7 @@ createRoot(document.getElementById("root")!).render(
           <Route path="billing" element={<Billing />} />
         </Route>
         <Route path="/app/job/:name/live" element={<Suspense><Live /></Suspense>} />
+        <Route path="/app/job/:name/board" element={<Suspense><LiveBoard /></Suspense>} />
         <Route path="/privacy" element={<Privacy />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/support" element={<Support />} />

@@ -1,5 +1,6 @@
 {
   "format": 1,
+  "firmware": "1.1.0",
   "board": "ESP32-CAM",
   "hardware": ["esp32cam"],
   "chip": "ESP32",
@@ -13,5 +14,5 @@
   ],
   "model": { "offset": "0x190000", "max_size": "0x200000", "magic": "EFM1" },
   "baud": 460800,
-  "monitor_baud": 115200
+  "monitor_baud": 921600
 }

@@ -2,7 +2,7 @@
 // WebUSB but no USB Web Serial, so there the CH340 driver of esptool-js talks to the board; desktop Chrome and
 // Edge use Web Serial, where the system's own driver owns the USB to serial chip. Tested on a Pixel 7a
 // (Chrome 154) with an ESP32-CAM-MB (CH340) on 2026-10-12.
-import { BOARDS, checkModel, friendlyError, lineSplitter, parseManifest, type Manifest, type Phase } from "./board";
+import { BOARDS, checkModel, friendlyError, lineSplitter, parseLine, parseManifest, type Manifest, type OnBoard, type Phase } from "./board";
 
 type Esptool = typeof import("esptool-js");
 let esptool: Promise<Esptool> | null = null;
@@ -94,8 +94,12 @@ export async function flash(port: any, files: Files, onProgress: (p: Progress) =
   await sleep(300);
 }
 
+/** A board being watched: stop() closes the port; send() writes a command line (firmware 1.1.0 on). */
+export type Watching = { stop: () => Promise<void>; send: (line: string) => Promise<void> };
+
 /** Restarts the board and reads its lines until stop() is called. onEnd runs when reading ends on its own. */
-export async function watch(port: any, baud: number, onLine: (line: string) => void, onEnd: (error?: string) => void) {
+export async function watch(port: any, baud: number, onLine: (line: string) => void,
+                            onEnd: (error?: string) => void): Promise<Watching> {
   const { Transport } = await lib();
   const transport = new Transport(port, false, false);
   let closed = false;
@@ -118,5 +122,34 @@ export async function watch(port: any, baud: number, onLine: (line: string) => v
   transport.rawRead((data: Uint8Array) => split(data).forEach(onLine), () => closed)
     .then(() => { if (!closed) { closed = true; onEnd("The board stopped sending. Unplugged?"); } else onEnd(); })
     .catch((e: unknown) => { const was = closed; closed = true; onEnd(was ? undefined : friendlyError(e, "monitor")); });
-  return stop;
+  // Raw bytes, straight to the port: Transport.write would wrap them in SLIP frames for the ROM loader.
+  const send = async (line: string) => {
+    if (closed || !port.writable) throw new Error("The board is not connected.");
+    const writer = port.writable.getWriter();
+    try { await writer.write(new TextEncoder().encode(`${line}\n`)); } finally { writer.releaseLock(); }
+  };
+  return { stop, send };
 }
+
+/** Restarts the board and listens for what it runs (OnBoard), for at most ms. Leaves the port closed. */
+export async function probe(port: any, baud: number, ms = 6000): Promise<OnBoard> {
+  let done: (v: OnBoard) => void = () => {};
+  const answer = new Promise<OnBoard>((ok) => { done = ok; });
+  const timer = setTimeout(() => done(null), ms);
+  const board = await watch(port, baud, (line) => {
+    const ev = parseLine(line);
+    if (ev.kind === "ready") done({ firmware: ev.firmware, crc: ev.crc });
+    else if (ev.kind === "error" && ev.firmware) done({ firmware: ev.firmware });
+  }, () => done(null));
+  const v = await answer;
+  clearTimeout(timer);
+  await board.stop();
+  await sleep(200);
+  return v;
+}
+
+// The port picked from the job page's "Try it live" tap (browsers only open the picker from a tap), handed to
+// the board's live page, which opens it.
+let handed: any = null;
+export const handPort = (port: any) => { handed = port; };
+export const takePort = () => { const p = handed; handed = null; return p; };

@@ -1,11 +1,13 @@
-import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, DollarSign, ImagePlus, Loader2, Pencil, RotateCcw, Sparkles, Square, X, Zap } from "lucide-react";
+import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, DollarSign, ImagePlus, Loader2, Pencil, RotateCcw, Sparkles, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ModelMenu } from "../components/library";
 import { FlashCard } from "../components/FlashCard";
+import { TestButton } from "../components/TestButton";
 import { flashable } from "../flash/board";
+import { flashRoute } from "../flash/flasher";
 import { useApp } from "./AppShell";
-import { enterCameraMode, isHandheld } from "../live/device";
+import { isHandheld } from "../live/device";
 import { captureFile, captureLabels, clearCaptures, listCaptures, removeCapture, type Capture } from "../live/captures";
 import { prepareImages } from "../images";
 import * as API from "../api";
@@ -251,12 +253,8 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
           {version && version.n > 1 && <Badge>v{version.n} · {version.reason}</Badge>}
           {version?.engine && <span className="text-xs text-muted" title="The EyeForge that trained this model">EyeForge {version.engine}</span>}
         </div>
-        {isHandheld() && r.portable_model_path && (
-          <Link to={`/app/job/${job}/live`} onClick={() => { enterCameraMode(); }}
-                className="mt-4 flex h-14 w-full items-center justify-center gap-2 rounded-[var(--radius-control)] bg-ink text-base font-semibold text-white shadow-sm">
-            <Camera className="h-5 w-5" /> Try it live with your camera
-          </Link>
-        )}
+        <TestButton job={job} phone={isHandheld() && !!r.portable_model_path}
+                    board={flashable(r.hardware, r.device_blob_path) && flashRoute() !== null} />
         <div className="mt-4 flex flex-col gap-6 sm:flex-row sm:items-end">
           <div className="flex-1">
             <p className="text-6xl font-bold tracking-tight text-brand-600">{headline}</p>
@@ -298,16 +296,10 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
           {flashable(r.hardware, r.device_blob_path) ? (
             <FlashCard job={job} hardware={r.hardware} modelUrl={API.fileUrl(job, "model.bin")} />
           ) : (
-            <>
-              <p className="mt-2 text-sm text-muted">
-                The model runs without a network. On a microcontroller, the C array goes into the firmware; on a
-                phone, Raspberry Pi or Jetson, the .tflite file loads with TensorFlow Lite.
-              </p>
-              {r.hardware === "esp32cam" && (
-                <p className="mt-3 flex items-center gap-1 text-sm font-medium text-ember-700"><Zap className="h-4 w-4" />
-                  Packed before flashing from the browser existed: retrain it to flash it from here</p>
-              )}
-            </>
+            <p className="mt-2 text-sm text-muted">
+              The model runs without a network. On a microcontroller, the C array goes into the firmware; on a
+              phone, Raspberry Pi or Jetson, the .tflite file loads with TensorFlow Lite.
+            </p>
           )}
         </Card>
       </div>
