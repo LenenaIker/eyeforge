@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import raw from "../../public/firmware/esp32/manifest.json";
-import { boardGuess, boardMismatch, planWrite, checkModel, flashable, friendlyError, fromBase64, lineSplitter, logLine, modelCrc, parseLine,
+import { boardAspect, boardGuess, boardMismatch, planWrite, checkModel, flashable, friendlyError, fromBase64, lineSplitter, logLine, modelCrc, parseLine,
          parseManifest } from "./board";
 
 const manifest = parseManifest(raw);
@@ -91,6 +91,19 @@ it("starts the check from the board's last frame", () => {
   expect(boardGuess({ kind: "counts", ms: 1, counts: {}, points: [[0.1, 0.2, "bottle"]] }))
     .toEqual({ points: [[0.1, 0.2, "bottle"]], top: null });
   expect(boardGuess(null)).toEqual({ points: [], top: null });
+});
+
+it("puts the board's points on the whole photo: as they are from 1.2.0, moved from the centre square before", () => {
+  const ready = parseLine('{"event":"ready","firmware":"1.2.0","crc":"0badf00d","task":"count","input":96,"frame":[320,240],"labels":["bg","bottle"]}');
+  expect(ready).toMatchObject({ kind: "ready", frame: [320, 240] });
+  if (ready.kind !== "ready") throw new Error("not a ready line");
+  expect(boardAspect(ready)).toBeCloseTo(4 / 3);
+  const counts = { kind: "counts" as const, ms: 1, counts: {}, points: [[0.5, 0.5, "bottle"], [0, 1, "bottle"]] as [number, number, string][] };
+  const photo = { w: 1600, h: 1200 };
+  expect(boardGuess(counts, ready, photo).points).toEqual([[0.5, 0.5, "bottle"], [0, 1, "bottle"]]);
+  const old = { kind: "ready" as const, input: 96, labels: [], firmware: "1.1.0", crc: "0badf00d" };
+  expect(boardAspect(old)).toBe(1);
+  expect(boardGuess(counts, old, photo).points).toEqual([[0.5, 0.5, "bottle"], [0.125, 1, "bottle"]]);
 });
 
 it("writes only what the board is missing", () => {

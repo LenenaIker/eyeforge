@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { fileUrl, type Report } from "../api";
 import { FlashCard, IPhoneNote } from "../components/FlashCard";
 import { Spinner } from "../components/ui";
-import { BOARDS, boardGuess, boardMismatch, fromBase64, modelCrc, parseLine, parseManifest, PHOTO_SIZE,
+import { BOARDS, boardAspect, boardGuess, boardMismatch, fromBase64, modelCrc, parseLine, parseManifest, PHOTO_SIZE,
          type BoardEvent, type Manifest, type OnBoard } from "../flash/board";
 import { flashRoute, pickPort, takePort, watch, type Watching } from "../flash/flasher";
 import { addCapture, listCaptures, type Said } from "../live/captures";
@@ -12,10 +12,11 @@ import { fit } from "../live/orient";
 import { Centered, CheckPhoto, Dots, type Guess } from "../live/overlay";
 
 // The trained model live on the ESP32-CAM, seen from this page over the USB cable: the board runs the model and
-// sends each result with the square it saw (a 96x96 JPEG, about one a second); this page draws them as the
+// sends each result with the picture it saw (its whole frame stretched to the model's square, as the training
+// photos are, sent as a 96x96 JPEG about one a second); this page draws it back at the frame's shape, as the
 // phone's live test does. On connecting, the board says which model it has (the CRC in model.bin's header): if
-// it is not this job's, the page flashes it first. The shutter asks the board for a photo at a bigger size
-// (PHOTO_SIZE), which the user checks and keeps for "Make it better", as on the phone.
+// it is not this job's, the page flashes it first. The shutter asks the board for a whole photo at a bigger size
+// (PHOTO_SIZE, same field of view), which the user checks and keeps for "Make it better", as on the phone.
 
 type Ready = Extract<BoardEvent, { kind: "ready" }>;
 type Frame = Extract<BoardEvent, { kind: "label" | "counts" }>;
@@ -155,11 +156,12 @@ export default function LiveBoard() {
     setStep({ step: "flash", reason, onBoard: onBoard.current });
   }
 
-  // The shutter: a photo at a bigger size from the board, its centre square (what the model sees), to check.
+  // The shutter: a whole photo at a bigger size from the board, to check. Kept whole: training stretches it to the
+  // model's square as the board does its frames, so the marks (0-1 of the photo) mean the same on both.
   async function shoot() {
     if (!board.current || taking) return;
     setTaking(true);
-    const guess = boardGuess(frame);
+    const shot = frame;  // what the model said when the user tapped
     const t0 = performance.now();
     try {
       const p = await new Promise<Photo>((ok, no) => {
@@ -169,8 +171,8 @@ export default function LiveBoard() {
       });
       const ms = performance.now() - t0;
       setLastPhoto({ bytes: p.bytes, w: p.w, h: p.h, ms, captureMs: p.captureMs });
-      const square = await centreSquare(new Blob([fromBase64(p.jpeg)], { type: "image/jpeg" }));
-      setChecking({ ...square, url: URL.createObjectURL(square.blob), guess });
+      const blob = new Blob([fromBase64(p.jpeg)], { type: "image/jpeg" });
+      setChecking({ blob, w: p.w, h: p.h, url: URL.createObjectURL(blob), guess: boardGuess(shot, ready, p) });
     } catch (e) {
       setError((e as Error).message);
     }
@@ -194,7 +196,7 @@ export default function LiveBoard() {
   const counting = report?.task === "count";
   const bg = report && ("background" in report ? report.background : report.labels[0]);
   const what = report?.labels.filter((l) => l !== bg).map((l) => l.replace(/_/g, " ")).join(", ");
-  const box = fit(1, 1, view.w, Math.max(160, view.h - 150), "contain");
+  const box = fit(boardAspect(ready), 1, view.w, Math.max(160, view.h - 150), "contain");
   const count = frame?.kind === "counts" ? Object.values(frame.counts).reduce((a, b) => a + b, 0) : 0;
 
   return (
@@ -313,17 +315,4 @@ export default function LiveBoard() {
       {checking && report && <CheckPhoto c={checking} report={report} view={view} onKeep={keep} onDiscard={discard} />}
     </div>
   );
-}
-
-/** The centre square of a photo, as the board's model sees its frames, as a JPEG. */
-async function centreSquare(jpeg: Blob): Promise<{ blob: Blob; w: number; h: number }> {
-  const bmp = await createImageBitmap(jpeg);
-  const side = Math.min(bmp.width, bmp.height);
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = side;
-  canvas.getContext("2d")!.drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, side, side);
-  bmp.close();
-  const blob = await new Promise<Blob | null>((ok) => canvas.toBlob(ok, "image/jpeg", 0.92));
-  if (!blob) throw new Error("Could not keep the photo.");
-  return { blob, w: side, h: side };
 }

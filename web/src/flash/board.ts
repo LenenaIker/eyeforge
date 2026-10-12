@@ -50,13 +50,15 @@ export function modelCrc(bin: Uint8Array): string | null {
   return v.toString(16).padStart(8, "0");
 }
 
-/** Points of a count model: [x, y, class], 0-1 on the square the model saw (the frame's centre square). */
+/** Points of a count model: [x, y, class], 0-1 on the picture the model saw. From firmware 1.2.0 on that is the
+ * whole frame stretched to a square, so they are 0-1 on the whole frame too; before, the frame's centre square. */
 export type BoardPoint = [number, number, string];
 
 /** One line of the firmware's output (firmware/esp32cam/src/main.cpp prints JSON lines; the boot log is text).
- * firmware and crc come from firmware 1.1.0 on (older boards say neither); jpeg is the square the model saw. */
+ * firmware and crc come from firmware 1.1.0 on (older boards say neither); jpeg is the picture the model saw.
+ * frame (width, height) comes from 1.2.0 on: the model sees that whole frame stretched; without it, its centre square. */
 export type BoardEvent =
-  | { kind: "ready"; input: number; labels: string[]; firmware?: string; crc?: string; task?: string }
+  | { kind: "ready"; input: number; labels: string[]; firmware?: string; crc?: string; task?: string; frame?: [number, number] }
   | { kind: "error"; message: string; firmware?: string }
   | { kind: "label"; label: string; score: number; ms: number; scores: Record<string, number>; jpeg?: string }
   | { kind: "counts"; ms: number; counts: Record<string, number>; points?: BoardPoint[]; jpeg?: string }
@@ -73,7 +75,9 @@ export function parseLine(line: string): BoardEvent {
   if (o.event === "ready") {
     return { kind: "ready", input: o.input, labels: o.labels ?? [],
              ...(o.firmware ? { firmware: String(o.firmware) } : {}), ...(o.crc ? { crc: String(o.crc) } : {}),
-             ...(o.task ? { task: String(o.task) } : {}) };
+             ...(o.task ? { task: String(o.task) } : {}),
+             ...(Array.isArray(o.frame) && o.frame.length === 2 && o.frame.every((v: unknown) => typeof v === "number" && v > 0)
+               ? { frame: [o.frame[0], o.frame[1]] as [number, number] } : {}) };
   }
   if (o.event === "error") {
     return { kind: "error", message: String(o.message ?? "unknown error"), ...(o.firmware ? { firmware: String(o.firmware) } : {}) };
@@ -112,10 +116,24 @@ export function boardMismatch(ready: Extract<BoardEvent, { kind: "ready" }> | nu
   return null;
 }
 
-/** What the board said of its last frame, as the live test's check starts from it. */
-export function boardGuess(ev: BoardEvent | null): { points: BoardPoint[]; top: { label: string; p: number } | null } {
+/** Width over height of the picture the model sees, to show its frames undistorted: the whole frame from firmware
+ * 1.2.0 on (its stretched square drawn back at the frame's shape), the centre square before. */
+export const boardAspect = (ready: Extract<BoardEvent, { kind: "ready" }> | null) =>
+  ready?.frame ? ready.frame[0] / ready.frame[1] : 1;
+
+/** What the board said of its last frame, as the live test's check starts from it, with the points 0-1 on the
+ * whole photo (w x h) from "capture", which has the frame's field of view. From firmware 1.2.0 on (ready.frame)
+ * they already are; an older board saw the centre square, so they are moved into it. */
+export function boardGuess(ev: BoardEvent | null, ready?: Extract<BoardEvent, { kind: "ready" }> | null,
+                           photo?: { w: number; h: number }): { points: BoardPoint[]; top: { label: string; p: number } | null } {
   if (ev?.kind === "label") return { points: [], top: { label: ev.label, p: ev.score } };
-  if (ev?.kind === "counts") return { points: (ev.points ?? []).map(([x, y, l]): BoardPoint => [x, y, l]), top: null };
+  if (ev?.kind === "counts") {
+    const square = !ready?.frame && photo ? Math.min(photo.w, photo.h) : 0;
+    const onPhoto = ([x, y, l]: BoardPoint): BoardPoint => square
+      ? [((photo!.w - square) / 2 + x * square) / photo!.w, ((photo!.h - square) / 2 + y * square) / photo!.h, l]
+      : [x, y, l];
+    return { points: (ev.points ?? []).map(onPhoto), top: null };
+  }
   return { points: [], top: null };
 }
 
