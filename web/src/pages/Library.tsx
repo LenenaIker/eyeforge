@@ -469,6 +469,7 @@ function KitEditor({ kit, lib, onClose, onDone }: { kit: Kit | null; lib: Librar
     objects: objects.map((o) => ({ id: o.id, name: o.name, pic: o.thumb ? cardUrl("object", o.id) : null, note: pretty(o.concept) })),
     scenes: lib.scenes.filter((s) => s.status === "ready").map((s) => ({ id: s.id, name: s.name, pic: s.thumb ? cardUrl("scene", s.id) : null, note: "" })),
   };
+  const picked = (k: typeof tab) => items[k].filter((it) => refs[k].has(it.id)).length;
   const go = async () => {
     if (!name.trim()) { setError("Give the kit a name first."); return; }
     try {
@@ -482,12 +483,16 @@ function KitEditor({ kit, lib, onClose, onDone }: { kit: Kit | null; lib: Librar
   return (
     <Dialog title={kit ? `Edit ${kit.name}` : "New kit"} onClose={onClose} wide>
       <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Kit name, e.g. Shop shelf" autoFocus className={field} aria-label="Kit name" />
-      <div className="mt-4 flex gap-1 border-b border-line">
+      <p className="mt-3 text-sm text-muted">Tick what goes into the kit. Each tab shows how many you picked of how many you have.</p>
+      <div className="mt-2 flex gap-1 border-b border-line">
         {(["datasets", "objects", "scenes"] as const).map((k) => (
           <button key={k} onClick={() => setTab(k)}
-                  className={cx("-mb-px border-b-2 px-3 py-2 text-sm font-medium capitalize",
+                  className={cx("-mb-px border-b-2 px-3 py-2 text-sm font-medium",
                                 tab === k ? "border-brand-600 text-brand-700" : "border-transparent text-muted hover:text-ink")}>
-            {k} <span className="opacity-60">{refs[k].size}</span>
+            <span className="capitalize">{k}</span> <span className={cx("tabular-nums", picked(k) ? "text-brand-700" : "opacity-60")}
+                      title={`${picked(k)} of your ${items[k].length} ${k} in the kit`}>
+              {picked(k)} of {items[k].length}
+            </span>
           </button>
         ))}
       </div>
