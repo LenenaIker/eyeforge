@@ -1,5 +1,5 @@
 import { Check, MoreHorizontal, Package, Pencil, Plus, SlidersHorizontal, Trash2, X } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { deleteItem, deleteJob, renameItem, renameJob, saveKit, type Kit, type LibraryKind } from "../api";
@@ -40,25 +40,55 @@ const SINGULAR: Record<LibraryKind, string> = { datasets: "dataset", objects: "o
 export const menuItem = "flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50";
 
 export function MoreMenu({ items }: { items: (close: () => void) => ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  // Where the menu sits on the screen. It lives in document.body, not in the card: a card clips what overflows it
+  // (overflow-hidden for its picture), and the menu came out cut below the card (2026-10-12).
+  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const close = () => setAt(null);
+  const toggle = () => {
+    if (at) return close();
+    const r = button.current!.getBoundingClientRect();
+    setAt({ top: r.bottom + 4, left: Math.max(8, r.right - MENU_WIDTH) });
+  };
+  useLayoutEffect(() => {  // no room below: open above the button
+    const r = button.current?.getBoundingClientRect();
+    const h = menu.current?.offsetHeight ?? 0;
+    if (at && r && at.top + h > window.innerHeight - 8 && r.top - h - 4 > 8) setAt({ ...at, top: r.top - h - 4 });
+  }, [at]);
   useEffect(() => {
-    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, []);
+    if (!at) return;
+    const outside = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!button.current?.contains(t) && !menu.current?.contains(t)) close();
+    };
+    // Fixed on the screen, so it would stay behind when the page scrolls: it closes instead.
+    const moved = (e: Event) => { if (!menu.current?.contains(e.target as Node)) close(); };
+    document.addEventListener("click", outside);
+    window.addEventListener("scroll", moved, true);
+    window.addEventListener("resize", close);
+    return () => {
+      document.removeEventListener("click", outside);
+      window.removeEventListener("scroll", moved, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [at]);
   return (
-    <div ref={ref} className="relative">
-      <button onClick={() => setOpen(!open)} aria-label="More"
+    <>
+      <button ref={button} onClick={toggle} aria-label="More" aria-expanded={!!at}
               className="rounded-lg p-1.5 text-muted hover:bg-gray-100 hover:text-ink"><MoreHorizontal className="h-4 w-4" /></button>
-      {open && (
-        <div className="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-xl border border-line bg-white py-1 shadow-lg">
-          {items(() => setOpen(false))}
-        </div>
+      {at && createPortal(
+        <div ref={menu} role="menu" style={{ top: at.top, left: at.left, width: MENU_WIDTH }}
+             className="fixed z-50 overflow-hidden rounded-xl border border-line bg-white py-1 shadow-lg">
+          {items(close)}
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   );
 }
+
+const MENU_WIDTH = 176;
 
 export function ItemMenu({ kind, id, name, onChanged, extra }:
   { kind: LibraryKind; id: string; name: string; onChanged: () => void; extra?: ReactNode }) {
