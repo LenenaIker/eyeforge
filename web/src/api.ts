@@ -245,6 +245,17 @@ export const trainCalibrated = (job: string, fixes: Fixes) =>
   api<{ rerun_from: null }>(`/api/jobs/${job}/train`, json(fixes));
 export const labelAll = (job: string, fixes: Fixes) =>
   api<{ rerun_from: string }>(`/api/jobs/${job}/label_all`, json(fixes));
+// The synthetic images of a job's last run (review.synthetic): what went into training, by photo2scene's phase
+// (imitation of the user's place, or extrapolation past what the photo shows), and what each filter left out.
+export type SyntheticShot = { image: string; scene?: string; phase?: "imitation" | "extrapolation"; similarity?: number };
+export type Synthetic = {
+  went_in: number; split: { imitation: number; extrapolation: number }; threshold: number | null;
+  left_out: { likeness: number; review: number };
+  reviews: { scene: string; score: number | null; keep: boolean; worst: string[] }[];
+  samples: { went_in: SyntheticShot[]; likeness: SyntheticShot[]; review: SyntheticShot[] };
+  no_synthetic: string | null;
+};
+export const getSynthetic = (job: string) => api<Synthetic>(`/api/jobs/${job}/synthetic`);
 export const mediaUrl = (job: string, path: string, big = false) =>
   `/api/jobs/${job}/media/${path}${big ? "?size=1024" : ""}`;
 export const fileUrl = (job: string, file: string) => `/api/jobs/${job}/files/${file}`;
@@ -300,8 +311,10 @@ export const reprofileDataset = (id: string) => api<{ profiling: boolean }>(`/ap
 export type ObjectCard = { id: string; name: string; concept: string; source: "photos" | "scene" | "upload";
                            has_file: boolean; thumb: boolean; kept: boolean; license?: string; author?: string;
                            url?: string; created: number; jobs: string[] };
-export type SceneCard = { id: string; name: string; route: "support" | "street" | "room"; photo_id: number | null;
-                          dataset: string | null; thumb: boolean; objects: string[]; jobs: string[]; created: number };
+export type SceneCard = { id: string; name: string; route: "support" | "surface" | "street" | "room" | "none";
+                          status: "ready" | "failed"; why: string | null;  // why a failed one made no scene
+                          photo_id: number | null; dataset: string | null; thumb: boolean; objects: string[];
+                          jobs: string[]; created: number };
 export type Kit = { id: string; name: string; datasets: string[]; objects: string[]; scenes: string[];
                     created: number; updated: number };
 export type LibraryData = { models: ModelCard[]; datasets: DatasetCard[]; objects: ObjectCard[]; scenes: SceneCard[];

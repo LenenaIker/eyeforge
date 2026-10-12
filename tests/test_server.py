@@ -293,6 +293,50 @@ def test_photos_in_batches_make_one_turn_and_one_rerun(app, tmp_path):
     assert len(lib.labeling_photos(lid)) == 5
 
 
+def test_synthetic_shows_what_went_in_and_what_each_filter_left_out(app, tmp_path):
+    """The job page's synthetic panel: the place's frames that went into training by phase, the ones unlike the
+    user's photos, the views the vision model's review rejected, and pictures of each."""
+    from PIL import Image
+    job = tmp_path / "jobs" / app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"]
+    src, render = job / "scene_from_photo", job / "render"
+    for d in (src / "photo_3" / "isaac", src / "photo_7" / "populated" / "isaac", src / "photo_9" / "isaac", render):
+        d.mkdir(parents=True)
+    (src / "scenes.json").write_text(json.dumps([
+        {"photo_id": 3, "route": "support", "status": "ready", "dir": "photo_3"},
+        {"photo_id": 7, "route": "street", "status": "ready", "dir": "photo_7"},
+        {"photo_id": 9, "route": "support", "status": "ready", "dir": "photo_9"}]))
+    (src / "frames.json").write_text(json.dumps([
+        {"file": "photo_3/isaac/render_01.png", "scene": "photo_3", "boxes": [["cow", 0, 0, 9, 9]]},
+        {"file": "photo_3/isaac/render_02.png", "scene": "photo_3", "boxes": [["cow", 0, 0, 9, 9]]},
+        {"file": "photo_7/populated/isaac/render_01.png", "scene": "photo_7", "boxes": [["cow", 0, 0, 9, 9]]}]))
+    for i in range(3):
+        Image.new("RGB", (64, 48)).save(render / f"rgb_{i:04d}.png")
+    (render / "labels.json").write_text(json.dumps([{"frame": f, "class": "cow", "scene": sc, "boxes": []}
+                                                    for f, sc in ((0, "photo_3"), (2, "photo_7"))]))
+    (render / "likeness.json").write_text(json.dumps({"threshold": 0.7, "photos": 5, "kept": 2, "left_out": 1, "frames": [
+        {"frame": 0, "similarity": 0.8, "kept": True}, {"frame": 1, "similarity": 0.6, "kept": False},
+        {"frame": 2, "similarity": 0.75, "kept": True}]}))
+    (src / "photo_3" / "review.json").write_text(json.dumps({"score": 4, "keep": True, "worst": []}))
+    (src / "photo_9" / "review.json").write_text(json.dumps({"score": 2, "keep": False, "worst": ["melted cows"]}))
+    for n in ("render_00.png", "render_01.png", "render_02.png"):
+        Image.new("RGB", (64, 48)).save(src / "photo_9" / "isaac" / n)
+    r = app.get(f"/api/jobs/{job.name}/synthetic").json()
+    assert r["went_in"] == 2 and r["split"] == {"imitation": 1, "extrapolation": 1}
+    assert r["left_out"] == {"likeness": 1, "review": 2} and r["threshold"] == 0.7
+    assert [x["scene"] for x in r["reviews"]] == ["photo_3", "photo_9"] and r["reviews"][1]["worst"] == ["melted cows"]
+    assert {x["phase"] for x in r["samples"]["went_in"]} == {"imitation", "extrapolation"}
+    assert r["samples"]["likeness"] == [{"image": "render/rgb_0001.png", "similarity": 0.6}]
+    assert [x["image"] for x in r["samples"]["review"]] == ["scene_from_photo/photo_9/isaac/render_01.png",
+                                                             "scene_from_photo/photo_9/isaac/render_02.png"]
+    assert app.get(f"/api/jobs/{job.name}/media/{r['samples']['review'][0]['image']}").status_code == 200
+    # A setup with the scenes turned off: only why, not the frames an earlier run left in the folders.
+    spec = json.loads((job / "request.json").read_text())
+    (job / "request.json").write_text(json.dumps({**spec, "generation": {**spec.get("generation", {}), "photo_scenes": False}}))
+    r = app.get(f"/api/jobs/{job.name}/synthetic").json()
+    assert r["went_in"] == 0 and r["samples"]["went_in"] == [] and r["left_out"] == {"likeness": 0, "review": 0}
+    assert r["no_synthetic"] == "rebuilding your place is turned off in the setup"
+
+
 def test_count_review_points_and_big_thumbnail(app, tmp_path):
     from PIL import Image
     job, lib, lid, names = labeled_job(tmp_path, {**GOOD, "task": "count"}, task="count", classes=("cow",))
@@ -417,7 +461,8 @@ def test_public_visitors_only_see_their_own_jobs(tmp_path):
     job = alice.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"]
     assert alice.get("/api/jobs").json() == {"jobs": [job]} and alice.get(f"/api/jobs/{job}").status_code == 200
     assert bob.get("/api/jobs").json() == {"jobs": []}
-    for path in (f"/api/jobs/{job}", f"/api/jobs/{job}/review", f"/api/jobs/{job}/files/report.json"):
+    for path in (f"/api/jobs/{job}", f"/api/jobs/{job}/review", f"/api/jobs/{job}/synthetic",
+                 f"/api/jobs/{job}/files/report.json"):
         assert bob.get(path).status_code == 404
     assert bob.post(f"/api/jobs/{job}/cancel").status_code == 404
     # The same setup from another visitor is their own run, not a link to someone else's.

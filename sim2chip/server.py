@@ -1408,6 +1408,12 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         spec = spec_mod.load(job.spec_path if job.spec_path.exists() else job.root / "request.json")
         return review.gather(job, Cache(home / "cache"), spec.labels, task=spec.task)
 
+    @app.get("/api/jobs/{name}/synthetic")
+    def synthetic_data(name: str, request: Request):
+        """The synthetic images of the job's last run: what went into training, what the filters left out and
+        why, with a few pictures of each (review.synthetic)."""
+        return review.synthetic(job_of(name, request))
+
     @app.get("/api/jobs/{name}/media/{path:path}")
     def media(name: str, path: str, request: Request, size: int = 360):
         """A small JPEG of an image inside the job folder (only the folders review shows); size 1024 for the

@@ -183,8 +183,14 @@ def test_a_scene_built_by_a_job_goes_to_the_next_job_on_its_dataset(tmp_path):
                       "mesh": "assets/sam3d/000_canon.glb"}]},
         {"photo_id": ids[1], "route": "street", "status": "failed", "why": "no ground"}]))
     lib.sync("u", [job])
-    (scene,) = lib.scenes("u")
+    scene, failed = lib.scenes("u")
     assert scene["name"] == "Kitchen table" and scene["dataset"] == ds and scene["jobs"] == ["j"]
+    assert scene["status"] == "ready" and scene["route"] == "support"
+    # A failed scene is shown too, with why, and no objects.
+    assert failed["status"] == "failed" and failed["why"] == "no ground" and failed["route"] == "street"
+    assert failed["objects"] == [] and not failed["thumb"]
+    # They outlive the library being opened again (a server restart).
+    assert [s["id"] for s in Library(tmp_path, tmp_path / "cache").scenes("u")] == [scene["id"], failed["id"]]
     (obj,) = lib.objects("u")
     assert obj["source"] == "scene" and obj["scene"] == scene["id"] and scene["objects"] == [obj["id"]]
     nxt = tmp_path / "jobs" / "k" / "input"
@@ -196,7 +202,7 @@ def test_a_scene_built_by_a_job_goes_to_the_next_job_on_its_dataset(tmp_path):
     assert not (nxt / "scenes" / scene["id"] / "logs").exists()
     # Deleting the scene keeps the objects taken out of it.
     lib.delete("u", "scene", scene["id"])
-    assert lib.scenes("u") == [] and lib.objects("u")[0]["scene"] is None
+    assert [s["id"] for s in lib.scenes("u")] == [failed["id"]] and lib.objects("u")[0]["scene"] is None
 
 
 def test_a_dataset_profile_is_made_once_and_read_by_the_chat(tmp_path):

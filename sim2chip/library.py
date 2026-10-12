@@ -36,7 +36,7 @@ from pathlib import Path
 from .review import StackedMarks, stacked
 from .workspace import IMAGE_EXT, Job, content_key
 
-VERSION = 5  # 4: datasets, labelings, classes, marks and reviews (2026-10-10); older libraries were emptied
+VERSION = 6  # 4: datasets, labelings, classes, marks and reviews (2026-10-10); older libraries were emptied
 # 5: models found on the internet left the owners' objects (2026-10-11): they are our catalog (asset_db.py)
 # 6: scenes built from a photo (photo2scene, docs/plan_photo2scene.md) and the objects taken out of them
 THUMB = 512  # side of the picture kept for an object's or a scene's card
@@ -930,14 +930,16 @@ class Library:
                 for oid, name, concept, source, file, thumb, kept, info, created, scene in rows]
 
     def scenes(self, owner: str) -> list[dict]:
-        """The owner's ready scenes, with the photo and dataset each comes from and the objects taken out of it."""
-        rows = self.db.execute("SELECT s.id, s.name, s.route, s.photo_id, p.dataset_id, s.thumb, s.info, s.created "
-                               "FROM scenes s LEFT JOIN photo p ON p.id = s.photo_id WHERE s.owner = ? "
-                               "AND s.status = 'ready' ORDER BY s.created DESC", (owner,)).fetchall()
-        return [{"id": sid, "name": name, "route": route, "photo_id": pid, "dataset": ds, "thumb": thumb is not None,
-                 **json.loads(info), "created": created, "jobs": self._used("scene", sid),
+        """The owner's scenes, ready ones first, with the photo and dataset each comes from, the objects taken out
+        of it and its route; a failed one says why (it is kept so its photo is not tried again)."""
+        rows = self.db.execute("SELECT s.id, s.name, s.route, s.status, s.why, s.photo_id, p.dataset_id, s.thumb, "
+                               "s.info, s.created FROM scenes s LEFT JOIN photo p ON p.id = s.photo_id "
+                               "WHERE s.owner = ? ORDER BY s.status != 'ready', s.created DESC", (owner,)).fetchall()
+        return [{"id": sid, "name": name, "route": route, "status": status, "why": why, "photo_id": pid,
+                 "dataset": ds, "thumb": thumb is not None, **json.loads(info), "created": created,
+                 "jobs": self._used("scene", sid),
                  "objects": [o for (o,) in self.db.execute("SELECT id FROM objects WHERE scene_id = ?", (sid,))]}
-                for sid, name, route, pid, ds, thumb, info, created in rows]
+                for sid, name, route, status, why, pid, ds, thumb, info, created in rows]
 
     def kits(self, owner: str) -> list[dict]:
         rows = self.db.execute("SELECT id, name, refs, created, updated FROM kits WHERE owner = ? "

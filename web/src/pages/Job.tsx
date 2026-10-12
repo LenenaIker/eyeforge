@@ -7,7 +7,7 @@ import { enterCameraMode, isHandheld } from "../live/device";
 import { captureFile, captureLabels, clearCaptures, listCaptures, removeCapture, type Capture } from "../live/captures";
 import { prepareImages } from "../images";
 import * as API from "../api";
-import type { Report, Stage, Status, Usage, Version } from "../api";
+import type { Report, Stage, Status, Synthetic, SyntheticShot, Usage, Version } from "../api";
 import { Badge, Button, Card, Notice, cx } from "../components/ui";
 import ReviewPanel from "./Review";
 
@@ -81,6 +81,7 @@ export default function JobPage() {
       {!s.running && s.report && <Improve job={s.job} counting={s.report.task === "count"} onRerun={restart} />}
       {s.report && s.usage && (s.usage.models.length > 0 || s.usage.gpu.length > 0) && <UsagePanel u={s.usage} />}
       {s.report && s.versions.length > 0 && <Versions job={s.job} versions={s.versions} />}
+      {!s.calibration && !s.labeling && !s.running && (s.report || failed) && <SyntheticPanel key={`s${reviewKey}`} job={s.job} />}
       {!s.calibration && !s.labeling && !s.running && (s.report || failed) && <ReviewPanel key={reviewKey} job={s.job} onRerun={restart} />}
       {!s.labeling && <ChatPanel job={s.job} reload={reviewKey} />}
     </div>
@@ -440,6 +441,58 @@ function Versions({ job, versions }: { job: string; versions: Version[] }) {
 }
 
 // What this model took: each Token Factory model with the steps it did, and the GPU time, with their cost.
+// The synthetic images of the last run: how many went into training and from which phase of rebuilding the
+// user's place, what the filters left out and why, and a few pictures of each.
+function SyntheticPanel({ job }: { job: string }) {
+  const [d, setD] = useState<Synthetic | null>(null);
+  useEffect(() => { API.getSynthetic(job).then(setD).catch(() => {}); }, [job]);
+  if (!d || (!d.went_in && !d.left_out.likeness && !d.left_out.review && !d.no_synthetic)) return null;
+  const rejected = d.reviews.filter((r) => !r.keep);
+  const groups: [string, string, SyntheticShot[], (x: SyntheticShot) => string | null][] = [
+    ["Went into training", `${d.went_in}`, d.samples.went_in,
+     (x) => x.phase === "extrapolation" ? "beyond the photo" : "your place"],
+    ["Left out: unlike your photos", `${d.left_out.likeness}`, d.samples.likeness,
+     (x) => x.similarity != null && d.threshold != null ? `${x.similarity.toFixed(2)} < ${d.threshold.toFixed(2)}` : null],
+    ["Left out by the vision model's review", `${d.left_out.review}`, d.samples.review, () => null],
+  ];
+  return (
+    <Card className="p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="font-semibold">Synthetic images</p>
+        <p className="text-sm text-muted">{d.went_in} went into training{d.went_in > 0 &&
+          ` · ${d.split.imitation} of your place, ${d.split.extrapolation} beyond what the photo shows`}</p>
+      </div>
+      {d.no_synthetic && <p className="mt-2 text-sm text-muted">None went in: {d.no_synthetic}.</p>}
+      <p className="mt-2 text-sm text-muted">
+        They come from one of your photos rebuilt in 3D, with your objects placed again at random. Before training,
+        the vision model rates each scene's views, and every image must look like at least one of your photos
+        {d.threshold != null && <> (similarity {d.threshold.toFixed(2)} or more, the least alike pair among your photos)</>}.
+      </p>
+      {rejected.length > 0 && (
+        <ul className="mt-3 space-y-1 text-sm">
+          {rejected.map((r) => (
+            <li key={r.scene}><span className="font-medium">{r.scene.replace(/_/g, " ")}</span>
+              <span className="text-muted"> rated {r.score ?? "?"}/5, left out: {r.worst.join("; ")}</span></li>
+          ))}
+        </ul>
+      )}
+      {groups.filter(([, , shots]) => shots.length > 0).map(([title, n, shots, note]) => (
+        <div key={title} className="mt-4">
+          <p className="text-sm font-medium">{title} <span className="text-muted">({n}{shots.length < Number(n) ? `, ${shots.length} shown` : ""})</span></p>
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {shots.map((x) => (
+              <figure key={x.image} className="overflow-hidden rounded-md bg-gray-100">
+                <img src={API.mediaUrl(job, x.image)} alt="" loading="lazy" className="block aspect-[4/3] w-full object-cover" />
+                {note(x) && <figcaption className="px-2 py-1 text-xs text-muted">{note(x)}</figcaption>}
+              </figure>
+            ))}
+          </div>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
 function UsagePanel({ u }: { u: Usage }) {
   const usd = (v: number | null) => v == null ? "" : v < 0.01 ? "< $0.01" : `$${v.toFixed(2)}`;
   const tokens = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);

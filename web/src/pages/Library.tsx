@@ -335,39 +335,47 @@ function ObjectUpload({ onClose, onDone }: { onClose: () => void; onDone: () => 
   );
 }
 
-const ROUTES: Record<string, string> = { support: "Things on one surface", street: "A street", room: "A room" };
+const ROUTES: Record<string, string> = { support: "Things on one surface", surface: "Surfaces seen from above",
+                                         street: "A street", room: "A room", none: "No route fits" };
 
 export function Scenes() {
   const { lib, error, reload } = useLibrary();
   const { sel, toggle, clear } = useSelection();
   const objects = new Map((lib?.objects ?? []).map((o) => [o.id, o]));
   const datasets = new Map((lib?.datasets ?? []).map((d) => [d.id, d]));
+  const ready = lib?.scenes.filter((sc) => sc.status === "ready") ?? [];
   return (
-    <Page title="Scenes" intro="Places rebuilt in 3D from one of your photos. Your objects are placed in them again at random, so the synthetic images look like your real place.">
+    <Page title="Scenes" intro="Places rebuilt in 3D from one of your photos: things on a table, a street or a room. Your objects are placed in them again at random, so the synthetic images look like your real place.">
       {!lib ? <Loading error={error} /> : lib.scenes.length === 0 ? (
         <Empty icon={<Mountain className="h-6 w-6" />} title="No scenes yet">
-          When a model counts things on a surface seen from above (a table, a lawn), it rebuilds one of your photos in
-          3D, takes out what moves and keeps it here, ready for your next models of that dataset.
+          When a model learns from your photos, it rebuilds one of them in 3D (things on a surface, a street or a
+          room), takes out what moves and keeps it here, ready for your next models of that dataset.
         </Empty>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {lib.scenes.map((sc) => {
             const ds = sc.dataset ? datasets.get(sc.dataset) : undefined;
+            const failed = sc.status !== "ready";
+            const names = [...new Set(sc.objects.map((id) => objects.get(id)?.name).filter(Boolean))];
             return (
               <Card key={sc.id} className={cx("relative overflow-hidden", sel.has(sc.id) && "ring-2 ring-brand-500")}>
-                <Tick on={sel.has(sc.id)} onToggle={() => toggle(sc.id)} />
-                <div className="aspect-[4/3] bg-gray-100">
-                  {sc.thumb && <img src={cardUrl("scene", sc.id)} alt="" loading="lazy" className="h-full w-full object-cover" />}
+                {!failed && <Tick on={sel.has(sc.id)} onToggle={() => toggle(sc.id)} />}
+                <div className="relative aspect-[4/3] bg-gray-100">
+                  {sc.thumb ? <img src={cardUrl("scene", sc.id)} alt="" loading="lazy" className="h-full w-full object-cover" />
+                    : failed && sc.photo_id != null &&
+                      <img src={libraryPhotoUrl(sc.photo_id)} alt="" loading="lazy" className="h-full w-full object-cover opacity-50 grayscale" />}
+                  {failed && <Badge tone="bad" className="absolute left-3 top-3">No scene</Badge>}
                 </div>
                 <div className="p-4">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="truncate font-medium" title={sc.name}>{sc.name}</div>
+                    <div className="truncate font-medium" title={sc.name}>{failed && sc.photo_id != null ? `Photo ${sc.photo_id}` : sc.name}</div>
                     <ItemMenu kind="scenes" id={sc.id} name={sc.name} onChanged={reload} />
                   </div>
                   <div className="text-sm text-muted">
                     {ROUTES[sc.route] ?? sc.route}
                     {ds && <> · from <Link to={`/app/datasets/${ds.id}`} className="hover:text-brand-600">{ds.name}</Link></>}
                   </div>
+                  {failed && <p className="mt-2 text-sm text-red-700">Why: {sc.why ?? "unknown"}.</p>}
                   {sc.objects.length > 0 && (
                     <div className="mt-3 flex gap-1.5 overflow-hidden" title="Taken out of the photo, placed again in every view">
                       {sc.objects.slice(0, 6).map((id) => {
@@ -380,6 +388,8 @@ export function Scenes() {
                       {sc.objects.length > 6 && <span className="self-center text-xs text-muted">+{sc.objects.length - 6}</span>}
                     </div>
                   )}
+                  {names.length > 0 && <p className="mt-1 truncate text-xs text-muted" title={names.join(", ")}>
+                    {sc.objects.length} object{sc.objects.length === 1 ? "" : "s"}: {names.join(", ")}</p>}
                   <Used jobs={sc.jobs} />
                 </div>
               </Card>
@@ -387,7 +397,7 @@ export function Scenes() {
           })}
         </div>
       )}
-      <SelectBar kind="scenes" picked={lib?.scenes.filter((sc) => sel.has(sc.id)) ?? []} kits={lib?.kits ?? []} onClear={clear} onDone={reload} />
+      <SelectBar kind="scenes" picked={ready.filter((sc) => sel.has(sc.id))} kits={lib?.kits ?? []} onClear={clear} onDone={reload} />
     </Page>
   );
 }
@@ -457,7 +467,7 @@ function KitEditor({ kit, lib, onClose, onDone }: { kit: Kit | null; lib: Librar
   const items: Record<typeof tab, Item[]> = {
     datasets: lib.datasets.map((d) => ({ id: d.id, name: d.name, pic: d.sample[0] ? libraryPhotoUrl(d.sample[0]) : null, note: `${d.photos} photos` })),
     objects: objects.map((o) => ({ id: o.id, name: o.name, pic: o.thumb ? cardUrl("object", o.id) : null, note: pretty(o.concept) })),
-    scenes: lib.scenes.map((s) => ({ id: s.id, name: s.name, pic: s.thumb ? cardUrl("scene", s.id) : null, note: "" })),
+    scenes: lib.scenes.filter((s) => s.status === "ready").map((s) => ({ id: s.id, name: s.name, pic: s.thumb ? cardUrl("scene", s.id) : null, note: "" })),
   };
   const go = async () => {
     if (!name.trim()) { setError("Give the kit a name first."); return; }
