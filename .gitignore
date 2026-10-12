@@ -11,3 +11,8 @@ sim2chip/web/dist/
 web/*.tsbuildinfo
 web/public/litert/
 sim2chip/build.json
+firmware/*/.pio/
+firmware/*/managed_components/
+firmware/*/sdkconfig.*
+!firmware/*/sdkconfig.defaults
+firmware/*/tools/node_modules/
