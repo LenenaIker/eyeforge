@@ -2,7 +2,8 @@
 street, room_template.py, street_template.py, crossroad.py) gets a few of phase 1's assets (flow_assets.py: the
 user's classes and the distractors) on whatever flat surface the camera sees: the floor, a desk top, a shelf
 board, the top of another asset. A distractor that stands in the same spot in every frame is learned as part of
-the place (user, 2026-10-08), so each view draws its own set, places and turns.
+the place (user, 2026-10-08), so each view draws its own set, places and turns. Classifying (--groups), each view
+shows the things of one class only, or of none in a share of the views, as on the support route (bg_build.py).
 
 Surfaces come from a height map of the place seen from above (pyrender, orthographic, the ceiling left out): a
 footprint fits where every cell under it is at one height, so the thing stands fully supported and clear of
@@ -131,6 +132,10 @@ def main():
     ap.add_argument('--res', type=float, default=0.01, help='height map cell, metres (coarser for big places)')
     ap.add_argument('--max-faces', type=int, default=40000)
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--groups', default=None,
+                    help='JSON {asset name: group}: each view shows the assets of one group only (assets in no group '
+                         'always), as bg_build.py does on the support route')
+    ap.add_argument('--empty', type=float, default=0.0, help='with --groups: share of views with no group at all')
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
     d = args.dir
@@ -177,6 +182,12 @@ def main():
         arr[f'obj{n_place + k}_colors'] = (m.visual.vertex_colors[:, :3] / 255).astype(np.float32)
         roles.append({'name': a['name'], 'role': a['role']})
 
+    groups = json.load(open(args.groups)) if args.groups else None
+    group_of = [groups.get(a['name']) if groups else None for a in assets]
+    shown = sorted({g for g in group_of if g is not None})
+    if groups:
+        print(f'one group per view among {shown}, {args.empty:.0%} with none', flush=True)
+
     lo_n, hi_n = (int(x) for x in args.per_view.split(','))
     cam = pyrender.IntrinsicsCamera(fx, fy, cx, cy, znear=0.01, zfar=5000)
     report = []
@@ -198,7 +209,12 @@ def main():
         renderer.delete()
 
         want = int(rng.integers(lo_n, hi_n + 1))
-        order = rng.permutation(len(assets))[:want]
+        pick = None
+        if groups is not None:
+            pick = None if not shown or rng.random() < args.empty else shown[rng.integers(len(shown))]
+            order = rng.permutation([k for k, g in enumerate(group_of) if g is None or g == pick])[:want]
+        else:
+            order = rng.permutation(len(assets))[:want]
         placed, why = [], Counter()
         heights = hm.h.copy()
         # Candidate cells: surface the camera sees, in the frame and not too close.
@@ -258,7 +274,7 @@ def main():
                 break
         view['objects'] = list(view['objects']) + placed
         report.append({'view': vi, 'asked': want, 'placed': [assets[i - n_place]['name'] for i, _ in placed],
-                       'rejected': dict(why)})
+                       'rejected': dict(why), **({'group': pick} if groups is not None else {})})
 
     out = os.path.join(d, args.out, 'isaac')
     shutil.rmtree(out, ignore_errors=True)  # renders and labels of an earlier draw would mix with this one

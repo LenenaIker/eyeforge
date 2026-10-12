@@ -248,14 +248,22 @@ def extend(flow: Flow, r: dict):
         raise Stop(f"only {v['share']:.0%} of the extended place's views pass the check")
 
 
-def compose(flow: Flow, seed: int) -> list[dict]:
+def compose(flow: Flow, seed: int, groups: dict[str, str] | None = None, empty: float = 0.0) -> list[dict]:
     """3.5 The erased things placed again at random in every kept view of a built place (a new draw per view and
-    per seed), rendered and labelled. Returns [{"file": populated/isaac/render_NN.png, "boxes": [...]}]."""
+    per seed), rendered and labelled. groups ({thing's name: group}): each view shows the things of one group only
+    (things in no group always), or of none in a share `empty` of the views. Returns [{"file":
+    populated/isaac/render_NN.png, "boxes": [...]}], the photo's camera (view 0) left out."""
     d = flow.d
     for out in COMPOSED:  # every job its own things; removed, never written over (links to the library's files)
         shutil.rmtree(d / out, ignore_errors=True)
     r = flow.json("route.json")
-    flow.run("3.5_populate", "mesh", "flow_populate.py", ["--dir", d, "--seed", seed], ["populated/isaac/scene.json"])
+    one = []
+    if groups is not None:
+        (d / "populated").mkdir()
+        (d / "populated/groups.json").write_text(json.dumps(groups))
+        one = ["--groups", d / "populated/groups.json", "--empty", empty]
+    flow.run("3.5_populate", "mesh", "flow_populate.py", ["--dir", d, "--seed", seed, *one],
+             ["populated/isaac/scene.json"])
     p = flow.json("populated/populate.json")
     if not sum(p["placed_per_view"]):
         flow.log("  no erased thing found a place in any view")
@@ -263,7 +271,7 @@ def compose(flow: Flow, seed: int) -> list[dict]:
     flow.run("3.5_render", "isaac", "piece_isaac.py", ["--dir", d / "populated", "--hdri-dir", hdri_dir(r["hdri_group"]),
                                                        "--seed", seed], ["populated/sheet_isaac.jpg"])
     flow.run("3.5_labels", "mesh", "view_labels.py", ["--dir", d / "populated"], ["populated/isaac/labels.json"])
-    kept = set(flow.json("extended/views.json")["kept"])
+    # populate keeps only the views the check passed, numbered again from the photo's camera (render_00).
     labels = flow.json("populated/isaac/labels.json")
     return [{"file": f"populated/isaac/{name}", "boxes": boxes} for name, boxes in sorted(labels.items())
-            if int(name.split("_")[1].split(".")[0]) in kept and (d / "populated/isaac" / name).exists()]
+            if name != "render_00.png" and (d / "populated/isaac" / name).exists()]

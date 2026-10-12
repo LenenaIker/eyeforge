@@ -246,7 +246,9 @@ def test_revise_a_trained_job(app, tmp_path):
 
     jetson = json.dumps({**GOOD, "hardware": "jetson_nano"})
     r = app.post("/api/jobs/barn_cam/revise", data={"spec": jetson, "dry": "true"}).json()
-    assert r["changed"] == ["hardware"] and "render" not in r["stages"] and "train" in r["stages"]
+    # The hardware changes ingest's photos, and so the scenes composed after it (roadmap C.5: level photos have a
+    # route classifying too); the template's Isaac stages stay off.
+    assert r["changed"] == ["hardware"] and "fetch_assets" not in r["stages"] and "train" in r["stages"]
     assert not app.launched and not (job.root / "versions").exists()  # dry: nothing happens
     r = app.post("/api/jobs/barn_cam/revise", data={"spec": jetson}).json()
     assert app.launched[-1][0] == "barn_cam" and app.launched[-1][3] is None and r["rerun_from"] == r["stages"][0]

@@ -68,26 +68,35 @@ def test_routes_this_module_does_not_build_stop_before_any_model(tmp_path, photo
 
 
 def test_compose_keeps_the_views_the_check_passed_without_the_photo_camera(tmp_path):
+    """populate keeps the photo's camera and the views the check passed (extended/views.json), numbered again:
+    kept [2, 5, 6] render as render_00 (the photo) to render_03. The photo 21 of the roads job lost 4 of its 11
+    kept views to the old numbering (2026-10-12)."""
     d = tmp_path
     routed(d, "village_street_day")
-    write(d, "extended/views.json", {"kept": [1, 3]})
-    write(d, "populated/populate.json", {"placed_per_view": [2, 3, 0, 1]})
+    write(d, "extended/views.json", {"kept": [2, 5, 6]})
     flow = FakeFlow(d)
     # compose() clears the job's last things first: the step outputs appear after that, as the steps would write.
     real_run = flow.run
+    asked = {}
 
-    def run(step, *a, **kw):
+    def run(step, python, script, args, *a, **kw):
         if step == "3.5_populate":
+            asked["args"] = [str(x) for x in args]
             write(d, "populated/populate.json", {"placed_per_view": [2, 3, 0, 1]})
         if step == "3.5_labels":
             write(d, "populated/isaac/labels.json", {f"render_{k:02d}.png": [{"box": [0, 0, 1, 1]}] for k in range(4)})
             for k in range(4):
                 (d / f"populated/isaac/render_{k:02d}.png").write_bytes(b"")
-        return real_run(step, *a, **kw)
+        return real_run(step, python, script, args, *a, **kw)
     flow.run = run
     frames = place.compose(flow, 7)
-    assert [f["file"] for f in frames] == ["populated/isaac/render_01.png", "populated/isaac/render_03.png"]
+    assert [f["file"] for f in frames] == [f"populated/isaac/render_{k:02d}.png" for k in (1, 2, 3)]
     assert [s for s, *_ in flow.ran] == ["3.5_populate", "3.5_render", "3.5_labels"]
+    assert "--groups" not in asked["args"]
+    # Classifying: the groups go to populate, one class per view.
+    place.compose(flow, 7, {"red car": "car", "bus": "bus"}, 0.1)
+    assert asked["args"][-4:] == ["--groups", str(d / "populated/groups.json"), "--empty", "0.1"]
+    assert json.loads((d / "populated/groups.json").read_text()) == {"red car": "car", "bus": "bus"}
 
 
 def test_the_steps_need_nothing_from_the_experiments():
@@ -138,7 +147,7 @@ def test_the_stage_routes_each_photo(tmp_path, monkeypatch):
     monkeypatch.setattr(photo2scene, "build", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("support")))
     monkeypatch.setattr(place, "observe", observe)
     monkeypatch.setattr(place, "build", build)
-    monkeypatch.setattr(place, "compose", lambda flow, seed: composed.append(seed) or [
+    monkeypatch.setattr(place, "compose", lambda flow, seed, groups, empty: composed.append(seed) or [
         {"file": "populated/isaac/render_01.png", "boxes": [{"box": [1, 1, 5, 5], "name": "car", "role": "target"},
                                                             {"box": [2, 2, 3, 3], "name": "bench", "role": "distractor"}]}])
     monkeypatch.setattr(label, "phrases_of", lambda spec, cache, log=print: {"car": ["car"]})
@@ -167,3 +176,69 @@ def test_the_street_bench_routes_by_rule():
     assert {n for n, r in got.items() if r["route"] == "out_of_scope"} == {"night_market", "night_street"}
     day = {n: r for n, r in got.items() if r["route"] != "out_of_scope"}
     assert len(day) == 7 and all(r["route"] == "village_street_day" and r["template_built"] for r in day.values())
+
+
+def test_classifying_in_a_street_shows_one_class_per_view(tmp_path, monkeypatch):
+    """Classifying, each class gets its street scene from a photo of it and each view shows one class, or none for
+    the background class; a view with two classes is left out (roadmap C.5, as B.4 on the support route)."""
+    from sim2chip import llm, photo2scene
+    from sim2chip.spec import from_dict
+    from sim2chip.stages import Context, label
+    from sim2chip.stages.scene_from_photo import SceneFromPhoto
+    from sim2chip.workspace import Cache, open_job
+
+    class Rater:
+        def __init__(self, usage_log=None):
+            pass
+
+        def model_for(self, role):
+            return "m"
+
+        def chat(self, *a, **kw):
+            return json.dumps({"count": 1, "score": 7, "why": "clear", "things": True})
+    photos = {}
+    for i, cls in ((1, "car"), (2, "bus")):
+        Image.new("RGB", (8, 8), (i, 0, 0)).save(tmp_path / f"{i}.jpg")
+        photos[cls] = (i, tmp_path / f"{i}.jpg")
+
+    def build(flow, photo, targets):
+        (flow.d / "extended").mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8)).save(flow.d / "photo.png")
+        import numpy as np
+        np.savez(flow.d / "assets.npz", masks=np.zeros((0, 8, 8), bool))
+        thing = "red car" if photo == photos["car"][1] else "bus"
+        write(flow.d, "assets.json", {"assets": [{"name": thing}, {"name": "bench"}]})
+        return {"route": "village_street_day", "template": "crossroads", "hdri_group": "countryside", "objects": []}
+    asked = []
+
+    def compose(flow, seed, groups=None, empty=0.0):
+        asked.append((groups, empty))
+        (thing,) = set(groups)
+        box = lambda name, role="target": {"box": [1, 1, 5, 5], "name": name, "role": role}  # noqa: E731
+        return [{"file": "populated/isaac/render_01.png", "boxes": [box(thing), box("bench", "distractor")]},
+                {"file": "populated/isaac/render_02.png", "boxes": [box("bench", "distractor")]},
+                {"file": "populated/isaac/render_03.png", "boxes": [box(thing), box("car" if thing == "bus" else "bus")]}]
+    monkeypatch.setattr(llm, "Client", Rater)
+    monkeypatch.setattr(photo2scene, "missing_pythons", lambda: [])
+    monkeypatch.setattr(photo2scene, "build", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("support")))
+    monkeypatch.setattr(place, "observe", lambda flow, photo: {"route": "village_street_day"})
+    monkeypatch.setattr(place, "build", build)
+    monkeypatch.setattr(place, "compose", compose)
+    monkeypatch.setattr(label, "phrases_of", lambda spec, cache, log=print: {"car": ["car"], "bus": ["bus"]})
+    monkeypatch.setattr(SceneFromPhoto, "_candidates",
+                        staticmethod(lambda ctx, tried: [(c, [photos[c]]) for c in ("bus", "car")]))
+    size = {"measure": "height", "range": [1.4, 4.0]}
+    spec = from_dict({"name": "r", "task": "roi_classification", "background_class": "empty",
+                      "user_data": {"raw": "photos"},
+                      "classes": [{"id": c, "names": [c], "size_m": size, "assets": {"source": "search", "queries": [c]}}
+                                  for c in ("car", "bus")]})
+    job = open_job(tmp_path, "j")
+    SceneFromPhoto().run(Context(spec, job, Cache(tmp_path / "cache")))
+    out = job.stage_dir("scene_from_photo")
+    scenes = json.loads((out / "scenes.json").read_text())
+    assert [(s["photo_id"], s["route"], s["status"]) for s in scenes] == [(2, "street", "ready"), (1, "street", "ready")]
+    assert asked == [({"bus": "bus"}, spec.generation.empty_ratio), ({"red car": "car"}, spec.generation.empty_ratio)]
+    frames = json.loads((out / "frames.json").read_text())
+    assert [(f["file"], f["class"]) for f in frames] == [
+        ("photo_2/populated/isaac/render_01.png", "bus"), ("photo_2/populated/isaac/render_02.png", "empty"),
+        ("photo_1/populated/isaac/render_01.png", "car"), ("photo_1/populated/isaac/render_02.png", "empty")]

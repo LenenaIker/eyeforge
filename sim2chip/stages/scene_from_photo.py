@@ -6,8 +6,7 @@ the support route, a street or a room to the place routes (photo2scene.place), a
 without a template) nowhere; a photo that does not fit is noted as failed with why, not tried again, and the next
 one is tried. Classes that are surfaces, not things to move around, take the surface route (the vision model says
 so when it rates the photos). Counting views hold any of the classes; classifying views hold one class each (or
-none, for the background class), and every class gets its own scene, from a photo of it; classifying is on the
-support route only so far.
+none, for the background class), and every class gets its own scene, from a photo of it, on every route.
 
 Render collects the frames (the scene template is off, base.TEMPLATE). The scene photos stay out of the test
 (ingest.scene_photos), and the new one is picked among the photos ingest put in training.
@@ -75,26 +74,22 @@ def _link(src, dst):
 
 
 def no_route(spec) -> str | None:
-    """Why no photo2scene route fits this spec, in the user's words, or None when one does. Counting, the photos
-    tell (a surface from above, a street or a room: SceneFromPhoto.run). Classifying, only the support route so far:
-    things on one surface seen from above (the photo analysis sets the camera's pitch then). Whether the classes are
-    things or surfaces only the photos tell (SceneFromPhoto._pick)."""
-    from ..tasks import task_of
+    """Why no photo2scene route fits this spec, in the user's words, or None when one does. The photos tell
+    the route (a surface from above, a street or a room: SceneFromPhoto.run), and whether the classes are things or
+    surfaces (SceneFromPhoto._pick)."""
     if not spec.synthetic:
         return "the setup asks for your photos only"
     if not spec.generation.photo_scenes:
         return "rebuilding your place is turned off in the setup"
     if not spec.user_data.raw:
         return "rebuilding your place needs unsorted photos of it"
-    if not spec.camera.pitch_deg and not task_of(spec).points:
-        return "your photos do not look down on one surface, the only kind of place EyeForge rebuilds so far"
     return None
 
 
 class SceneFromPhoto(Stage):
     name = "scene_from_photo"
-    version = "5"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view;
-    # 4: surfaces re-framed in 3D; 5: streets and rooms
+    version = "6"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view;
+    # 4: surfaces re-framed in 3D; 5: streets and rooms; 6: classifying in them, every view of a place kept
     runtime = "cpu"   # it runs each step in the Python that has its models (photo2scene.PYTHONS)
     gpu = "rtx"
     max_hours = 2
@@ -162,8 +157,6 @@ class SceneFromPhoto(Stage):
                     flow = p2s.Flow(work, usage, ctx.log)
                     route = ROUTES.get(place.observe(flow, photo)["route"], "support")
                     ctx.log(f"photo {pid} takes the {route} route")
-                    if route != "support" and not task_of(ctx.spec).points:
-                        raise p2s.Stop(f"classifying in a {route} is not built yet, only on a surface seen from above")
                     summary = (p2s.build if route == "support" else place.build)(flow, photo, targets)
                 except p2s.Stop as e:
                     ctx.log(f"photo {pid} makes no scene: {e}")
@@ -237,11 +230,6 @@ class SceneFromPhoto(Stage):
         class; a view whose one class is out of sight is left out."""
         from ..photo2scene import compose, place
         from ..tasks import task_of
-        if (flow.d / "extended").is_dir():  # a street or a room (counting only so far)
-            return [{"file": f"{scene}/{v['file']}", "scene": scene,
-                     "boxes": [[cls, *b["box"]] for b in v["boxes"] if b.get("role") == "target"
-                               and (cls := self._class_of(b["name"], phrases))]}
-                    for v in place.compose(flow, ctx.spec.generation.seed)]
         groups, empty = None, 0.0
         if not task_of(ctx.spec).points:
             cat = flow.d / "assets.json"
@@ -249,7 +237,10 @@ class SceneFromPhoto(Stage):
             groups = {n: cls for n in names if (cls := self._class_of(n, phrases))}
             empty = ctx.spec.generation.empty_ratio if ctx.spec.background_class else 0.0
         out = []
-        for v in compose(flow, VIEWS, ctx.spec.generation.seed, groups, empty):
+        seed = ctx.spec.generation.seed
+        views = (place.compose(flow, seed, groups, empty) if (flow.d / "extended").is_dir()  # a street or a room
+                 else compose(flow, VIEWS, seed, groups, empty))
+        for v in views:
             boxes = [[cls, *b["box"]] for b in v["boxes"] if b.get("role") == "target"
                      and (cls := self._class_of(b["name"], phrases))]
             frame = {"file": f"{scene}/{v['file']}", "scene": scene, "boxes": boxes}
