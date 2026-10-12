@@ -9,7 +9,7 @@ from PIL import Image
 from sim2chip.spec import from_dict
 from sim2chip.stages import Context
 from sim2chip.stages.crops import Crops
-from sim2chip.stages.export import c_array
+from sim2chip.stages.export import c_array, model_blob
 from sim2chip.stages.ingest import Ingest
 from sim2chip.stages.qa_assets import QAAssets
 from sim2chip.workspace import Cache, link_input, open_job
@@ -194,6 +194,17 @@ def test_c_array():
     assert "sim2chip_model[20]" in h and '"cow"' in h and "0x13" in h
 
 
+def test_model_blob_header_matches_the_firmware():
+    import struct
+    import zlib
+    model = bytes(range(256)) * 3
+    b = model_blob(model, ["empty", "cow"], 96, False)
+    assert b[:4] == b"EFM1"
+    header, size, crc, side, classes, task = struct.unpack_from("<IIIHHB", b, 4)
+    assert header % 16 == 0 and b[header:] == model and size == len(model) and crc == zlib.crc32(model)
+    assert (side, classes, task) == (96, 2, 0) and b[24:header].rstrip(b"\0").split(b"\0") == [b"empty", b"cow"]
+
+
 def test_export_report_is_portable(tmp_path):
     from sim2chip.stages.export import Export
     ctx = ctx_for(tmp_path)
@@ -210,6 +221,7 @@ def test_export_report_is_portable(tmp_path):
     assert (out / report["portable_model_path"]).read_bytes() == b"\x01" * 1024
     assert (out / "labels.txt").read_text().split() == ctx.spec.labels
     assert (out / "model_data.h").exists() == (ctx.hardware.runtime == "tflite-micro")
+    assert (out / "model.bin").exists() == (ctx.hardware.runtime == "tflite-micro")
 
 
 def test_export_ships_the_best_count_detector_as_its_recipe_says(tmp_path):

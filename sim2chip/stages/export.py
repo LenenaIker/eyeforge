@@ -1,11 +1,13 @@
 """Package the model: the int8 .tflite for the device, a portable copy with float32 input and output
-(phones, PCs, any TFLite runtime), the labels, a C array when the device runs TFLite Micro, and a report.
+(phones, PCs, any TFLite runtime), the labels, a C array and a flashable blob when the device runs TFLite Micro,
+and a report.
 
 The shipped model is the seed with the best validation accuracy (the real test set does not choose it).
 The report lists the 3D models used and their authors, as their CC-BY licenses require.
 Both .tflite files get a fixed batch of 1: Keras exports a dynamic one (-1), which runtimes that cannot resize
 inputs, such as LiteRT.js in the web app's live test, refuse.
-Output: export/{model_int8.tflite, model.tflite, labels.txt, report.json}, export/model_data.h (TFLite Micro);
+Output: export/{model_int8.tflite, model.tflite, labels.txt, report.json}, export/{model_data.h, model.bin}
+(TFLite Micro; model.bin goes to the "model" partition of our firmware, firmware/esp32cam);
 a count detector (hardware counter) ships model.tflite only, float16 weights, read as report output says.
 """
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import json
 import shutil
 import struct
+import zlib
 
 from .base import Context, Stage
 from ..tasks import recipe_of, task_of
@@ -20,7 +23,7 @@ from ..tasks import recipe_of, task_of
 
 class Export(Stage):
     name = "export"
-    version = "11"  # 4: fixed batch 1 in the .tflite files (live test in the browser); 5: shipped_test; 6: advice; 7: crowd advice; 8: density output; 9: count detector; 10: why no synthetic images; 11: synthetic frames kept and left out
+    version = "12"  # 4: fixed batch 1 in the .tflite files (live test in the browser); 5: shipped_test; 6: advice; 7: crowd advice; 8: density output; 9: count detector; 10: why no synthetic images; 11: synthetic frames kept and left out; 12: model.bin
     runtime = "cpu"
     results = ("*",)
     after = ("train", "evaluate", "qa_assets")
@@ -49,6 +52,7 @@ class Export(Stage):
         (out / "labels.txt").write_text("\n".join(ctx.spec.labels) + "\n")
         if hw.runtime == "tflite-micro":
             (out / "model_data.h").write_text(c_array(blob, ctx.spec.labels, hw.input_size))
+            (out / "model.bin").write_bytes(model_blob(blob, ctx.spec.labels, hw.input_size, counting))
 
         kb = round(len(blob) / 1024, 1)
         if kb > hw.max_model_kb:
@@ -65,6 +69,7 @@ class Export(Stage):
             # model.tflite: float32 RGB 0-255 in (no normalization, the model does it), probabilities out.
             "portable_model_path": "model.tflite", "portable_input": "float32 RGB 0-255, no normalization",
             "c_array_path": "model_data.h" if hw.runtime == "tflite-micro" else None,
+            "device_blob_path": "model.bin" if hw.runtime == "tflite-micro" else None,
             "seed": int(seed), "task": ctx.spec.task, "metric": task.metric,
             "val_score": summary[seed][val], "val_accuracy": None if counting else summary[seed]["val_acc"],
             "real_test": json.loads(ev.read_text()) if ev.exists() else None,
@@ -158,6 +163,20 @@ def c_array(blob: bytes, labels: list[str], size: int) -> str:
         f"static const char *const sim2chip_labels[] = {{{names}}};\n"
         f"alignas(16) static const uint8_t sim2chip_model[{len(blob)}] = {{\n  " + ",\n  ".join(rows) + "\n};\n"
     )
+
+
+MODEL_BLOB_HEADER = 24  # fixed fields; the labels follow
+
+
+def model_blob(blob: bytes, labels: list[str], size: int, counting: bool) -> bytes:
+    """The model as our firmware reads it from its "model" partition (firmware/esp32cam/src/main.cpp):
+    a header with the input side, the labels and a CRC-32 that catches a half-written flash, then the .tflite.
+    The header is padded to 16 bytes so the model stays aligned for TFLite Micro."""
+    names = b"".join(c.encode() + b"\0" for c in labels)
+    header = MODEL_BLOB_HEADER + len(names)
+    header += -header % 16
+    fixed = b"EFM1" + struct.pack("<IIIHHB3x", header, len(blob), zlib.crc32(blob), size, len(labels), int(counting))
+    return (fixed + names).ljust(header, b"\0") + blob
 
 
 def box_output(trained: dict) -> dict:

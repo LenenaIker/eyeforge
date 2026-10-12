@@ -129,7 +129,7 @@ class Job:
             f.write(json.dumps(rec) + "\n")
 
 
-VERSION_FILES = ("model_int8.tflite", "model.tflite", "labels.txt", "model_data.h", "report.json")
+VERSION_FILES = ("model_int8.tflite", "model.tflite", "labels.txt", "model_data.h", "model.bin", "report.json")
 CURRENT_VERSION = "version.json"  # input/version.json: number and reason of the model export/ holds or will hold
 PREVIOUS = "previous"             # input/previous/: the model a rerun replaces, scored again on the new test set
 

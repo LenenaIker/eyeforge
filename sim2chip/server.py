@@ -33,7 +33,7 @@ from .pipeline import Pipeline
 from .stages.render import no_synthetic
 from .workspace import IMAGE_EXT, Cache, Job, content_key, current_version, last_engine, open_job, snapshot, versions
 
-DOWNLOADS = {"model.tflite", "labels.txt", "model_int8.tflite", "model_data.h", "report.json"}
+DOWNLOADS = {"model.tflite", "labels.txt", "model_int8.tflite", "model_data.h", "model.bin", "report.json"}
 WEB = Path(__file__).parent / "web"
 DIST = WEB / "dist"
 OWNER = "owner"  # file in a public server's job folder: the visitor who started it
