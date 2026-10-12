@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "board": "ESP32-CAM",
+  "hardware": ["esp32cam"],
+  "chip": "ESP32",
+  "usb": "usb-serial",
+  "build": "firmware/esp32cam, ESP-IDF, built 2026-10-12",
+  "parts": [
+    { "name": "bootloader", "offset": "0x1000", "file": "bootloader.bin" },
+    { "name": "partition table", "offset": "0x8000", "file": "partitions.bin" },
+    { "name": "boot selector", "offset": "0xe000", "file": "ota_data_initial.bin" },
+    { "name": "firmware", "offset": "0x10000", "file": "firmware.bin" }
+  ],
+  "model": { "offset": "0x190000", "max_size": "0x200000", "magic": "EFM1" },
+  "baud": 460800,
+  "monitor_baud": 115200
+}

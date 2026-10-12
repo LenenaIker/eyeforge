@@ -54,6 +54,7 @@ export type Report = {
   job: string; hardware: string; labels: string[]; background?: string | null; input: number[]; model_kb: number; task: string;
   val_score?: number; val_accuracy?: number; real_test?: RealTest; real_accuracy?: RealTest;
   c_array_path: string | null; portable_model_path?: string;
+  device_blob_path?: string | null;  // model.bin, flashed on its own next to our firmware (TFLite Micro boards)
   quantization?: string;  // int8, or float16 for a count detector
   model_path?: string;  // the device model: model_int8.tflite, or model.tflite for a count detector
   // The shipped model's own score on the real test photos (the headline); real_test is the mean of the seeds.

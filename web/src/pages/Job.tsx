@@ -2,6 +2,8 @@ import { AlertTriangle, Camera, Check, ChevronRight, Clock, Cpu, Download, Dolla
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ModelMenu } from "../components/library";
+import { FlashCard } from "../components/FlashCard";
+import { flashable } from "../flash/board";
 import { useApp } from "./AppShell";
 import { enterCameraMode, isHandheld } from "../live/device";
 import { captureFile, captureLabels, clearCaptures, listCaptures, removeCapture, type Capture } from "../live/captures";
@@ -239,6 +241,7 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
   const files = [["model_int8.tflite", "Model (int8)", !single],
                  ["model.tflite", single ? "Model" : "Portable model", single || !!r.portable_model_path],
                  ["labels.txt", "Labels", !!r.portable_model_path], ["model_data.h", "C array for the chip", r.c_array_path !== null],
+                 ["model.bin", "Model for our ESP32 firmware", !!r.device_blob_path],
                  ["report.json", "Full report", true]] as const;
   return (
     <div className="space-y-4">
@@ -292,11 +295,20 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
         </Card>
         <Card className="bg-gradient-to-br from-ember-50 to-white p-5">
           <p className="flex items-center gap-2 font-semibold"><Cpu className="h-4 w-4 text-ember-700" /> Next: put it on your device</p>
-          <p className="mt-2 text-sm text-muted">
-            The model runs without a network. On a microcontroller, the C array goes into the firmware; on a
-            phone, Raspberry Pi or Jetson, the .tflite file loads with TensorFlow Lite.
-          </p>
-          <p className="mt-3 flex items-center gap-1 text-sm font-medium text-ember-700"><Zap className="h-4 w-4" /> Flashing from the browser is coming <ChevronRight className="h-4 w-4" /></p>
+          {flashable(r.hardware, r.device_blob_path) ? (
+            <FlashCard job={job} hardware={r.hardware} modelUrl={API.fileUrl(job, "model.bin")} />
+          ) : (
+            <>
+              <p className="mt-2 text-sm text-muted">
+                The model runs without a network. On a microcontroller, the C array goes into the firmware; on a
+                phone, Raspberry Pi or Jetson, the .tflite file loads with TensorFlow Lite.
+              </p>
+              {r.hardware === "esp32cam" && (
+                <p className="mt-3 flex items-center gap-1 text-sm font-medium text-ember-700"><Zap className="h-4 w-4" />
+                  Packed before flashing from the browser existed: retrain it to flash it from here</p>
+              )}
+            </>
+          )}
         </Card>
       </div>
     </div>

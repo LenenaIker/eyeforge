@@ -32,15 +32,23 @@ export default defineConfig({
       workbox: {
         globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
         // Fonts load by unicode range: the browser fetches other alphabets only when a page uses them.
-        globIgnores: ["**/inter-{cyrillic,cyrillic-ext,greek,greek-ext,vietnamese}-*", "litert/**"],
+        globIgnores: ["**/inter-{cyrillic,cyrillic-ext,greek,greek-ext,vietnamese}-*", "litert/**", "assets/esptool/**"],
         // The model runtime (9 MB of WebAssembly) is fetched the first time someone tests a model live, then
         // kept for offline use; it is not part of the app's first download.
-        runtimeCaching: [{ urlPattern: /\/litert\//, handler: "CacheFirst", options: { cacheName: "litert-runtime" } }],
+        // Same for the flasher (esptool-js, 300 KB with every chip's loader): only people who flash a board need it.
+        // The board firmware (/firmware/*.bin) is never cached: it always comes from the server.
+        runtimeCaching: [{ urlPattern: /\/litert\//, handler: "CacheFirst", options: { cacheName: "litert-runtime" } },
+                         { urlPattern: /\/assets\/esptool\//, handler: "CacheFirst", options: { cacheName: "esptool" } }],
         navigateFallback: "/index.html",
         navigateFallbackDenylist: [/^\/api\//, /^\/auth\//],  // the login redirects must reach the server
       },
     }),
   ],
-  build: { outDir: "../sim2chip/web/dist", emptyOutDir: true },
+  build: {
+    outDir: "../sim2chip/web/dist", emptyOutDir: true,
+    // esptool-js chunks go to their own folder so the service worker can leave them out of the first download
+    rolldownOptions: { output: { chunkFileNames: (c) =>
+      c.moduleIds.some((id) => id.includes("/node_modules/esptool-js/")) ? "assets/esptool/[name]-[hash].js" : "assets/[name]-[hash].js" } },
+  },
   server: { proxy: { "/api": "http://127.0.0.1:8000" } },
 });
