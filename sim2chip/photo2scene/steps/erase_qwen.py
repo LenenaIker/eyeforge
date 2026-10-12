@@ -67,36 +67,70 @@ def prompt_for(names):
 LIGHTNING = ('lightx2v/Qwen-Image-Edit-2511-Lightning', 'Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors')
 
 
-def load(bits, lightning=False):
-    if bits == 16:
-        pipe = QwenImageEditPlusPipeline.from_pretrained(BASE, torch_dtype=torch.bfloat16)
+def local(repo):
+    """The repo's folder in the Hugging Face cache when it is there, else its id. Offline (a cloud job, its weights
+    pulled from the cache bucket), diffusers still asks the Hub about a sharded model given by id."""
+    from huggingface_hub import snapshot_download
+    try:
+        return snapshot_download(repo, local_files_only=True)
+    except Exception:
+        return repo
+
+
+def load(bits, lightning=False, encoder_bits=None, gpu=False, save=None):
+    """bits: the transformer's, encoder_bits the text encoder's (default the same). gpu: the whole pipeline stays on
+    the GPU instead of moving each model there in turn from the CPU (an L40S holds both in 4 bits). save: a folder
+    to write the quantized pipeline to, before its LoRAs, instead."""
+    encoder_bits = encoder_bits or bits
+    base = local(BASE)
+    nf4 = dict(load_in_4bit=True, bnb_4bit_quant_type='nf4', bnb_4bit_compute_dtype=torch.bfloat16)
+    saved = os.environ.get('SIM2CHIP_QWEN_NF4')  # the pipeline already in 4 bits (--save-nf4): a third of the
+    # bytes to read, nothing to quantize (on a Nebius disk the bf16 load took 7-8 min, 2026-10-12)
+    if bits == 4 and encoder_bits == 4 and saved and os.path.exists(os.path.join(saved, 'model_index.json')):
+        pipe = QwenImageEditPlusPipeline.from_pretrained(saved, torch_dtype=torch.bfloat16)
+    elif bits == 16 and encoder_bits == 16:
+        pipe = QwenImageEditPlusPipeline.from_pretrained(base, torch_dtype=torch.bfloat16)
     else:
-        nf4 = dict(load_in_4bit=True, bnb_4bit_quant_type='nf4', bnb_4bit_compute_dtype=torch.bfloat16)
         # In 4 bits the first block's modulation and the in/out projections turn the whole picture into
         # speckle (home_office, 2026-10-08): they stay in bf16.
         skip = ['transformer_blocks.0.img_mod', 'img_in', 'txt_in', 'proj_out', 'norm_out', 'time_text_embed']
         transformer = QwenImageTransformer2DModel.from_pretrained(
-            BASE, subfolder='transformer', quantization_config=DiffusersBnb(**nf4, llm_int8_skip_modules=skip),
-            torch_dtype=torch.bfloat16)
+            base, subfolder='transformer', torch_dtype=torch.bfloat16,
+            **({} if bits == 16 else {'quantization_config': DiffusersBnb(**nf4, llm_int8_skip_modules=skip)}))
         encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            BASE, subfolder='text_encoder', quantization_config=TransformersBnb(**nf4), torch_dtype=torch.bfloat16)
-        pipe = QwenImageEditPlusPipeline.from_pretrained(BASE, transformer=transformer, text_encoder=encoder,
+            base, subfolder='text_encoder', torch_dtype=torch.bfloat16,
+            **({} if encoder_bits == 16 else {'quantization_config': TransformersBnb(**nf4)}))
+        pipe = QwenImageEditPlusPipeline.from_pretrained(base, transformer=transformer, text_encoder=encoder,
                                                          torch_dtype=torch.bfloat16)
-    pipe.load_lora_weights(LORA, adapter_name='remover')
+    if save:
+        lightning = False
+    else:
+        pipe.load_lora_weights(local(LORA), adapter_name='remover')
     if lightning:
         # 4 steps instead of 40 (lightx2v, Apache 2.0): 23 s instead of 260 on the 3090. One pass leaves more
         # behind (home_office 12 of 24 against 1), but three passes, each naming what is left, came out cleaner
         # than one full pass on user_desk, home_office and bottles in 45-90 s (erase_bench.py, 2026-10-08).
-        pipe.load_lora_weights(LIGHTNING[0], weight_name=LIGHTNING[1], adapter_name='lightning')
+        pipe.load_lora_weights(local(LIGHTNING[0]), weight_name=LIGHTNING[1], adapter_name='lightning')
         pipe.set_adapters(['remover', 'lightning'], adapter_weights=[1.0, 1.0])
-    pipe.enable_model_cpu_offload()
+    if save:
+        pipe.save_pretrained(save)
+        return None
+    if gpu:
+        pipe.to('cuda')
+    else:
+        pipe.enable_model_cpu_offload()
     return pipe
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--dir', action='append', required=True)
-    ap.add_argument('--bits', type=int, choices=[4, 16], default=4, help='4 on the 3090, 16 on an L40S')
+    ap.add_argument('--dir', action='append', default=[])
+    ap.add_argument('--save-nf4', help='write the 4-bit pipeline to this folder and stop (SIM2CHIP_QWEN_NF4 reads it)')
+    ap.add_argument('--bits', type=int, choices=[4, 16], default=int(os.environ.get('SIM2CHIP_ERASE_BITS', 4)),
+                    help="the transformer's: 4 on the 3090")
+    ap.add_argument('--encoder-bits', type=int, choices=[4, 16], help="the text encoder's (default --bits)")
+    ap.add_argument('--gpu', action='store_true', default=os.environ.get('SIM2CHIP_ERASE_GPU') == '1',
+                    help='keep the whole pipeline on the GPU, no CPU offload (a 48 GB GPU)')
     ap.add_argument('--steps', type=int, default=40)
     ap.add_argument('--cfg', type=float, default=4.0)
     ap.add_argument('--feather', type=int, default=6, help='blur of the paste edge, pixels')
@@ -113,7 +147,12 @@ def main():
     args = ap.parse_args()
     if not args.full:
         args.steps, args.cfg = 4, 1.0
-    pipe = load(args.bits, lightning=not args.full)
+    if args.save_nf4:
+        load(4, save=args.save_nf4)
+        return
+    t_load = time.time()
+    pipe = load(args.bits, lightning=not args.full, encoder_bits=args.encoder_bits, gpu=args.gpu)
+    t_load = round(time.time() - t_load, 1)
     for d in args.dir:
         photo = Image.open(os.path.join(d, 'photo.png')).convert('RGB')
         names = list(dict.fromkeys(json.load(open(os.path.join(d, 'prepare.json')))['instances']))
@@ -151,7 +190,9 @@ def main():
             shutil.copy(qw, bg)
         info = {'objects': names, 'left_after_pass': passes, 'left': [phrases[i] for i in todo],
                 'shift_px': round(moved, 2), 'used': 'raw' if use_raw else 'mask',
-                'seconds': round(time.time() - t, 1)}
+                'seconds': round(time.time() - t, 1), 'load_seconds': t_load,
+                'bits': [args.bits, args.encoder_bits or args.bits], 'gpu_resident': args.gpu,
+                'peak_gpu_gb': round(torch.cuda.max_memory_allocated() / 1e9, 1)}
         json.dump(info, open(os.path.join(d, 'erase_qwen.json'), 'w'), indent=1)
         print(json.dumps({'dir': d, **info}), flush=True)
 

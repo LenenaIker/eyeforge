@@ -48,7 +48,10 @@ class Stop(Exception):
 
 
 def missing_pythons(names=("sam3", "mesh", "erase", "isaac")) -> list[str]:
-    """The step Pythons this machine lacks (environment variable unset or file missing)."""
+    """The step Pythons this machine lacks (environment variable unset or file missing). In a cloud job the mesh
+    and erase ones come from the cache bucket when a step needs them (cloud.py)."""
+    from . import cloud
+    names = [n for n in names if not (cloud.on() and n in cloud.KITS)]
     return [PYTHONS[n] for n in names if not (p := config.env(PYTHONS[n])) or not Path(p).exists()]
 
 
@@ -69,8 +72,10 @@ class Flow:
         the step is a best effort (must=False: a retry that fills what a first run left out)."""
         if outputs and all((self.d / o).exists() for o in outputs):
             return 0
+        from . import cloud
         env = {**os.environ, **{k: v for k in PASS_ON if (v := config.env(k))}, "PYOPENGL_PLATFORM": "egl",
-               "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "PYTHONUNBUFFERED": "1"}
+               "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "PYTHONUNBUFFERED": "1",
+               **(cloud.ready(python, script, self.log) if cloud.on() else {})}
         if self.usage_log:
             env["SIM2CHIP_LLM_USAGE"] = str(self.usage_log)
         t0 = time.time()
