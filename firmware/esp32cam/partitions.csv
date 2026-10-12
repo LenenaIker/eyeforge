@@ -1,0 +1,6 @@
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x5000
+otadata,  data, ota,     0xe000,   0x2000
+app0,     app,  ota_0,   0x10000,  0x180000
+# The model blob written by sim2chip's export stage (model.bin), flashed on its own.
+model,    data, 0x40,    0x190000, 0x200000

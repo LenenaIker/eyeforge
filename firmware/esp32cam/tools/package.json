@@ -1,0 +1,12 @@
+{
+  "name": "eyeforge-esp32cam-tools",
+  "private": true,
+  "type": "module",
+  "description": "Flash and watch the ESP32-CAM from Node with esptool-js, the library the web app uses",
+  "license": "AGPL-3.0-only",
+  "dependencies": {
+    "esptool-js": "0.7.0",
+    "serialport": "^12.0.0",
+    "usb": "^2.14.0"
+  }
+}
