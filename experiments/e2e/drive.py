@@ -30,6 +30,12 @@ CASES = {
                       "las fotos del dataset 'Chat photos 09 Oct'. Lo usaré en el móvil.",
              "facts": "Phone. Only the five colored bins. Use the photos of that dataset, you have no others. Balanced "
                       "errors. If asked about reusing the dataset's labels, say yes."},
+    "bins_upload": {"first": "Te he subido fotos de la calle. Quiero contar los contenedores de basura por color "
+                             "(azul, amarillo, marrón, gris y verde). Lo usaré en el móvil.",
+                    "facts": "Phone. Only the five colored bins. The photos you uploaded are all you have. Balanced "
+                             "errors."},
+    "table_upload": {"first": "Te he subido fotos de mi mesa. Quiero contar los objetos que hay encima, para el móvil.",
+                     "facts": "Phone. Any object lying on the table counts, one class is enough."},
     "table": {"first": "Quiero contar los objetos que hay encima de la mesa con mi dataset 'contador mesa', para el "
                        "móvil.",
               "facts": "Phone. Any object lying on the table counts, one class is enough. Keep the labels the dataset "
@@ -37,8 +43,35 @@ CASES = {
 }
 
 
-def chat(api: httpx.Client, case: dict, log: list) -> tuple[dict, str]:
+def upload(api: httpx.Client, sid: str, folder: Path, log: list) -> None:
+    """The photos into the chat as the web sends them: batches under 40 MB, the last one doing the work."""
+    files = sorted(f for f in folder.iterdir() if f.suffix.lower() in (".jpg", ".jpeg", ".png"))
+    batches, size = [[]], 0
+    for f in files:
+        if size + f.stat().st_size > 40_000_000 and batches[-1]:
+            batches.append([])
+            size = 0
+        batches[-1].append(f)
+        size += f.stat().st_size
+    t0 = time.time()
+    for i, part in enumerate(batches):
+        last = i == len(batches) - 1
+        data = {"purpose": "training", "cls": "", "more": str(not last).lower()}
+        if last:
+            data["total"] = str(len(files))
+        r = api.post(f"/api/interview/{sid}/photos", data=data, timeout=600,
+                     files=[("photos", (f.name, f.read_bytes(), "image/jpeg")) for f in part])
+        r.raise_for_status()
+    turn = r.json()
+    log.append({"user": f"[{len(files)} photos]", "app": turn.get("intro") or turn.get("text"), "kind": turn.get("kind"),
+                "s": round(time.time() - t0, 1)})
+    print(f"[upload {log[-1]['s']} s] {turn.get('kind')}: {str(log[-1]['app'])[:300]}", flush=True)
+
+
+def chat(api: httpx.Client, case: dict, log: list, photos: Path | None = None) -> tuple[dict, str]:
     sid = api.post("/api/interview").json()["session"]
+    if photos is not None:
+        upload(api, sid, photos, log)
     player, text, history = Player(Client(), case), case["first"], []
     for _ in range(10):
         t0 = time.time()
@@ -95,14 +128,17 @@ def main() -> int:
     p.add_argument("--base", default="http://127.0.0.1:8100")
     p.add_argument("--case", choices=sorted(CASES))
     p.add_argument("--job")
+    p.add_argument("--photos", type=Path, help="a folder of photos to upload in the chat first")
+    p.add_argument("--cookie-file", type=Path, help="the session cookie of a signed-in account (public server)")
     a = p.parse_args()
-    api = httpx.Client(base_url=a.base)
+    cookies = {"eyeforge_session": a.cookie_file.read_text().strip()} if a.cookie_file else None
+    api = httpx.Client(base_url=a.base, cookies=cookies)
     record: dict = {"base": a.base, "case": a.case, "chat": [], "timeline": []}
     t0 = time.time()
     if a.job:
         job = a.job
     else:
-        spec, sid = chat(api, CASES[a.case], record["chat"])
+        spec, sid = chat(api, CASES[a.case], record["chat"], a.photos)
         record["spec"] = spec
         r = api.post("/api/jobs", data={"spec": json.dumps(spec), "calibrate": "true", "session": sid}, timeout=600)
         if r.status_code >= 400:
