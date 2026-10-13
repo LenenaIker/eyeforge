@@ -31,6 +31,8 @@ DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 # Preferred model families per role, matched against the live /models list (ids change over time).
 PREFERENCES = {
     "text": [r"nemotron-3-super", r"nemotron-3.*nano-30b", r"nemotron"],
+    # Holds the interview's conversation; Nemotron ("text") still writes the spec (interview.SPLIT_NOTE).
+    "chat": [r"Kimi-K2\.6", r"nemotron-3-super"],
     # No Nemotron on Token Factory accepts images (checked 2026-09-24); prefer one if it appears. GLM-5.3-Flash
     # agreed best with the human asset review (88.9%), see experiments/NOTES.md.
     "vision": [r"nemotron.*omni", r"nemotron.*vl", r"GLM-5\.3-Flash", r"MiniCPM-V"],

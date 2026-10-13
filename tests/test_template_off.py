@@ -42,6 +42,13 @@ def test_no_route_means_no_synthetic_stages_and_a_reason():
     assert no_synthetic(from_dict(COUNT)) is None
 
 
+def test_a_spec_without_3d_models_still_gets_photo2scene():
+    """The short interview prompt (interview.SYSTEM_LEAN) asks for no 3D models: frames alone turn synthetic on."""
+    bare = {**COUNT, "classes": [{"id": "bottle", "names": ["bottle"]}]}
+    assert from_dict(bare).synthetic and "scene_from_photo" in enabled(bare) and no_synthetic(from_dict(bare)) is None
+    assert not from_dict({**bare, "generation": {"frames": 0}}).synthetic
+
+
 def test_render_gives_no_template_frames(tmp_path):
     """Scenes off and the user's photos: no frame at all, even with an earlier run's scene frames in the folder."""
     job = open_job(tmp_path, "j")

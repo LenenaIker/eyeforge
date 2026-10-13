@@ -537,12 +537,11 @@ function SpecOptions({ spec, proposal, onEdit, realPhotos }: {
   spec: Spec; proposal: Spec; onEdit: (s: Spec) => void; realPhotos: number;
 }) {
   const synthetic = usesSynthetic(spec);
-  const canSynth = usesSynthetic(proposal);  // 3D models to search come from the interview's proposal
   const photos = hasPhotos(spec);
-  const setSynthetic = (on: boolean) => onEdit(on
-    ? { ...spec, classes: spec.classes.map((c) => ({ ...c, assets: proposal.classes.find((p) => p.id === c.id)?.assets ?? null })),
-        props: proposal.props ?? [] }
-    : { ...spec, classes: spec.classes.map((c) => ({ ...c, assets: null })), props: [] });
+  const canSynth = photos;  // synthetic images are rebuilt from the user's photos
+  const proposed = proposal.generation?.frames ?? 2000;
+  const setSynthetic = (on: boolean) =>
+    onEdit({ ...spec, generation: { ...spec.generation, frames: on ? (proposed > 0 ? proposed : 2000) : 0 } });
   const frames = spec.generation?.frames ?? 2000;
   const advised = frameAdvice(1, realPhotos, spec.task) !== null;
   const options = [...new Set([...FRAMES, frames,
@@ -557,9 +556,8 @@ function SpecOptions({ spec, proposal, onEdit, realPhotos }: {
                 disabled={{ photos: !photos, synthetic: !canSynth }} />
         <p className="mt-1.5 text-xs text-muted">
           {!photos ? "Add some of your photos in the chat to train on them alone." :
-           !canSynth ? "To add synthetic images, ask for them in the chat." :
-           synthetic ? "Synthetic images cover cases your photos miss, but finding 3D models and rendering them on a GPU makes the run longer and more expensive." :
-           "Faster and cheaper: no 3D models and no rendering. It needs photos of every case the camera will see."}
+           synthetic ? "Synthetic images rebuilt from your photos cover cases they miss, but rendering them on a GPU makes the run longer and more expensive." :
+           "Faster and cheaper: no rendering. It needs photos of every case the camera will see."}
         </p>
         {synthetic && (
           <div className="mt-2">

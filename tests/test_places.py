@@ -167,7 +167,7 @@ def test_interview_describes_the_photos(tmp_path):
         return fields, "In 5 of your photos I see: 100% building fronts."
     client = Scripted([{"describe_scene": {"folder": str(tmp_path), "classes": "flower pots"}},
                        {"say": "Mostly building fronts. Should the images look like that?"}])
-    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), scene_profiler=profiler)
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), scene_profiler=profiler, lean=False)
     turn = s.reply("I want to count pots, photos in the folder")
     assert turn.kind == "say" and calls == [(str(tmp_path), "flower pots")]
     assert "building fronts" in client.seen[-1] and '"wall_tags": ["brick"]' in client.seen[-1]
@@ -183,9 +183,22 @@ def test_photos_are_analysed_as_soon_as_the_user_names_the_folder(tmp_path):
                  "suggest": {"size_m": {"measure": "length", "range": [0.2, 0.5]}, "props": ["chair"],
                              "photos": ["a.jpg: two pots on a balcony floor"]}}, "In 16 of your photos I see: balconies.")
     client = Scripted([{"say": "I saw pots on balconies. Which device?"}])
-    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), scene_profiler=profiler)
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), scene_profiler=profiler, lean=False)
     s.reply(f"I want to count pots, my photos are in {tmp_path} and some in {tmp_path}/sub.")
     assert calls == [(str(tmp_path.resolve()), f"I want to count pots, my photos are in {tmp_path} and some in "
                       f"{tmp_path}/sub.")]  # once: the subfolder is part of it
     note = client.seen[-1]
     assert "two pots on a balcony floor" in note and '"size_m"' in note and "without asking" in note
+
+
+def test_short_prompt_gets_the_photos_and_the_camera_without_scene_fields(tmp_path):
+    def profiler(folder, classes):
+        return ({"contexts": [{"kind": "balcony", "share": 1.0}], "wall_tags": ["brick"],
+                 "suggest": {"size_m": {"measure": "length", "range": [0.2, 0.5]}, "camera_height_m": [1.5, 2.0],
+                             "photos": ["a.jpg: two pots on a balcony floor"]}}, "In 16 of your photos I see: balconies.")
+    client = Scripted([{"say": "I saw pots on balconies. Which device?"}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), scene_profiler=profiler, lean=True)
+    s.reply(f"I want to count pots, my photos are in {tmp_path}.")
+    note = client.seen[-1]
+    assert "two pots on a balcony floor" in note and "[1.5, 2.0]" in note
+    assert '"size_m"' not in note and "wall_tags" not in note

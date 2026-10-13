@@ -17,9 +17,9 @@ from .workspace import Job
 PRICES = "token_prices.json"
 PRICES_MAX_AGE_S = 24 * 3600
 # What each logged purpose is part of, as the user knows the steps.
-STEP = {"interview": "interview", "english_queries": "interview", "pick_photos": "interview",
-        "scene_profile": "interview", "research": "interview", "label": "labeling", "label_lesson": "labeling",
-        "label_rules": "labeling",
+STEP = {"interview": "interview", "interview_spec": "interview", "english_queries": "interview",
+        "pick_photos": "interview", "scene_profile": "interview", "research": "interview", "label": "labeling",
+        "label_lesson": "labeling", "label_rules": "labeling",
         "qa_assets": "3D model check", "qa_describe": "3D model check", "qa_decide": "3D model check"}
 
 

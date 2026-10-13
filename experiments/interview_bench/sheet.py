@@ -1,4 +1,4 @@
-"""Comparison sheet of the interview model arms (S, U, K, Q) from the runs on disk.
+"""Comparison sheet of interview arms (default the model arms S, U, K, Q; --arms picks others) from the runs on disk.
 
     python experiments/interview_bench/sheet.py --out <file.html> [--notes notes.html] [--excerpts traffic,cat:1]
 
@@ -33,9 +33,9 @@ COLS = [  # key, header, format, lower is better
 ]
 
 
-def load(personas: set[str] | None) -> dict[str, list[dict]]:
+def load(personas: set[str] | None, arms: list[str]) -> dict[str, list[dict]]:
     out = {}
-    for arm in ARMS:
+    for arm in arms:
         recs = [json.loads(f.read_text()) for f in sorted((OUT / arm).glob("*.json"))]
         out[arm] = [r for r in recs if personas is None or r["persona"] in personas]
     return out
@@ -68,9 +68,12 @@ def main() -> None:
     ap.add_argument("--personas", default=None)
     ap.add_argument("--excerpts", default="traffic,cat")
     ap.add_argument("--notes", default=None)
+    ap.add_argument("--arms", default=",".join(ARMS))
+    ap.add_argument("--title", default="Entrevista: qué modelo conversa y quién escribe el spec")
     a = ap.parse_args()
+    arms = a.arms.split(",")
     prices = Client().prices()
-    runs = load(set(a.personas.split(",")) if a.personas else None)
+    runs = load(set(a.personas.split(",")) if a.personas else None, arms)
     rows = {arm: [row(r, prices) | {"rep": r["rep"], "persona": r["persona"]} for r in recs]
             for arm, recs in runs.items()}
     spent = sum(r["usd"] + r["bench_usd"] for rs in rows.values() for r in rs)
@@ -79,10 +82,10 @@ def main() -> None:
          "body{font-family:sans-serif;max-width:1400px;margin:auto;padding:16px;line-height:1.4}"
          "table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:4px 8px;text-align:center}"
          "td.l,th.l{text-align:left}.best{background:#e6f4ea}.note{background:#fff7e6;padding:8px 12px;"
-         "border-radius:6px}.cols{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}"
+         "border-radius:6px}.cols{display:grid;grid-template-columns:repeat(" + str(len(arms)) + ",1fr);gap:10px}"
          ".cols>div{border:1px solid #ddd;border-radius:6px;padding:6px 10px;font-size:13px}"
          "p.user{color:#225}p.assistant{color:#333}p.meta{color:#777;font-size:12px}</style>",
-         "<h1>Entrevista: qué modelo conversa y quién escribe el spec</h1>",
+         f"<h1>{html.escape(a.title)}</h1>",
          "<p>Banco <code>experiments/interview_bench/</code>: la Session real contra usuarios simulados "
          "(Qwen3-235B), análisis de fotos simulado; juez Qwen3-235B para preguntas prohibidas o repetidas; el spec "
          "final se compara con los hechos del usuario. Personas: "
@@ -90,14 +93,14 @@ def main() -> None:
          + f". Cada número es la media de todas las entrevistas; debajo, la media de cada repetición (ruido).</p>",
          "<table><tr><th class=l>Brazo</th><th>n</th>"
          + "".join(f"<th>{html.escape(c[1])}</th>" for c in COLS) + "</tr>"]
-    for arm in ARMS:
+    for arm in arms:
         rs = rows[arm]
         if not rs:
             continue
         tds = []
         for key, _, fmt, low in COLS:
             v = cell(rs, key)
-            vals = [cell(rows[x], key) for x in ARMS if rows[x]]
+            vals = [cell(rows[x], key) for x in arms if rows[x]]
             best = (min(vals) if low else max(vals)) == v
             reps = sorted({r["rep"] for r in rs})
             per = " / ".join(fmt.format(cell([r for r in rs if r["rep"] == k], key)) for k in reps)
@@ -108,10 +111,10 @@ def main() -> None:
     h.append(f"<p>Gasto del banco en Token Factory (entrevistas, usuario simulado y juez): {spent:.2f} $.</p>")
 
     h.append("<h2>Fallos de spec por persona (todas las repeticiones)</h2><table><tr><th class=l>Persona</th>"
-             + "".join(f"<th>{a}</th>" for a in ARMS) + "</tr>")
+             + "".join(f"<th>{x}</th>" for x in arms) + "</tr>")
     for p in sorted({r["persona"] for rs in runs.values() for r in rs}):
         tds = []
-        for arm in ARMS:
+        for arm in arms:
             got = [", ".join(r["mismatches"]) or ("ok" if r["outcome"] == "done" else r["outcome"])
                    for r in sorted(runs[arm], key=lambda r: r["rep"]) if r["persona"] == p]
             tds.append("<td class=l><small>" + "<br>".join(map(html.escape, got)) + "</small></td>")
@@ -122,7 +125,7 @@ def main() -> None:
         p, _, k = item.partition(":")
         k = int(k or 0)
         h.append(f"<h2>Conversación lado a lado: {p}, repetición {k}</h2><div class=cols>")
-        for arm in ARMS:
+        for arm in arms:
             rec = next((r for r in runs[arm] if r["persona"] == p and r["rep"] == k), None)
             h.append(f"<div><h3>{arm}</h3>{dialogue_html(rec) if rec else 'sin datos'}</div>")
         h.append("</div>")

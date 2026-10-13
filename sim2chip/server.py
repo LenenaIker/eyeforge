@@ -72,7 +72,7 @@ def default_interviewer(home: Path, backend: str = "local", public: bool = False
     from dataclasses import replace
 
     base = Client(usage_log=home / "logs" / "llm_usage.jsonl")
-    model, scene = base.model_for("text"), base.model_for("scene")
+    model, scene, chat = base.model_for("text"), base.model_for("scene"), base.model_for("chat")
     objaverse_dir = home / "cache" / "objaverse"
     cats = interview.CategoryIndex(cache_dir=objaverse_dir, live=interview.live_searcher(objaverse_dir))
     researcher = research.searcher()  # None without a Tavily key
@@ -84,7 +84,8 @@ def default_interviewer(home: Path, backend: str = "local", public: bool = False
         return interview.Session(client, model, cats, scene_check=interview.check_scene,
                                  photo_ranker=interview.photo_ranker(client, scene),
                                  scene_profiler=interview.scene_profiler(client, scene),
-                                 photo_models=backend != "nebius", uploads_only=public, researcher=researcher)
+                                 photo_models=backend != "nebius", uploads_only=public, researcher=researcher,
+                                 chat_model=chat)
     return session
 
 

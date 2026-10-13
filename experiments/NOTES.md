@@ -731,6 +731,19 @@ Banco `experiments/interview_bench/` (tarea 10 de `docs/tareas_usuario_2026-10-1
 - Fallo del producto: `_english_queries` lanza AttributeError con `"classes": ["car", ...]`; debería ser spec inválido. Sin tocar.
 - Decide el usuario; propuesta: mantener Super. Límite: usuarios simulados cooperativos, no reproduce lo que el usuario vio en la web.
 
+## Entrevista: prompt corto sin la plantilla (2026-10-13)
+
+El prompt de sistema (`interview.SYSTEM`, 15.700 caracteres) seguía describiendo la plantilla retirada (búsqueda de modelos 3D, props, Poly Haven, lugares, tiempo, fotos para 3D) y el esquema completo con valores por defecto. `SYSTEM_LEAN` (4.300) deja solo lo vivo y medido, sin Jetson; también se recortan el bloque de la biblioteca y la nota del análisis de fotos. Mismo banco y personas que la sección anterior, 18 entrevistas por brazo, Nemotron 3 Super. Hoja: `runs/interview_bench/hoja_prompt_corto.html`.
+
+| Brazo | spec correcto | specs rechazados | turnos | prohibidas | repetidas | s de modelo | $ |
+|---|---|---|---|---|---|---|---|
+| S13: prompt actual, código del 13 | 12/18 | 0,94 | 2,17 | 0,06 | 0,06 | 27 | 0,0091 |
+| L: prompt corto | 14/18 | 0,11 | 2,11 | 0,06 | 0,11 | 12 | 0,0026 |
+
+- El prompt largo invitaba a rellenar 3D, tamaños y escena, que el código rechazaba: una vuelta más del modelo casi por entrevista.
+- Fallos de L: gatera `errors` (también en S13) y gallinas con cámara en el techo `orientation` upright (2 de 3). Con la regla de orientación aclarada (L2, 3 repeticiones), 1 de 3.
+- Adoptado por el usuario: `Session(lean=None)` usa el corto mientras `stages.base.TEMPLATE` esté apagado; `spec.synthetic` ya no exige modelos 3D con la plantilla apagada (photo2scene sale de las fotos), y la web cambia el sintético con `frames`.
+
 ## photo2scene en Nebius (fase E, 2026-10-12)
 
 Kits y pesos (E.1): `scripts/scene_kits.py` empaqueta con conda-pack los dos entornos conda de photo2scene (mesh: SAM 3D Objects, MoGe-2, pyrender, 7,6 GB en zstd; erase: Qwen-Image-Edit, 3,4 GB) y sube al bucket de caché los pesos (SAM 3D 13,1 GB, MoGe-2, LaMa, DINOv2, Qwen en nf4 18,2 GB, y los repos de Hugging Face como espejo de su caché). `sim2chip/photo2scene/cloud.py` los baja la primera vez que un paso los pide y corre el paso sin internet. SAM 3 y la VLM usan el kit `teacher` de siempre; Isaac, la imagen de Isaac.

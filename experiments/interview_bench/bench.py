@@ -80,6 +80,12 @@ VARIANTS = {
     "U": {"desc": "Nemotron 3 Ultra for everything, max 16384", "model": ULTRA, "interview": ROOMY},
     "K": {"desc": "Kimi K2.6 converses, Nemotron 3 Super writes the spec", "chat_model": KIMI, "chat": ROOMY},
     "Q": {"desc": "Qwen3.5-397B converses, Nemotron 3 Super writes the spec", "chat_model": QWEN, "chat": ROOMY},
+    # The split moved into the product (Session.chat_model, 2026-10-13): "session_chat" passes it to the Session.
+    "PK": {"desc": "product split: Kimi K2.6 converses, Nemotron 3 Super writes the spec", "session_chat": KIMI},
+    # The short system prompt without the scene template's parts (interview.SYSTEM_LEAN, 2026-10-13).
+    "S13": {"desc": "Nemotron 3 Super, full system prompt, code of 2026-10-13 (L's control)"},
+    "L": {"desc": "Nemotron 3 Super with the short system prompt (SYSTEM_LEAN)", "lean": True},
+    "L2": {"desc": "L, the photo analysis note also gives the camera's downward pitch", "lean": True},
 }
 
 SPLIT_NOTE = ("The setup is ready to propose. Write the spec action now from everything said above, following "
@@ -206,7 +212,9 @@ def run_one(persona, variant_name: str, rep: int) -> dict:
     client = BenchClient(base, VARIANTS[variant_name])
     uploads = FIXTURES / "uploads" / f"{variant_name}_{persona['id']}_{rep}"
     session = interview.Session(client, VARIANTS[variant_name].get("model", MODEL), CATS, scene_check=interview.check_scene, photo_ranker=ranker,
-                                uploads=uploads, scene_profiler=profiler(persona))
+                                uploads=uploads, scene_profiler=profiler(persona),
+                                chat_model=VARIANTS[variant_name].get("session_chat"),
+                                lean=VARIANTS[variant_name].get("lean", False))
     facts, lang = fx(persona["facts"]), persona["lang"]
     user_prompt = USER_PROMPT.format(facts=facts, lang=lang)
     seen = []  # the dialogue as the user saw it (assistant = EyeForge)

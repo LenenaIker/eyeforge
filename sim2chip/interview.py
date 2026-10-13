@@ -161,6 +161,79 @@ assets.photos plus an English "queries" name; "training": user_data.raw).
 Reply ONLY with one JSON object per turn: {{"say": "..."}}, {{"search": ["..."]}}, {{"photos": {{...}}}},
 {{"pick_photos": {{...}}}}, {{"describe_scene": {{...}}}} or {{"say": "...", "spec": {{...}}}}."""
 
+# The same job without the scene template's parts (3D model search, props, Poly Haven tags, places, weather,
+# photos for 3D models): with stages.TEMPLATE off the synthetic images come from the user's photos only
+# (photo2scene) and those fields feed nothing. Measured against SYSTEM in experiments/interview_bench (arm L).
+SYSTEM_LEAN = """You are the setup assistant of EyeForge. EyeForge trains a small vision model that classifies
+or counts, runs on the user's own device and is sized to it, from the user's own photos plus synthetic images
+rebuilt from those photos. Your job: talk with the user and write the job spec. Users are not vision experts:
+they know their problem and their place, not datasets or models. Be brief and friendly, in the user's language.
+
+Ask only what nobody else can answer, at most one short question per turn, never something already answered
+(even in other words):
+- what the camera must recognize or count, and what counts as one;
+- their photos: a folder path or an upload ({{"photos": {{"for": "training", "say": "<your question>"}}}}, the
+  user gets an upload box). Photos are required: without them there is no model, so send no spec until they
+  give some;
+- their device, if they did not say it;
+- which mistake hurts more, only when their goal does not tell.
+Decide everything else yourself, never ask: camera height and angle, light, place, how photos are organised,
+orientation, synthetic images. When you get the photos you receive their folder layout and a photo analysis:
+use them. As soon as you know what to recognize and have the analysis, send the spec with one or two plain
+sentences on what you saw in the photos: {{"say": "...", "spec": {{...}}}}. The user confirms once; do not ask
+for confirmations along the way.
+
+Spec rules:
+- classes: only the objects to find. 2 to 5 coarse classes on a microcontroller (suggest merging what it cannot
+  tell apart at 96 px). Ids are short English snake_case words named by what the camera sees, a color or a
+  shape ("blue_bin", not "paper_bin" nor "contenedor_azul"). Never a catch-all class ("other_trash", "misc").
+- background_class: "empty" (no object) is added by itself, never list it. When every photo is one of the
+  classes (surfaces or states that fill the view: lawn / border / no grass, day / night) set it to null.
+- task: "roi_classification" (default) names what the picture shows. "count" says how many of each class
+  and where: use it to count, and whenever several objects share the picture (pots on a balcony, bins and
+  litter on a street). Never tell classes apart by their size in the picture. For count, every class needs
+  "names": 1 to 3 short English noun phrases, most common first ("names": ["flower pot", "plant pot"]); the
+  photos go in user_data.raw. On a microcontroller only objects that fill a good part of the picture can be
+  counted, and past 30 objects per photo counts are often off by a third: say so if it applies.
+- errors: "find_more" when missing one is worse (a pest, a defect, a studied animal), "fewer_false" when a
+  false alarm is worse (an alert that wakes someone, a robot that stops), else "balanced".
+- training.orientation: "upright" (default) when the view has an up (sky, walls, standing things, a camera
+  looking forward); "any" when the camera looks straight down (from a ceiling or a drone, over a conveyor or a
+  table, a microscope) or at loose objects, since a view from above has no up; "fixed" when left and right
+  matter too (text, digits, arrows).
+- hardware, one of:
+{hardware}
+  "generic" when they have no device, have not decided, or test on a phone or PC.
+- user_data: "raw" is a folder (or a list of folders) of unsorted photos; the teacher labels them. "labeled"
+  only when the folder has one subfolder per class, with "class_map": {{"<class id>": ["<subfolder>"]}}. An
+  optional "test" folder with photos from another day or place gives an honest score.
+- camera.height_m: [min, max] meters above the floor, from the photo analysis.
+- generation: {{"frames": 0}} when the user wants only their own photos; omit it otherwise.
+
+Example: {example}
+
+Reply ONLY with one JSON object per turn: {{"say": "..."}}, {{"photos": {{...}}}} or {{"say": "...", "spec": {{...}}}}."""
+
+LEAN_EXAMPLE = {"name": "pot_counter", "task": "count", "hardware": "generic", "errors": "balanced",
+                "classes": [{"id": "flower_pot", "description": "flower pots on balconies and window sills",
+                             "names": ["flower pot", "plant pot"]}],
+                "camera": {"height_m": [3.0, 9.0]}, "user_data": {"raw": "<folder>"}}
+
+LIBRARY_LEAN = """
+The user's library: things they already have, kept from earlier models or uploaded. A kit is a named list of
+them. When the user names a kit or a dataset listed below, use it; never ask for photos again for a dataset they
+named. Before proposing a spec that uses a dataset, look at it: {{"dataset": "<id>"}}. You get its labelings (each
+one a named list of classes with their keys and English names, the photos the user reviewed and the models
+trained with it) and what its photos show. Then:
+- its photos go in user_data "raw": "library:<id>" (one dataset per model); photos attached in this chat join
+  it: "raw": ["library:<id>", "<attached folder>"];
+- user_data "labeling": the id of the labeling to use when the user wants what it has, or it with classes added
+  or left out; null for a new labeling. For the classes a labeling has, use its keys as class ids and its English
+  names as "names";
+- put in the spec only the classes the user wants now. Use only the ids listed here.
+{items}
+"""
+
 EXAMPLE = {"name": "example", "classes": [{"id": "cow", "description": "cows seen from the side or front",
                                            "size_m": {"measure": "length", "range": [2.0, 2.5]},
                                            "assets": {"source": "objaverse_lvis", "categories": ["cow"],
@@ -185,7 +258,11 @@ def scene_tags(kind: str) -> list[str]:
         return FALLBACK_TAGS[kind]
 
 
-def system_prompt() -> str:
+def system_prompt(lean: bool = False) -> str:
+    if lean:  # no Jetson: the devices offered now go from an ESP32-CAM to a phone (user, 2026-10-13)
+        profiles = "\n".join(f"  - {h.name}: {h.description}" for h in hardware.PROFILES.values()
+                             if h.name != "jetson_nano")
+        return SYSTEM_LEAN.format(hardware=profiles, example=json.dumps(LEAN_EXAMPLE))
     schema = json.dumps(spec_mod.to_dict(spec_mod.from_dict(EXAMPLE)), indent=1)
     profiles = "\n".join(f"  - {h.name}: {h.description}" for h in hardware.PROFILES.values())
     return SYSTEM.format(hardware=profiles, weather=", ".join(spec_mod.WEATHER),
@@ -261,6 +338,14 @@ MAX_INVALID_SPECS = 4  # rejected proposals in a row before the model must ask t
 # Answers that are not one JSON object, in a row, before the interview gives up. Seen 2026-10-03 (bench, reasoning
 # off): the same malformed JSON 59 times, 60 turns and 1.4 M tokens.
 MAX_BAD_FORMAT = 3
+# Split interview (user, 2026-10-13): the chat model holds the conversation and, when it proposes the setup,
+# Nemotron writes the structured spec from the same conversation. experiments/interview_bench 2026-10-12, arm K
+# (Kimi K2.6 converses, Super writes the spec): 78% right specs against 72% for Super alone, fewer turns.
+SPLIT_NOTE = ("The setup is ready to propose. Write the spec action now from everything said above, following "
+              "the spec rules of the system prompt (a \"say\" intro in the user's language may go with it). Reply "
+              "with the JSON object only.")
+# The chat model reasons longer than Super: room so its answer is not cut, and time so it is not retried.
+CHAT_CALL = {"max_tokens": 16384, "timeout": 300.0}
 PICK_MAX = 8
 
 
@@ -521,7 +606,11 @@ def summary(s: spec_mod.Spec) -> str:
     lines = [f"Spec '{s.name}' for {s.hardware}, {what}:",
              f"  classes: {', '.join(s.labels)} "
              + (f"(background: {s.background_class})" if s.background_class else "(no background class)")]
+    from .stages import base as stages
     for c in s.classes:
+        if not stages.TEMPLATE:  # sizes, 3D models and the scene fed the scene template only
+            lines.append(f"  - {c.id}: {c.description}")
+            continue
         size = f"{c.size_m.measure} {c.size_m.range[0]}-{c.size_m.range[1]} m" if c.size_m else "no 3D size"
         a = c.assets
         cats = "no 3D models" if not a else ", ".join(a.categories) if a.source == "objaverse_lvis" else \
@@ -534,18 +623,21 @@ def summary(s: spec_mod.Spec) -> str:
             cats += f" + made from photos ({a.queries[0]})"
         lines.append(f"  - {c.id}: {c.description} | {size} | models: {cats}")
     sc = s.scene
-    lines.append(f"  camera: {s.camera.height_m[0]}-{s.camera.height_m[1]} m high, scene {sc.template}, "
-                 f"weather {', '.join(sc.weather)}")
-    if sc.contexts:
-        lines.append("  places: " + ", ".join(f"{c.kind} {round(c.share * 100)}%" for c in sc.contexts) +
-                     (f"; walls {', '.join(sc.wall_tags)}" if sc.wall_tags else "") +
-                     (f"; railings {', '.join(sc.railings)}" if sc.railings else ""))
-    if sc.sky_tags or sc.ground_tags:
-        lines.append(f"  place: sky {', '.join(sc.sky_tags) or 'any'}, ground {', '.join(sc.ground_tags) or 'plain'}")
-    extra = [f"distractors {', '.join(sc.distractors)}" if sc.distractors else "",
-             f"props {', '.join(p.id for p in s.props)}" if s.props else ""]
-    if any(extra):
-        lines.append("  also in the scene: " + "; ".join(e for e in extra if e))
+    if not stages.TEMPLATE:
+        lines.append(f"  camera: {s.camera.height_m[0]}-{s.camera.height_m[1]} m high")
+    else:
+        lines.append(f"  camera: {s.camera.height_m[0]}-{s.camera.height_m[1]} m high, scene {sc.template}, "
+                     f"weather {', '.join(sc.weather)}")
+        if sc.contexts:
+            lines.append("  places: " + ", ".join(f"{c.kind} {round(c.share * 100)}%" for c in sc.contexts) +
+                         (f"; walls {', '.join(sc.wall_tags)}" if sc.wall_tags else "") +
+                         (f"; railings {', '.join(sc.railings)}" if sc.railings else ""))
+        if sc.sky_tags or sc.ground_tags:
+            lines.append(f"  place: sky {', '.join(sc.sky_tags) or 'any'}, ground {', '.join(sc.ground_tags) or 'plain'}")
+        extra = [f"distractors {', '.join(sc.distractors)}" if sc.distractors else "",
+                 f"props {', '.join(p.id for p in s.props)}" if s.props else ""]
+        if any(extra):
+            lines.append("  also in the scene: " + "; ".join(e for e in extra if e))
     ud = s.user_data
     photos = [f"sorted by class {ud.labeled}" if ud.labeled else "",
               f"unsorted {ud.raw} (the teacher model labels them)" if ud.raw else "",
@@ -697,9 +789,11 @@ class Session:
 
     def __init__(self, client, model: str, categories: CategoryIndex, max_turns: int = 60, scene_check=None,
                  photo_ranker=None, uploads: Path | None = None, scene_profiler=None, photo_models: bool = True,
-                 uploads_only: bool = False, researcher=None):
+                 uploads_only: bool = False, researcher=None, chat_model: str | None = None,
+                 lean: bool | None = None):
         from .stages import base as stages
         self.client, self.model, self.categories, self.max_turns = client, model, categories, max_turns
+        self.chat_model = chat_model if chat_model != model else None  # holds the conversation (SPLIT_NOTE)
         # False where 3D models cannot be made from photos (the Nebius backend has no TRELLIS runtime yet), and
         # while the scene template, the only user of those models, is off.
         self.photo_models = photo_models and stages.TEMPLATE
@@ -714,8 +808,11 @@ class Session:
         self.uploads = uploads            # where chosen photos are gathered
         self.scene_profiler = scene_profiler  # (folder, classes) -> (scene fields, summary)
         self.candidates: list[dict] = []  # the last photos proposed to the user
-        self.messages = [{"role": "system", "content": system_prompt() + ("" if photo_models else NO_PHOTO_MODELS)
-                          + (UPLOADS_ONLY if uploads_only else "")
+        # SYSTEM_LEAN, without the scene template's parts: the default while the template is off (benched 2026-10-13:
+        # right specs 14/18 against 12/18, 0.11 rejected specs per interview against 0.94, 12 s against 27 s).
+        self.lean = not stages.TEMPLATE if lean is None else lean
+        self.messages = [{"role": "system", "content": system_prompt(lean)
+                          + ("" if photo_models or lean else NO_PHOTO_MODELS) + (UPLOADS_ONLY if uploads_only else "")
                           + (RESEARCH.format(n=MAX_RESEARCH) if researcher else "")}]
         self.proposed: spec_mod.Spec | None = None
         self.transcript: Path | None = None  # set by the server: logs/interviews/<session>.json
@@ -750,7 +847,7 @@ class Session:
         self.dataset_card = dataset_card
         self.dataset_ids = set(datasets or ())
         self.photo_notes, self.open_dataset = notes, open_dataset
-        self.messages[0]["content"] += LIBRARY.format(items=items)
+        self.messages[0]["content"] += (LIBRARY_LEAN if self.lean else LIBRARY).format(items=items)
         if kit:
             self._note(f"The user starts this model from their kit \"{kit}\": use its datasets and objects.")
 
@@ -1022,6 +1119,14 @@ class Session:
             self.measured = {k: v for k, v in fields.items() if k != "suggest"}
             sug = fields.pop("suggest", {})
             photos = "\n".join(sug.pop("photos", []))
+            if self.lean:  # the scene fields, sizes and props fed the scene template only
+                self._note(f"[Photo analysis of the user's photos in {folder}] {text}\nWhat each photo shows:\n"
+                           f"{photos}\nCamera height measured (camera.height_m): "
+                           f"{json.dumps(sug.get('camera_height_m'))}"
+                           + (f"; it looks down at {fields['camera']['pitch_deg']} degrees" if fields.get("camera")
+                              else "") + ". Use this in the spec without asking the "
+                           "user about it; tell them in one plain sentence what you saw.")
+                return
             self._note(f"[Photo analysis of the user's photos in {folder}] {text}\nWhat each photo shows:\n{photos}\n"
                        f"Scene fields to use (template generic): {json.dumps(fields)}\nAlso measured: "
                        f"{json.dumps(sug)} (size_m for the class; seen: every kind of thing that stood out, with its share "
@@ -1047,11 +1152,7 @@ class Session:
         for i in range(self.max_turns):
             step = self._step("Thinking" if i == 0 else "Thinking about what it found")
             try:
-                # Full reasoning, T 0.3: in experiments/interview_bench (2026-10-03, 20 interviews each) low
-                # effort, no reasoning and T 1.0 all gave more rejected specs or wrong fields. No answer
-                # reached 4096 tokens; 8192 is headroom, as reasoning counts inside max_tokens.
-                text = self.client.chat(self.messages, self.model, purpose="interview", temperature=0.3,
-                                        max_tokens=8192)
+                text = self._think()
             except Exception as e:
                 self._end(step, "failed", str(e))
                 raise
@@ -1088,6 +1189,27 @@ class Session:
                 return turn
         self.finished = True
         return Turn("failed", "The interview did not converge; nothing was saved.")
+
+    def _think(self) -> str:
+        """The next answer of the interview. With a chat model, it converses and a spec it proposes is written
+        again by Nemotron (self.model) from the same conversation; only Nemotron's answer is kept."""
+        from .llm import parse_json
+
+        # Full reasoning, T 0.3: in experiments/interview_bench (2026-10-03, 20 interviews each) low effort, no
+        # reasoning and T 1.0 all gave more rejected specs or wrong fields. No answer reached 4096 tokens; 8192
+        # is headroom, as reasoning counts inside max_tokens.
+        if not self.chat_model:
+            return self.client.chat(self.messages, self.model, purpose="interview", temperature=0.3,
+                                    max_tokens=8192)
+        text = self.client.chat(self.messages, self.chat_model, purpose="interview", temperature=0.3, **CHAT_CALL)
+        try:
+            action = parse_json(text)
+        except ValueError:
+            return text
+        if not (isinstance(action, dict) and "spec" in action):
+            return text
+        return self.client.chat(self.messages + [{"role": "user", "content": SPLIT_NOTE}], self.model,
+                                purpose="interview_spec", temperature=0.3, max_tokens=8192)
 
     def _handler(self, action: dict):
         """The method for the first action of ACTIONS the answer holds, or None."""

@@ -267,9 +267,12 @@ class Spec:
 
     @property
     def synthetic(self) -> bool:
-        """Whether the job renders images from 3D models: some class has models and frames are asked for.
-        generation.frames 0 means the user's photos only (the 3D stages would run for nothing, 2026-09-30)."""
-        return self.generation.frames > 0 and any(c.assets for c in self.classes)
+        """Whether the job makes synthetic images: frames are asked for and, with the scene template on, some class
+        has 3D models. generation.frames 0 means the user's photos only (the 3D stages would run for nothing,
+        2026-09-30). With the template off (stages.base.TEMPLATE) the images are rebuilt from the user's photos
+        (photo2scene) and the interview no longer asks for 3D models (SYSTEM_LEAN, 2026-10-13)."""
+        from .stages import base as stages
+        return self.generation.frames > 0 and (not stages.TEMPLATE or any(c.assets for c in self.classes))
 
     def cls(self, class_id: str) -> ClassSpec:
         for c in self.classes:

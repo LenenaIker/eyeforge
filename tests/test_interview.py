@@ -56,6 +56,26 @@ def test_every_action_has_a_handler_and_unknown_ones_go_back_to_the_model():
     assert client.seen[1].startswith("Unknown action") and client.seen[2].startswith("Unknown action")
 
 
+def test_chat_model_converses_and_nemotron_writes_the_spec():
+    calls = []
+
+    class Split(Scripted):
+        def chat(self, messages, model, purpose, **kw):
+            calls.append((model, purpose))
+            return super().chat(messages, model, purpose, **kw)
+
+    # The chat model asks, then proposes a sloppy spec; Nemotron writes the one that is kept.
+    client = Split([{"say": "Where is the camera?"}, {"spec": {"name": "sloppy"}}, {"spec": GOOD}])
+    s = interview.Session(client, "nemotron", interview.CategoryIndex(counts={"cow": 62}), chat_model="kimi")
+    assert s.reply("cows").text == "Where is the camera?"
+    t = s.reply("on a post in my barn")
+    assert t.kind == "confirm" and t.spec.name == "barn"
+    assert calls[:3] == [("kimi", "interview"), ("kimi", "interview"), ("nemotron", "interview_spec")]
+    assert all(m == "nemotron" for m, _ in calls[3:])  # the checks of the spec stay on Nemotron
+    assert client.seen[-1] == interview.SPLIT_NOTE
+    assert interview.SPLIT_NOTE not in json.dumps(s.messages)  # the note is not kept in the conversation
+
+
 def test_system_prompt_mentions_schema():
     p = interview.system_prompt()
     assert '"target_fill"' in p and "esp32cam" in p and "road" in p

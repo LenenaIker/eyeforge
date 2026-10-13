@@ -53,9 +53,9 @@ export function SpecSummary({ spec }: { spec: Spec }) {
   );
 }
 
-// Synthetic images are made only for classes with 3D models to find (assets) and frames asked for; without them,
-// the run trains on the user's photos alone and skips the 3D models and the rendering (spec.synthetic).
-export const usesSynthetic = (spec: Spec) => (spec.generation?.frames ?? 2000) > 0 && spec.classes.some((c: any) => c.assets);
+// Synthetic images are rebuilt from the user's photos whenever frames are asked for; frames 0 trains on the
+// user's photos alone and skips the rendering (spec.synthetic).
+export const usesSynthetic = (spec: Spec) => (spec.generation?.frames ?? 2000) > 0;
 export const hasPhotos = (spec: Spec) => {
   const ud = spec.user_data ?? {};
   return Boolean(ud.raw || ud.test || (ud.labeled && Object.keys(ud.labeled).length));
