@@ -31,10 +31,14 @@ MAX_DE = 35  # mean colour difference (delta E) to the photo above which the pla
 COMPOSED = ("populated",)
 
 
+GREEN_COVER = 0.25  # trees and shrubs over this share of the photo: the green skies (Poly Haven parks and lanes)
+
+
 def hdri_dir(group: str) -> Path:
-    """The skies of the route's group: urban ones for a city street, the general ones otherwise."""
+    """The skies of the route's group: urban ones for a city street, green ones (parks and tree-lined lanes) for a
+    leafy one, the general ones (open country) otherwise."""
     root = Path(config.env("SIM2CHIP_HDRI_DIR") or Path(__file__).resolve().parents[2] / "data" / "hdri")
-    return root / "urban" if group == "urban" else root
+    return root / group if group in ("urban", "green") else root
 
 
 def _phrases(entries) -> str:
@@ -178,6 +182,10 @@ def imitate(flow: Flow, r: dict, keep: list[int]):
                  ["section.json"], must=False)
         if (d / "section.json").exists():
             section = ["--section", d / "section.json"]
+            # A leafy street under the open country's dry hills looked like no photo (roads, 2026-10-13).
+            cover = flow.json("section.json").get("image_cover", {})
+            if sum(cover.values()) >= GREEN_COVER:
+                r["hdri_group"] = "green"
     # 2.2 The surroundings meshes into the place, then the geometric gates; a mesh that fails is dropped once.
     for attempt in range(2):
         flow.run(f"2.2a_env_{attempt}", "mesh", "env_add.py",

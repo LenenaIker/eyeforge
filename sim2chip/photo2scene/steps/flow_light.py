@@ -1,6 +1,6 @@
 """Step 2.3b of the scene flow: the light of the photo, picked by measurement. piece_isaac.py --sweep renders the
-photo's camera under a fixed set of lights (8 sun directions at 3 heights, and sky only); each render and the
-photo are compared on the same pixel grid as flow_photometry.py, after taking each image to the photo's mean
+photo's camera under a fixed set of lights (8 sun directions at 3 heights, full or soft, and sky only); each render
+and the photo are compared on the same pixel grid as flow_photometry.py, after taking each image to the photo's mean
 luminance, so what is compared is where the light falls (which facades are lit, how the ground stands against
 them), not how much. The light with the smallest median colour difference goes into the place's scene.json, and
 view 0 is rendered with it from then on. Without it a random sun lit the main house from behind and the ground

@@ -228,14 +228,18 @@ def frame(z):
     return Gf.Matrix4d(rot.T.tolist())
 
 
+SUN = 2500.0
+SUN_LEVELS = (1.0, 0.3)  # the sweep's sun strengths: full, and soft (a lane under trees, light through leaves)
+
+
 def set_light(e, a, sun_on=True):
     """Sun at elevation e and azimuth a (radians, a about the scene's up from a fixed side), the dome turned by a.
-    sun_on False: the sky alone (overcast)."""
+    sun_on: True or a strength (a share of SUN); False or 0: the sky alone (overcast)."""
     side = np.cross(up, [1.0, 0, 0]) if abs(up[0]) < 0.9 else np.cross(up, [0, 0, 1.0])
     side /= np.linalg.norm(side)
     other = np.cross(up, side)
     sun_op.Set(frame(-(math.cos(e) * (math.cos(a) * side + math.sin(a) * other) + math.sin(e) * up)))
-    sun.CreateIntensityAttr().Set(0 if scene["indoor"] or not sun_on else 2500)
+    sun.CreateIntensityAttr().Set(0 if scene["indoor"] or not sun_on else SUN * float(sun_on))
     # The dome's latlong pole is its local +Z in RTX (the product renders with a Z-up stage): align it with the
     # scene's up, then turn it about that axis. With +Y the sky lay on its side (street HDRIs, 2026-10-06).
     z = up / np.linalg.norm(up)
@@ -255,7 +259,10 @@ def set_indoor(panel_k, window_k, lamp_k=1.0):
 
 
 def randomize_light():
-    set_light(math.radians(rng.uniform(30, 70)), rng.uniform(0, 2 * math.pi))
+    # The other views keep the photo's kind of light (flow_light.py's match): a soft sun stays soft, the sky alone
+    # stays overcast; only where it comes from changes.
+    strength = (scene.get("light") or {}).get("sun", True)
+    set_light(math.radians(rng.uniform(30, 70)), rng.uniform(0, 2 * math.pi), strength)
     if scene["indoor"]:
         set_indoor(rng.uniform(0.5, 2.0), rng.uniform(0.3, 2.0), rng.uniform(0.0, 1.5))
 
@@ -322,7 +329,8 @@ tiles = [("photo", photo)]
 if args.sweep:
     # Step 2.3b of the scene flow: view 0 (the photo's camera) under a fixed set of lights, for flow_light.py to
     # pick the one whose light falls like the photo's.
-    lights = [(el, az, True) for el in (20, 45, 70) for az in range(0, 360, 45)] + [(60, 0, False)]
+    lights = [(el, az, k if k != 1.0 else True) for k in SUN_LEVELS for el in (20, 45, 70)
+              for az in range(0, 360, 45)] + [(60, 0, False)]
     if scene["indoor"]:  # no sun indoors: how strong the ceiling, the windows and the lamp are against each other
         lights = [dict(panel=p, window=wk, lamp=lk) for p in (0.3, 1.0, 3.0)
                   for wk in ((0.0, 1.0, 3.0) if window_lights else (0.0,)) for lk in (0.0, 1.0)]

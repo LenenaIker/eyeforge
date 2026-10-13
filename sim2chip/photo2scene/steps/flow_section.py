@@ -8,9 +8,9 @@ Run in the `teacher-sam3` env after piece_build.py:
 
     python sim2chip/photo2scene/steps/flow_section.py --dir <flow dir> --catalog <cache>/vegetation
 
-Writes <dir>/section.json ({"road": {"centre", "along", "across", "half", "visible"}, "bands": [{"side", "kind",
-"from_m", "to_m", "height_m", "cover", "spacing_m", "colour", "pick"}]}) and <dir>/section.jpg (the photo by band
-and the bands seen from above).
+Writes <dir>/section.json ({"road": {"centre", "along", "across", "half", "visible"}, "image_cover": {"tree",
+"shrub"}, "bands": [{"side", "kind", "from_m", "to_m", "depth_m", "height_m", "cover", "spacing_m", "colour",
+"pick", "picks"}]}) and <dir>/section.jpg (the photo by band and the bands seen from above).
 """
 import argparse
 import json
@@ -130,6 +130,8 @@ def main():
             seen = np.histogram(v[on], bins)[0] > 5
             band = {'side': side, 'kind': kind, 'from_m': round(float(np.percentile(dist, 10)), 2),
                     'to_m': round(float(np.percentile(dist, 90)), 2),
+                    # how deep the band goes: its farthest points (a crown seen from the road shows its front)
+                    'depth_m': round(float(np.percentile(dist, 98)), 2),
                     'height_m': round(float(np.percentile(hh[on], 95)), 2),
                     'cover': round(float(seen.mean()), 2), 'colour': col, 'pixels': int(on.sum())}
             if kind == 'tree':  # stems along the street: each instance's median point
@@ -178,11 +180,17 @@ def main():
                             max_tokens=8192)
         got = [x for x in map_within(ask, [0.0] + [0.7] * (args.votes - 1), seconds=600) if x]
         if got:
-            pick = Counter(x['pick'] for x in got).most_common(1)[0][0]
-            band['pick'] = items[pick - 1]['name']
+            votes = Counter(x['pick'] for x in got) + Counter(x['second'] for x in got if isinstance(
+                x.get('second'), int) and 1 <= x['second'] <= len(items))
+            ranked = [k for k, _ in votes.most_common()]
+            band['pick'] = items[ranked[0] - 1]['name']
+            band['picks'] = [items[k - 1]['name'] for k in ranked[:2]]  # two species mixed in a zone
 
     out = {'road': {'centre': c.tolist(), 'along': a.tolist(), 'across': b.tolist(), 'half': half,
                     'visible': visible, 'colour': np.median(photo[road], 0).round().astype(int).tolist()},
+           # how much of the photo each kind of plant covers: the target the filled zones are rendered against
+           'image_cover': {'tree': round(float(masks['tree'].mean()), 3),
+                           'shrub': round(float((masks['hedge'] | masks['shrub']).mean()), 3)},
            'bands': bands}
     with open(os.path.join(d, 'section.json'), 'w') as f:
         json.dump(out, f, indent=1)

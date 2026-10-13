@@ -51,11 +51,13 @@ def main():
         ids = []
         for j, (i, tf) in enumerate(view['objects']):
             node = scene.add(pyrender.Mesh.from_trimesh(objs[i], smooth=False), pose=np.asarray(tf))
-            seg[node] = (j + 1, 0, 0)
+            # Two channels: a street with its trees holds hundreds of objects, and with one the ids wrapped past
+            # 255 and the cars lost their boxes (roads, 2026-10-13).
+            seg[node] = ((j + 1) % 256, (j + 1) // 256, 0)
             ids.append(i)
         scene.add(cam, pose=np.asarray(view['pose']) @ CV2GL)
         color, _ = renderer.render(scene, flags=pyrender.RenderFlags.SEG, seg_node_map=seg)
-        inst = color[..., 0]
+        inst = color[..., 0].astype(np.int32) + 256 * color[..., 1].astype(np.int32)
         boxes = []
         for j in range(1, len(ids) + 1):
             # Stray mesh fragments far from the object would stretch the box: keep the blobs at least a fifth
@@ -73,7 +75,7 @@ def main():
                 elif roles[ids[j - 1]]['role'] != 'scene':  # the place's own furniture is background
                     boxes.append({'box': box, **roles[ids[j - 1]]})
         labels[f'render_{k:02d}.png'] = boxes
-        Image.fromarray(inst).save(os.path.join(d, f'inst_{k:02d}.png'))
+        Image.fromarray(inst.astype(np.uint16)).save(os.path.join(d, f'inst_{k:02d}.png'))
     renderer.delete()
     with open(os.path.join(d, 'labels.json'), 'w') as f:
         json.dump(labels, f)

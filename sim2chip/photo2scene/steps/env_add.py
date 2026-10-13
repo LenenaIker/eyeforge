@@ -278,24 +278,48 @@ def add_asset(scene, arr, url, place, proxy):
     return i
 
 
-def bands(args, scene, arr, up, floor):
-    """flow_section.py's bands filled over the stretch of street the photo sees (section_fill.py): more trees,
-    hedges and shrubs where the photo has them, off the road, the meshes and the photo's own trees; grass and
-    sidewalk strips. Returns the scene's new env entries."""
+def bands(args, scene, arr, up, floor, rounds=6, tolerance=0.15):
+    """flow_section.py's zones filled over the street the photo sees (section_fill.py): trees, hedges and shrubs
+    where the photo has them, off the road, the meshes and the photo's own trees; grass and sidewalk strips. The
+    zones are made denser or sparser until, from the photo's camera, their plants cover as much of the picture as
+    the photo's trees and shrubs do (proxies rendered with pyrender, a few rounds). Returns the new env entries."""
     import section_fill
+    from flow_gates import render
     section = json.load(open(args.section))
+    target = section.get('image_cover', {})
+    env = scene.get('env', [])
     # Kept away from every surroundings object already there: a mesh by all its points, a tree by its trunk (its
     # lowest metre; by the whole crown, a row of trees left no room for one more, 2026-10-13).
     avoid = []
-    for e in scene.get('env', []):
+    for e in env:
         p = arr[f"obj{e['index']}_points"]
         if e.get('vegetation'):
             hgt = p @ up
             p = p[hgt < hgt.min() + 1.0]
         avoid.append(p[:: max(1, len(p) // 400)])
     avoid = np.concatenate(avoid) if avoid else np.zeros((0, 3))
-    objects, strips = section_fill.fill(section, up, floor, section['road']['visible'], args.veg_dir,
-                                        np.random.default_rng(7), avoid)
+    # Beyond what the road's own pixels show: the photo's trees go on down the street.
+    vis = section['road']['visible']
+    along = (vis[0], max(vis[1], 40.0))
+    w, h = scene['size']
+    fixed = [(arr[f"obj{e['index']}_points"], arr[f"obj{e['index']}_faces"]) for e in env]
+    fixed_group = ['tree' if e.get('vegetation') else None for e in env]
+    scale, objects, strips = {}, [], []
+    for rnd in range(rounds):
+        objects, strips = section_fill.fill(section, up, floor, along, args.veg_dir, seed=7, avoid=avoid,
+                                            scale=scale)
+        items = fixed + [(o['proxy']['points'] @ o['place'][:3, :3].T + o['place'][:3, 3], o['proxy']['faces'])
+                         for o in objects]
+        groups = fixed_group + [section_fill.GROUP[o['band']] for o in objects]
+        _, ids = render(scene, arr, items, w, h)
+        cover = {g: float(np.isin(ids, [k + 1 for k, gk in enumerate(groups) if gk == g]).mean())
+                 for g in target}
+        off = {g: cover[g] / target[g] for g in target if target[g] > 0.01}
+        print(f"round {rnd}: {len(objects)} plants, cover {cover} for {target} (scale {scale})", flush=True)
+        if all(abs(x - 1) <= tolerance for x in off.values()) or not off:
+            break
+        for g, x in off.items():
+            scale[g] = float(np.clip(scale.get(g, 1.0) * np.clip(1 / max(x, 1e-3), 0.5, 3.0), 0.1, 12.0))
     scene['pieces'] += strips
     out = []
     for k, o in enumerate(objects):
