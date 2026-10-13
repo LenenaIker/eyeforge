@@ -49,10 +49,10 @@ NO_SURFACE_VIEWS = "no new view of your surfaces kept its class"
 # scene and say why.
 # SIM2CHIP_SURFACE_ROUTE=1 turns it on to measure it.
 SURFACE_ROUTE = os.environ.get("SIM2CHIP_SURFACE_ROUTE") == "1"
-# The street route is off until it helps as well: on the user's roads (counting cars) the likeness filter kept none
-# of the street's views, 0.662 against 0.651 with the photos alone (roadmap C.6; the user's decision, 2026-10-12).
-# Off, a street photo makes no scene and says why. SIM2CHIP_STREET_ROUTE=1 turns it on to measure it.
-STREET_ROUTE = os.environ.get("SIM2CHIP_STREET_ROUTE") == "1"
+# The street route is on (the user's decision, 2026-10-13) although on the user's roads (counting cars) the likeness
+# filter kept none of the street's views, 0.662 against 0.651 with the photos alone (roadmap C.6): the filter keeps
+# bad views out. SIM2CHIP_STREET_ROUTE=0 turns it off; off, a street photo makes no scene and says why.
+STREET_ROUTE = os.environ.get("SIM2CHIP_STREET_ROUTE", "1") == "1"
 NO_STREETS = "streets do not make training images good enough yet"
 
 
@@ -93,9 +93,9 @@ def no_route(spec) -> str | None:
 
 class SceneFromPhoto(Stage):
     name = "scene_from_photo"
-    version = "7"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view;
+    version = "8"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view;
     # 4: surfaces re-framed in 3D; 5: streets and rooms; 6: classifying in them, every view of a place kept;
-    # 7: the street route off (C.6)
+    # 7: the street route off (C.6); 8: on again (2026-10-13)
     runtime = "cpu"   # it runs each step in the Python that has its models (photo2scene.PYTHONS)
     gpu = "rtx"
     max_hours = 2

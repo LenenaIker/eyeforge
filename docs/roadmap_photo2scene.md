@@ -193,7 +193,7 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
   - [x] Check: etiquetas comprobadas en 20 vistas: 22 vistas de calle, cada coche visible con su caja ajustada, ninguna caja de más; los tapados llevan la caja de lo visible. Fallos de colocación (no de etiqueta): coches en la acera y montados, un cielo quemado.
 - [ ] **C.6 Medir con C.0**:
   - [x] Check: nota de solo fotos frente a nota con escenas: 0,651 (0,638 / 0,636 / 0,680) frente a 0,662 (0,634 / 0,670 / 0,681), 3 ejecuciones de 5 semillas (2026-10-12, `scripts/arms_c6.sh`, hoja `compare/C6_calle_medida.html`). Las 11 vistas de la calle de la foto 21 no pasan el filtro de parecido (0 de 11): los dos brazos entrenan con lo mismo y la diferencia es ruido.
-  - [x] Check: si la calle no ayuda, queda escrito y la ruta se desactiva por defecto. Hoy ni ayuda ni empeora: apagada por defecto (usuario, 2026-10-12). Una foto de calle queda fallida con su motivo; `SIM2CHIP_STREET_ROUTE=1` la enciende para medir cuando mejore la calidad de las calles. La habitación sigue encendida (sin medir).
+  - [x] Check: si la calle no ayuda, queda escrito y la ruta se desactiva por defecto. Hoy ni ayuda ni empeora: apagada por defecto (usuario, 2026-10-12). Una foto de calle queda fallida con su motivo; `SIM2CHIP_STREET_ROUTE=1` la enciende para medir cuando mejore la calidad de las calles. La habitación sigue encendida (sin medir). Encendida por defecto en producción (usuario, 2026-10-13), sin haber mejorado aún; `SIM2CHIP_STREET_ROUTE=0` la apaga.
 
 ## Fase D: el reparto medido (~0,5 día)
 
