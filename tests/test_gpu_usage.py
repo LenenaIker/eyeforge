@@ -37,3 +37,18 @@ def test_the_job_scripts_sample_the_gpu_first_thing():
     for script in (nebius.worker_script("j", [], runtime=nebius.worker_runtime(False)), nebius.warm_script(False)):
         lines = script.splitlines()
         assert lines.index(gpu_usage.SAMPLER) < next(i for i, l in enumerate(lines) if "S2C_ENVS" in l or "kit" in l.lower())
+
+
+def test_the_cpu_and_ram_are_summed_up_too(tmp_path):
+    samples = tmp_path / "gpu.log"
+    # CPU full while the GPU waits (unpacking, 0-20 s), then the GPU busy; the first line has no CPU reading yet,
+    # one has no GPU reading.
+    samples.write_text("1000 0 500 - - 2000\n"
+                       + "".join(f"{t} {0 if t < 1020 else 80} 900 {95 if t < 1020 else 30} 4 {3000 + t - 1000}\n"
+                                 for t in range(1002, 1040, 2))
+                       + "1040 - - 50 0 3100\n")
+    s = gpu_usage.read(samples)
+    assert len(s) == 20 and s[0][3] is None
+    w = gpu_usage.window(s, 1000, 1040)
+    assert w["cpu"] == 61 and w["cpu_full"] == 0.47 and w["iowait"] == 4 and w["ram_mb"] == 3038
+    assert gpu_usage.window(s, 1000, 1000).keys() == {"util", "busy", "mem_mb", "samples"}

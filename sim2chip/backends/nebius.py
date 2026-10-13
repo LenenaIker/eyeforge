@@ -216,12 +216,15 @@ def print_timeline(job: Job, log=print, since: float | None = None) -> None:
     log(f"  where the time went ({total / 60:.1f} min in all):")
     for r in sorted(recs, key=lambda r: -r["seconds"]):
         g = gpu.get("steps", {}).get(r["step"])
-        use = f", GPU {g['util']}%" if g else ""
+        use = (f", GPU {g['util']}%" + (f", CPU {g['cpu']}%" if "cpu" in g else "")) if g else ""
         log(f"    {r['seconds'] / 60:5.1f} min  {100 * r['seconds'] / total:3.0f}%  {r['step']} ({r['where']}{use})")
     if gpu.get("all"):
         a = gpu["all"]
         log(f"  GPU in the cloud job: {a['util']}% on average, busy {100 * a['busy']:.0f}% of the time, "
             f"{a['mem_mb'] / 1024:.1f} GB at most")
+        if "cpu" in a:
+            log(f"  CPU in the cloud job ({gpu.get('cpus') or '?'} cores): {a['cpu']}% on average, full "
+                f"{100 * a['cpu_full']:.0f}% of the time, iowait {a['iowait']}%, RAM {a['ram_mb'] / 1024:.1f} GB at most")
 
 
 def cloud_spec(spec, log=print):

@@ -163,7 +163,7 @@ def main() -> int:
     try:  # its whole life, idle time included (gpu_usage.py); the server adds it to warm_usage.jsonl
         use = gpu_usage.window(gpu_usage.read(), t0, time.time())
         if use:
-            warm.put(store, bucket, warm.key(wid, "gpu.json"), use)
+            warm.put(store, bucket, warm.key(wid, "gpu.json"), {**use, "cpus": os.cpu_count()})
     except Exception as e:
         say(f"GPU use not summed up: {e}")
     if server is not None:
