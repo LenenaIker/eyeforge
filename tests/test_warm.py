@@ -163,6 +163,9 @@ class CLI:
     def job_logs(self, job_id):
         return ""
 
+    def cancel(self, job_id):
+        self.cancelled = [*getattr(self, "cancelled", []), job_id]
+
 
 def run_setup(tmp_path, monkeypatch, store):
     from sim2chip.pipeline import Pipeline
@@ -240,6 +243,38 @@ def test_a_task_the_gpu_never_takes_goes_back(tmp_path, monkeypatch):
         be.run_pipeline(pipe, log=lambda line: None)
     assert [j["name"] for j in be.cli.jobs] == ["s2c-j-run"]
     assert not store.listing("sim2chip-cache", warm.key("w1", "tasks"))  # withdrawn
+
+
+def test_a_warm_gpu_that_never_comes_up_is_given_up(tmp_path, monkeypatch):
+    # 2026-10-13: Nebius kept the warm GPU in PROVISIONING for 12 min and the run waited on it with no end.
+    store = Store()
+    pipe = run_setup(tmp_path, monkeypatch, store)
+    w = warm.current(tmp_path)
+    assert warm.usable(store, "sim2chip-cache", "w1", w["started"])  # just asked for: starting
+    stale = time.time() - warm.SETUP_S - 1
+    assert not warm.usable(store, "sim2chip-cache", "w1", stale)
+    assert warm.task_state(store, "sim2chip-cache", "w1", "t1", False, stale) == "LOST"
+    warm.worker_file(tmp_path).write_text(json.dumps({**w, "started": stale}))
+    be = NebiusBackend(max_usd=10.0, cli=CLI(), store=store, poll_s=0)
+    with pytest.raises(Exception):  # the fake cold job does nothing
+        be.run_pipeline(pipe, log=lambda line: None)
+    assert [j["name"] for j in be.cli.jobs] == ["s2c-j-run"]  # its own GPU, not the dead one
+    gpu = warm.WarmGPU(tmp_path, backend=be, log=lambda line: None)
+    gpu.give_up(warm.current(tmp_path))
+    assert be.cli.cancelled == ["aijob-warm"] and warm.current(tmp_path) is None
+
+
+def test_a_job_nebius_finds_no_gpu_for_is_cancelled(tmp_path, monkeypatch):
+    store = Store()
+    pipe = run_setup(tmp_path, monkeypatch, store)
+    warm.worker_file(tmp_path).unlink()
+    monkeypatch.setattr(nebius, "PROVISION_S", 0)
+    cli = CLI()
+    cli.job_state = lambda job_id: "PROVISIONING"
+    be = NebiusBackend(max_usd=10.0, cli=cli, store=store, poll_s=0)
+    with pytest.raises(Exception, match="no free GPU"):
+        be.run_pipeline(pipe, log=lambda line: None)
+    assert cli.cancelled == ["aijob-1"]
 
 
 def test_start_writes_the_worker_and_its_script(tmp_path, monkeypatch):

@@ -110,6 +110,9 @@ ENVS = "/tmp/s2c/envs"
 KIT_PY, KIT_TEACHER = f"{ENVS}/py/bin/python", f"{ENVS}/teacher/bin/python"
 KIT_PICODET, KIT_PADDLEDET = f"{ENVS}/picodet/bin/python", f"{ENVS}/paddledet"  # the picodet kit holds both
 KIT_TIMES = "/tmp/s2c/kit_times.txt"  # per streamed kit: index, start and end (epoch s), bytes
+# A job Nebius cannot give a machine to this long is cancelled (2026-10-13: PROVISIONING, its instance FAILED,
+# retried for over 12 min); waiting longer only keeps the user staring at a run that never starts.
+PROVISION_S = float(config.env("SIM2CHIP_NEBIUS_PROVISION_S", "900"))
 TERMINAL = {"COMPLETED", "SUCCEEDED", "FAILED", "ERROR", "CANCELLED", "CANCELED", "STOPPED", "DELETED"}
 
 
@@ -700,7 +703,7 @@ class NebiusBackend:
         try:
             if self.cli.job_state(w["job_id"]) in TERMINAL:
                 return None
-            return w if warm.usable(self.store, f"{self.prefix}-cache", w["wid"]) else None
+            return w if warm.usable(self.store, f"{self.prefix}-cache", w["wid"], w.get("started")) else None
         except Exception as e:  # the run starts its own GPU instead
             print(f"  warm GPU not checked ({type(e).__name__}: {e}), starting a new job", flush=True)
             return None
@@ -805,6 +808,11 @@ class NebiusBackend:
             if misses >= 10 or time.time() > deadline:
                 raise RuntimeError(f"lost track of Nebius job {job_id} (state {state}): check it with "
                                    f"'nebius ai job get {job_id}' and cancel it if it still runs")
+            if state_of is None and state == "PROVISIONING" and last == "PROVISIONING" \
+                    and time.time() - since > PROVISION_S:
+                self.cli.cancel(job_id)
+                raise RuntimeError(f"Nebius found no free GPU in {PROVISION_S / 60:.0f} min (job {job_id}, cancelled): "
+                                   "try again in a while")
             if state != last and state != "UNKNOWN":
                 now = time.time()
                 if last is not None:  # how long the job stayed in each state: queue, image pull, run

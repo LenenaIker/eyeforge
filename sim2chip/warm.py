@@ -44,6 +44,10 @@ PARALLEL = 2      # tasks at once (two users); more queue
 POLL_S = 3        # how often the GPU and a waiting run look at the bucket
 STALE_S = 120     # a heartbeat older than this: the GPU is gone or stuck, runs go elsewhere
 PICK_S = 180      # a task the GPU has not started by then, while it says ready, goes elsewhere
+# A GPU with no heartbeat this long after it was asked for never came up (2026-10-13: Nebius kept the job in
+# PROVISIONING, its instance FAILED, for over 12 min): it is given up, and its tasks go elsewhere. A start-up
+# takes about 92 s with the light image, 4 min at worst seen.
+SETUP_S = float(config.env("SIM2CHIP_WARM_SETUP_S", "420"))
 LATE_READY = "/tmp/s2c/late.ready"  # written when the kits fetched after start-up (PicoDet's) are unpacked
 
 
@@ -84,11 +88,12 @@ def heartbeat(store, bucket: str, wid: str) -> dict | None:
     return read(store, bucket, key(wid, "state.json"))
 
 
-def usable(store, bucket: str, wid: str) -> bool:
-    """The GPU can take a task: starting (no heartbeat yet) or ready, not stopping, not silent."""
+def usable(store, bucket: str, wid: str, started: float | None = None) -> bool:
+    """The GPU can take a task: starting (no heartbeat yet, for at most SETUP_S since `started`) or ready, not
+    stopping, not silent."""
     hb = heartbeat(store, bucket, wid)
     if hb is None:
-        return True
+        return started is None or time.time() - started < SETUP_S
     return hb.get("state") in ("setup", "ready") and time.time() - hb.get("t", 0) < STALE_S
 
 
@@ -133,6 +138,8 @@ def task_state(store, bucket: str, wid: str, tid: str, worker_ended: bool, submi
     silent = hb is not None and time.time() - hb.get("t", 0) > STALE_S
     # "stopping" is not lost: the GPU looks once more for tasks before it stops, and takes this one.
     if worker_ended or silent or (hb and hb.get("state") == "stopped" and not started):
+        return "LOST"
+    if hb is None and time.time() - submitted > SETUP_S:  # the GPU never came up
         return "LOST"
     if not started and hb and hb.get("state") == "ready" and time.time() - submitted > PICK_S:
         return "LOST"
@@ -237,11 +244,11 @@ class WarmGPU:
         with self._lock:
             try:
                 w = self._alive()
-                if w is not None and usable(self.backend.store, self._bucket(), w["wid"]):
+                if w is not None and usable(self.backend.store, self._bucket(), w["wid"], w.get("started")):
                     keep_alive(self.backend.store, self._bucket(), w["wid"], KEEP_S)
                     return
                 if w is not None:  # stopping or silent: let it end, a new one takes over
-                    self.record_end(w, "REPLACED")
+                    self.give_up(w)
                 w = self.backend.start_warm(self.home)
                 keep_alive(self.backend.store, self._bucket(), w["wid"], KEEP_S)
                 self.log(f"warm GPU {w['job_id']} asked for ({reason})")
@@ -283,6 +290,13 @@ class WarmGPU:
             f.write(json.dumps(rec) + "\n")
         worker_file(self.home).unlink(missing_ok=True)
 
+    def give_up(self, w: dict) -> None:
+        """Forget this GPU; one that never came up is cancelled, or Nebius would bill it once it does."""
+        if heartbeat(self.backend.store, self._bucket(), w["wid"]) is None:
+            self.log(f"warm GPU {w['job_id']} not up after {(time.time() - w['started']) / 60:.0f} min: cancelled")
+            self.backend.cli.cancel(w["job_id"])
+        self.record_end(w, "REPLACED")
+
     def watch(self, every: float = 60) -> None:
         """Notice when the GPU ends (to note its cost), in one background thread."""
         with self._lock:
@@ -295,7 +309,12 @@ class WarmGPU:
                 time.sleep(every)
                 try:
                     with self._lock:
-                        if self._alive() is None:
+                        w = self._alive()
+                        if w is not None and not usable(self.backend.store, self._bucket(), w["wid"], w.get("started")) \
+                                and heartbeat(self.backend.store, self._bucket(), w["wid"]) is None:
+                            self.give_up(w)
+                            w = None
+                        if w is None:
                             self._watching = False
                             return
                 except Exception as e:
