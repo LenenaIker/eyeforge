@@ -55,6 +55,21 @@ def missing_pythons(names=("sam3", "mesh", "erase", "isaac")) -> list[str]:
     return [PYTHONS[n] for n in names if not (p := config.env(PYTHONS[n])) or not Path(p).exists()]
 
 
+
+def ca_file() -> str | None:
+    """The root certificates this Python verifies with. The kits' standalone Pythons find none on Nebius's image,
+    and the NVIDIA vegetation catalog failed to download there (CERTIFICATE_VERIFY_FAILED, 2026-10-14)."""
+    import ssl
+    paths = ssl.get_default_verify_paths()
+    for f in (paths.cafile, paths.openssl_cafile, "/etc/ssl/certs/ca-certificates.crt"):
+        if f and os.path.exists(f):
+            return f
+    try:
+        import certifi
+        return certifi.where()
+    except ImportError:
+        return None
+
 @dataclass
 class Flow:
     d: Path                         # the scene folder
@@ -78,6 +93,8 @@ class Flow:
                **(cloud.ready(python, script, self.log) if cloud.on() else {})}
         if self.usage_log:
             env["SIM2CHIP_LLM_USAGE"] = str(self.usage_log)
+        if "SSL_CERT_FILE" not in env and (ca := ca_file()):
+            env["SSL_CERT_FILE"] = ca
         t0 = time.time()
         logf = self.d / "logs" / f"{step}.log"
         with open(logf, "w") as fh:

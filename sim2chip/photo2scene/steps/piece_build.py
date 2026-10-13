@@ -275,7 +275,9 @@ def main():
     intr = (w, h, fx, fy, cx, cy)
     P = points_from_depth(dp['depth'], fx, fy, cx, cy)
     vp = dp['mask'] > 0
-    things = cv2.dilate(np.any(masks, 0).astype(np.uint8), np.ones((15, 15), np.uint8)) > 0  # objects, grown
+    # Objects, grown; a photo without any (an empty street, roads photo 12) has no masks at all.
+    found = np.any(masks, 0) if len(masks) else np.zeros(vp.shape, bool)
+    things = cv2.dilate(found.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0
 
     # The support plane on the photo's depth, away from the objects.
     support = (np.asarray(Image.open(os.path.join(d, 'support_raw.png'))) > 0) & ~things & vp
