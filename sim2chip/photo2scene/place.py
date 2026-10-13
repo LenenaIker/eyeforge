@@ -184,8 +184,10 @@ def imitate(flow: Flow, r: dict, keep: list[int]):
             section = ["--section", d / "section.json"]
             # A leafy street under the open country's dry hills looked like no photo (roads, 2026-10-13).
             cover = flow.json("section.json").get("image_cover", {})
-            if sum(cover.values()) >= GREEN_COVER:
+            if cover.get("tree", 0) + cover.get("shrub", 0) >= GREEN_COVER:
                 r["hdri_group"] = "green"
+                # compose() reads the route again from disk: it must render under the same skies.
+                (d / "route.json").write_text(json.dumps({**flow.json("route.json"), "hdri_group": "green"}, indent=1))
     # 2.2 The surroundings meshes into the place, then the geometric gates; a mesh that fails is dropped once.
     for attempt in range(2):
         flow.run(f"2.2a_env_{attempt}", "mesh", "env_add.py",

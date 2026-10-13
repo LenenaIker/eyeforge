@@ -257,8 +257,8 @@ def vegetation(args, scene, arr, up, floor):
         centre = centre + away * 0.25 * width
         base = centre + (floor(centre)[0] - centre @ up) * up
         z = np.load(veg_catalog.proxy(args.veg_dir, cat[a['name']]))
-        i = add_asset(scene, arr, a['url'], pose(base, height, z, up, np.random.default_rng(a['index']).uniform(0, 6.3)),
-                      z)
+        yaw = np.random.default_rng(a['index']).uniform(0, 2 * np.pi)
+        i = add_asset(scene, arr, a['url'], pose(base, height, z, up, yaw), z)
         print(f"{a['phrase']} -> {a['name']}: {height:.1f} m (asset {float(z['height_m']):.1f} m), "
               f"at {base.round(1).tolist()}")
         out.append({'index': i, 'name': f"{a['index']:03d} {a['phrase']}", 'vegetation': a['name']})
@@ -279,10 +279,12 @@ def add_asset(scene, arr, url, place, proxy):
 
 
 def bands(args, scene, arr, up, floor, rounds=6, tolerance=0.15):
-    """flow_section.py's zones filled over the street the photo sees (section_fill.py): trees, hedges and shrubs
-    where the photo has them, off the road, the meshes and the photo's own trees; grass and sidewalk strips. The
-    zones are made denser or sparser until, from the photo's camera, their plants cover as much of the picture as
-    the photo's trees and shrubs do (proxies rendered with pyrender, a few rounds). Returns the new env entries."""
+    """flow_section.py's bands filled over the street the photo sees (section_fill.py): a front row of trees at the
+    photo's height and spacing, a back row taller and leaning over the road, hedges and shrubs, kept off the
+    road, the meshes and the photo's own trees; grass and sidewalk strips. Then tuned to the photo, seen from its
+    camera (proxies rendered with pyrender, a few rounds): the back row grows or shrinks until the trees cover as
+    much of the picture as the photo's, it leans more or less until they cover as much of its top third (the
+    canopy over the road), and the shrubs thicken until theirs match. Returns the new env entries."""
     import section_fill
     from flow_gates import render
     section = json.load(open(args.section))
@@ -304,29 +306,35 @@ def bands(args, scene, arr, up, floor, rounds=6, tolerance=0.15):
     w, h = scene['size']
     fixed = [(arr[f"obj{e['index']}_points"], arr[f"obj{e['index']}_faces"]) for e in env]
     fixed_group = ['tree' if e.get('vegetation') else None for e in env]
-    scale, objects, strips = {}, [], []
+    look, objects, strips = dict(section_fill.LOOK), [], []
     for rnd in range(rounds):
-        objects, strips = section_fill.fill(section, up, floor, along, args.veg_dir, seed=7, avoid=avoid,
-                                            scale=scale)
+        objects, strips = section_fill.fill(section, up, floor, along, args.veg_dir, seed=7, avoid=avoid, look=look)
         items = fixed + [(o['proxy']['points'] @ o['place'][:3, :3].T + o['place'][:3, 3], o['proxy']['faces'])
                          for o in objects]
         groups = fixed_group + [section_fill.GROUP[o['band']] for o in objects]
         _, ids = render(scene, arr, items, w, h)
-        cover = {g: float(np.isin(ids, [k + 1 for k, gk in enumerate(groups) if gk == g]).mean())
-                 for g in target}
-        off = {g: cover[g] / target[g] for g in target if target[g] > 0.01}
-        print(f"round {rnd}: {len(objects)} plants, cover {cover} for {target} (scale {scale})", flush=True)
-        if all(abs(x - 1) <= tolerance for x in off.values()) or not off:
+        is_tree = np.isin(ids, [k + 1 for k, g in enumerate(groups) if g == 'tree'])
+        cover = {'tree': float(is_tree.mean()), 'tree_top': float(is_tree[: h // 3].mean()),
+                 'shrub': float(np.isin(ids, [k + 1 for k, g in enumerate(groups) if g == 'shrub']).mean())}
+        off = {g: cover[g] / target[g] for g in cover if target.get(g, 0) > 0.01}
+        print(f"round {rnd}: {len(objects)} plants, cover {({g: round(v, 3) for g, v in cover.items()})} for "
+              f"{target}, look {({g: round(v, 2) for g, v in look.items()})}", flush=True)
+        if all(abs(x - 1) <= tolerance for x in off.values()):
             break
-        for g, x in off.items():
-            scale[g] = float(np.clip(scale.get(g, 1.0) * np.clip(1 / max(x, 1e-3), 0.5, 3.0), 0.1, 12.0))
+        if 'tree' in off:
+            look['back'] = float(np.clip(look['back'] * np.clip(off['tree'] ** -0.5, 0.85, 1.25), 1.0, 2.2))
+        if 'tree_top' in off and abs(off['tree_top'] - 1) > tolerance:
+            look['tilt'] = float(np.clip(look['tilt'] + (3.0 if off['tree_top'] < 1 else -3.0), 0.0, 12.0))
+        if 'shrub' in off:
+            look['shrub'] = float(np.clip(look['shrub'] / max(off['shrub'], 1e-3), 0.3, 3.0))
     scene['pieces'] += strips
     out = []
     for k, o in enumerate(objects):
         i = add_asset(scene, arr, o['url'], o['place'], o['proxy'])
         out.append({'index': i, 'name': f"{900 + k:03d} {o['band']}", 'vegetation': o['name'], 'filled': True})
-    print(f"bands: {len(objects)} plants ({', '.join(sorted({o['name'] for o in objects}))}), "
-          f"{len(strips)} ground strips")
+    rows = {r: sum(o['row'] == r for o in objects) for r in ('front', 'back', 'hedge', 'shrub')}
+    print(f"bands: {len(objects)} plants {rows} ({', '.join(sorted({o['name'] for o in objects}))}), "
+          f"{len(strips)} ground strips, look {look}")
     return out
 
 

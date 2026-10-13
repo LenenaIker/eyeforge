@@ -157,19 +157,34 @@ def main():
                 for x, y in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
     pieces = [quad(road_pts, colour=ASPHALT)] + facade_quads
     size = json.load(open(os.path.join(args.photo_scene, 'pieces.json')))['materials']['floor'].get('size_m', [1, 1])
+    sec_path = os.path.join(args.photo_scene, 'section.json')
+    section = json.load(open(sec_path)) if os.path.exists(sec_path) else None
     for s in (1, -1):
         c0 = centre + s * half * b
-        side = [c0 - span * a, c0 + span * a, c0 + span * a + s * args.reach * b, c0 - span * a + s * args.reach * b]
-        uv = [[0, 0], [2 * span / size[0], 0], [2 * span / size[0], args.reach / size[1]], [0, args.reach / size[1]]]
+        # With the photo's street bands (flow_section.py) the sidewalk is as wide as the photo's and the land past
+        # it takes its outer bands' colour: a 60 m sidewalk of the photo's asphalt read as a square (roads,
+        # 2026-10-13).
+        walk, land = args.reach, None
+        if section:
+            same = int(np.sign(b @ np.asarray(section['road']['across'])))  # this template's b against the section's
+            mine = [x for x in section['bands'] if x['side'] == s * same]
+            walks = [x['to_m'] for x in mine if x['kind'] == 'sidewalk' and x['to_m'] > 0.3]
+            walk = float(np.clip(max(walks) if walks else 1.0, 0.5, 4.0))
+            outer = [x for x in mine if x['kind'] in ('grass', 'hedge', 'shrub', 'tree')]
+            land = (np.mean([x['colour'] for x in outer], 0) / 255 * 0.8).tolist() if outer else [0.32, 0.36, 0.24]
+        side = [c0 - span * a, c0 + span * a, c0 + span * a + s * walk * b, c0 - span * a + s * walk * b]
+        uv = [[0, 0], [2 * span / size[0], 0], [2 * span / size[0], walk / size[1]], [0, walk / size[1]]]
         pieces.append(quad(side, uv, floor['texture'], floor['colour']))
         pieces[-1]['gain'] = floor.get('gain')  # the photometry gain of the photo's ground
+        if land is not None:
+            c1 = c0 + s * walk * b
+            pieces.append(quad([c1 - span * a, c1 + span * a, c1 + span * a + s * (args.reach - walk) * b,
+                                c1 - span * a + s * (args.reach - walk) * b], colour=land))
         pieces.append(quad([c0 - span * a, c0 + span * a, c0 + span * a - args.curb * up,
                             c0 - span * a - args.curb * up], colour=[0.55, 0.54, 0.52]))
     # The photo's street bands (flow_section.py): its asphalt's colour, grass and sidewalk strips the whole length.
-    sec_path = os.path.join(args.photo_scene, 'section.json')
-    if os.path.exists(sec_path):
+    if section:
         import section_fill
-        section = json.load(open(sec_path))
         pieces[0]['colour'] = [x / 255 for x in section['road']['colour']]
         pieces += section_fill.strips(section, up, lambda X: np.full(len(np.atleast_2d(X)), level), (-span, span))
 

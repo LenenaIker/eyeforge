@@ -11,9 +11,10 @@ STRIP_LIFT = 0.03  # ground strips this far over the floor, so they do not flick
 GROUND_KINDS = ('grass', 'sidewalk')
 
 
-def pose(base, height, proxy, up, yaw):
+def pose(base, height, proxy, up, yaw, lean=None):
     """4x4 from the proxy's frame (metres, Z up, trunk base at the origin) to the place: turned by yaw about up,
-    scaled to height, base on the given point."""
+    scaled to height, base on the given point; lean (a horizontal direction, an angle in radians) tips its top
+    that way about its base."""
     e1 = np.cross(up, [1.0, 0, 0]) if abs(up[0]) < 0.9 else np.cross(up, [0, 0, 1.0])
     e1 /= np.linalg.norm(e1)
     e2 = np.cross(up, e1)
@@ -21,6 +22,12 @@ def pose(base, height, proxy, up, yaw):
     ca, sa = np.cos(yaw), np.sin(yaw)
     m = np.eye(4)
     m[:3, :3] = np.stack([ca * e1 + sa * e2, -sa * e1 + ca * e2, up], 1) * k
+    if lean is not None and lean[1]:
+        axis = np.cross(up, lean[0])
+        axis /= np.linalg.norm(axis)
+        kx = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+        rot = np.eye(3) + np.sin(lean[1]) * kx + (1 - np.cos(lean[1])) * kx @ kx  # Rodrigues
+        m[:3, :3] = rot @ m[:3, :3]
     m[:3, 3] = base
     return m
 
@@ -41,6 +48,7 @@ def frame(section, up, floor):
     def at(u, v):
         x = c + u * b + v * a
         return x + (float(floor(x)[0]) - x @ up) * up
+    at.across = b
     return edge, at
 
 
@@ -86,21 +94,24 @@ def poisson(lo_u, hi_u, lo_v, hi_v, d, rng, tries=30):
     return pts
 
 
-def fill(section, up, floor, along, veg_dir, seed=0, avoid=(), avoid_m=1.5, scale=None):
-    """Vegetation zones and ground strips over the street from along[0] to along[1] metres (v, from the road's
-    centre point). Trees and shrubs are areas, not single plants (user, 2026-10-13): each zone, from its band's
-    start to its depth plus a crown, gets a Poisson scatter of its two species; a hedge is a row of touching
-    shrubs with gaps by its cover. A zone holds one tree per spacing squared, shrubs by their cover, times
-    scale ({'tree' | 'shrub': factor}, env_add.py matches the photo's cover with it). floor(X) gives the floor's up coordinate under each point;
-    avoid: points no stem stands within avoid_m (plus its crown, a shrub; a tree, its zone's spacing) of. Returns
-    ([{name, url, place, proxy, band}], [ground quads]); the same seed gives the same plants, more with a higher
-    density."""
+LOOK = {'back': 1.4, 'tilt': 4.0, 'shrub': 1.0}  # fill()'s defaults; env_add.py tunes them to the photo
+
+
+def fill(section, up, floor, along, veg_dir, seed=0, avoid=(), avoid_m=1.5, look=None):
+    """Vegetation and ground strips over the street from along[0] to along[1] metres (v, from the road's centre
+    point), laid as a set dresser would (user, 2026-10-13): a tree band is a front row at the photo's height and
+    spacing by the road, and behind it a back row of half as many, look['back'] times taller and leaning
+    look['tilt'] degrees over the road, which closes the canopy with few trees (163 scattered ones did not, and
+    left the road in the sun). A hedge is a row of touching shrubs with gaps by its cover; other shrubs a Poisson
+    scatter by their cover times look['shrub'] (3 at most). floor(X) gives the floor's up coordinate under each
+    point; avoid: points no stem stands within avoid_m (plus its crown; a tree, 0.7 of its spacing) of. Returns
+    ([{name, url, place, proxy, band, row}], [ground quads]); the same seed gives the same plants."""
     edge, at = frame(section, up, floor)
     avoid = np.asarray(avoid, float).reshape(-1, 3)
     flat = lambda X: X - np.outer(np.atleast_2d(X) @ up, up)  # noqa: E731
     av = flat(avoid) if len(avoid) else avoid
     cat = {x['name']: x for x in veg_catalog.catalog(veg_dir)}
-    scale = scale or {}
+    look = {**LOOK, **(look or {})}
 
     objects = []
     for bi, band in enumerate(section['bands']):
@@ -114,26 +125,36 @@ def fill(section, up, floor, along, veg_dir, seed=0, avoid=(), avoid_m=1.5, scal
         height = max(band['height_m'], 0.5)
         r = max(crown(z) * float(np.clip(height / float(z['height_m']), 0.3, 3.0)) for z in proxies.values())
         lo = max(lo, edge[side] + 0.3)
-        if band['kind'] == 'hedge':  # a row of shrubs touching, gaps where the photo shows none
+        # (u, v, height, lean angle in degrees, row)
+        if band['kind'] == 'tree':
+            spacing = band.get('spacing_m') or 2 * r
+            far = max(hi, edge[side] + band.get('depth_m', band['to_m']) + r, lo + 2 * r)
+            spots = [(lo + rng.uniform(0.2, 1.0), v, height * rng.uniform(0.85, 1.1), 0.0, 'front')
+                     for v in np.arange(along[0] + rng.uniform(0, spacing), along[1], spacing)]
+            behind = lo + max(r, 2.0)
+            spots += [(behind + rng.uniform(0, max(far - behind, 1.0)), v,
+                       height * look['back'] * rng.uniform(0.9, 1.1), look['tilt'] * rng.uniform(0.7, 1.0), 'back')
+                      for v in np.arange(along[0] + spacing / 2, along[1], 2 * spacing)]
+            gap = 0.7 * spacing
+        elif band['kind'] == 'hedge':  # a row of shrubs touching, gaps where the photo shows none
             d = max(1.4 * r, 0.6)
-            spots = [(rng.uniform(lo, max(hi, lo + 0.1)), v) for v in np.arange(along[0], along[1], d)
-                     if rng.uniform() < band['cover']]
+            spots = [(rng.uniform(lo, max(hi, lo + 0.1)), v, height * rng.uniform(0.8, 1.2), 0.0, 'hedge')
+                     for v in np.arange(along[0], along[1], d) if rng.uniform() < band['cover']]
             gap = avoid_m + r
         else:
             far = max(hi, edge[side] + band.get('depth_m', band['to_m']) + r, lo + 2 * r)
-            spacing = band.get('spacing_m') or 2 * r
-            d = max(0.7 * spacing, 2.5) if band['kind'] == 'tree' else max(1.2 * r, 1.0)
-            per100 = 100 / max(spacing, 2.0) ** 2 if band['kind'] == 'tree' else 100 * band['cover'] / (4 * d * d)
-            per100 *= scale.get(GROUP[band['kind']], 1.0)
-            spots = poisson(lo, far, along[0], along[1], d, rng)
-            spots = spots[:int(round(per100 * (far - lo) * (along[1] - along[0]) / 100))]
-            gap = d if band['kind'] == 'tree' else avoid_m + r
-        for k, (u, v) in enumerate(spots):
+            d = max(1.2 * r, 1.0)
+            n = 100 * band['cover'] / (4 * d * d) * min(look['shrub'], 3.0) * (far - lo) * (along[1] - along[0]) / 100
+            spots = [(u, v, height * rng.uniform(0.8, 1.2), 0.0, 'shrub')
+                     for u, v in poisson(lo, far, along[0], along[1], d, rng)[:int(round(n))]]
+            gap = avoid_m + r
+        toward_road = -side * at.across
+        for k, (u, v, hgt, tilt, row) in enumerate(spots):
             base = at(side * u, v)
             if len(av) and np.min(np.linalg.norm(av - flat(base), axis=1)) <= gap:
                 continue
             name = names[k % len(names)]
-            objects.append({'name': name, 'url': cat[name]['url'], 'band': band['kind'],
-                            'place': pose(base, height * rng.uniform(0.8, 1.2), proxies[name], up,
-                                          rng.uniform(0, 2 * np.pi)), 'proxy': proxies[name]})
+            objects.append({'name': name, 'url': cat[name]['url'], 'band': band['kind'], 'row': row,
+                            'place': pose(base, hgt, proxies[name], up, rng.uniform(0, 2 * np.pi),
+                                          (toward_road, np.radians(tilt))), 'proxy': proxies[name]})
     return objects, strips(section, up, floor, along)

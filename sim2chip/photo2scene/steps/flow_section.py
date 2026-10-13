@@ -9,8 +9,8 @@ Run in the `teacher-sam3` env after piece_build.py:
     python sim2chip/photo2scene/steps/flow_section.py --dir <flow dir> --catalog <cache>/vegetation
 
 Writes <dir>/section.json ({"road": {"centre", "along", "across", "half", "visible"}, "image_cover": {"tree",
-"shrub"}, "bands": [{"side", "kind", "from_m", "to_m", "depth_m", "height_m", "cover", "spacing_m", "colour",
-"pick", "picks"}]}) and <dir>/section.jpg (the photo by band and the bands seen from above).
+"shrub", "tree_top"}, "bands": [{"side", "kind", "from_m", "to_m", "depth_m", "height_m", "cover", "spacing_m",
+"colour", "pick", "picks"}]}) and <dir>/section.jpg (the photo by band and the bands seen from above).
 """
 import argparse
 import json
@@ -190,7 +190,9 @@ def main():
                     'visible': visible, 'colour': np.median(photo[road], 0).round().astype(int).tolist()},
            # how much of the photo each kind of plant covers: the target the filled zones are rendered against
            'image_cover': {'tree': round(float(masks['tree'].mean()), 3),
-                           'shrub': round(float((masks['hedge'] | masks['shrub']).mean()), 3)},
+                           'shrub': round(float((masks['hedge'] | masks['shrub']).mean()), 3),
+                           # the canopy over the street: trees in the picture's top third
+                           'tree_top': round(float(masks['tree'][: h // 3].mean()), 3)},
            'bands': bands}
     with open(os.path.join(d, 'section.json'), 'w') as f:
         json.dump(out, f, indent=1)
