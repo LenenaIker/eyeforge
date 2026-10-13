@@ -30,6 +30,8 @@ import trimesh
 from PIL import Image, ImageDraw, ImageFilter
 from scipy.spatial import ConvexHull, cKDTree
 
+from bg_build import floor_height
+
 GL2CV = np.diag([1.0, -1.0, -1.0, 1.0])
 
 
@@ -158,17 +160,17 @@ def photo_texture(meshes, d, tol=0.03, min_cos=0.25):
     return out
 
 
-def skirt(pts, faces, cols, up, level, min_gap=0.1):
+def skirt(pts, faces, cols, up, floor, min_gap=0.1):
     """A floating mesh (its base hidden behind a hedge or a wall in the photo, so SAM 3D left out the lower
     floors) gets a prism from its lowest band down to the floor: the band's convex outline, the band's colour.
-    Moving it down instead put a house metres off its own photo pixels (basque_street, 2026-10-07)."""
-    h = pts @ up
+    Moving it down instead put a house metres off its own photo pixels (basque_street, 2026-10-07). floor(X): the
+    up coordinate of the floor under each point (a slope is not level)."""
+    h = pts @ up - floor(pts)  # above the floor right under each point
     base = float(np.percentile(h, 0.5))
-    gap = base - level
-    if gap < min_gap:  # a few centimetres: set it down, it stays on its photo pixels (sideboard 7 cm, home_office)
+    if base < min_gap:  # a few centimetres: set it down, it stays on its photo pixels (sideboard 7 cm, home_office)
         # Measured on the surface by area, as flow_gates.py does: by vertices a sideboard was still 6 cm up.
         surf = trimesh.sample.sample_surface(trimesh.Trimesh(pts, faces, process=False), 20000, seed=0)[0]
-        return pts - max(float(np.percentile(surf @ up, 0.5)) - level, 0.0) * up, faces, cols
+        return pts - max(float(np.percentile(surf @ up - floor(surf), 0.5)), 0.0) * up, faces, cols
     band = h <= base + 0.1 * max(float(np.ptp(h)), 0.5)
     e1 = np.cross(up, [1.0, 0, 0]) if abs(up[0]) < 0.9 else np.cross(up, [0, 0, 1.0])
     e1 /= np.linalg.norm(e1)
@@ -178,8 +180,10 @@ def skirt(pts, faces, cols, up, level, min_gap=0.1):
         hull = q[ConvexHull(q).vertices]
     except Exception:
         return pts, faces, cols
-    top = [a * e1 + b * e2 + base * up for a, b in hull]
-    bottom = [a * e1 + b * e2 + level * up for a, b in hull]
+    flat = np.array([a * e1 + b * e2 for a, b in hull])
+    under = floor(flat)
+    top = list(flat + (under + base)[:, None] * up)
+    bottom = list(flat + under[:, None] * up)
     n0, k = len(pts), len(hull)
     new = np.array(top + bottom)
     f = []
@@ -268,7 +272,14 @@ def main():
     first = scene['objects']
     up = np.asarray(scene['up'], float)
     up /= np.linalg.norm(up)
-    level = float(np.mean(np.asarray(scene['pieces'][0]['points']) @ up))  # piece_build's floor comes first
+    if scene.get('floor_plane'):  # piece_build's floor, which on a slope is not level
+        def floor(X):
+            return floor_height(np.atleast_2d(X), up, scene['floor_plane'])
+    else:  # older scenes: a level floor, the first piece
+        level = float(np.mean(np.asarray(scene['pieces'][0]['points']) @ up))
+
+        def floor(X):
+            return np.full(len(np.atleast_2d(X)), level)
     tex = photo_texture(meshes, args.scene) if args.photo_texture and meshes else {}
     if tex:
         tex_path = os.path.abspath(os.path.join(args.out, 'isaac', 'tex_photo.png'))
@@ -283,9 +294,9 @@ def main():
             pts = trimesh.transform_points(m.vertices, GL2CV) * s
             faces = m.faces
         if args.snap_ground:  # catalog entry 1: a base hidden in the photo comes out floating or sunk
-            pts = pts + (level - np.percentile(pts @ up, 0.5)) * up
+            pts = pts - np.percentile(pts @ up - floor(pts), 0.5) * up
         elif args.fill_ground:
-            pts, faces, cols = skirt(pts, faces, cols, up, level)
+            pts, faces, cols = skirt(pts, faces, cols, up, floor)
         if name in tex:  # the skirt's new vertices and faces take no photo
             arr[f'obj{i}_uv'] = np.concatenate([uv, np.zeros((len(pts) - len(uv), 2), np.float32)])
             arr[f'obj{i}_photo_faces'] = np.concatenate([photo_faces, np.zeros(len(faces) - len(photo_faces), bool)])

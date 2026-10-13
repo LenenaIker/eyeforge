@@ -21,6 +21,8 @@ import pyrender
 import trimesh
 from PIL import Image
 
+from bg_build import floor_height
+
 GL2CV = np.diag([1.0, -1.0, -1.0, 1.0])
 
 
@@ -60,6 +62,8 @@ def main():
     up /= np.linalg.norm(up)
     floor = scene['pieces'][0]
     level = float(np.mean(np.asarray(floor['points']) @ up))
+    plane = scene.get('floor_plane')  # piece_build's floor, which on a slope is not level
+    under = (lambda X: floor_height(X, up, plane)) if plane else (lambda X: np.full(len(X), level))  # noqa: E731
 
     env = scene.get('env', [])
     em = np.load(os.path.join(d, 'env_masks.npz'))
@@ -91,7 +95,7 @@ def main():
         # On the surface, by area: a skirt (env_add.py --fill-ground) has few vertices but large faces.
         surf = trimesh.sample.sample_surface(trimesh.Trimesh(pts, arr[f"obj{e['index']}_faces"], process=False),
                                              20000, seed=0)[0]
-        base = float(np.percentile(surf @ up, 0.5)) - level
+        base = float(np.percentile(surf @ up - under(surf), 0.5))
         mi = int(e['name'][:3])
         mask = masks[mi] if mi < len(masks) else np.zeros((h, w), bool)
         sil = ids == k + 2

@@ -57,6 +57,13 @@ def fit_plane(pts, iters=500, tol=0.004, seed=0):
     return n, d, float(best.mean())
 
 
+def floor_height(X, up, plane):
+    """The up coordinate of the floor right under (or over) each point X: plane is (n, d) with n.p + d = 0, which
+    need not be level (a street on a slope, piece_build.gravity)."""
+    n, d = np.asarray(plane[0], float), float(plane[1])
+    return X @ up - (X @ n + d) / (n @ up)
+
+
 def grid_mesh(points, colors, valid, step=2, max_jump=0.04):
     """Triangulated depth map; drops faces across depth jumps (relative) so edges do not smear."""
     pts, col, ok = points[::step, ::step], colors[::step, ::step], valid[::step, ::step]

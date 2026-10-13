@@ -258,6 +258,7 @@ def main():
 
     os.makedirs(os.path.join(args.out, 'isaac'), exist_ok=True)
     scene.update(objects=objects, views=views, pieces=pieces, env=[], indoor=False, lamp=None)
+    scene.pop('floor_plane', None)  # the photo's floor; the template's ground is level
     json.dump(scene, open(os.path.join(args.out, 'isaac', 'scene.json'), 'w'))
     np.savez_compressed(os.path.join(args.out, 'isaac', 'meshes.npz'), **out_arr)
     shutil.copy(os.path.join(args.scene, 'photo.png'), args.out)

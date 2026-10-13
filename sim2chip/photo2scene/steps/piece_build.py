@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw
 
 import sys  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
-from bg_build import fit_plane, look_at_cv, photo_replica, place, points_from_depth
+from bg_build import fit_plane, floor_height, look_at_cv, photo_replica, place, points_from_depth
 
 
 def basis(n):
@@ -33,6 +33,41 @@ def basis(n):
     u = np.cross(n, a)
     u /= np.linalg.norm(u)
     return u, np.cross(n, u)
+
+
+def gravity(P, surf, things, vp, n, max_tilt=20.0, min_px=2000):
+    """The true vertical from the walls the photo shows: buildings stand plumb, the ground need not (a street on a
+    slope tilted the whole place 7.6 degrees, the house leaning in every new view; photo 24 of the pots, 2026-10-13).
+    Each wall mask's points give a free plane; the vertical is the direction across all their normals. Walls of one
+    direction only fix the lean towards them (n with its part along their normal taken out); no wall, or a vertical
+    more than max_tilt from the ground's normal, keeps n. Returns (up, how, tilt in degrees)."""
+    normals = []
+    for m, kind in zip(surf['masks'], surf['kinds']):
+        sel = m & ~things & vp
+        if kind != 'wall' or sel.sum() < min_px:
+            continue
+        X = P[sel]
+        X = X[np.isfinite(X).all(1)]
+        X = X[np.random.default_rng(0).choice(len(X), min(len(X), 20000), replace=False)]
+        tol = max(0.03, 0.01 * float(np.median(np.linalg.norm(X, axis=1))))  # depth noise grows with distance
+        wm, _, inl = fit_plane(X, iters=300, tol=tol)
+        if inl >= 0.5 and abs(wm @ n) < 0.5:  # a wall, not a stretch of ground or a roof
+            normals.append((wm, inl * len(X)))
+    if not normals:
+        return n, 'ground', 0.0
+    M = sum(wt * np.outer(wm, wm) for wm, wt in normals)
+    ev, evec = np.linalg.eigh(M / sum(wt for _, wt in normals))
+    if ev[1] > 0.1:  # two wall directions at least: the vertical is across all of them
+        up, how = evec[:, 0], 'walls'
+    else:  # one direction: lean towards it fixed, sideways lean left as the ground has it
+        wm = evec[:, 2]
+        up, how = n - (n @ wm) * wm, 'one wall direction'
+    up = up / np.linalg.norm(up)
+    up = up if up @ n > 0 else -up
+    tilt = math.degrees(math.acos(min(1.0, float(up @ n))))
+    if tilt > max_tilt:
+        return n, f'ground (walls said {tilt:.1f} deg)', 0.0
+    return up, how, round(tilt, 2)
 
 
 def max_rect(valid):
@@ -191,7 +226,9 @@ def main():
     n, dd, inlier = fit_plane(P[support])
     scale = args.camera_height / dd if args.camera_height else 1.0
     P, dd, depth_p = P * scale, dd * scale, dp['depth'] * scale
-    up = n  # points from the plane towards the camera, so up
+    # Up is the true vertical (the walls'), the floor keeps its own normal n: on a slope it is not level.
+    up, up_how, tilt = gravity(P, surf, things, vp, n)
+    print(f'up from the {up_how}, {tilt} deg off the ground normal', flush=True)
     ppm = fx / float(np.median(depth_p[vp]))  # texture pixels per metre near the photo's own resolution
 
     # Floor: the support itself, or a plane parallel to it below (a table photo with the floor in view).
@@ -205,9 +242,10 @@ def main():
             floor_dd, floor_mask = cand, sel
             break
     on_floor = floor_dd == dd
+    hz = lambda X: (X @ n + floor_dd) / (n @ up)  # noqa: E731  height above the floor, along up
 
-    # Walls: vertical planes (normal across the floor) by RANSAC on each wall mask's points in floor coordinates.
-    e1, e2 = basis(n)
+    # Walls: vertical planes (normal across up) by RANSAC on each wall mask's points in level coordinates.
+    e1, e2 = basis(up)
     walls = []
     for m, kind in zip(surf['masks'], surf['kinds']):
         sel = m & ~things & vp
@@ -253,10 +291,10 @@ def main():
         r = rays[m]
         t = wl['c'] / (r @ wl['m'])
         X = r[t > 0] * t[t > 0][:, None]
-        along = np.cross(n, wl['m'])
+        along = np.cross(up, wl['m'])
         a = np.percentile(X @ along, [2, 98])
-        v = np.percentile(X @ n, [2, 98])
-        centre = wl['m'] * wl['c'] + along * a.mean() + n * v.mean()
+        v = np.percentile(X @ up, [2, 98])
+        centre = wl['m'] * wl['c'] + along * a.mean() + up * v.mean()
         centre = centre - wl['m'] * (centre @ wl['m'] - wl['c'])
         windows.append({'centre': centre + wl['m'] * 0.02, 'normal': wl['m'], 'along': along,
                         'size': [float(np.ptp(a)), float(np.ptp(v))]})
@@ -281,12 +319,17 @@ def main():
     # Pieces in floor coordinates: x along the first wall (or e1), y away from it towards the camera.
     if walls:
         ay = walls[0]['m']
-        ax = np.cross(ay, n)
+        ax = np.cross(ay, up)
     else:
         ax, ay = e1, e2
-    floor_o = -n * floor_dd  # the floor point under the camera
-    to2 = lambda X: np.array([(X - floor_o) @ ax, (X - floor_o) @ ay])  # noqa: E731
-    to3 = lambda x, y, z=0.0: floor_o + x * ax + y * ay + z * n  # noqa: E731
+    floor_o = -up * floor_dd / (n @ up)  # the floor point under the camera
+
+    def to2(X):
+        return np.array([(X - floor_o) @ ax, (X - floor_o) @ ay])
+
+    def to3(x, y, z=0.0):  # z above the floor at (x, y), which on a slope is not floor_o's height
+        X = floor_o + x * ax + y * ay
+        return X + (z - hz(X)) * up
     cam2 = to2(np.zeros(3))
     reach = np.linalg.norm(pivot) * 1.5
     objs2 = np.array([to2(meas[j]['base']) for j, _, _ in good]) if good else np.array([to2(pivot)])
@@ -316,7 +359,7 @@ def main():
         wall_mat = {'colour': [0.78, 0.76, 0.72]}
     pieces = []
     # Wall height: the highest wall pixel above the floor, if the photo shows the wall's top; else --wall-height.
-    tops = [float(np.percentile(P[wl['mask']] @ n + floor_dd, 99.5)) for wl in walls]
+    tops = [float(np.percentile(hz(P[wl['mask']]), 99.5)) for wl in walls]
     H = max([args.wall_height] + [t + 0.05 for t in tops])
     pieces.append(quad([to3(lo[0], lo[1]), to3(hi[0], lo[1]), to3(hi[0], hi[1]), to3(lo[0], hi[1])], mats['floor']))
     if room:
@@ -329,14 +372,17 @@ def main():
     if args.outdoor:
         # Facades: each wall over the stretch and height the photo shows, a metre wider on each side.
         for i, wl in enumerate(walls):
-            t = np.cross(n, wl['m'])
+            t = np.cross(up, wl['m'])
             pts = P[wl['mask']]
             a0, a1 = np.percentile(pts @ t, [1, 99]) + np.array([-1.0, 1.0])
-            top = float(np.percentile(pts @ n + floor_dd, 99.5)) + 0.3
-            base = wl['m'] * wl['c'] - n * (wl['m'] * wl['c'] @ n + floor_dd)  # wall point on the floor
+            # Its height above the floor at both ends: on a slope a low wall follows the ground (a level top made
+            # the stone wall of photo 24 grow downhill, 2026-10-13).
+            top = float(np.percentile(hz(pts), 99.5)) + 0.3
+            base = wl['m'] * wl['c']
             base = base - t * (base @ t)
+            foot = [base + t * a - hz(base + t * a) * up for a in (a0, a1)]  # each end on the floor
             mat = mats[f'wall{i}'] if 'texture' in mats[f'wall{i}'] else wall_mat
-            pieces.append(quad([base + t * a0 + n * top, base + t * a1 + n * top, base + t * a1, base + t * a0], mat))
+            pieces.append(quad([f + top * up for f in foot] + foot[::-1], mat))
     slab = None
     if not on_floor:
         # The support as a block from the floor to its top, its outline the support pixels and the objects on it.
@@ -359,9 +405,9 @@ def main():
     # room; objects shuffled on the free support (--layout photo: where the photo has them), fixed ones kept.
     lib = [(r, obj, meas[j]) for r, (j, obj, tf) in enumerate(good) if meas[j]['phrase'] not in fixed]
     anchored = [(r, obj, tf, meas[j]) for r, (j, obj, tf) in enumerate(good) if meas[j]['phrase'] in fixed]
-    p2, c_h = to2(pivot), float(np.zeros(3) @ n + floor_dd)  # camera height above the floor
+    p2, c_h = to2(pivot), float(hz(np.zeros(3)))  # camera height above the floor
     d0 = np.linalg.norm(cam2 - p2)
-    tilt0 = math.atan2(c_h - (pivot @ n + floor_dd), d0)
+    tilt0 = math.atan2(c_h - hz(pivot), d0)
     sup_z = 0.0 if on_floor else slab[1]
 
     def free_spot(r, placed):
@@ -381,7 +427,7 @@ def main():
                      'lamp': None if room is None else to3(*((lo + hi) / 2), H - 0.4).tolist()}], 0
     orbit = [float(a) for a in args.orbit.split(',') if a.strip()]
     for deg in orbit:  # the photo's camera turned about the vertical through the objects, its framing kept
-        rot = trimesh.transformations.rotation_matrix(math.radians(deg), n, pivot)
+        rot = trimesh.transformations.rotation_matrix(math.radians(deg), up, pivot)
         views.append({'pose': rot.tolist(), 'objects': list(views[0]['objects']), 'lamp': views[0]['lamp']})
     while not orbit and len(views) <= args.views and tries < 50 * args.views:
         tries += 1
@@ -398,7 +444,7 @@ def main():
                 if spot is None:
                     continue
                 placed.append((*spot, mi['width_m'] * kk / 2))
-                tf = place(obj, to3(*spot, sup_z), n, mi['height_m'] * kk, mi['width_m'] * kk,
+                tf = place(obj, to3(*spot, sup_z), up, mi['height_m'] * kk, mi['width_m'] * kk,
                            rng.uniform(0, 2 * math.pi))
                 objects.append([r, tf.tolist()])
         turn = math.radians(rng.uniform(-args.turn, args.turn))
@@ -408,11 +454,11 @@ def main():
         dir2 = np.array([dir2[0] * math.cos(turn) - dir2[1] * math.sin(turn),
                          dir2[0] * math.sin(turn) + dir2[1] * math.cos(turn)])
         e2d = p2 + dir2 * dist * math.cos(tilt)
-        ez = (pivot @ n + floor_dd) + dist * math.sin(tilt)
+        ez = hz(pivot) + dist * math.sin(tilt)
         if ez < 0.3 or ez > H - 0.2 or (room and not ((e2d > lo + 0.3) & (e2d < hi - 0.3)).all()):
             continue
         target = pivot + rng.normal(0, 0.05 * dist, 3)
-        pose = look_at_cv(to3(*e2d, ez), target, n)
+        pose = look_at_cv(to3(*e2d, ez), target, up)
         lamp = to3(*rng.uniform(lo + 0.3, hi - 0.3), H - rng.uniform(0.2, 0.6)) if room else None
         views.append({'pose': pose.tolist(), 'objects': objects, 'lamp': None if lamp is None else lamp.tolist()})
     print(f'{len(views) - 1} views out of {tries} tries', flush=True)
@@ -431,7 +477,8 @@ def main():
     np.savez_compressed(os.path.join(out, 'meshes.npz'), **arrays)
     lamp = to3(*((lo + hi) / 2), H - 0.05) if room else None
     with open(os.path.join(out, 'scene.json'), 'w') as f:
-        json.dump({'size': [w, h], 'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy, 'up': n.tolist(), 'objects': len(good),
+        json.dump({'size': [w, h], 'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy, 'up': up.tolist(), 'objects': len(good),
+                   'floor_plane': [n.tolist(), float(floor_dd)],
                    'views': views, 'pieces': pieces, 'indoor': room is not None,
                    'lamp': None if lamp is None else lamp.tolist(),
                    'windows': [{k2: np.asarray(v).tolist() for k2, v in x.items()} for x in windows] if room else []},
@@ -455,7 +502,7 @@ def main():
         sheet.paste(im, ((i % 4) * tw, (i // 4) * tw))
         ImageDraw.Draw(sheet).text(((i % 4) * tw + 4, (i // 4) * tw + 4), name, fill=(255, 0, 0))
     sheet.save(os.path.join(d, 'pieces.jpg'), quality=88)
-    report = {'plane_inlier_frac': round(inlier, 3), 'camera_height_above_support_m': round(float(dd), 3),
+    report = {'plane_inlier_frac': round(inlier, 3), 'up': {'from': up_how, 'tilt_deg': tilt}, 'camera_height_above_support_m': round(float(dd), 3),
               'floor_below_support_m': round(float(floor_dd - dd), 3), 'walls': [
                   {'normal': wl['m'].round(3).tolist(), 'offset_m': round(wl['c'], 3), 'inliers': wl['inliers']}
                   for wl in walls], 'room': None if room is None else [room[0].tolist(), room[1].tolist()],
