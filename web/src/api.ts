@@ -1,6 +1,8 @@
 // Typed client of the EyeForge API (sim2chip/server.py). Every call goes through `api`, which turns an error
 // response into an Error carrying the server's message.
 
+import { contentKey, shrink } from "./images";
+
 export type Spec = Record<string, any> & {
   name: string;
   task?: string;
@@ -127,13 +129,19 @@ export const onAccountChange = (f: () => void) => { accountListeners.add(f); ret
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const r = await fetch(path, opts);
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    if (r.status === 401 || r.status === 402 || r.status === 403) accountListeners.forEach((f) => f());
-    // Over HTTP/2 statusText is empty: an error without a detail (a server crash) still says something.
-    throw new ApiError(body.detail || r.statusText || `the server failed (HTTP ${r.status}); please try again`, r.status);
-  }
+  if (!r.ok) throw failure(r.status, body, r.statusText);
   return body as T;
 }
+
+function failure(status: number, body: any, statusText = ""): ApiError {
+  if (status === 401 || status === 402 || status === 403) accountListeners.forEach((f) => f());
+  // Over HTTP/2 statusText is empty: an error without a detail (a server crash) still says something.
+  return new ApiError(body?.detail || statusText || `the server failed (HTTP ${status}); please try again`, status);
+}
+
+// A request that failed on the network (status 0) or at the proxy in front of the server, not by the server's
+// answer: worth sending again.
+export const networkError = (e: unknown) => !(e instanceof ApiError) || [0, 502, 503, 504].includes(e.status);
 
 const json = (body: unknown): RequestInit => ({
   method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -161,7 +169,7 @@ export const pick = (sid: string, files: string[], cls: string, act?: string) =>
   api<Turn>(`/api/interview/${sid}/pick${actQuery(act)}`, json({ files, class: cls }));
 // Once the turn is over, its answer too (turn, or error and status): the web's own request may have been cut.
 export const activity = (sid: string, act: string) =>
-  api<{ steps: Step[]; now: number; turn?: Turn; error?: string; status?: number }>(
+  api<{ steps: Step[]; now: number; arrived?: boolean; turn?: Turn; error?: string; status?: number }>(
     `/api/interview/${sid}/activity?act=${encodeURIComponent(act)}`);
 // The chat as the web shows it, kept by the server so it opens again in another tab or device (key: which
 // conversation: a new model, a kit, a model being changed).
@@ -174,41 +182,178 @@ export const closeChats = (key: string) =>
 const actQuery = (act?: string) => (act ? `?act=${encodeURIComponent(act)}` : "");
 export const thumbUrl = (sid: string, file: string) => `/api/interview/${sid}/thumb?file=${encodeURIComponent(file)}`;
 
-// The public server sits behind a proxy that refuses requests over 100 MB: photos go in batches under BATCH_BYTES.
-// Every batch but the last only stores its photos (more=true); the last one carries the total and does the work.
-const BATCH_BYTES = 40_000_000;
+// Photos go up shrunk (images.ts), in batches of about BATCH_BYTES, PARALLEL at a time, each tried again on a
+// network error; photos the destination already has are not sent (a retry after a cut sends only what is
+// missing). The public server's proxy refuses requests over 100 MB, and one lost batch of 40 MB lost 29 photos
+// of a phone's chat upload (2026-10-13): small batches lose little and go up side by side.
+const BATCH_BYTES = 8_000_000;
+const PARALLEL = 3;
+const RETRIES = [1000, 3000, 9000];  // waits before each new try of a batch that failed on the network
 
-function batches(files: File[]): File[][] {
-  const out: File[][] = [[]];
-  let size = 0;
-  for (const f of files) {
-    if (size + f.size > BATCH_BYTES && out[out.length - 1].length) { out.push([]); size = 0; }
-    out[out.length - 1].push(f);
-    size += f.size;
-  }
-  return out;
+// Where the photos go, as /api/uploads/known names it, to skip the ones already there.
+export type Where = { chat: string; purpose: string; cls: string } | { dataset: string } | { job: string };
+// prepared: photos shrunk so far; sent: photos uploaded (fractions while a batch is on its way) or found there.
+export type Progress = { prepared: number; sent: number; total: number };
+export type Sent<T> = { answer?: T; unreadable: string[] };
+
+// What the web says while photos go up: "Uploading 12 of 40 photos".
+export const progressText = (p: Progress | null, what = "photos") =>
+  p ? `Uploading ${Math.min(p.total, Math.floor(p.sent))} of ${p.total} ${what}` : `Uploading ${what}`;
+// The photos the browser could not read, said after an upload that sent the rest.
+export const unreadableText = (names: string[]) => names.length ?
+  `${names.length} photo${names.length > 1 ? "s" : ""} could not be read in this browser and ${names.length > 1 ? "were" : "was"} left out (${names.slice(0, 3).join(", ")}${names.length > 3 ? ", ..." : ""}). Send ${names.length > 1 ? "them" : "it"} as JPEG.` : "";
+
+export class UploadError extends Error {
+  constructor(message: string, public dataset?: string) { super(message); }
 }
 
-// storeOnly: every batch only stores its photos (the chat's next message makes the turn, see storePhotos).
-async function sendInBatches<T>(url: string, files: File[], fields: Record<string, string>, storeOnly = false): Promise<T> {
-  const parts = batches(files);
-  let last: T | undefined;
-  for (const [i, part] of parts.entries()) {
-    const form = new FormData();
-    Object.entries(fields).forEach(([k, v]) => form.append(k, v));
-    const final = !storeOnly && i === parts.length - 1;
-    form.append("more", String(!final));
-    if (final) form.append("total", String(files.length));
-    part.forEach((f) => form.append("photos", f, f.name));
-    last = await api<T>(url, { method: "POST", body: form });
-  }
-  return last as T;
+// POST with upload progress (fetch does not tell how much of the body went), failing like api().
+function post<T>(url: string, form: FormData, onSent?: (fraction: number) => void): Promise<T> {
+  return new Promise((ok, fail) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", url);
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onSent?.(e.loaded / e.total); };
+    x.onload = () => {
+      let body: any = {};
+      try { body = JSON.parse(x.responseText); } catch { /* not JSON: a proxy's page */ }
+      if (x.status >= 200 && x.status < 300) ok(body as T);
+      else fail(failure(x.status, body, x.statusText));
+    };
+    x.onerror = x.ontimeout = () => fail(new ApiError("the connection failed", 0));
+    x.send(form);
+  });
 }
+
+async function knownPhotos(where: Where, keys: string[]): Promise<Set<string>> {
+  try {
+    return new Set((await api<{ known: string[] }>("/api/uploads/known", json({ ...where, hashes: keys }))).known);
+  } catch {
+    return new Set();  // only an optimisation: send them all
+  }
+}
+
+type Batch = { files: File[]; keys: (string | null)[] };
+type SendBatch = (files: File[], onSent: (fraction: number) => void) => Promise<any>;
+
+// The upload itself. Photos are shrunk one by one while the batches already made go up. first: sends the first
+// batch on its own before any other (it makes the dataset the others join; it returns where the rest go).
+// final: sends the last batch once all the others are in (it carries the total and makes the server act on
+// them); it always gets at least one photo.
+async function sendPhotos<T>(files: File[], o: {
+  where: Where | null; store: SendBatch; first?: (files: File[], onSent: (f: number) => void) => Promise<Where>;
+  final?: SendBatch; onProgress?: (p: Progress) => void;
+}): Promise<Sent<T>> {
+  const total = files.length, unreadable: string[] = [];
+  let where = o.where, prepared = 0, sent = 0, failed = 0, stop: unknown = null, producing = true;
+  const flying = new Map<Batch, number>();
+  const report = () => o.onProgress?.({ prepared, sent: sent + [...flying].reduce((a, [b, f]) => a + f * b.files.length, 0), total });
+  const queue: Batch[] = [];
+
+  async function go(b: Batch, send: SendBatch): Promise<any> {
+    if (where) {  // the ones already there are counted as sent and left out
+      const keys = b.keys.filter((k): k is string => !!k);
+      const known = keys.length ? await knownPhotos(where, keys) : new Set<string>();
+      const keep = b.keys.map((k) => !k || !known.has(k));
+      if (send === o.final && !keep.some(Boolean)) keep[keep.length - 1] = true;
+      sent += keep.filter((k) => !k).length;
+      b = { files: b.files.filter((_, i) => keep[i]), keys: b.keys.filter((_, i) => keep[i]) };
+      if (!b.files.length) { report(); return; }
+    }
+    for (let attempt = 0; ; attempt++) {
+      flying.set(b, 0);
+      try {
+        const out = await send(b.files, (f) => { flying.set(b, f); report(); });
+        flying.delete(b);
+        sent += b.files.length;
+        report();
+        return out;
+      } catch (e) {
+        flying.delete(b);
+        report();
+        if (!networkError(e) || attempt >= RETRIES.length) throw e;
+        await new Promise((ok) => setTimeout(ok, RETRIES[attempt]));
+      }
+    }
+  }
+  const worker = async () => {
+    while (!stop) {
+      const b = queue.shift();
+      if (!b) { if (!producing) return; await new Promise((ok) => setTimeout(ok, 50)); continue; }
+      try { await go(b, o.store); } catch (e) {
+        if (networkError(e)) failed += b.files.length; else stop = e;
+      }
+    }
+  };
+  const makeFirst: SendBatch = async (part, onSent) => { where = await o.first!(part, onSent); };
+  const workers: Promise<void>[] = [];
+  let batch: Batch = { files: [], keys: [] }, size = 0, firstDone = !o.first, last: File | null = null;
+  try {
+    for (const f of files) {
+      if (stop) break;
+      const small = await shrink(f);
+      prepared++;
+      report();
+      if (!small) { unreadable.push(f.name); sent++; continue; }
+      batch.files.push(small);
+      batch.keys.push(await contentKey(small));
+      last = small;
+      size += small.size;
+      if (size < BATCH_BYTES) continue;
+      if (!firstDone) {  // the first batch alone: the others need what it makes
+        await go(batch, makeFirst);
+        firstDone = true;
+      } else {
+        queue.push(batch);
+        if (workers.length < PARALLEL) workers.push(worker());
+      }
+      batch = { files: [], keys: [] };
+      size = 0;
+    }
+    if (!firstDone) {  // all in one batch
+      if (!batch.files.length) throw new UploadError(`none of the photos could be read in this browser (${unreadable.join(", ")})`);
+      await go(batch, makeFirst);
+      batch = { files: [], keys: [] };
+    }
+    if (!o.final && batch.files.length) {
+      queue.push(batch);
+      batch = { files: [], keys: [] };
+      if (workers.length < PARALLEL) workers.push(worker());
+    }
+    producing = false;
+    await Promise.all(workers);
+    if (stop) throw stop;
+    const lost = (n: number) => new UploadError(`${n} of ${total} photos did not upload: the connection failed. ` +
+      "Try again: the photos already uploaded are not sent twice.", where && "dataset" in where ? where.dataset : undefined);
+    if (failed) throw lost(failed);
+    if (!last) throw new UploadError(`none of the photos could be read in this browser (${unreadable.join(", ")})`);
+    let answer: T | undefined;
+    if (o.final) {
+      if (!batch.files.length) batch = { files: [last], keys: [null] };
+      answer = await go(batch, o.final).catch((e) => Promise.reject(networkError(e) ? lost(batch.files.length) : e));
+    }
+    return { answer, unreadable };
+  } catch (e) {
+    stop = stop ?? e;
+    if (e instanceof UploadError || !(where && "dataset" in where)) throw e;
+    throw new UploadError((e as Error).message, where.dataset);  // the dataset is made: a retry adds to it
+  } finally {
+    producing = false;
+  }
+}
+
+const form = (fields: Record<string, string>, files: File[]) => {
+  const f = new FormData();
+  Object.entries(fields).forEach(([k, v]) => f.append(k, v));
+  files.forEach((p) => f.append("photos", p, p.name));
+  return f;
+};
 
 // Photos attached to a chat message: stored in the chat (the GPU warms up) without a turn of their own; the message
 // sent next (reply, even with no text) tells the interview about them, so it answers once, seeing both.
-export function storePhotos(sid: string, files: File[], purpose: string, cls: string | null) {
-  return sendInBatches<{ stored: number }>(`/api/interview/${sid}/photos`, files, { purpose, cls: cls || "" }, true);
+export function storePhotos(sid: string, files: File[], purpose: string, cls: string | null, onProgress?: (p: Progress) => void) {
+  const url = `/api/interview/${sid}/photos`, fields = { purpose, cls: cls || "", more: "true" };
+  return sendPhotos<{ stored: number }>(files, { where: { chat: sid, purpose, cls: cls || "" }, onProgress,
+    store: (part, onSent) => post(url, form(fields, part), onSent) });
 }
 
 // session: the interview that wrote the spec, so the job shows what it used.
@@ -230,8 +375,23 @@ export function reviseJob(job: string, spec: Spec, dry = false, session?: string
 }
 
 // labels: what the user said of some photos in the live test, by file name (live/captures.ts).
-export function addPhotos(job: string, files: File[], note: string, labels: Record<string, unknown> = {}) {
-  return sendInBatches<{ rerun_from: string; photos: number }>(`/api/jobs/${job}/photos`, files, { note, labels: JSON.stringify(labels) });
+// The photos with a label are always sent: the label is applied to the photo that comes with it.
+export function addPhotos(job: string, files: File[], note: string, labels: Record<string, unknown> = {},
+                          onProgress?: (p: Progress) => void) {
+  const url = `/api/jobs/${job}/photos`, fields = { note, labels: JSON.stringify(labels) };
+  const labelled = files.filter((f) => f.name in labels), rest = files.filter((f) => !(f.name in labels));
+  return sendPhotos<{ rerun_from: string; photos: number }>([...rest, ...labelled], {
+    where: labelled.length ? null : { job }, onProgress,
+    store: (part, onSent) => post(url, form({ ...fields, more: "true" }, part), onSent),
+    final: async (part, onSent) => {
+      try {
+        return await post(url, form({ ...fields, more: "false", total: String(files.length) }, part), onSent);
+      } catch (e) {  // a retry of a final batch whose first try got there: the run it started is running
+        if (e instanceof ApiError && e.status === 409 && /running/.test(e.message)) return { rerun_from: "label", photos: files.length };
+        throw e;
+      }
+    },
+  });
 }
 
 export const listJobs = () => api<{ jobs: string[] }>("/api/jobs");
@@ -350,19 +510,20 @@ export const deleteAccount = () => api<{ ok: boolean; refunded: number }>("/api/
 
 // Editing the library. Photos go in batches like the chat's: the first batch makes the dataset, the rest join it.
 export type LibraryKind = "datasets" | "objects" | "scenes" | "kits";
-export async function createDataset(name: string, files: File[]) {
-  const [first, ...rest] = batches(files);
-  const form = new FormData();
-  form.append("name", name);
-  first.forEach((f) => form.append("photos", f, f.name));
-  const made = await api<{ id: string; photos: number }>("/api/library/datasets", { method: "POST", body: form });
-  for (const part of rest) await addDatasetPhotos(made.id, part);
-  return made;
+// A failed upload throws an UploadError with the dataset already made, if any, for the retry to add to.
+export async function createDataset(name: string, files: File[], onProgress?: (p: Progress) => void) {
+  let id = "";
+  const r = await sendPhotos(files, { where: null, onProgress,
+    first: async (part, onSent) => {
+      id = (await post<{ id: string }>("/api/library/datasets", form({ name }, part), onSent)).id;
+      return { dataset: id };
+    },
+    store: (part, onSent) => post(`/api/library/datasets/${id}/photos`, form({}, part), onSent) });
+  return { id, unreadable: r.unreadable };
 }
-export function addDatasetPhotos(id: string, files: File[]) {
-  const form = new FormData();
-  files.forEach((f) => form.append("photos", f, f.name));
-  return api<{ photos: number }>(`/api/library/datasets/${id}/photos`, { method: "POST", body: form });
+export async function addDatasetPhotos(id: string, files: File[], onProgress?: (p: Progress) => void) {
+  return sendPhotos(files, { where: { dataset: id }, onProgress,
+    store: (part, onSent) => post(`/api/library/datasets/${id}/photos`, form({}, part), onSent) });
 }
 // card: the picture of the model the app rendered (glbCard.ts), shown on its card.
 export function uploadObject(name: string, concept: string, model: File, card: Blob | null) {

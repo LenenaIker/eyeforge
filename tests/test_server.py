@@ -751,6 +751,44 @@ def test_a_finished_turn_can_be_picked_up_after_the_request_was_cut(app):
     assert "turn" not in app.get(f"/api/interview/{sid}/activity?act=t2").json()  # another turn: still running
 
 
+def test_a_retried_turn_is_answered_once_and_a_lost_one_never_arrived(app):
+    """A phone's request lost on the network: the web sends it again with the same id and gets the first try's
+    answer (not a second turn), and a turn that never got here says so, so the web stops waiting."""
+    sid = app.post("/api/interview").json()["session"]
+    assert app.get(f"/api/interview/{sid}/activity?act=t1").json()["arrived"] is False
+    first = app.post(f"/api/interview/{sid}?act=t1", json={"text": "cows"}).json()
+    again = app.post(f"/api/interview/{sid}?act=t1", json={"text": "cows"}).json()
+    assert again == first and first["text"] == "Where is the camera?"
+    assert app.get(f"/api/interview/{sid}/activity?act=t1").json()["arrived"] is True
+    nxt = app.post(f"/api/interview/{sid}?act=t2", json={"text": "on a pole"}).json()
+    assert nxt["text"] != first["text"]  # the script went on by one turn, not two
+
+
+def test_chat_photos_with_one_name_are_all_kept_and_known_ones_are_skipped(app, tmp_path):
+    """iPhones name every photo image.jpg: none is lost, and the web asks which photos are already there
+    (by content, like the library) so a retry or a folder sent again only sends the new ones."""
+    from sim2chip.workspace import content_key
+    sid = app.post("/api/interview").json()["session"]
+    files = [("photos", ("image.jpg", b"one", "image/jpeg")), ("photos", ("image.jpg", b"two", "image/jpeg"))]
+    assert app.post(f"/api/interview/{sid}/photos", data={"more": "true"}, files=files).json() == {"stored": 2}
+    upload = tmp_path / "uploads" / sid / "training"
+    assert sorted(f.read_bytes() for f in upload.iterdir()) == [b"one", b"two"]
+    one, three = content_key(upload / "image.jpg"), "0123456789abcdef"
+    r = app.post("/api/uploads/known", json={"chat": sid, "purpose": "training", "hashes": [one, three]})
+    assert r.json() == {"known": [one]}
+    (ds,) = app.get("/api/library").json()["datasets"]
+    assert app.post("/api/uploads/known", json={"dataset": ds["id"], "hashes": [one, three]}).json() == {"known": [one]}
+    assert app.post("/api/uploads/known", json={"chat": "f" * 32, "hashes": [one]}).status_code == 404
+
+
+def test_uploads_are_timed(app):
+    sid = app.post("/api/interview").json()["session"]
+    r = app.post(f"/api/interview/{sid}/photos", data={"more": "true"},
+                 files=[("photos", ("a.jpg", b"a", "image/jpeg"))])
+    timing = r.headers["server-timing"]
+    assert all(f"{k};dur=" in timing for k in ("read", "save", "library", "total"))
+
+
 def test_a_model_can_be_renamed_and_deleted(app, tmp_path, monkeypatch):
     r = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()
     job = r["job"]

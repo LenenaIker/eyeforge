@@ -12,6 +12,7 @@ from the job folder (done markers, the pipeline log and the cloud usage log).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import re
@@ -158,6 +159,26 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
         if auth is not None and auth.public_url.startswith("https"):
             response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+        return response
+
+    @app.middleware("http")
+    async def upload_timing(request: Request, call_next):
+        """Photo uploads timed in the log and in Server-Timing (seen in the browser's network panel): bytes,
+        the whole request, and the parts the handler marks with `timed` (reading the form is what comes
+        before the handler starts). Tells how much of a slow upload is the network and how much is us."""
+        if request.method != "POST" or not request.url.path.endswith("/photos") and \
+                request.url.path != "/api/library/datasets":
+            return await call_next(request)
+        t0 = time.perf_counter()
+        request.state.timing = {"t0": t0}
+        response = await call_next(request)
+        total = time.perf_counter() - t0
+        parts = {k: v for k, v in request.state.timing.items() if k != "t0"}
+        response.headers["Server-Timing"] = ", ".join(
+            [f"{k};dur={v * 1000:.0f}" for k, v in parts.items()] + [f"total;dur={total * 1000:.0f}"])
+        size = int(request.headers.get("content-length") or 0)
+        print(f"upload {request.url.path} {response.status_code}: {size / 1e6:.1f} MB in {total:.2f} s ("
+              + ", ".join(f"{k} {v:.2f}" for k, v in parts.items()) + ")", flush=True)
         return response
 
     if public:  # added before the key check, so it runs after it (the last middleware added runs first)
@@ -694,6 +715,19 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     # that runs long (Cloudflare: 100 s, HTTP 524; a library dataset measured anew took longer, 2026-10-10) while
     # the turn goes on here, and the web picks its answer up from interview_activity.
     answers: dict[str, dict] = {}
+    # The turns each chat has seen arrive, by the web's id: a web whose request failed on the network asks
+    # interview_activity whether it reached us, and a retry with the same id gets the first try's answer
+    # instead of a second turn (it would answer the same message twice).
+    arrived: dict[str, set[str]] = {}
+
+    def kept_answer(sid: str, act: str | None, request: Request):
+        """The answer already given to the turn `act` of this chat (a retry), or None."""
+        done = answers.get(sid)
+        if not act or not done or done["act"] != act or done["owner"] != owner_of(request):
+            return None
+        if "turn" in done:
+            return done["turn"]
+        raise HTTPException(done["status"], done["error"])
 
     def answered(sid: str, act: str | None, out: dict, request: Request) -> dict:
         if act:
@@ -705,7 +739,17 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         right status: 502 when the model service fails, 409 when the interview is already over.
         act: the front end's id for this turn, under which its steps are shown (see interview_activity)."""
         from .llm import LLMError
+        seen = arrived.setdefault(sid, set())
+        retry = bool(act) and act in seen
+        if act:
+            seen.add(act)
         with locks.setdefault(sid, threading.Lock()):
+            if retry:  # the first try held the lock until it ended; its answer is kept right after
+                until = time.time() + 10
+                while (kept := kept_answer(sid, act, request)) is None and time.time() < until:
+                    time.sleep(0.2)
+                if kept is not None:
+                    return kept
             session = sessions.get(sid)
             if accounts is not None and sid in chat_payer and accounts.balance(chat_payer[sid]) <= 0:
                 acc = accounts.get(chat_payer[sid])
@@ -728,6 +772,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 meter_chat(sid)
 
     def turn_out(sid: str, turn) -> dict:
+        if isinstance(turn, dict):  # a retried turn: the answer as it was given (see guarded)
+            return turn
         out = {"kind": turn.kind, "text": turn.text}
         steps = getattr(sessions.get(sid), "activity", None)
         if steps:
@@ -741,11 +787,14 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if turn.kind in ("done", "failed"):
             sessions.pop(sid, None)
             locks.pop(sid, None)
+            arrived.pop(sid, None)
             ended(sid).touch()  # over: never brought back from its transcript
         return out
 
     @app.post("/api/interview/{sid}")
     def interview_reply(sid: str, body: dict, request: Request, act: str | None = None):
+        if (kept := kept_answer(sid, act, request)) is not None:  # retried after the chat ended with it
+            return kept
         session = chat_of(sid, request)
         return answered(sid, act, turn_out(sid, guarded(sid, session.reply, str(body.get("text", "")), act=act,
                                                         request=request)), request)
@@ -797,7 +846,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         """What the turn `act` is doing right now: its steps so far (thinking, searching, checking the setup),
         polled by the web while it waits. No lock: it must answer while the turn holds it. `now` lets the
         client time running steps with the server's clock. Once the turn is over, its answer too ("turn", or
-        "error" and "status"), for a web whose request a proxy cut."""
+        "error" and "status"), for a web whose request a proxy cut. arrived: whether the turn reached us at
+        all (a request lost on the network never did: the web stops waiting and offers to send it again)."""
         done = answers.get(sid)
         if done and done["act"] == act and done["owner"] == owner_of(request):
             done = {k: v for k, v in done.items() if k in ("turn", "error", "status")}
@@ -805,7 +855,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         else:
             done, session = {}, chat_of(sid, request)
         steps = list(getattr(session, "activity", [])) if getattr(session, "activity_id", None) == act else []
-        return {"steps": [dict(s) for s in steps], "now": time.time(), **done}
+        return {"steps": [dict(s) for s in steps], "now": time.time(), "arrived": bool(done) or act in arrived.get(sid, ()),
+                **done}
 
     @app.post("/api/interview/{sid}/photos")
     def interview_photos(sid: str, request: Request, purpose: str = Form("training"), cls: str = Form(""),
@@ -819,17 +870,15 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         session = chat_of(sid, request)
         purpose = "3d" if purpose == "3d" else "training"
         folder = home / "uploads" / sid / (f"3d_{slug(cls)}" if purpose == "3d" and cls else purpose)
-        folder.mkdir(parents=True, exist_ok=True)
-        saved = []
-        for p in photos:
-            if Path(p.filename or "").suffix.lower() in IMAGE_EXT:
-                (folder / Path(p.filename).name).write_bytes(capped(p, MAX_PHOTO_BYTES))
-                saved.append(folder / Path(p.filename).name)
+        with timed(request, "save"):  # a different photo with a name already there (image.jpg) gets its own
+            saved = [folder / f for _, f in save_photos(
+                folder, [p for p in photos if Path(p.filename or "").suffix.lower() in IMAGE_EXT])]
         n = len(saved)
         # Every training photo belongs to a dataset: the chat's own, made with its first photos (user, 2026-10-08).
         # Photos to build a class's 3D model from stay with the job that uses them.
         if purpose == "training" and saved:
-            lib.add_chat_photos(owner_of(request), sid, saved)
+            with timed(request, "library"):
+                lib.add_chat_photos(owner_of(request), sid, saved)
         if not n and not total:
             raise HTTPException(400, "no images among the files")
         if purpose == "training":  # the GPU starts while the interview goes on
@@ -837,9 +886,35 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if more:
             return {"stored": n}
         n = max(n, total)
+        if (kept := kept_answer(sid, act, request)) is not None:
+            return kept
         return answered(sid, act, {**turn_out(sid, guarded(sid, session.add_photos, str(folder), n, purpose,
                                                            cls or None, act=act, request=request)), "photos": n},
                         request)
+
+    @app.post("/api/uploads/known")
+    def uploads_known(body: dict, request: Request):
+        """Which of these photos (content keys, as content_key makes them from the bytes the web would send)
+        are already where they are going: a chat's folder ({"chat", "purpose", "cls"}), a library dataset
+        ({"dataset"}) or a model's labeling ({"job"}). The web sends only the others: a retry after a cut or
+        a folder sent again with a few new photos costs only what is new."""
+        hashes = {str(h) for h in (body.get("hashes") or [])[:5000]}
+        have: set[str] = set()
+        if body.get("chat"):
+            sid = str(body["chat"])
+            if not owns_upload(sid, request):
+                raise HTTPException(404, "unknown interview session")
+            purpose, cls = ("3d" if body.get("purpose") == "3d" else "training"), str(body.get("cls") or "")
+            folder = home / "uploads" / sid / (f"3d_{slug(cls)}" if purpose == "3d" and cls else purpose)
+            have = {content_key(f) for f in folder.iterdir() if f.is_file()} if folder.is_dir() else set()
+        elif body.get("dataset"):
+            owned(request, "datasets", str(body["dataset"]))
+            have = {p["hash"] for p in lib.photos(str(body["dataset"]))}
+        elif body.get("job"):
+            snap = kept(job_of(str(body["job"]), request))
+            lab = lib.labeling(snap["labeling"]) if snap else None
+            have = {p["hash"] for p in lib.photos(lab["dataset"])} if lab else set()
+        return {"known": sorted(hashes & have)}
 
     @app.get("/api/interview/{sid}/thumb")
     def interview_thumb(sid: str, file: str, request: Request):
@@ -991,11 +1066,14 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         import shutil
         if public and len(photos) > MAX_PHOTOS:
             raise HTTPException(413, f"at most {MAX_PHOTOS} photos per upload")
-        tmp, files = incoming(photos, IMAGE_EXT)
+        with timed(request, "save"):
+            tmp, files = incoming(photos, IMAGE_EXT)
         try:
             if not files:
                 raise HTTPException(400, "no images among the files")
-            return {"id": lib.new_dataset(owner_of(request), name.strip()[:80] or "My photos", files), "photos": len(files)}
+            with timed(request, "library"):
+                made = lib.new_dataset(owner_of(request), name.strip()[:80] or "My photos", files)
+            return {"id": made, "photos": len(files)}
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1005,9 +1083,11 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         owner, _ = owned(request, "datasets", item)
         if public and len(photos) > MAX_PHOTOS:
             raise HTTPException(413, f"at most {MAX_PHOTOS} photos per upload")
-        tmp, files = incoming(photos, IMAGE_EXT)
+        with timed(request, "save"):
+            tmp, files = incoming(photos, IMAGE_EXT)
         try:
-            return {"photos": lib.add_photos(owner, item, files)}
+            with timed(request, "library"):
+                return {"photos": lib.add_photos(owner, item, files)}
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1563,10 +1643,13 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         owner = owner_of(request)
         if public and lab["photos"] + len(images) > MAX_PHOTOS:
             raise HTTPException(413, f"at most {MAX_PHOTOS} photos per model ({lab['photos']} already)")
-        tmp = job.root / "_incoming"
-        names = save_photos(tmp, images)
-        files = {n: tmp / saved for n, saved in names.items()}
-        lib.add_photos(owner, lab["dataset"], list(files.values()))
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(dir=job.root, prefix="_incoming"))  # its own: batches come in parallel
+        with timed(request, "save"):
+            names = save_photos(tmp, images)
+        files = {n: tmp / saved for n, saved in names}
+        with timed(request, "library"):
+            lib.add_photos(owner, lab["dataset"], [tmp / saved for _, saved in names])
         try:  # what the user said each photo is in the live test wins over the teacher's: reviewed photos
             for n, v in _photo_labels(labels).items():
                 pid = lib.photo_id(lab["dataset"], content_key(files[n])) if n in files else None
@@ -1635,11 +1718,26 @@ def capped(upload: UploadFile, limit: int) -> bytes:
     return data
 
 
-def save_photos(folder: Path, images: list[UploadFile]) -> dict[str, str]:
+@contextlib.contextmanager
+def timed(request: Request, part: str):
+    """Times a part of an upload's handler for upload_timing; the first one also marks how long reading
+    the form took (from the request's arrival to the handler)."""
+    timing = getattr(request.state, "timing", None)
+    t = time.perf_counter()
+    if timing is not None and "read" not in timing:
+        timing["read"] = t - timing["t0"]
+    try:
+        yield
+    finally:
+        if timing is not None:
+            timing[part] = timing.get(part, 0) + time.perf_counter() - t
+
+
+def save_photos(folder: Path, images: list[UploadFile]) -> list[tuple[str, str]]:
     """Writes uploaded photos under their own names; a different photo with a name already there gets a
-    numbered one (phones reuse names like image.jpg). Returns each upload's name -> the file name it got."""
+    numbered one (phones reuse names like image.jpg). Returns (upload's name, file name it got) per photo."""
     folder.mkdir(parents=True, exist_ok=True)
-    got = {}
+    got = []
     for p in images:
         data, name = capped(p, MAX_PHOTO_BYTES), Path(p.filename or "photo.jpg").name
         dst, n = folder / name, 1
@@ -1647,7 +1745,7 @@ def save_photos(folder: Path, images: list[UploadFile]) -> dict[str, str]:
             n += 1
             dst = folder / f"{Path(name).stem}_{n}{Path(name).suffix}"
         dst.write_bytes(data)
-        got[name] = dst.name
+        got.append((name, dst.name))
     return got
 
 

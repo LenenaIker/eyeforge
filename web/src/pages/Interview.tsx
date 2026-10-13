@@ -4,7 +4,6 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import * as API from "../api";
 import type { RevisePlan, Spec, Step, Turn } from "../api";
 import { Button, Card, Notice, Spinner, cx } from "../components/ui";
-import { prepareImages } from "../images";
 import { DEVICES, SpecSummary, hasPhotos, usesSynthetic } from "./SpecSummary";
 import { useApp } from "./AppShell";
 
@@ -67,6 +66,7 @@ export default function Interview() {
   const [dragging, setDragging] = useState(false);
   const [attached, setAttached] = useState<{ file: File; url: string }[]>([]);  // photos waiting in the composer
   const [trainError, setTrainError] = useState<string | null>(null);
+  const [unsent, setUnsent] = useState<string | null>(null);  // a message that never reached the server, to send again
   const session = useRef<string | null>(saved?.session ?? null);
   const mounted = useRef(true);
   const starting = useRef(false);  // "Looks good" and Train could both launch the same run
@@ -128,19 +128,22 @@ export default function Interview() {
 
   // One turn of the interview. While it runs, its steps (thinking, searching, checking the setup) are polled
   // under an id made up here, so the user sees it working instead of a bare "Thinking". call null: a turn that
-  // was running when the user left the page (resumed: its id), whose answer the server kept.
-  async function ask(label: string, call: ((act: string) => Promise<Turn>) | null, resumed?: string) {
+  // was running when the user left the page (resumed: its id), whose answer the server kept. onLost: the turn
+  // never reached the server (a network error, tried twice), so there is nothing to wait for.
+  async function ask(label: string, call: ((act: string) => Promise<Turn>) | null, resumed?: string, onLost?: () => void) {
     const act = resumed ?? Math.random().toString(36).slice(2) + Date.now().toString(36);
     setBusy(label);
     setLive(null);
     setPending({ act, label });
     let polling = true;
-    const kept: { answer: { turn?: Turn; error?: string } | null } = { answer: null };  // as the server kept it
+    // As the server kept it; arrived: whether the turn reached the server at all.
+    const kept: { answer: { turn?: Turn; error?: string; lost?: boolean } | null; arrived?: boolean } = { answer: null };
     const poll = async () => {
       while (polling) {
         if (session.current) {
           try {
             const r = await API.activity(session.current, act);
+            kept.arrived = r.arrived;
             if (r.turn || r.error) kept.answer = r;
             else if (polling && mounted.current) setLive({ steps: r.steps, offset: Date.now() / 1000 - r.now });
           } catch { /* a missed poll only delays the next update */ }
@@ -148,18 +151,24 @@ export default function Interview() {
         await new Promise((ok) => setTimeout(ok, 700));
       }
     };
+    // The answer of a turn whose request was cut; after 15 s the server still has not seen it: it never got
+    // there (2026-10-13: a phone's turn lost on the network was waited for 10 minutes).
     const wait = async () => {
-      const until = Date.now() + 10 * 60_000;
-      while (!kept.answer && Date.now() < until) await new Promise((ok) => setTimeout(ok, 1000));
+      const t0 = Date.now(), until = t0 + 10 * 60_000;
+      while (!kept.answer && Date.now() < until) {
+        if (kept.arrived === false && Date.now() - t0 > 15_000) return { lost: true };
+        await new Promise((ok) => setTimeout(ok, 1000));
+      }
       return kept.answer;
     };
     poll();
-    let answer: { turn?: Turn; error?: string } | null;
+    let answer: { turn?: Turn; error?: string; lost?: boolean } | null;
     try {
-      answer = call ? { turn: await call(act) } : await wait();
+      // Sent again once on a network error: the server answers a turn id it has seen with its first answer.
+      answer = call ? { turn: await call(act).catch((e) => API.networkError(e) ? call(act) : Promise.reject(e)) } : await wait();
     } catch (e) {
       // The proxy in front of the server gives up on a long turn (Cloudflare: 100 s, HTTP 524) or the network
-      // drops, while the turn goes on there: wait for its answer instead of losing it.
+      // drops, while the turn may go on there: wait for its answer instead of losing it.
       const status = e instanceof API.ApiError ? e.status : 0;
       answer = [0, 504, 524].includes(status) ? await wait() : null;
       if (!answer) answer = { error: (e as Error).message };
@@ -170,6 +179,7 @@ export default function Interview() {
     setBusy(null);
     setPending(null);
     if (answer?.turn) showTurn(answer.turn);
+    else if (answer?.lost && onLost) onLost();
     else push({ from: "sys", text: `Something went wrong: ${answer?.error ?? "no answer from the server; please try again"}` });
   }
 
@@ -189,24 +199,42 @@ export default function Interview() {
 
   // The user's message: the text and the photos attached in the composer, sent together (like a messenger app).
   // The photos are stored first (the GPU warms up), then the text goes as the turn, so the assistant answers once.
+  // A failed upload gives the message and its photos back to the composer (sent again, only the photos that did
+  // not get there go up); a turn that never reached the server gives the text back (its photos are there).
   async function send() {
     const value = text.trim(), photos = attached;
-    if ((!value && !photos.length) || busy) return;
+    if ((!value && !photos.length && unsent === null) || busy) return;
+    const again = unsent !== null && value === unsent && !photos.length;  // the lost message, already shown
+    setUnsent(null);
     const req = photoRequest ?? { for: "training" as const, class: null };
     const purpose = req.for ?? "training";
     const caption = `${photos.length} photo${photos.length > 1 ? "s" : ""}` +
                     (purpose === "3d" ? ` of ${req.class || "the object"} for 3D models` : "");
-    push({ from: "me", text: value || caption, ...(photos.length ? { photos: photos.slice(0, 8).map((a) => a.url) } : {}) });
+    const id = nextId;
+    if (!again) push({ from: "me", text: value || caption, ...(photos.length ? { photos: photos.slice(0, 8).map((a) => a.url) } : {}) });
     setText("");
-    if (photos.length) setAttached([]);
-    await ask(photos.length ? "Uploading your photos" : "Thinking", async (act) => {
-      const sid = await ensureSession();
-      if (photos.length) {
-        const files = await prepareImages(photos.map((a) => a.file));
-        await API.storePhotos(sid, files, purpose, req.class ?? null);
-        if (purpose === "training") setRealPhotos((n) => n + files.length);
+    if (photos.length) {
+      setAttached([]);
+      setBusy(API.progressText(null, "your photos"));
+      try {
+        const sid = await ensureSession();
+        const r = await API.storePhotos(sid, photos.map((a) => a.file), purpose, req.class ?? null,
+                                        (p) => setBusy(API.progressText(p, "your photos")));
+        if (purpose === "training") setRealPhotos((n) => n + photos.length - r.unreadable.length);
+        if (r.unreadable.length) push({ from: "sys", text: API.unreadableText(r.unreadable) });
+      } catch (e) {
+        setBusy(null);
+        setMsgs((all) => all.filter((m) => m.id !== id));
+        setText(value);
+        setAttached(photos);
+        push({ from: "sys", text: `Your photos did not upload: ${(e as Error).message}` });
+        return;
       }
-      return API.reply(sid, value, act);
+    }
+    await ask("Thinking", async (act) => API.reply(await ensureSession(), value, act), undefined, () => {
+      setText(value);
+      setUnsent(value);
+      push({ from: "sys", text: "Your message did not reach the server (the connection failed). It is back in the box: send it again." });
     });
   }
 
@@ -314,7 +342,7 @@ export default function Interview() {
                       onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
                       placeholder={revising ? "What should change?" : "What do you want to forge?"}
                       className="max-h-40 min-h-11 flex-1 resize-none bg-transparent px-1 py-2.5 text-[16px] outline-none placeholder:text-gray-400" />
-            <Button onClick={() => send()} disabled={(!text.trim() && !attached.length) || !!busy} className="h-11 w-11 shrink-0 px-0" aria-label="Send">
+            <Button onClick={() => send()} disabled={(!text.trim() && !attached.length && unsent === null) || !!busy} className="h-11 w-11 shrink-0 px-0" aria-label="Send">
               <ArrowUp className="h-5 w-5" />
             </Button>
           </div>

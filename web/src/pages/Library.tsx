@@ -1,7 +1,7 @@
 import { Box, Cpu, Images, Mountain, Package, Pencil, Plus, Upload } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { cardUrl, createDataset, addDatasetPhotos, getLibrary, libraryPhotoUrl, saveKit, uploadObject,
+import { cardUrl, createDataset, addDatasetPhotos, progressText, unreadableText, UploadError, type Progress, getLibrary, libraryPhotoUrl, saveKit, uploadObject,
          type DatasetCard, type Kit, type LibraryData, type ModelCard } from "../api";
 import { Dialog, ItemMenu, ModelMenu, SelectBar, Tick, field, useSelection } from "../components/library";
 import { Badge, Button, ButtonLink, Card, Notice, Spinner, cx } from "../components/ui";
@@ -165,16 +165,22 @@ function PhotoUpload({ into, onClose, onDone }: { into: { id: string; name: stri
   const [name, setName] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const made = useRef<string | null>(null);  // the dataset a failed upload already made: trying again adds to it
   const go = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
+    setError(null);
+    setProgress(null);
     try {
-      if (into) await addDatasetPhotos(into.id, files);
-      else await createDataset(name.trim(), files);
-      onClose();
+      const target = into?.id ?? made.current;
+      const r = target ? await addDatasetPhotos(target, files, setProgress) : await createDataset(name.trim(), files, setProgress);
       onDone();
+      if (r.unreadable.length) { setError(unreadableText(r.unreadable)); setBusy(false); return; }
+      onClose();
     } catch (err: any) {
+      if (err instanceof UploadError && err.dataset) { made.current = err.dataset; onDone(); }
       setError(err.message);
       setBusy(false);
     }
@@ -190,7 +196,7 @@ function PhotoUpload({ into, onClose, onDone }: { into: { id: string; name: stri
         </label>
         {error && <Notice tone="bad">{error}</Notice>}
         <Button type="submit" className="w-full" disabled={busy || !files.length || (!into && !name.trim())}>
-          {busy ? "Uploading..." : "Upload"}
+          {busy ? progressText(progress) + "..." : error && made.current ? "Try again" : "Upload"}
         </Button>
       </form>
     </Dialog>

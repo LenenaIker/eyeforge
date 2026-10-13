@@ -9,7 +9,6 @@ import { flashRoute } from "../flash/flasher";
 import { useApp } from "./AppShell";
 import { isHandheld } from "../live/device";
 import { captureFile, captureLabels, clearCaptures, listCaptures, removeCapture, type Capture } from "../live/captures";
-import { prepareImages } from "../images";
 import * as API from "../api";
 import type { Report, Stage, Status, Synthetic, SyntheticShot, Usage, Version } from "../api";
 import { Badge, Button, Card, Notice, cx } from "../components/ui";
@@ -334,6 +333,7 @@ function Improve({ job, counting, onRerun }: { job: string; counting: boolean; o
   const [caps, setCaps] = useState<Capture[]>([]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<API.Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const camera = useRef<HTMLInputElement>(null), gallery = useRef<HTMLInputElement>(null);
   const card = useRef<HTMLDivElement>(null);
@@ -353,9 +353,9 @@ function Improve({ job, counting, onRerun }: { job: string; counting: boolean; o
     else setFiles((f) => f.filter((_, k) => k !== i - caps.length));
   };
   const send = async () => {
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setProgress(null);
     try {
-      await API.addPhotos(job, await prepareImages([...caps.map(captureFile), ...files]), note, captureLabels(caps));
+      await API.addPhotos(job, [...caps.map(captureFile), ...files], note, captureLabels(caps), setProgress);
       await clearCaptures(job);
       onRerun();
     } catch (e) {
@@ -395,7 +395,7 @@ function Improve({ job, counting, onRerun }: { job: string; counting: boolean; o
           <Pencil className="h-4 w-4" /> Change the setup
         </Link>
         <Button size="sm" className="sm:ml-auto" onClick={send} disabled={!total || busy}>
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} {total ? `Add ${total} photo${total > 1 ? "s" : ""} and retrain` : "Add photos and retrain"}
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} {busy ? API.progressText(progress) : total ? `Add ${total} photo${total > 1 ? "s" : ""} and retrain` : "Add photos and retrain"}
         </Button>
       </div>
       <input ref={camera} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { pick(e.target.files); e.target.value = ""; }} />
