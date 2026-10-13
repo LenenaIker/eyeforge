@@ -25,7 +25,10 @@ from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
 MODEL = 'Qwen/Qwen3.8-27B'
 QUESTIONS = {
     'street_view': ('Does this look like a street or lane seen by a person standing or driving on it?', 'yes'),
-    'sky_up': ('Is the sky at the top and the ground at the bottom of the picture?', 'yes'),
+    # Upright, not "the sky at the top": under a closed canopy the top is leaves and a tree-lined lane failed
+    # (roads, 2026-10-13).
+    'sky_up': ('Is the picture upright: the ground at the bottom and the sky or the treetops, whichever shows, at '
+               'the top?', 'yes'),
     'inside': ('Is most of the picture one flat texture or the inside of something (the camera inside a wall, a '
                'hedge or a house)?', 'no'),
     'floating': ('Does any building, wall or hedge float in the air above the ground?', 'no'),

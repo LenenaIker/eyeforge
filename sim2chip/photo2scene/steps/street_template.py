@@ -124,6 +124,18 @@ def main():
 
     out_arr, objects = {}, 0
     lengths, facade_quads = {}, []
+    originals = [x for x in (1, -1) if x in shown]
+
+    def clear_of_road(p):
+        """A copied object stands off the road and away from the photo's camera. The street's axis comes from the
+        road's pixels, and a side lane twisted it some 30 degrees on the roads photo: copies moved "along" it
+        crossed the road and a shrub stood on the camera, view 0 black (2026-10-13)."""
+        h = p @ up
+        base = p[h < h.min() + 0.5]
+        if np.abs((base - centre) @ b).min() < width / 2 + 0.3:
+            return False
+        return float(np.linalg.norm(p, axis=1).min()) > 2.0  # the photo's camera is the origin
+
     for s, block in sides.items():
         allp = np.concatenate([p for p, *_ in block] + [np.asarray(fp['points']) for fp in facades[s]])
         along = (allp - centre) @ a
@@ -140,6 +152,8 @@ def main():
                     continue
                 facade_quads.append({**fp, 'points': (np.asarray(fp['points']) + shift).tolist()})
             for p, f, col, n, photo, usd in block:
+                if (k or s not in originals) and not clear_of_road(p + shift):
+                    continue
                 if any(w in n for w in ('house', 'wall', 'building')):
                     col = rebrick(col, brick)
                 out_arr[f'obj{objects}_points'] = (p + shift).astype(np.float32)
