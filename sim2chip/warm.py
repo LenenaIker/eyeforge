@@ -187,7 +187,7 @@ def usage_file(home: Path) -> Path:
 def spent(home: Path, since: float) -> float:
     """Dollars of warm GPUs that ended since `since`, plus the one up now at its elapsed time and a full idle
     period more (what it costs at least before it can stop)."""
-    from .backends.nebius import USD_PER_HOUR
+    from .backends.nebius import USD_PER_HOUR, usd_per_hour
     total = 0.0
     try:
         for line in usage_file(home).read_text().splitlines():
@@ -198,7 +198,7 @@ def spent(home: Path, since: float) -> float:
         pass
     w = current(home)
     if w:
-        total += ((time.time() - w["started"]) + IDLE_S) / 3600 * USD_PER_HOUR
+        total += ((time.time() - w["started"]) + IDLE_S) / 3600 * usd_per_hour(w.get("platform"))
     return total
 
 
@@ -273,7 +273,7 @@ class WarmGPU:
 
     def record_end(self, w: dict, state: str) -> None:
         """Its cost, from its start to its last heartbeat (or now), once."""
-        from .backends.nebius import USD_PER_HOUR
+        from .backends.nebius import usd_per_hour
         if current(self.home) != w:
             return
         hb = None
@@ -284,7 +284,7 @@ class WarmGPU:
         end = min(time.time(), hb["t"] + 60) if hb and hb.get("t") else time.time()
         hours = max(0.0, end - w["started"]) / 3600
         rec = {"t": round(time.time()), "job_id": w["job_id"], "state": state, "hours": round(hours, 4),
-               "usd_estimate": round(hours * USD_PER_HOUR, 4)}
+               "usd_estimate": round(hours * usd_per_hour(w.get("platform")), 4)}
         usage_file(self.home).parent.mkdir(parents=True, exist_ok=True)
         with open(usage_file(self.home), "a") as f:
             f.write(json.dumps(rec) + "\n")

@@ -52,6 +52,12 @@ USD_PER_HOUR = float(config.env("SIM2CHIP_USD_PER_HOUR", "1.55"))  # on-demand L
 # whose smallest preset is bigger. "" turns it off.
 FALLBACK = config.env("SIM2CHIP_NEBIUS_FALLBACK", "gpu-l40s-d/1gpu-16vcpu-96gb")
 NO_GPU_S = 1800  # a platform that found no machine is asked last for this long
+# On-demand price of the smallest preset per platform (nebius.com/prices, 2026-10-13); others cost USD_PER_HOUR.
+PRICES = {"gpu-l40s-a": USD_PER_HOUR, "gpu-l40s-d": 1.82}
+
+
+def usd_per_hour(platform: str | None) -> float:
+    return PRICES.get(platform or PLATFORM, USD_PER_HOUR)
 WORKER_HOURS = int(config.env("SIM2CHIP_WORKER_HOURS", "3"))  # timeout of a whole run in one job
 UV_URL = "https://github.com/astral-sh/uv/releases/download/0.8.22/uv-x86_64-unknown-linux-gnu.tar.gz"
 WORKER_DEPS = ["tensorflow[and-cuda]==2.18.1", "numpy<2.1", "pillow", "objaverse", "boto3", "usd-core==26.8",
@@ -687,7 +693,7 @@ class NebiusBackend:
                 log(f"  {e}: trying {options[i + 1][0]}")
         marker.unlink(missing_ok=True)
         hours = (time.time() - t0) / 3600
-        self.spent_usd += hours * USD_PER_HOUR
+        self.spent_usd += hours * usd_per_hour(where[0])
         self._record(job, "run", job_id, state, hours, where=where)
         (job.logs / "worker.job.log").write_text(self.cli.job_logs(job_id))
         self._finish(job, cache, job_bucket, cache_bucket, state, hours, todo, log, t_up)
@@ -994,7 +1000,8 @@ class NebiusBackend:
         """warm: a task of the warm GPU, whose whole life the server notes apart (warm.py): the daily budget skips
         these records, the usage panel shows them."""
         rec = {"t": round(time.time()), "stage": stage, "job_id": job_id, "state": state, "platform": where[0],
-               "preset": where[1], "hours": round(hours, 4), "usd_estimate": round(hours * USD_PER_HOUR, 4)}
+               "preset": where[1], "hours": round(hours, 4),
+               "usd_estimate": round(hours * usd_per_hour(where[0]), 4)}
         if warm:
             rec["warm"] = True
         with open(job.logs / "cloud_usage.jsonl", "a") as f:
