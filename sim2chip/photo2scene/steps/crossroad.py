@@ -34,7 +34,7 @@ ASPHALT = [0.24, 0.24, 0.25]
 ROAD_WORDS = ('road', 'street', 'asphalt', 'lane', 'cobble')
 
 
-PHOTO_KEYS = ('uv', 'photo_faces', 'texture', 'gain')
+PHOTO_KEYS = ('uv', 'photo_faces', 'texture', 'gain', 'tile')
 
 
 def photo_keys(arr, i):
@@ -250,7 +250,9 @@ def main():
             out_arr[f'obj{objects}_faces'] = f
             out_arr[f'obj{objects}_colors'] = np.asarray(c, np.float32)
             out_arr.update(usd_keys(objects, usd, rot))
-            if k == 0:  # the corner as the photo shows it keeps the photo's texture; turned copies are rebricked
+            # The corner as the photo shows it keeps the photo's texture; turned copies are rebricked. A tiled
+            # texture (a lot's wall, env_add.wall_tile) fits anywhere.
+            if k == 0 or 'tile' in photo:
                 out_arr.update({f'obj{objects}_{key}': v for key, v in photo.items()})
             objects += 1
 

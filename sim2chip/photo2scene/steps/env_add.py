@@ -295,6 +295,40 @@ def raised(name, pts, up, floor):
     return gap if LOT_MIN < gap < LOT_MAX else None
 
 
+TILE_ODD = 0.05  # a wall's crop with more of its pixels this far from its median shade has something before it
+
+
+def wall_tile(arr, i, up, path):
+    """A crop of the photo where object i (a wall) shows in it, saved to path for tiling, and its size in metres
+    (along, up); None when the wall has no photo texture or something stands before it (a parked car tiled over
+    every lot, photo 27, 2026-10-14): over TILE_ODD of the crop's pixels 0.25 off its median luminance (its
+    stones 0.002, the car 0.12)."""
+    if i is None or f'obj{i}_texture' not in arr:
+        return None
+    on = np.asarray(arr[f'obj{i}_photo_faces'], bool)
+    if on.sum() < 4:
+        return None
+    vid = np.unique(np.asarray(arr[f'obj{i}_faces'])[on])
+    uv, X = np.asarray(arr[f'obj{i}_uv'])[vid], np.asarray(arr[f'obj{i}_points'])[vid]
+    img = Image.open(str(arr[f'obj{i}_texture'])).convert('RGB')
+    W, H = img.size
+    # The middle of what the photo shows of it: its ends are often cut by a car or the frame.
+    u0, u1 = np.percentile(uv[:, 0], [15, 85]) * W
+    t0, t1 = (1 - np.percentile(uv[:, 1], [85, 15])) * H
+    if u1 - u0 < 16 or t1 - t0 < 16:
+        return None
+    h = X @ up
+    flat = X - np.outer(h, up)
+    along = float(np.ptp(flat @ np.linalg.eigh(np.cov((flat - flat.mean(0)).T))[1][:, -1]))
+    size = (max(along * 0.7, 0.5), max(float(np.ptp(h)) * 0.7, 0.3))
+    crop = img.crop((int(u0), int(t0), int(u1), int(t1)))
+    lum = np.asarray(crop.convert('L').filter(ImageFilter.GaussianBlur(2)), float) / 255
+    if np.mean(np.abs(lum - np.median(lum)) > 0.25) > TILE_ODD:
+        return None
+    crop.save(path)
+    return path, size
+
+
 def lots(args, scene, arr, up, floor, high):
     """Lots raised under the buildings that stand over the street (high: {env name: object index}), laid as a
     scene builder does, between the sidewalk and the building: a block from the building's front, or the
@@ -318,7 +352,8 @@ def lots(args, scene, arr, up, floor, high):
     walls = [e for e in scene['env'] if 'wall' in e['name'] or 'fence' in e['name']]
     top_colour = np.asarray(scene['pieces'][0]['colour'], float) * 0.9
     out = []
-    for name, i in high.items():
+    def footprint(i):
+        """A building's base: its points, top, side of the street, across span and along span."""
         pts = arr[f'obj{i}_points']
         h = pts @ up - floor(pts)
         base = pts[h < np.percentile(h, LOT_BASE_PCT) + 0.5]
@@ -326,28 +361,62 @@ def lots(args, scene, arr, up, floor, high):
         U, V = (flat(base) - c) @ b, (flat(base) - c) @ a
         side = 1.0 if np.median(U) >= 0 else -1.0
         inner, outer = float((side * U).min()), float((side * U).max()) + 1.0
-        v0, v1 = float(V.min()) - 1.0, float(V.max()) + 1.0
-        front, wall_colour = inner - 0.5, np.array([0.55, 0.53, 0.5])
-        for e in walls:  # a retaining wall in front of the building is the lot's front
+        return top, side, inner, outer, float(V.min()) - 1.0, float(V.max()) + 1.0
+
+    def in_front(side, inner, v0, v1):
+        """The retaining wall in front of a building (the lot's front) and where it stands across, or None."""
+        best = None
+        for e in walls:
             W = arr[f"obj{e['index']}_points"]
             wu, wv = side * ((flat(W) - c) @ b), (flat(W) - c) @ a
             if wv.max() > v0 and wv.min() < v1 and inner - 6.0 < np.median(wu) < inner + 0.5:
-                front = min(front, float(np.median(wu)))
-                wall_colour = np.median(arr[f"obj{e['index']}_colors"], 0)
+                if best is None or np.median(wu) < best[0]:
+                    best = (float(np.median(wu)), e['index'])
+        return best
+
+    # A lot with no wall in front of it takes the stones of another lot's front wall: the nearest wall of any kind
+    # was a stretch of the photo with cars parked before it, and painted them on the lots (photo 27, 2026-10-14).
+    fronts = [w[1] for i in high.values() if (w := in_front(*[footprint(i)[k] for k in (1, 2, 4, 5)]))]
+    shared = max(set(fronts), key=fronts.count) if fronts else None
+    tiles = {w: t for w in dict.fromkeys(fronts)
+             if (t := wall_tile(arr, w, up, os.path.join(args.out, 'isaac', f'tex_wall{w}.png')))}
+    for name, i in high.items():
+        top, side, inner, outer, v0, v1 = footprint(i)
+        front, wall = inner - 0.5, shared
+        if (w := in_front(side, inner, v0, v1)):
+            front, wall = min(front, w[0]), w[1]
+        wall_colour = np.median(arr[f'obj{wall}_colors'], 0) if wall is not None else np.array([0.55, 0.53, 0.5])
         ring = [c + side * u * b + v * a for u, v in ((front, v0), (outer, v0), (outer, v1), (front, v1))]
         tops = [x + (top - x @ up) * up for x in ring]
         bottoms = [x + (float(floor(x)[0]) - 0.2 - x @ up) * up for x in ring]
-        P = np.array(tops + tops + bottoms)  # the top's own corners, then the sides' (another colour)
+        # The top, then each side on its own four corners (its own texture coordinates), in another colour.
+        P = list(tops)
         F = [[0, 1, 2], [0, 2, 3]]
         for j in range(4):
             k = (j + 1) % 4
-            F += [[4 + j, 4 + k, 8 + k], [4 + j, 8 + k, 8 + j]]
+            n = len(P)
+            P += [tops[j], tops[k], bottoms[k], bottoms[j]]
+            F += [[n, n + 1, n + 2], [n, n + 2, n + 3]]
+        P = np.array(P)
         F = F + [f[::-1] for f in F]  # both sides: seen from the street and from above
-        C = np.array([top_colour] * 4 + [wall_colour] * 8)
+        C = np.array([top_colour] * 4 + [wall_colour] * 16)
+        tile = tiles.get(wall) or next(iter(tiles.values()), None)
         li = scene['objects']
         arr[f'obj{li}_points'] = P.astype(np.float32)
         arr[f'obj{li}_faces'] = np.asarray(F, np.int32)
         arr[f'obj{li}_colors'] = np.clip(C, 0, 1).astype(np.float32)
+        if tile:  # the sides tiled with the retaining wall's own stones, metres over the crop's size
+            path, (tw, th) = tile
+            uv = np.zeros((len(P), 2))
+            for j in range(4):
+                n = 4 + 4 * j
+                w_m = float(np.linalg.norm(P[n + 1] - P[n]))
+                h_m = float(np.linalg.norm(P[n] - P[n + 3]))
+                uv[n:n + 4] = [[0, h_m / th], [w_m / tw, h_m / th], [w_m / tw, 0], [0, 0]]
+            arr[f'obj{li}_uv'] = uv.astype(np.float32)
+            arr[f'obj{li}_photo_faces'] = np.array([False, False] + [True] * 8 + [False, False] + [True] * 8)
+            arr[f'obj{li}_texture'] = np.array(path)
+            arr[f'obj{li}_tile'] = np.array(True)
         scene['objects'] = li + 1
         env[name]['on'] = li
         out.append({'index': li, 'name': f'{name[:3]} lot', 'lot': True})

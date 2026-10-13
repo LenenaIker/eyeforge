@@ -28,6 +28,8 @@ from scipy.spatial import cKDTree
 from crossroad import (ASPHALT, BRICKS, ROAD_WORDS, _axis_rotation, affine, lifts, look, photo_keys, quad, rebrick,
                        usd_keys, usd_of)
 
+SEE_CONE, SEE_M, SEE_SHARE = 30.0, 40.0, 0.02  # a view must have this much of the scene ahead (sees_enough)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -161,7 +163,9 @@ def main():
                 out_arr[f'obj{objects}_faces'] = f
                 out_arr[f'obj{objects}_colors'] = np.asarray(col, np.float32)
                 out_arr.update(usd_keys(objects, usd, affine(move=shift)))
-                if k == 0:  # the block where the photo has it keeps the photo's texture; copies are rebricked
+                # The block where the photo has it keeps the photo's texture; copies are rebricked. A tiled
+                # texture (a lot's wall, env_add.wall_tile) fits anywhere.
+                if k == 0 or 'tile' in photo:
                     out_arr.update({f'obj{objects}_{key}': v for key, v in photo.items()})
                 objects += 1
 
@@ -204,6 +208,7 @@ def main():
             q = np.asarray(p['points'], float)
             pieces.append({**p, 'points': (q + (level + 0.06 - q @ up)[:, None] * up).tolist()})
     # The photo's street bands (flow_section.py): its asphalt's colour, grass and sidewalk strips the whole length.
+    if section:
         import section_fill
         pieces[0]['colour'] = [x / 255 for x in section['road']['colour']]
         pieces += section_fill.strips(section, up, lambda X: np.full(len(np.atleast_2d(X)), level), (-span, span))
@@ -220,18 +225,32 @@ def main():
     clearance = float(np.clip(half, 1.5, 5.0))  # narrow lanes leave little room
     views, tries = [{'pose': np.eye(4).tolist(), 'objects': [], 'lamp': None}], 0
     reach_a = (args.repeats + 0.5) * min(lengths.values())
+
+    def sees_enough(pos, fwd):
+        """Houses, walls or plants in the middle of the view: a share of the scene's surface samples within
+        SEE_CONE degrees of the view axis and SEE_M metres."""
+        d = env_pts - pos
+        dist = np.linalg.norm(d, axis=1)
+        cos = (d @ fwd) / np.maximum(dist, 1e-6)
+        return np.mean((cos > math.cos(math.radians(SEE_CONE))) & (dist < SEE_M)) >= SEE_SHARE
     while len(views) <= args.views and tries < 5000:
         tries += 1
-        pos = centre + rng.uniform(-reach_a, reach_a) * a + rng.uniform(-half - 2, half + 2) * b + \
-            rng.uniform(1.3, 4.0) * up
+        # Mostly a person on the road looking along it, so the far end of the street (its vanishing point) and the
+        # lines lead the eye; some views turn to a side. Cameras up to 4 m and pitched 3 to 18 degrees down mostly
+        # saw the ground, and side views over the land past the sidewalk a flat green band (pots, 2026-10-14).
+        along = rng.random() < 0.7
+        across = rng.uniform(-half, half) if along else rng.uniform(-half - 2, half + 2)
+        pos = centre + rng.uniform(-reach_a, reach_a) * a + across * b + rng.uniform(1.4, 2.2) * up
         if tree.query(pos)[0] < clearance:
             continue
-        if rng.random() < 0.6:  # along the street, either way
-            yaw = (0 if rng.random() < 0.5 else math.pi) + math.radians(rng.uniform(-40, 40))
+        if along:  # either way
+            yaw = (0 if rng.random() < 0.5 else math.pi) + math.radians(rng.uniform(-20, 20))
         else:  # at one side
-            yaw = (math.pi / 2 if rng.random() < 0.5 else -math.pi / 2) + math.radians(rng.uniform(-50, 50))
-        pitch = math.radians(rng.uniform(3, 18))
+            yaw = (math.pi / 2 if rng.random() < 0.5 else -math.pi / 2) + math.radians(rng.uniform(-40, 40))
+        pitch = math.radians(rng.uniform(-4, 8))
         fwd = math.cos(pitch) * (math.cos(yaw) * a + math.sin(yaw) * b) - math.sin(pitch) * up
+        if not sees_enough(pos, fwd):
+            continue
         views.append({'pose': look(pos, fwd, up).tolist(), 'objects': [], 'lamp': None})
     for v in views:
         v['objects'] = [[i, np.eye(4).tolist()] for i in range(objects)]

@@ -138,8 +138,9 @@ for i in range(scene["objects"]):
         tex = UsdShade.Shader.Define(stage, f"/World/Looks/ObjPhoto{i}/Tex")
         tex.CreateIdAttr("UsdUVTexture")
         tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(str(arr[f"obj{i}_texture"]))
+        tiled = f"obj{i}_tile" in arr.files  # a lot's wall crop repeats; the photo's projection does not
         for wrap in ("wrapS", "wrapT"):
-            tex.CreateInput(wrap, Sdf.ValueTypeNames.Token).Set("clamp")
+            tex.CreateInput(wrap, Sdf.ValueTypeNames.Token).Set("repeat" if tiled else "clamp")
         st = UsdShade.Shader.Define(stage, f"/World/Looks/ObjPhoto{i}/St")
         st.CreateIdAttr("UsdPrimvarReader_float2")
         st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
