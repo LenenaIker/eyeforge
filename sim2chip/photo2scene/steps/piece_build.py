@@ -70,6 +70,62 @@ def gravity(P, surf, things, vp, n, max_tilt=20.0, min_px=2000):
     return up, how, round(tilt, 2)
 
 
+GROUND_PHOTO_M = 40.0   # the photo's own ground is laid out to this distance; past it, the tiled floor
+GROUND_PHOTO_PPM = 12   # its texels per metre
+GROUND_PHOTO_LIFT = 0.05  # over the floor and the street bands' strips (section_fill.STRIP_LIFT)
+
+
+def ground_photo(d, intr, depth, flat_at, to2, lo, hi, floor_mat, out):
+    """The photo's ground seen from above (an orthophoto): every texel of the floor around the camera, up to
+    GROUND_PHOTO_M away, takes the erased photo's colour where the photo sees ground there (its pixel on the ground
+    masks), and the tiled floor texture elsewhere. A side lane, the cracks and the
+    painted lines come out where the photo has them, which bands along a straight street cannot draw (the roads
+    photo's lane up to the left, 2026-10-13). flat_at(x, y) gives floor points for arrays of floor coordinates.
+    Returns the piece, or None when the photo shows too little ground."""
+    w, h, fx, fy, cx, cy = intr
+    bg = np.asarray(Image.open(os.path.join(d, 'background.png')).convert('RGB').resize((w, h)))
+    ground = np.any(np.load(os.path.join(d, 'ground.npz'))['masks'], 0)
+    rays = points_from_depth(np.ones((h, w)), fx, fy, cx, cy)
+    # Where the photo's ground lies, in floor coordinates: its pixels' depth points, near ones only.
+    X = rays[ground] * depth[ground][:, None]
+    X = X[np.isfinite(X).all(1) & (np.linalg.norm(X, axis=1) < GROUND_PHOTO_M)]
+    if len(X) < 1000:
+        return None
+    q = np.array([to2(x) for x in X[:: max(1, len(X) // 20000)]])
+    x0, y0 = np.maximum(np.percentile(q, 1, 0) - 2, lo)
+    x1, y1 = np.minimum(np.percentile(q, 99, 0) + 2, hi)
+    step = 1.0 / GROUND_PHOTO_PPM
+    gx, gy = np.meshgrid(np.arange(x0, x1, step), np.arange(y0, y1, step))
+    P = flat_at(gx.ravel(), gy.ravel())
+    z = P[:, 2]
+    ok = z > 0.1
+    u = np.where(ok, P[:, 0] / np.maximum(z, 1e-6) * fx + cx, -1)
+    v = np.where(ok, P[:, 1] / np.maximum(z, 1e-6) * fy + cy, -1)
+    ui, vi = np.round(u).astype(int), np.round(v).astype(int)
+    inside = ok & (ui >= 0) & (ui < w) & (vi >= 0) & (vi < h)
+    # Seen where the photo's pixel is ground: the ground is then the nearest thing there. A depth agreement on top
+    # threw away most of a street that is not quite one plane (roads: 17 % of the texels kept).
+    seen = np.zeros(len(P), bool)
+    seen[inside] = ground[vi[inside], ui[inside]]
+    colour = cv2.remap(bg, u.reshape(gx.shape).astype(np.float32), v.reshape(gx.shape).astype(np.float32),
+                       cv2.INTER_LINEAR).reshape(-1, 3).astype(np.float32)
+    tex = np.asarray(Image.open(floor_mat['texture']).convert('RGB')) if 'texture' in floor_mat else None
+    if tex is not None:  # the tiled floor where the photo does not see the ground
+        th, tw = tex.shape[:2]
+        sx, sy = floor_mat['size_m']
+        fill = tex[((gy.ravel() % sy) / sy * th).astype(int) % th, ((gx.ravel() % sx) / sx * tw).astype(int) % tw]
+    else:
+        fill = np.tile(np.array(floor_mat['colour']) * 255, (len(P), 1))
+    a = cv2.GaussianBlur(seen.reshape(gx.shape).astype(np.float32), (9, 9), 0).reshape(-1, 1)  # soft edges
+    img = (a * colour + (1 - a) * fill).reshape(*gx.shape, 3).clip(0, 255).astype(np.uint8)
+    if seen.mean() < 0.05:
+        return None
+    path = os.path.abspath(os.path.join(out, 'tex_ground_photo.png'))
+    Image.fromarray(img[::-1]).save(path)  # rows from y1 down: a texture's st origin is its bottom left
+    return {'texture': path, 'corners': ((x0, y0), (x1, y0), (x1, y1), (x0, y1)), 'seen': round(float(seen.mean()), 3),
+            'colour': floor_mat['colour']}
+
+
 def max_rect(valid):
     """Largest all-True axis-aligned rectangle (y0, x0, y1, x1), by the histogram method."""
     h, w = valid.shape
@@ -362,6 +418,16 @@ def main():
     tops = [float(np.percentile(hz(P[wl['mask']]), 99.5)) for wl in walls]
     H = max([args.wall_height] + [t + 0.05 for t in tops])
     pieces.append(quad([to3(lo[0], lo[1]), to3(hi[0], lo[1]), to3(hi[0], hi[1]), to3(lo[0], hi[1])], mats['floor']))
+    gp = None
+    if args.outdoor:  # the photo's own ground, laid over the tiled floor where the photo sees it
+        def flat_at(x, y):
+            Xf = floor_o + np.outer(x, ax) + np.outer(y, ay)
+            return Xf - np.outer(hz(Xf), up)
+        gp = ground_photo(d, intr, depth_p, flat_at, to2, lo, hi, mats['floor'], out)
+        if gp:
+            pieces.append({'points': [to3(*c, GROUND_PHOTO_LIFT).tolist() for c in gp['corners']],
+                           'uv': [[0, 0], [1, 0], [1, 1], [0, 1]], 'texture': gp['texture'], 'colour': gp['colour'],
+                           'ground_photo': True})
     if room:
         for a, b in (((lo[0], lo[1]), (hi[0], lo[1])), ((hi[0], lo[1]), (hi[0], hi[1])),
                      ((hi[0], hi[1]), (lo[0], hi[1])), ((lo[0], hi[1]), (lo[0], lo[1]))):
@@ -502,7 +568,8 @@ def main():
         sheet.paste(im, ((i % 4) * tw, (i // 4) * tw))
         ImageDraw.Draw(sheet).text(((i % 4) * tw + 4, (i // 4) * tw + 4), name, fill=(255, 0, 0))
     sheet.save(os.path.join(d, 'pieces.jpg'), quality=88)
-    report = {'plane_inlier_frac': round(inlier, 3), 'up': {'from': up_how, 'tilt_deg': tilt}, 'camera_height_above_support_m': round(float(dd), 3),
+    report = {'plane_inlier_frac': round(inlier, 3), 'up': {'from': up_how, 'tilt_deg': tilt},
+              'ground_photo': gp and {'seen': gp['seen'], 'corners_m': [list(map(float, c)) for c in gp['corners']]}, 'camera_height_above_support_m': round(float(dd), 3),
               'floor_below_support_m': round(float(floor_dd - dd), 3), 'walls': [
                   {'normal': wl['m'].round(3).tolist(), 'offset_m': round(wl['c'], 3), 'inliers': wl['inliers']}
                   for wl in walls], 'room': None if room is None else [room[0].tolist(), room[1].tolist()],

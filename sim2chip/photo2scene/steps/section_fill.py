@@ -48,7 +48,7 @@ def frame(section, up, floor):
     def at(u, v):
         x = c + u * b + v * a
         return x + (float(floor(x)[0]) - x @ up) * up
-    at.across = b
+    at.across, at.centre = b, c
     return edge, at
 
 
@@ -95,6 +95,27 @@ def poisson(lo_u, hi_u, lo_v, hi_v, d, rng, tries=30):
 
 
 LOOK = {'back': 1.4, 'tilt': 4.0, 'shrub': 1.0}  # fill()'s defaults; env_add.py tunes them to the photo
+# Crowns reach over the road at most this share of its half width: the middle stays open to the far end of the
+# street, its vanishing point (what a line-following model learns from; the user, 2026-10-13).
+OVERHANG = 0.35
+
+
+def clear_corridor(place, proxy, side, edge, at, up, tilt, rng_u, base_at):
+    """A tree's pose and base whose crown keeps out of the road's open middle (OVERHANG): straightened first, then
+    moved away from the road. base_at(u) gives the base for an across distance u; rng_u its first one."""
+    u = rng_u
+    for _ in range(12):
+        m = place(base_at(u), tilt)
+        pts = proxy['points'] @ m[:3, :3].T + m[:3, 3]
+        inner = float(np.min(side * ((pts - at.centre) @ at.across)))
+        limit = edge[side] * (1 - OVERHANG)
+        if inner >= limit:
+            return m
+        if tilt > 0:
+            tilt = max(0.0, tilt - 3.0)
+        else:
+            u += limit - inner + 0.2
+    return m
 
 
 def fill(section, up, floor, along, veg_dir, seed=0, avoid=(), avoid_m=1.5, look=None):
@@ -154,7 +175,10 @@ def fill(section, up, floor, along, veg_dir, seed=0, avoid=(), avoid_m=1.5, look
             if len(av) and np.min(np.linalg.norm(av - flat(base), axis=1)) <= gap:
                 continue
             name = names[k % len(names)]
+            yaw = rng.uniform(0, 2 * np.pi)
+            m = clear_corridor(lambda b0, t, name=name, hgt=hgt, yaw=yaw: pose(
+                b0, hgt, proxies[name], up, yaw, (toward_road, np.radians(t))), proxies[name], side, edge, at, up,
+                tilt, u, lambda uu, v=v: at(side * uu, v))
             objects.append({'name': name, 'url': cat[name]['url'], 'band': band['kind'], 'row': row,
-                            'place': pose(base, hgt, proxies[name], up, rng.uniform(0, 2 * np.pi),
-                                          (toward_road, np.radians(tilt))), 'proxy': proxies[name]})
+                            'place': m, 'proxy': proxies[name]})
     return objects, strips(section, up, floor, along)

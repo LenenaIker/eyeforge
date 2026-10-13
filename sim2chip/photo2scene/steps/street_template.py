@@ -196,8 +196,13 @@ def main():
                                 c1 - span * a + s * (args.reach - walk) * b], colour=land))
         pieces.append(quad([c0 - span * a, c0 + span * a, c0 + span * a - args.curb * up,
                             c0 - span * a - args.curb * up], colour=[0.55, 0.54, 0.52]))
+    # The photo's own ground seen from above (piece_build.ground_photo) where the photo stands: its side lane and
+    # its cracks. The template's ground is level and the road a curb lower: lifted to stay over both.
+    for p in scene['pieces']:
+        if p.get('ground_photo'):
+            q = np.asarray(p['points'], float)
+            pieces.append({**p, 'points': (q + (level + 0.06 - q @ up)[:, None] * up).tolist()})
     # The photo's street bands (flow_section.py): its asphalt's colour, grass and sidewalk strips the whole length.
-    if section:
         import section_fill
         pieces[0]['colour'] = [x / 255 for x in section['road']['colour']]
         pieces += section_fill.strips(section, up, lambda X: np.full(len(np.atleast_2d(X)), level), (-span, span))

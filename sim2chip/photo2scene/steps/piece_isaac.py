@@ -230,11 +230,17 @@ def frame(z):
 
 SUN = 2500.0
 SUN_LEVELS = (1.0, 0.3)  # the sweep's sun strengths: full, and soft (a lane under trees, light through leaves)
+SKY = 1000.0
+# The sweep's sky strengths: the dome as before, and three times as bright. Under a tree canopy the light is mostly
+# the sky's; with the dome at 1000 the crowns came out black over a white sunlit road (roads, 2026-10-13).
+SKY_LEVELS = (1.0, 3.0)
 
 
-def set_light(e, a, sun_on=True):
+def set_light(e, a, sun_on=True, sky=1.0):
     """Sun at elevation e and azimuth a (radians, a about the scene's up from a fixed side), the dome turned by a.
-    sun_on: True or a strength (a share of SUN); False or 0: the sky alone (overcast)."""
+    sun_on: True or a strength (a share of SUN); False or 0: the sky alone (overcast). sky: the dome's strength,
+    a share of SKY."""
+    dome.CreateIntensityAttr().Set(SKY * float(sky))
     side = np.cross(up, [1.0, 0, 0]) if abs(up[0]) < 0.9 else np.cross(up, [0, 0, 1.0])
     side /= np.linalg.norm(side)
     other = np.cross(up, side)
@@ -261,8 +267,9 @@ def set_indoor(panel_k, window_k, lamp_k=1.0):
 def randomize_light():
     # The other views keep the photo's kind of light (flow_light.py's match): a soft sun stays soft, the sky alone
     # stays overcast; only where it comes from changes.
-    strength = (scene.get("light") or {}).get("sun", True)
-    set_light(math.radians(rng.uniform(30, 70)), rng.uniform(0, 2 * math.pi), strength)
+    light = scene.get("light") or {}
+    set_light(math.radians(rng.uniform(30, 70)), rng.uniform(0, 2 * math.pi), light.get("sun", True),
+              light.get("sky", 1.0))
     if scene["indoor"]:
         set_indoor(rng.uniform(0.5, 2.0), rng.uniform(0.3, 2.0), rng.uniform(0.0, 1.5))
 
@@ -329,8 +336,8 @@ tiles = [("photo", photo)]
 if args.sweep:
     # Step 2.3b of the scene flow: view 0 (the photo's camera) under a fixed set of lights, for flow_light.py to
     # pick the one whose light falls like the photo's.
-    lights = [(el, az, k if k != 1.0 else True) for k in SUN_LEVELS for el in (20, 45, 70)
-              for az in range(0, 360, 45)] + [(60, 0, False)]
+    lights = [(el, az, k if k != 1.0 else True, sky) for sky in SKY_LEVELS for k in SUN_LEVELS
+              for el in (20, 45, 70) for az in range(0, 360, 45)] + [(60, 0, False, sky) for sky in SKY_LEVELS]
     if scene["indoor"]:  # no sun indoors: how strong the ceiling, the windows and the lamp are against each other
         lights = [dict(panel=p, window=wk, lamp=lk) for p in (0.3, 1.0, 3.0)
                   for wk in ((0.0, 1.0, 3.0) if window_lights else (0.0,)) for lk in (0.0, 1.0)]
@@ -346,12 +353,12 @@ if args.sweep:
         if scene["indoor"]:
             set_indoor(L["panel"], L["window"], L["lamp"])
         else:
-            set_light(math.radians(L[0]), math.radians(L[1]), L[2])
+            set_light(math.radians(L[0]), math.radians(L[1]), L[2], L[3])
         rep.orchestrator.step(rt_subframes=16)
         Image.fromarray(expose(rgb.get_data()[..., :3].astype(np.float32))).save(
             os.path.join(src, "sweep", f"sweep_{k:02d}.png"))
     json.dump(lights if scene["indoor"] else
-              [{"elevation": el, "azimuth": az, "sun": on} for el, az, on in lights],
+              [{"elevation": el, "azimuth": az, "sun": on, "sky": sky} for el, az, on, sky in lights],
               open(os.path.join(src, "sweep", "lights.json"), "w"))
     app.close()
     raise SystemExit(0)
@@ -363,7 +370,7 @@ for k, view in enumerate(scene["views"]):
         if scene["indoor"]:
             set_indoor(L["panel"], L["window"], L["lamp"])
         else:
-            set_light(math.radians(L["elevation"]), math.radians(L["azimuth"]), L["sun"])
+            set_light(math.radians(L["elevation"]), math.radians(L["azimuth"]), L["sun"], L.get("sky", 1.0))
     place_lights(view)
     cam_op.Set(Gf.Matrix4d((np.asarray(view["pose"]) @ CV2GL).T.tolist()))
     shown = {i for i, _ in view["objects"]}
