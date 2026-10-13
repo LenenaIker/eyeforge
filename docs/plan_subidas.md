@@ -18,6 +18,8 @@ Medido:
 - Navegador real (Chromium, 10 Mbit/s), 40 fotos: biblioteca en 28 s con un lote cortado a propósito y reintentado, las 40 guardadas a 1600 px y bien orientadas; repetir la subida no manda nada (2,8 s). Chat: el turno cortado dos veces se avisa a los 45 s (30 de subida + 15) con el texto devuelto; al reenviar se contesta una vez.
 - Las fotos reducidas pesan unos 800 KB (césped con mucho detalle), no 300-500 KB.
 
+- Memoria (2026-10-13): la reducción se para mientras haya 6 lotes esperando, así que las fotos reducidas en memoria no pasan de unos 50 MB (antes, con 400 fotos, unos 320 MB). Pico de Chromium de escritorio al reducir una foto: 12 MP 65 MB, 50 MP 214 MB, 200 MP 800 MB. Pedir el tamaño final a `createImageBitmap` (`resizeWidth`) no ahorra (72, 264 y 1026 MB), así que no se usa. Si `createImageBitmap` falla, `<img>` reduce una de 200 MP con 73 MB.
+
 Pendiente: probar desde el Pixel 7a en producción tras desplegar (la memoria del móvil no se reproduce aquí).
 
 ## Cómo funciona hoy

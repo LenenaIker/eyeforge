@@ -289,6 +289,8 @@ async function sendPhotos<T>(files: File[], o: {
   let batch: Batch = { files: [], keys: [] }, size = 0, firstDone = !o.first, last: File | null = null;
   try {
     for (const f of files) {
+      // Shrinking outruns the upload: wait while enough batches wait, so shrunk photos don't pile up in memory.
+      while (queue.length >= PARALLEL * 2 && !stop) await new Promise((ok) => setTimeout(ok, 50));
       if (stop) break;
       const small = await shrink(f);
       prepared++;

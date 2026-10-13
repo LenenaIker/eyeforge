@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Photos are "shrunk" as they are (no canvas here) and keyed by their name; "bad" ones cannot be read.
+const counts = vi.hoisted(() => ({ shrunk: 0 }));
 vi.mock("./images", () => ({
-  shrink: async (f: File) => (f.name.startsWith("bad") ? null : f),
+  shrink: async (f: File) => { counts.shrunk++; return f.name.startsWith("bad") ? null : f; },
   contentKey: async (f: File) => `k_${f.name}`,
 }));
 
@@ -50,7 +51,7 @@ async function run(p: Promise<unknown>): Promise<any> {
 }
 
 beforeEach(() => {
-  sent = []; known = []; failures = {}; flying = 0; most = 0;
+  sent = []; known = []; failures = {}; flying = 0; most = 0; counts.shrunk = 0;
   vi.stubGlobal("XMLHttpRequest", FakeXhr);
   vi.stubGlobal("fetch", async (_url: string, opts: RequestInit) => {
     const { hashes } = JSON.parse(String(opts.body));
@@ -68,6 +69,19 @@ describe("photo upload", () => {
     expect(most).toBeGreaterThan(1);
     expect(sent.every((s) => s.fields.more === "true")).toBe(true);
     expect(r.unreadable).toEqual([]);
+  });
+
+  it("stops shrinking while enough batches wait to go up", async () => {
+    let ahead = 0;
+    const p = storePhotos("s1", photos(60), "training", null);
+    const out = p.finally(() => {});
+    for (let i = 0; i < 400 && counts.shrunk < 60; i++) {
+      await vi.advanceTimersByTimeAsync(1);
+      ahead = Math.max(ahead, counts.shrunk - sent.flatMap((s) => s.names).length);
+    }
+    await run(out);
+    expect(sent.flatMap((s) => s.names)).toHaveLength(60);
+    expect(ahead).toBeLessThanOrEqual(3 * (3 * 2 + 3 + 1));  // 6 waiting + 3 flying + the one being built
   });
 
   it("tries a batch lost on the network again", async () => {
