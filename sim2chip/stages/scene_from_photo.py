@@ -93,9 +93,10 @@ def no_route(spec) -> str | None:
 
 class SceneFromPhoto(Stage):
     name = "scene_from_photo"
-    version = "8"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view;
+    version = "9"  # 2: the vision model picks the cleanest photo; 3: classifying too, one class per view;
     # 4: surfaces re-framed in 3D; 5: streets and rooms; 6: classifying in them, every view of a place kept;
-    # 7: the street route off (C.6); 8: on again (2026-10-13)
+    # 7: the street route off (C.6); 8: on again (2026-10-13); 9: NVIDIA trees, lots, the photo's ground, light
+    # per object, skies fetched where data/ is not (2026-10-14)
     runtime = "cpu"   # it runs each step in the Python that has its models (photo2scene.PYTHONS)
     gpu = "rtx"
     max_hours = 2

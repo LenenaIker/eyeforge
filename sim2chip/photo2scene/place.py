@@ -34,11 +34,38 @@ COMPOSED = ("populated",)
 GREEN_COVER = 0.25  # trees and shrubs over this share of the photo: the green skies (Poly Haven parks and lanes)
 
 
-def hdri_dir(group: str) -> Path:
+SKIES = {  # Poly Haven ids of each group"s skies (data/hdri), fetched into the cache where data/ is not (Nebius)
+    "urban": [
+        "buikslotermeerplein", "canary_wharf", "driving_school", "urban_street_01", "urban_street_04",
+        "wide_street_01", "wide_street_02"],
+    "green": [
+        "ahornsteig", "alps_field", "ballawley_park", "blaubeuren_outskirts", "borghese_gardens",
+        "charolettenbrunn_park", "cloudy_vondelpark"],
+    "open": [
+        "approaching_storm", "between_bridges", "champagne_castle_1", "evening_road_01",
+        "kloofendal_48d_partly_cloudy", "lakeside", "mealie_road", "noon_grass", "qwantani", "signal_hill_sunrise",
+        "sunflowers", "syferfontein_18d_clear", "table_mountain_1", "white_cliff_top"],
+}
+
+
+def hdri_dir(group: str, d: Path) -> Path:
     """The skies of the route's group: urban ones for a city street, green ones (parks and tree-lined lanes) for a
-    leafy one, the general ones (open country) otherwise."""
+    leafy one, the general ones (open country) otherwise. Without the repo's data/ (a Nebius job carries only the
+    code), Poly Haven's are fetched once into the cache next to the scenes (d is a scene's folder)."""
     root = Path(config.env("SIM2CHIP_HDRI_DIR") or Path(__file__).resolve().parents[2] / "data" / "hdri")
-    return root / group if group in ("urban", "green") else root
+    local = root / group if group in ("urban", "green") else root
+    if any(local.glob("*.hdr")):
+        return local
+    from .. import polyhaven
+    dest = d.parent.parent / "hdri" / "photo2scene" / (group if group in SKIES else "open")
+    if len(list(dest.glob("*.hdr"))) >= len(SKIES[dest.name]):
+        return dest
+    for sky in SKIES[dest.name]:
+        try:
+            polyhaven.download(sky, "hdris", dest)
+        except Exception:  # noqa: BLE001 - a sky that does not come leaves the others; none, a plain sky
+            pass
+    return dest
 
 
 def _phrases(entries) -> str:
@@ -211,7 +238,7 @@ def imitate(flow: Flow, r: dict, keep: list[int]):
         raise Stop(f"meshes still fail the gates: {drop}")
     # 2.3 Light and sky: the route's HDRI group, then the photo's light by measurement (view 0 under a fixed set of
     # lights, the closest kept).
-    hdri = hdri_dir(r["hdri_group"])
+    hdri = hdri_dir(r["hdri_group"], d)
     render = lambda step, *extra: flow.run(step, "isaac", "piece_isaac.py",  # noqa: E731
                                            ["--dir", d / "place", "--hdri-dir", hdri, *extra])
     render("2.3_render")
@@ -272,7 +299,7 @@ def extend(flow: Flow, r: dict):
     elif t == "straight_street":
         args += ["--photo-scene", d]
     flow.run("3.2_extend", "mesh", TEMPLATES[t], args, ["extended/isaac/scene.json"])
-    flow.run("3.4a_render", "isaac", "piece_isaac.py", ["--dir", d / "extended", "--hdri-dir", hdri_dir(r["hdri_group"])],
+    flow.run("3.4a_render", "isaac", "piece_isaac.py", ["--dir", d / "extended", "--hdri-dir", hdri_dir(r["hdri_group"], d)],
              ["extended/sheet_isaac.jpg"])
     flow.run("3.4b_views", "sam3", "flow_check_views.py", ["--dir", d / "extended"] + (["--indoor"] if t == "room" else []),
              ["extended/views.json"])
@@ -302,7 +329,7 @@ def compose(flow: Flow, seed: int, groups: dict[str, str] | None = None, empty: 
     if not sum(p["placed_per_view"]):
         flow.log("  no erased thing found a place in any view")
         return []
-    flow.run("3.5_render", "isaac", "piece_isaac.py", ["--dir", d / "populated", "--hdri-dir", hdri_dir(r["hdri_group"]),
+    flow.run("3.5_render", "isaac", "piece_isaac.py", ["--dir", d / "populated", "--hdri-dir", hdri_dir(r["hdri_group"], d),
                                                        "--seed", seed], ["populated/sheet_isaac.jpg"])
     flow.run("3.5_labels", "mesh", "view_labels.py", ["--dir", d / "populated"], ["populated/isaac/labels.json"])
     # populate keeps only the views the check passed, numbered again from the photo's camera (render_00).
