@@ -24,6 +24,7 @@ import time
 import traceback
 from pathlib import Path
 
+from . import gpu_usage
 from . import spec as spec_mod
 from .backends.local import LocalBackend
 from .backends.nebius import KIT_TIMES
@@ -83,7 +84,7 @@ def main() -> int:
     job, cache = Job(args.home / "jobs" / args.job), Cache(args.home / "cache")
     if args.prefetch:
         return prefetch(store, job_bucket, cache_bucket, job, cache)
-    t0 = time.time()
+    t0 = run_t0 = time.time()
     listing = store.listing(job_bucket)
     store.pull(job_bucket, [k for k in listing if k == "spec.json" or k.endswith("/" + DONE)], job.root)
     pipe = Pipeline(spec_mod.load(job.spec_path), job, cache)
@@ -147,6 +148,10 @@ def main() -> int:
     if os.environ.get("SIM2CHIP_ISAAC_PYTHON"):
         m += sum(store.upload_dir(cache_bucket, gpu_cache(local), prefix) for prefix, local in GPU_CACHES.items())
     job.timeline("cloud: push cache", time.time() - t0, "nebius", files=m)
+    try:  # the job script's start when this is the job's own run, else this task's
+        gpu_usage.write(job.logs, float(os.environ.get("S2C_T0") or run_t0), time.time())
+    except Exception as e:  # a measure, never worth the run
+        say(f"GPU use not summed up: {e}")
     n = store.upload_dir(job_bucket, job.root, "", written_since=pulled)
     sync_progress(store, job_bucket, job.root)
     say(f"worker: pushed {n} job files and {m} cache files, exit {code}")

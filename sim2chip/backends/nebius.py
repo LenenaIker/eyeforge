@@ -207,9 +207,21 @@ def print_timeline(job: Job, log=print, since: float | None = None) -> None:
         return
     # Steps nest (the job's running state holds every stage): shares are of the wall time, not of the sum.
     total = max(r["t"] for r in recs) - min(r["t"] - r["seconds"] for r in recs) or 1
+    try:  # the GPU's use per step, from the cloud job (gpu_usage.py)
+        gpu = json.loads((job.logs / "gpu_usage.json").read_text())
+        if gpu.get("end", 0) < min(r["t"] for r in recs):  # an earlier run's
+            gpu = {}
+    except (OSError, ValueError):
+        gpu = {}
     log(f"  where the time went ({total / 60:.1f} min in all):")
     for r in sorted(recs, key=lambda r: -r["seconds"]):
-        log(f"    {r['seconds'] / 60:5.1f} min  {100 * r['seconds'] / total:3.0f}%  {r['step']} ({r['where']})")
+        g = gpu.get("steps", {}).get(r["step"])
+        use = f", GPU {g['util']}%" if g else ""
+        log(f"    {r['seconds'] / 60:5.1f} min  {100 * r['seconds'] / total:3.0f}%  {r['step']} ({r['where']}{use})")
+    if gpu.get("all"):
+        a = gpu["all"]
+        log(f"  GPU in the cloud job: {a['util']}% on average, busy {100 * a['busy']:.0f}% of the time, "
+            f"{a['mem_mb'] / 1024:.1f} GB at most")
 
 
 def cloud_spec(spec, log=print):
@@ -356,6 +368,7 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
     labels photos), the code from a presigned URL, then the whole pipeline. With our own images the Pythons are
     kits unpacked from the presigned URLs in S2C_ENVS, all at once; in the stock Isaac Sim image it makes them
     with uv (a couple of minutes)."""
+    from ..gpu_usage import SAMPLER
     isaac = runtime.python == RUNTIMES["isaac"].python
     # A download can meet a passing 503 (2026-10-03, after the GPU was paid): retry before giving up.
     fetch = (f"{KIT_PY if runtime.kits else runtime.python} -c 'import sys, time, urllib.request\n"
@@ -389,8 +402,9 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
     lines = [
         "#!/bin/bash",
         "set -eo pipefail",
-        "S2C_T0=$(date +%s)",
+        "export S2C_T0=$(date +%s)",
         "mkdir -p /tmp/s2c/code /tmp/s2c/bin /tmp/s2c/home",
+        SAMPLER,
         *(unpack if runtime.kits else install),
         f'{fetch} "$S2C_CODE_URL" /tmp/s2c/code.tgz',
         "tar xzf /tmp/s2c/code.tgz -C /tmp/s2c/code",
@@ -414,12 +428,14 @@ def warm_script(isaac: bool = True) -> str:
              "    except Exception as e:\n"
              "        if i == 4: raise\n"
              "        print(\"download failed, retrying:\", e, flush=True); time.sleep(5 * 2 ** i)'")
+    from ..gpu_usage import SAMPLER
     from ..warm import LATE_READY
     lines = [
         "#!/bin/bash",
         "set -eo pipefail",
         "S2C_T0=$(date +%s)",
         "mkdir -p /tmp/s2c/code /tmp/s2c/bin /tmp/s2c/home",
+        SAMPLER,
         *kit_lines(),
         *kit_lines("S2C_ENVS_LATE", LATE_READY),
         f'{fetch} "$S2C_CODE_URL" /tmp/s2c/code.tgz',

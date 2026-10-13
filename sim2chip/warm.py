@@ -285,6 +285,12 @@ class WarmGPU:
         hours = max(0.0, end - w["started"]) / 3600
         rec = {"t": round(time.time()), "job_id": w["job_id"], "state": state, "hours": round(hours, 4),
                "usd_estimate": round(hours * usd_per_hour(w.get("platform")), 4)}
+        try:  # how much of that the GPU worked (gpu_usage.py), written by the GPU as it stops
+            gpu = read(self.backend.store, self._bucket(), key(w["wid"], "gpu.json"))
+            if gpu:
+                rec["gpu"] = gpu
+        except Exception:
+            pass
         usage_file(self.home).parent.mkdir(parents=True, exist_ok=True)
         with open(usage_file(self.home), "a") as f:
             f.write(json.dumps(rec) + "\n")

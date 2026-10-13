@@ -24,7 +24,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import warm
+from . import gpu_usage, warm
 from .cloud_sync import S3Store
 from .workspace import say
 
@@ -160,6 +160,12 @@ def main() -> int:
             beat("ready")
         time.sleep(warm.POLL_S)
     beat("stopped")
+    try:  # its whole life, idle time included (gpu_usage.py); the server adds it to warm_usage.jsonl
+        use = gpu_usage.window(gpu_usage.read(), t0, time.time())
+        if use:
+            warm.put(store, bucket, warm.key(wid, "gpu.json"), use)
+    except Exception as e:
+        say(f"GPU use not summed up: {e}")
     if server is not None:
         server.terminate()
     say(f"warm GPU stopping after {(time.time() - t0) / 60:.1f} min")
