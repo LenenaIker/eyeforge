@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 from .. import config
@@ -48,7 +49,25 @@ class LocalBackend:
         return pipe
 
     def run(self, pipe, start: str | None = None, only: str | None = None, force: bool = False) -> None:
-        pipe.run(self, start=start, only=only, force=force)
+        if self.name != "local":  # a Nebius worker: its job script samples the machine (gpu_usage.SAMPLER)
+            return pipe.run(self, start=start, only=only, force=force)
+        # How much of this machine the run uses, per stage, as on Nebius (logs/gpu_usage.json): a run that keeps
+        # the CPU full here will want a good CPU there too (user, 2026-10-13).
+        from .. import gpu_usage
+        samples, t0 = pipe.job.logs / "usage_samples.log", time.time()
+        try:
+            with gpu_usage.sampling(samples):
+                pipe.run(self, start=start, only=only, force=force)
+        finally:
+            try:
+                use = gpu_usage.write(pipe.job.logs, t0, time.time(), samples, where="local")
+                a = (use or {}).get("all")
+                if a and "cpu" in a:
+                    print(f"machine use: GPU {a['util']}% (busy {100 * a['busy']:.0f}%), CPU {a['cpu']}% of "
+                          f"{use['cpus']} cores (full {100 * a['cpu_full']:.0f}%), iowait {a['iowait']}%, "
+                          f"RAM {a['ram_mb'] / 1024:.1f} GB at most", flush=True)
+            except Exception as e:  # a measure, never worth the run
+                print(f"machine use not summed up: {e}", flush=True)
 
     def run_stage(self, stage: Stage, job: Job, cache: Cache, fp: str) -> None:
         if self.before_stage:

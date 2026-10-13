@@ -52,3 +52,22 @@ def test_the_cpu_and_ram_are_summed_up_too(tmp_path):
     w = gpu_usage.window(s, 1000, 1040)
     assert w["cpu"] == 61 and w["cpu_full"] == 0.47 and w["iowait"] == 4 and w["ram_mb"] == 3038
     assert gpu_usage.window(s, 1000, 1000).keys() == {"util", "busy", "mem_mb", "samples"}
+
+
+def test_a_local_run_samples_this_machine(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from sim2chip.backends.local import LocalBackend
+    monkeypatch.setattr(gpu_usage, "SAMPLE_S", 1)
+    job = Job(tmp_path / "jobs" / "j")
+    job.logs.mkdir(parents=True)
+
+    def run(backend, **_):
+        import time
+        t0 = time.time()
+        time.sleep(3.5)
+        job.timeline("train", time.time() - t0, backend.name)
+    LocalBackend().run(SimpleNamespace(job=job, run=run))
+    out = json.loads((job.logs / "gpu_usage.json").read_text())
+    assert out["where"] == "local" and out["all"]["samples"] >= 2 and "cpu" in out["all"]
+    assert "train" in out["steps"]
