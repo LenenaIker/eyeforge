@@ -171,12 +171,19 @@ def imitate(flow: Flow, r: dict, keep: list[int]):
     kind = "--outdoor" if r["route"] == "village_street_day" else "--indoor"
     flow.run("2.1b_pieces", "mesh", "piece_build.py", ["--dir", d, kind, "--views", "0", "--depth", "background"],
              ["pieces.json", "isaac/scene.json"])
+    # 2.1c A street's cross-section (road, then verge, hedge, trees, houses), filled along it; best effort.
+    section = []
+    if kind == "--outdoor":
+        flow.run("2.1c_section", "sam3", "flow_section.py", ["--dir", d, "--catalog", vegetation_dir(d)],
+                 ["section.json"], must=False)
+        if (d / "section.json").exists():
+            section = ["--section", d / "section.json"]
     # 2.2 The surroundings meshes into the place, then the geometric gates; a mesh that fails is dropped once.
     for attempt in range(2):
         flow.run(f"2.2a_env_{attempt}", "mesh", "env_add.py",
                  ["--env", d / "meshes", "--scene", d, "--out", d / "place", "--fill-ground", "--photo-texture",
                   "--keep", ",".join(map(str, keep)), "--vegetation", d / "vegetation.json",
-                  "--veg-dir", vegetation_dir(d)] + (["--drop-covered-walls"] if kind == "--outdoor" else []),
+                  "--veg-dir", vegetation_dir(d)] + section + (["--drop-covered-walls"] if kind == "--outdoor" else []),
                  ["place/isaac/scene.json"])
         flow.run(f"2.2b_gates_{attempt}", "mesh", "flow_gates.py", ["--dir", d], ["gates.json"])
         g = flow.json("gates.json")

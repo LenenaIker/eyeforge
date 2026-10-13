@@ -237,10 +237,8 @@ def vegetation(args, scene, arr, up, floor):
     picks = json.load(open(args.vegetation))['assets']
     vz = np.load(os.path.join(os.path.dirname(args.vegetation), 'vegetation.npz'))
     dp = np.load(os.path.join(args.scene, 'depth_background.npz'))
+    from section_fill import pose
     cat = {c['name']: c for c in veg_catalog.catalog(args.veg_dir)}
-    e1 = np.cross(up, [1.0, 0, 0]) if abs(up[0]) < 0.9 else np.cross(up, [0, 0, 1.0])
-    e1 /= np.linalg.norm(e1)
-    e2 = np.cross(up, e1)
     out = []
     for a in picks:
         m = vz['masks'][a['index']] & (dp['mask'] > 0)
@@ -259,23 +257,52 @@ def vegetation(args, scene, arr, up, floor):
         centre = centre + away * 0.25 * width
         base = centre + (floor(centre)[0] - centre @ up) * up
         z = np.load(veg_catalog.proxy(args.veg_dir, cat[a['name']]))
-        k = float(np.clip(height / float(z['height_m']), 0.3, 3.0))
-        yaw = np.random.default_rng(a['index']).uniform(0, 2 * np.pi)
-        ca, sa = np.cos(yaw), np.sin(yaw)
-        place = np.eye(4)  # proxy (metres, Z up) -> the place: x, y turned about up, z along up, scaled by k
-        place[:3, :3] = np.stack([ca * e1 + sa * e2, -sa * e1 + ca * e2, up], 1) * k
-        place[:3, 3] = base
-        pts = z['points'] @ place[:3, :3].T + base
-        i = scene['objects']
-        arr[f'obj{i}_points'] = pts.astype(np.float32)
-        arr[f'obj{i}_faces'] = z['faces'].astype(np.int32)
-        arr[f'obj{i}_colors'] = z['colors'].astype(np.float32)
-        arr[f'obj{i}_usd'] = np.array(a['url'])
-        arr[f'obj{i}_usd_pose'] = (place @ z['to_proxy']).astype(np.float64)
-        scene['objects'] = i + 1
-        print(f"{a['phrase']} -> {a['name']}: {height:.1f} m (asset {float(z['height_m']):.1f} m, x{k:.2f}), "
+        i = add_asset(scene, arr, a['url'], pose(base, height, z, up, np.random.default_rng(a['index']).uniform(0, 6.3)),
+                      z)
+        print(f"{a['phrase']} -> {a['name']}: {height:.1f} m (asset {float(z['height_m']):.1f} m), "
               f"at {base.round(1).tolist()}")
         out.append({'index': i, 'name': f"{a['index']:03d} {a['phrase']}", 'vegetation': a['name']})
+    return out
+
+
+def add_asset(scene, arr, url, place, proxy):
+    """An NVIDIA asset as the scene's next object: its proxy posed for the pyrender steps, its USD and pose (from
+    the USD's own units and axes) for Isaac. Returns its index."""
+    i = scene['objects']
+    arr[f'obj{i}_points'] = (proxy['points'] @ place[:3, :3].T + place[:3, 3]).astype(np.float32)
+    arr[f'obj{i}_faces'] = proxy['faces'].astype(np.int32)
+    arr[f'obj{i}_colors'] = proxy['colors'].astype(np.float32)
+    arr[f'obj{i}_usd'] = np.array(url)
+    arr[f'obj{i}_usd_pose'] = (place @ proxy['to_proxy']).astype(np.float64)
+    scene['objects'] = i + 1
+    return i
+
+
+def bands(args, scene, arr, up, floor):
+    """flow_section.py's bands filled over the stretch of street the photo sees (section_fill.py): more trees,
+    hedges and shrubs where the photo has them, off the road, the meshes and the photo's own trees; grass and
+    sidewalk strips. Returns the scene's new env entries."""
+    import section_fill
+    section = json.load(open(args.section))
+    # Kept away from every surroundings object already there: a mesh by all its points, a tree by its trunk (its
+    # lowest metre; by the whole crown, a row of trees left no room for one more, 2026-10-13).
+    avoid = []
+    for e in scene.get('env', []):
+        p = arr[f"obj{e['index']}_points"]
+        if e.get('vegetation'):
+            hgt = p @ up
+            p = p[hgt < hgt.min() + 1.0]
+        avoid.append(p[:: max(1, len(p) // 400)])
+    avoid = np.concatenate(avoid) if avoid else np.zeros((0, 3))
+    objects, strips = section_fill.fill(section, up, floor, section['road']['visible'], args.veg_dir,
+                                        np.random.default_rng(7), avoid)
+    scene['pieces'] += strips
+    out = []
+    for k, o in enumerate(objects):
+        i = add_asset(scene, arr, o['url'], o['place'], o['proxy'])
+        out.append({'index': i, 'name': f"{900 + k:03d} {o['band']}", 'vegetation': o['name'], 'filled': True})
+    print(f"bands: {len(objects)} plants ({', '.join(sorted({o['name'] for o in objects}))}), "
+          f"{len(strips)} ground strips")
     return out
 
 
@@ -297,6 +324,8 @@ def main():
     ap.add_argument('--vegetation', default=None, help="flow_vegetation.py's picks: NVIDIA trees and shrubs "
                     'placed where the photo has them (with --veg-dir, veg_catalog.py --dir)')
     ap.add_argument('--veg-dir', default=None)
+    ap.add_argument('--section', default=None, help="flow_section.py's street bands, filled over the stretch the "
+                    'photo sees')
     args = ap.parse_args()
     graph_path = os.path.join(args.env, 'scene_graph.json')
     if os.path.exists(graph_path):
@@ -369,6 +398,11 @@ def main():
     scene['env'] = [{'index': first + k, 'name': name} for k, name in enumerate(meshes)]
     if args.vegetation and os.path.exists(args.vegetation):
         for e in vegetation(args, scene, arr, up, floor):
+            for v in scene['views']:
+                v['objects'].append([e['index'], np.eye(4).tolist()])
+            scene['env'].append(e)
+    if args.section and os.path.exists(args.section) and args.veg_dir:
+        for e in bands(args, scene, arr, up, floor):
             for v in scene['views']:
                 v['objects'].append([e['index'], np.eye(4).tolist()])
             scene['env'].append(e)

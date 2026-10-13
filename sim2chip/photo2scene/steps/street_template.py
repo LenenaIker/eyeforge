@@ -165,6 +165,13 @@ def main():
         pieces[-1]['gain'] = floor.get('gain')  # the photometry gain of the photo's ground
         pieces.append(quad([c0 - span * a, c0 + span * a, c0 + span * a - args.curb * up,
                             c0 - span * a - args.curb * up], colour=[0.55, 0.54, 0.52]))
+    # The photo's street bands (flow_section.py): its asphalt's colour, grass and sidewalk strips the whole length.
+    sec_path = os.path.join(args.photo_scene, 'section.json')
+    if os.path.exists(sec_path):
+        import section_fill
+        section = json.load(open(sec_path))
+        pieces[0]['colour'] = [x / 255 for x in section['road']['colour']]
+        pieces += section_fill.strips(section, up, lambda X: np.full(len(np.atleast_2d(X)), level), (-span, span))
 
     # Views: the photo's camera, then cameras over the road and sidewalks looking along the street or at a side.
     def quad_points(fp, n=300):
