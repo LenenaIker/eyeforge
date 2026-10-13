@@ -153,8 +153,8 @@ class CLI:
     def ensure_bucket(self, name):
         pass
 
-    def create_job(self, name, runtime, env, script, timeout_h, env_secrets):
-        self.jobs.append({"name": name, "image": runtime.image, "env": env})
+    def create_job(self, name, runtime, env, script, timeout_h, env_secrets, where=None):
+        self.jobs.append({"name": name, "image": runtime.image, "env": env, "where": where})
         return f"aijob-{len(self.jobs)}"
 
     def job_state(self, job_id):
@@ -274,7 +274,14 @@ def test_a_job_nebius_finds_no_gpu_for_is_cancelled(tmp_path, monkeypatch):
     be = NebiusBackend(max_usd=10.0, cli=cli, store=store, poll_s=0)
     with pytest.raises(Exception, match="no free GPU"):
         be.run_pipeline(pipe, log=lambda line: None)
-    assert cli.cancelled == ["aijob-1"]
+    # Asked on the Intel L40S, then the AMD one; both cancelled, and the next run asks in that order no more.
+    assert [j["where"][0] for j in cli.jobs] == ["gpu-l40s-a", "gpu-l40s-d"]
+    assert cli.cancelled == ["aijob-1", "aijob-2"]
+    nebius.note_no_gpu(tmp_path, "gpu-l40s-d")
+    nebius.note_no_gpu(tmp_path, "gpu-l40s-a")
+    assert [p for p, _ in nebius.platforms(tmp_path)] == ["gpu-l40s-a", "gpu-l40s-d"]  # both sick: as listed
+    (tmp_path / "logs" / "no_gpu.json").write_text(json.dumps({"gpu-l40s-a": time.time()}))
+    assert [p for p, _ in nebius.platforms(tmp_path)] == ["gpu-l40s-d", "gpu-l40s-a"]
 
 
 def test_start_writes_the_worker_and_its_script(tmp_path, monkeypatch):

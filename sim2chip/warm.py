@@ -293,8 +293,10 @@ class WarmGPU:
     def give_up(self, w: dict) -> None:
         """Forget this GPU; one that never came up is cancelled, or Nebius would bill it once it does."""
         if heartbeat(self.backend.store, self._bucket(), w["wid"]) is None:
+            from .backends.nebius import PLATFORM, note_no_gpu
             self.log(f"warm GPU {w['job_id']} not up after {(time.time() - w['started']) / 60:.0f} min: cancelled")
             self.backend.cli.cancel(w["job_id"])
+            note_no_gpu(self.home, w.get("platform", PLATFORM))  # the next one is asked elsewhere
         self.record_end(w, "REPLACED")
 
     def watch(self, every: float = 60) -> None:

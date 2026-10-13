@@ -19,7 +19,7 @@ class FakeCLI:
     def ensure_bucket(self, name):
         self.store.buckets.add(name)
 
-    def create_job(self, name, runtime, env, script, timeout_h, env_secrets):
+    def create_job(self, name, runtime, env, script, timeout_h, env_secrets, where=None):
         self.jobs.append({"name": name, "image": runtime.image, "env": env, "timeout_h": timeout_h,
                           "secrets": env_secrets, "script": script.read_text()})
         if self.final == "COMPLETED":  # the remote stage writes its marker into the job bucket
@@ -217,7 +217,7 @@ def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch, templa
     store = ListingStore()
 
     class WorkerCLI(FakeCLI):
-        def create_job(self, name, runtime, env, script, timeout_h, env_secrets):
+        def create_job(self, name, runtime, env, script, timeout_h, env_secrets, where=None):
             self.jobs.append({"name": name, "image": runtime.image, "script": script.read_text(), "secrets": env_secrets,
                               "env": env})
             for st, fp in fps.items():  # the worker ran every stage and pushed its marker

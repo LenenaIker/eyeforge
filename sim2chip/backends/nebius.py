@@ -48,6 +48,10 @@ from ..workspace import DONE, LOG_PREFIX as PREFIX, REPO, Cache, Job
 PLATFORM = config.env("SIM2CHIP_NEBIUS_PLATFORM", "gpu-l40s-a")
 PRESET = config.env("SIM2CHIP_NEBIUS_PRESET", "1gpu-8vcpu-32gb")
 USD_PER_HOUR = float(config.env("SIM2CHIP_USD_PER_HOUR", "1.55"))  # on-demand L40S (Intel), nebius.com/prices, 2026-09
+# Where to ask when PLATFORM has no free machine (2026-10-13: none for over 20 min): the same L40S on AMD hosts,
+# whose smallest preset is bigger. "" turns it off.
+FALLBACK = config.env("SIM2CHIP_NEBIUS_FALLBACK", "gpu-l40s-d/1gpu-16vcpu-96gb")
+NO_GPU_S = 1800  # a platform that found no machine is asked last for this long
 WORKER_HOURS = int(config.env("SIM2CHIP_WORKER_HOURS", "3"))  # timeout of a whole run in one job
 UV_URL = "https://github.com/astral-sh/uv/releases/download/0.8.22/uv-x86_64-unknown-linux-gnu.tar.gz"
 WORKER_DEPS = ["tensorflow[and-cuda]==2.18.1", "numpy<2.1", "pillow", "objaverse", "boto3", "usd-core==26.8",
@@ -110,9 +114,36 @@ ENVS = "/tmp/s2c/envs"
 KIT_PY, KIT_TEACHER = f"{ENVS}/py/bin/python", f"{ENVS}/teacher/bin/python"
 KIT_PICODET, KIT_PADDLEDET = f"{ENVS}/picodet/bin/python", f"{ENVS}/paddledet"  # the picodet kit holds both
 KIT_TIMES = "/tmp/s2c/kit_times.txt"  # per streamed kit: index, start and end (epoch s), bytes
-# A job Nebius cannot give a machine to this long is cancelled (2026-10-13: PROVISIONING, its instance FAILED,
-# retried for over 12 min); waiting longer only keeps the user staring at a run that never starts.
-PROVISION_S = float(config.env("SIM2CHIP_NEBIUS_PROVISION_S", "900"))
+# A job Nebius cannot give a machine to this long is cancelled and asked for on the next platform (2026-10-13:
+# PROVISIONING, its instance FAILED, retried for over 12 min); waiting longer only keeps the user staring at a run
+# that never starts.
+PROVISION_S = float(config.env("SIM2CHIP_NEBIUS_PROVISION_S", "300"))
+
+
+class NoGPU(RuntimeError):
+    """Nebius found no machine for a job in PROVISION_S."""
+
+
+def platforms(home: Path | None) -> list[tuple[str, str]]:
+    """(platform, preset) to ask in turn: the ones that found no machine lately (home/logs/no_gpu.json) last."""
+    out = [(PLATFORM, PRESET)] + ([tuple(FALLBACK.split("/", 1))] if FALLBACK else [])
+    try:
+        sick = json.loads((home / "logs" / "no_gpu.json").read_text()) if home else {}
+    except (OSError, ValueError):
+        sick = {}
+    return sorted(out, key=lambda pp: time.time() - sick.get(pp[0], 0) < NO_GPU_S)
+
+
+def note_no_gpu(home: Path | None, platform: str) -> None:
+    if home is None:
+        return
+    f = home / "logs" / "no_gpu.json"
+    try:
+        sick = json.loads(f.read_text())
+    except (OSError, ValueError):
+        sick = {}
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({**sick, platform: time.time()}))
 TERMINAL = {"COMPLETED", "SUCCEEDED", "FAILED", "ERROR", "CANCELLED", "CANCELED", "STOPPED", "DELETED"}
 
 
@@ -440,9 +471,9 @@ class NebiusCLI:
         self("storage", "bucket", "delete", "--id", bucket_id)
 
     def create_job(self, name: str, runtime: Runtime, env: dict[str, str], script: Path, timeout_h: int,
-                   env_secrets: list[str]) -> str:
-        args = ["ai", "job", "create", "--name", name, "--image", runtime.image, "--platform", PLATFORM,
-                "--preset", PRESET, "--on-demand", "--timeout", f"{timeout_h}h", *self._parent(),
+                   env_secrets: list[str], where: tuple[str, str] = (PLATFORM, PRESET)) -> str:
+        args = ["ai", "job", "create", "--name", name, "--image", runtime.image, "--platform", where[0],
+                "--preset", where[1], "--on-demand", "--timeout", f"{timeout_h}h", *self._parent(),
                 "--inject-file", f"{script}:/opt/s2c_stage.sh", "--container-command", "bash",
                 "--args", "/opt/s2c_stage.sh", "--async"]
         for k, v in {**runtime.env, **env}.items():
@@ -633,20 +664,31 @@ class NebiusBackend:
                                               [st.name for st in todo], log)
                 if state is not None:
                     return self._finish(job, cache, job_bucket, cache_bucket, state, hours, todo, log, t_up)
-        t0 = time.time()
-        job_id = self.cli.create_job(name, runtime, env, script, WORKER_HOURS, secrets)
-        if self.dry_run:
-            return
-        log(f"  nebius job {job_id} ({PLATFORM}, {PRESET}, {runtime.image.rsplit('/', 1)[-1]}), whole pipeline in one job")
-        # While this file exists a cloud job may be running and billing: the web reads it (and can cancel the
-        # job) even when the process that launched it is gone.
-        marker = job.logs / CLOUD_JOB
-        marker.write_text(json.dumps({"id": job_id, "started": time.time(), "hours": WORKER_HOURS + 1}))
-        state = self._follow(job_id, job, job_bucket, log, [st.name for st in todo])  # if this fails the marker stays, to find the job
+        home = job.root.parents[1]
+        options = platforms(home)
+        for i, where in enumerate(options):
+            t0 = time.time()
+            job_id = self.cli.create_job(name, runtime, env, script, WORKER_HOURS, secrets, where)
+            if self.dry_run:
+                return
+            log(f"  nebius job {job_id} ({where[0]}, {where[1]}, {runtime.image.rsplit('/', 1)[-1]}), whole pipeline in one job")
+            # While this file exists a cloud job may be running and billing: the web reads it (and can cancel the
+            # job) even when the process that launched it is gone.
+            marker = job.logs / CLOUD_JOB
+            marker.write_text(json.dumps({"id": job_id, "started": time.time(), "hours": WORKER_HOURS + 1}))
+            try:  # if this fails the marker stays, to find the job
+                state = self._follow(job_id, job, job_bucket, log, [st.name for st in todo])
+                break
+            except NoGPU as e:
+                marker.unlink(missing_ok=True)
+                note_no_gpu(home, where[0])
+                if i == len(options) - 1:
+                    raise
+                log(f"  {e}: trying {options[i + 1][0]}")
         marker.unlink(missing_ok=True)
         hours = (time.time() - t0) / 3600
         self.spent_usd += hours * USD_PER_HOUR
-        self._record(job, "run", job_id, state, hours)
+        self._record(job, "run", job_id, state, hours, where=where)
         (job.logs / "worker.job.log").write_text(self.cli.job_logs(job_id))
         self._finish(job, cache, job_bucket, cache_bucket, state, hours, todo, log, t_up)
 
@@ -685,8 +727,9 @@ class NebiusBackend:
                "S2C_CODE_URL": self.store.url(cache_bucket, warm.key(wid, "code.tgz"), hours=warm.HOURS + 1),
                "S2C_ENVS": " ".join(kits[:3]), "S2C_ENVS_LATE": kits[3]}
         secrets = self._secrets(bool(_env("SIM2CHIP_NEBIUS_SECRET")))  # rounds may put phrases in English
-        job_id = self.cli.create_job(f"s2c-warm-{wid}", runtime, env, script, warm.HOURS, secrets)
-        w = {"wid": wid, "job_id": job_id, "started": time.time(), "image": runtime.image}
+        where = platforms(home)[0]
+        job_id = self.cli.create_job(f"s2c-warm-{wid}", runtime, env, script, warm.HOURS, secrets, where)
+        w = {"wid": wid, "job_id": job_id, "started": time.time(), "image": runtime.image, "platform": where[0]}
         warm.worker_file(home).write_text(json.dumps(w))
         return w
 
@@ -740,7 +783,7 @@ class NebiusBackend:
         tid = token_hex(6)
         task = {"id": tid, "kind": "run", "job": job.name, "bucket": job_bucket, "code_url": code_url,
                 "args": plan_args, "env": env, "picodet": picodet, "log": "worker.job.log"}
-        log(f"  warm GPU {w['job_id']} ({PLATFORM}, {PRESET}): no start-up, task {tid}")
+        log(f"  warm GPU {w['job_id']} ({w.get('platform', PLATFORM)}): no start-up, task {tid}")
         marker = job.logs / CLOUD_JOB
         marker.write_text(json.dumps({"id": w["job_id"], "warm": w["wid"], "task": tid, "started": time.time(),
                                       "hours": WORKER_HOURS + 1}))
@@ -811,8 +854,8 @@ class NebiusBackend:
             if state_of is None and state == "PROVISIONING" and last == "PROVISIONING" \
                     and time.time() - since > PROVISION_S:
                 self.cli.cancel(job_id)
-                raise RuntimeError(f"Nebius found no free GPU in {PROVISION_S / 60:.0f} min (job {job_id}, cancelled): "
-                                   "try again in a while")
+                raise NoGPU(f"Nebius found no free GPU in {PROVISION_S / 60:.0f} min (job {job_id}, cancelled): "
+                            "try again in a while")
             if state != last and state != "UNKNOWN":
                 now = time.time()
                 if last is not None:  # how long the job stayed in each state: queue, image pull, run
@@ -946,11 +989,12 @@ class NebiusBackend:
             time.sleep(self.poll_s)
 
     @staticmethod
-    def _record(job: Job, stage: str, job_id: str, state: str, hours: float, warm: bool = False) -> None:
+    def _record(job: Job, stage: str, job_id: str, state: str, hours: float, warm: bool = False,
+                where: tuple[str, str] = (PLATFORM, PRESET)) -> None:
         """warm: a task of the warm GPU, whose whole life the server notes apart (warm.py): the daily budget skips
         these records, the usage panel shows them."""
-        rec = {"t": round(time.time()), "stage": stage, "job_id": job_id, "state": state, "platform": PLATFORM,
-               "preset": PRESET, "hours": round(hours, 4), "usd_estimate": round(hours * USD_PER_HOUR, 4)}
+        rec = {"t": round(time.time()), "stage": stage, "job_id": job_id, "state": state, "platform": where[0],
+               "preset": where[1], "hours": round(hours, 4), "usd_estimate": round(hours * USD_PER_HOUR, 4)}
         if warm:
             rec["warm"] = True
         with open(job.logs / "cloud_usage.jsonl", "a") as f:
