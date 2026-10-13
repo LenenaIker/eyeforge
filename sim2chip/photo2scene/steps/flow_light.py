@@ -2,7 +2,8 @@
 photo's camera under a fixed set of lights (8 sun directions at 3 heights, full or soft, and sky only); each render
 and the photo are compared on the same pixel grid as flow_photometry.py, after taking each image to the photo's mean
 luminance, so what is compared is where the light falls (which facades are lit, how the ground stands against
-them), not how much. The light with the smallest median colour difference goes into the place's scene.json, and
+them), not how much. The light with the smallest colour difference (each piece's median, averaged over the pieces
+and objects) goes into the place's scene.json, and
 view 0 is rendered with it from then on. Without it a random sun lit the main house from behind and the ground
 came out white (basque_street, 2026-10-07): per-object colour gains would have baked that shadow into the
 colours. Run in the `trellis2` env:
@@ -22,6 +23,9 @@ from flow_gates import render
 from flow_photometry import LUMA, STEP, items_of, lab, to_linear
 
 
+MIN_PART = 50  # sampled pixels a piece or object needs to count in the score
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir', required=True)
@@ -39,13 +43,18 @@ def main():
     photo = to_linear(np.asarray(Image.open(os.path.join(d, 'background.png')).convert('RGB').resize((w, h)))
                       .astype(float)[sel])
     target = lab(photo)
+    who = ids[sel]
+    parts = [k for k in np.unique(who) if (who == k).sum() >= MIN_PART]
     lights = json.load(open(os.path.join(src, 'sweep', 'lights.json')))
     scores = []
     for k, L in enumerate(lights):
         r = to_linear(np.asarray(Image.open(os.path.join(src, 'sweep', f'sweep_{k:02d}.png')).convert('RGB'))
                       .astype(float)[sel])
         r = r * (photo @ LUMA).mean() / max((r @ LUMA).mean(), 1e-6)  # same mean luminance: compare the pattern
-        de = float(np.median(np.linalg.norm(lab(np.clip(r, 0, 1)) - target, axis=1)))
+        err = np.linalg.norm(lab(np.clip(r, 0, 1)) - target, axis=1)
+        # Each piece and object counts the same, by its own median: by pixels the facades filling a street photo
+        # chose a bright sky whose painted sun burnt the ground white (the pots' photo 27, 2026-10-13).
+        de = float(np.mean([np.median(err[who == k]) for k in parts]))
         scores.append({**L, 'median_de': round(de, 2)})
     best = min(scores, key=lambda s: s['median_de'])
     for name in ('scene.json', 'orig_scene.json'):

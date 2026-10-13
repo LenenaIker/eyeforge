@@ -25,8 +25,8 @@ import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
 
-from crossroad import (ASPHALT, BRICKS, ROAD_WORDS, _axis_rotation, affine, look, photo_keys, quad, rebrick, usd_keys,
-                       usd_of)
+from crossroad import (ASPHALT, BRICKS, ROAD_WORDS, _axis_rotation, affine, lifts, look, photo_keys, quad, rebrick,
+                       usd_keys, usd_of)
 
 
 def main():
@@ -77,11 +77,12 @@ def main():
 
     # Surroundings by side; their bases set on the sidewalk level (far ones come out floating or sunk).
     sides = {1: [], -1: []}
+    moves = lifts(scene, arr, up, level)  # a building on a raised lot moves with it
     for i, t in scene['views'][0]['objects']:
         if i not in names:
             continue
         p = arr[f'obj{i}_points'] @ np.asarray(t)[:3, :3].T + np.asarray(t)[:3, 3]
-        lift = (level - np.percentile(p @ up, 0.5)) * up
+        lift = moves[i]
         p = p + lift
         s = 1 if float((p.mean(0) - centre) @ b) >= 0 else -1
         sides[s].append((p, arr[f'obj{i}_faces'], arr[f'obj{i}_colors'], names[i], photo_keys(arr, i),

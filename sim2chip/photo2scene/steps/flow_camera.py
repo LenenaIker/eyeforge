@@ -20,6 +20,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 from bg_build import fit_plane
 
+VLM_MAX_SPREAD = 0.1  # the VLM's horizon samples must agree this closely to judge ours
 HEIGHT = {'ground': (0.05, 1.0), 'pedestrian': (0.5, 4.0), 'raised': (2.0, 15.0)}
 
 
@@ -56,7 +57,9 @@ def main():
     # streets never spread more than 0.1: a VLM that disagrees with itself is not asked.
     guesses = [s['horizon_y'] for s in observed.get('samples', []) if isinstance(s.get('horizon_y'), (int, float))]
     spread = max(guesses) - min(guesses) if guesses else 0.0
-    if spread > 2 * args.horizon_tol:
+    # Spread past 0.1 is already too much: on a street going uphill (the pots' photo 27, 2026-10-13) its samples
+    # spread 0.15 around 0.55 while the parked cars' roofs, at the camera's height, sat on our 0.70.
+    if spread > VLM_MAX_SPREAD:
         vlm = None
     lo, hi = HEIGHT.get(obs['camera_height'], (0.05, 50))
     checks = {

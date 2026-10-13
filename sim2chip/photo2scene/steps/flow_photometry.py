@@ -44,6 +44,11 @@ def to_linear(srgb):
     return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
 
 
+def to_srgb(lin):
+    """Linear 0-1 to sRGB 0-1."""
+    return np.where(lin <= 0.0031308, lin * 12.92, 1.055 * np.power(np.clip(lin, 0, None), 1 / 2.4) - 0.055)
+
+
 def lab(lin):
     """Linear sRGB (D65) to CIE Lab."""
     m = np.array([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]])
@@ -176,6 +181,9 @@ def weighted_median(v, w):
     return float(v[o][np.searchsorted(c, c[-1] / 2)])
 
 
+GROUND_MIN_GAIN = 0.05
+
+
 def relative_gains(report, samples, args):
     """Objects out of proportion first, each to the median ratio of the others; then the grey-world cast of the
     render as it will be after that, applied to everything."""
@@ -225,12 +233,28 @@ def apply(d, report, args, samples):
             g = glob if args.mode == 'global' or o['ok'] or o['lighting'] else np.array(o['gain'])
         g = g * np.array(prev.get(key, [1, 1, 1]))  # rounds build on what was applied before
         g = g.clip(1 / args.max_gain, args.max_gain)
+        if o['kind'] == 'piece' and scene['pieces'][o['index']].get('ground_photo'):
+            # The photo's own ground (piece_build.ground_photo): its texture is the photo, so from the photo's camera
+            # it must look like it, however far the light makes it. Its own photo / render ratio, past max_gain:
+            # under a strong sky the pots' street came out 16 times too bright (photo 27, 2026-10-13).
+            g = np.clip(np.array(o['ratio']) * np.array(prev.get(key, [1, 1, 1])), GROUND_MIN_GAIN, args.max_gain)
         # Brightness is fixed whole, colour only a little: a render far off the photo in one channel is light, not
         # paint (home_office walls went green and the sideboard blue with free channels, 2026-10-08).
         lum = max(float(g @ LUMA), 1e-6)
         g = lum * np.clip(g / lum, 1 - args.max_tint, 1 + args.max_tint)
         applied[key] = g.round(3).tolist()
-        if o['kind'] == 'piece':
+        if o['kind'] == 'piece' and scene['pieces'][o['index']].get('ground_photo'):
+            # Baked into its texture: RTX did not honour the texture's scale input, and a ground at 0.05 stayed
+            # white (photo 27, 2026-10-13).
+            pc = scene['pieces'][o['index']]
+            orig = pc.get('texture_orig', pc['texture'])
+            im = np.asarray(Image.open(orig).convert('RGB')).astype(np.float32) / 255
+            baked = (to_srgb(np.clip(to_linear(im * 255) * np.asarray(g), 0, 1)) * 255).round().astype(np.uint8)
+            # A new name per gain: Isaac caches textures by path, and one file rewritten each round rendered stale.
+            path = orig.replace('.png', '_gain_' + '_'.join(f'{x:.3f}' for x in g) + '.png')
+            Image.fromarray(baked).save(path)
+            pc.update({'texture_orig': orig, 'texture': path, 'gain': [1.0, 1.0, 1.0]})
+        elif o['kind'] == 'piece':
             scene['pieces'][o['index']]['gain'] = applied[key]
         else:
             arr[f"obj{o['index']}_colors"] = np.clip(arr[f"obj{o['index']}_colors"] * g, 0, 1).astype(np.float32)

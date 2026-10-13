@@ -52,6 +52,22 @@ def affine(rot=None, move=None):
     return m
 
 
+def lifts(scene, arr, up, level):
+    """Each surroundings object's move onto the template's level: its lowest points to it (the far ones come out of
+    the photo's depth floating or sunk); a building on a raised lot (env_add.lots) moves with its lot, keeping the
+    terrace."""
+    env = {e['index']: e for e in scene.get('env', [])}
+    posed = {i: np.asarray(t) for i, t in scene['views'][0]['objects'] if i in env}
+    out = {}
+    for i, t in posed.items():
+        p = arr[f'obj{i}_points'] @ t[:3, :3].T + t[:3, 3]
+        out[i] = (level - np.percentile(p @ up, 0.5)) * up
+    for i, e in env.items():
+        if e.get('on') is not None and e['on'] in out and i in out:
+            out[i] = out[e['on']]
+    return out
+
+
 def usd_of(arr, i, move):
     """An NVIDIA asset's URL and its pose in the place after `move` (env_add.py vegetation), or None: copies and
     shifts of the object must carry the asset with them."""
@@ -189,6 +205,7 @@ def main():
 
     # The block: the objects where the photo has them, the surroundings; everything baked into the world frame.
     block = []
+    moves = lifts(scene, arr, up, level)
     for i, t in scene['views'][0]['objects']:
         if i in drop:
             continue
@@ -199,8 +216,8 @@ def main():
             continue
         if i in names:
             # Far surroundings come out of the photo's depth floating or sunk (a house 4 m up): set them on the
-            # sidewalk; their lowest points, not one stray vertex.
-            lift = (level - np.percentile(p @ up, 0.5)) * up
+            # sidewalk; their lowest points, not one stray vertex (with its lot, a building on one).
+            lift = moves[i]
             p = p + lift
         else:
             lift = np.zeros(3)

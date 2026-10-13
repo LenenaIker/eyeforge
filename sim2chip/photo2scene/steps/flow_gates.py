@@ -113,11 +113,15 @@ def main():
         }
         if veg:  # placed on the floor by us; another species than the photo's, so no silhouette or depth to match
             checks = {'stands on the ground': checks['stands on the ground']}
+        elif e.get('lot'):  # a raised lot (env_add.lots): built by us under a building, no mask of its own
+            checks = {}
+        elif e.get('on') is not None:  # a building on its lot stands on the lot, not on the street
+            checks.pop('stands on the ground')
         why = [c for c, ok in checks.items() if not ok]
         report['meshes'].append({'index': e['index'], 'name': e['name'], 'height_m': round(hgt, 2),
                                  'base_gap_m': round(base, 2), 'iou': round(iou, 3), 'depth_err': err,
                                  'checks': checks, 'why': why, **({'vegetation': True} if veg else {})})
-        if why and not veg:
+        if why and not veg and not e.get('lot'):
             drop.append(mi)
     report['drop'] = drop
     # The floor piece must lie under every ground pixel of the photo: on 2026-10-07 a floor of a few metres left

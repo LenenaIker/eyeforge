@@ -278,6 +278,84 @@ def add_asset(scene, arr, url, place, proxy):
     return i
 
 
+BUILDING_WORDS = ('house', 'building', 'apartment', 'block', 'tower', 'facade')
+LOT_MIN, LOT_MAX = 0.6, 6.0  # a building's base this far over the street stands on a lot raised to it
+# Where a building's base is: its lowest 5 % of points, not 0.5 % (a stray vertex below it left the building
+# floating a metre over its lot, photo 27).
+LOT_BASE_PCT = 5
+
+
+def raised(name, pts, up, floor):
+    """How far a building's base stands over the floor, when it stands on a raised lot (LOT_MIN to LOT_MAX), else
+    None: the photo's terraces behind a retaining wall (the pots' photo 27, 2026-10-13), which a skirt drew as a
+    dark pedestal."""
+    if not any(w in name for w in BUILDING_WORDS):
+        return None
+    gap = float(np.percentile(pts @ up - floor(pts), LOT_BASE_PCT))
+    return gap if LOT_MIN < gap < LOT_MAX else None
+
+
+def lots(args, scene, arr, up, floor, high):
+    """Lots raised under the buildings that stand over the street (high: {env name: object index}), laid as a
+    scene builder does, between the sidewalk and the building: a block from the building's front, or the
+    retaining wall in front of it, to a metre behind it, its top at the building's base, its sides the wall's
+    colour. The building's env entry gets 'on' (its lot's index), so the templates move them together. Returns the
+    lots' env entries."""
+    if not high:
+        return []
+    flat = lambda X: X - np.outer(np.atleast_2d(X) @ up, up)  # noqa: E731
+    env = {e['name']: e for e in scene['env']}
+    sec = json.load(open(args.section)) if args.section and os.path.exists(args.section) else None
+    if sec:
+        c, a, b = (np.asarray(sec['road'][k], float) for k in ('centre', 'along', 'across'))
+    else:  # the buildings' own long axis
+        q = flat(np.concatenate([arr[f'obj{i}_points'] for i in high.values()]))
+        c = q.mean(0)
+        a = np.linalg.eigh(np.cov((q - c).T))[1][:, -1]
+        a -= (a @ up) * up
+        a /= np.linalg.norm(a)
+        b = np.cross(a, up)
+    walls = [e for e in scene['env'] if 'wall' in e['name'] or 'fence' in e['name']]
+    top_colour = np.asarray(scene['pieces'][0]['colour'], float) * 0.9
+    out = []
+    for name, i in high.items():
+        pts = arr[f'obj{i}_points']
+        h = pts @ up - floor(pts)
+        base = pts[h < np.percentile(h, LOT_BASE_PCT) + 0.5]
+        top = float(np.percentile(pts @ up, LOT_BASE_PCT))
+        U, V = (flat(base) - c) @ b, (flat(base) - c) @ a
+        side = 1.0 if np.median(U) >= 0 else -1.0
+        inner, outer = float((side * U).min()), float((side * U).max()) + 1.0
+        v0, v1 = float(V.min()) - 1.0, float(V.max()) + 1.0
+        front, wall_colour = inner - 0.5, np.array([0.55, 0.53, 0.5])
+        for e in walls:  # a retaining wall in front of the building is the lot's front
+            W = arr[f"obj{e['index']}_points"]
+            wu, wv = side * ((flat(W) - c) @ b), (flat(W) - c) @ a
+            if wv.max() > v0 and wv.min() < v1 and inner - 6.0 < np.median(wu) < inner + 0.5:
+                front = min(front, float(np.median(wu)))
+                wall_colour = np.median(arr[f"obj{e['index']}_colors"], 0)
+        ring = [c + side * u * b + v * a for u, v in ((front, v0), (outer, v0), (outer, v1), (front, v1))]
+        tops = [x + (top - x @ up) * up for x in ring]
+        bottoms = [x + (float(floor(x)[0]) - 0.2 - x @ up) * up for x in ring]
+        P = np.array(tops + tops + bottoms)  # the top's own corners, then the sides' (another colour)
+        F = [[0, 1, 2], [0, 2, 3]]
+        for j in range(4):
+            k = (j + 1) % 4
+            F += [[4 + j, 4 + k, 8 + k], [4 + j, 8 + k, 8 + j]]
+        F = F + [f[::-1] for f in F]  # both sides: seen from the street and from above
+        C = np.array([top_colour] * 4 + [wall_colour] * 8)
+        li = scene['objects']
+        arr[f'obj{li}_points'] = P.astype(np.float32)
+        arr[f'obj{li}_faces'] = np.asarray(F, np.int32)
+        arr[f'obj{li}_colors'] = np.clip(C, 0, 1).astype(np.float32)
+        scene['objects'] = li + 1
+        env[name]['on'] = li
+        out.append({'index': li, 'name': f'{name[:3]} lot', 'lot': True})
+        print(f'{name}: on a lot {top - float(floor(ring[0])[0]):.1f} m over the street, '
+              f'{outer - front:.1f} x {v1 - v0:.1f} m')
+    return out
+
+
 def bands(args, scene, arr, up, floor, rounds=6, tolerance=0.15):
     """flow_section.py's bands filled over the street the photo sees (section_fill.py): a front row of trees at the
     photo's height and spacing, a back row taller and leaning over the road, hedges and shrubs, kept off the
@@ -403,6 +481,7 @@ def main():
     if tex:
         tex_path = os.path.abspath(os.path.join(args.out, 'isaac', 'tex_photo.png'))
         shutil.copy(os.path.join(args.scene, 'background.png'), tex_path)
+    high = {}  # buildings standing over the street: env name -> object index
     for k, (name, m) in enumerate(meshes.items()):
         i = first + k
         pts = trimesh.transform_points(m.vertices, GL2CV) * s
@@ -412,7 +491,9 @@ def main():
             m, uv, photo_faces, cols = tex[name]
             pts = trimesh.transform_points(m.vertices, GL2CV) * s
             faces = m.faces
-        if args.snap_ground:  # catalog entry 1: a base hidden in the photo comes out floating or sunk
+        if raised(name, pts, up, floor) is not None:  # on a lot (lots()): neither moved down nor skirted
+            high[name] = i
+        elif args.snap_ground:  # catalog entry 1: a base hidden in the photo comes out floating or sunk
             pts = pts - np.percentile(pts @ up - floor(pts), 0.5) * up
         elif args.fill_ground:
             pts, faces, cols = skirt(pts, faces, cols, up, floor)
@@ -428,6 +509,10 @@ def main():
         print(f'{name}: {len(m.faces)} faces, {np.ptp(pts, 0).round(2).tolist()} m, at {pts.mean(0).round(1).tolist()}')
     scene['objects'] = first + len(meshes)
     scene['env'] = [{'index': first + k, 'name': name} for k, name in enumerate(meshes)]
+    for e in lots(args, scene, arr, up, floor, high):
+        for v in scene['views']:
+            v['objects'].append([e['index'], np.eye(4).tolist()])
+        scene['env'].append(e)
     if args.vegetation and os.path.exists(args.vegetation):
         for e in vegetation(args, scene, arr, up, floor):
             for v in scene['views']:
