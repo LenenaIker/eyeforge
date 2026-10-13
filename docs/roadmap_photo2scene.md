@@ -221,6 +221,18 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
   - Hecho (2026-10-12, `9a03d99`, hoja `compare/F_web.html`): panel "Synthetic images" con lo que entró, el reparto por fase (soporte siempre imitación; calle y habitación, extrapolación; superficie, imitación salvo los suelos unidos), lo que dejó fuera cada filtro con muestras y el motivo si no entró nada.
   - Check: lo revisa el usuario en el navegador.
 
+## Fase V: vegetación con assets de NVIDIA (decisión del usuario, 2026-10-13)
+
+Los árboles y arbustos salen de SAM 3D como bloques verdes y el filtro de parecido tira las vistas (roads, C.6). En vez de SAM 3D (caro, de 20 s a 2 min de GPU por árbol) o de tarjetas recortadas de la foto, se usan los assets de vegetación del bucket público de NVIDIA (`Assets/Vegetation`: 44 árboles y 37 arbustos; de 24.000 a 87.000 triángulos más ramas instanciadas; en cm y con Z arriba; materiales MDL con hojas recortadas; miniaturas en `.thumbs`). Comparación de opciones en la conversación del 2026-10-13: los assets ahorran la GPU de SAM 3D, se ven bien desde cualquier ángulo y dan variedad gratis en la extrapolación.
+
+- [ ] **V.1 Catálogo**: lista de árboles y arbustos con su miniatura, altura y grupo, cacheada; proxy ligero de cada uno (malla simplificada con colores) para los pasos que renderizan con pyrender (controles, etiquetas, mapa de alturas).
+- [ ] **V.2 Elección** (paso 1.5v, tras el control de máscaras): las máscaras de vegetación no van a SAM 3D; el VLM elige del catálogo, con la hoja de miniaturas y el recorte, la especie más parecida (forma de copa, color, tamaño).
+- [ ] **V.3 Colocación** (en `env_add`): base en el suelo bajo la máscara y altura medida con MoGe sobre el suelo (con la vertical de las paredes), giro al azar. En `meshes.npz` el proxy y la referencia al USD con su pose.
+- [ ] **V.4 Isaac**: `piece_isaac` referencia el USD en lugar de la malla, y espera a que cargue; las plantillas de la fase 3 copian la pose con cada copia; en la extrapolación se puede cambiar de especie.
+- [ ] **V.5 Controles**: `flow_gates` no pide coincidencia de silueta a la vegetación (no es su árbol); `flow_populate` no pone objetos sobre las copas.
+- [ ] **V.6 Medida**: hoja de antes y después en la foto 21 de roads y en la 24 de macetas; F1 de roads_cars con 3 ejecuciones (C.6: 0,651 solo fotos, 0,662 con calle).
+- [ ] **V.7 Nebius**: los USD se referencian por URL pública (Isaac los cachea); los proxies van a la caché del bucket.
+
 ## Fase G: cierre
 
 - [ ] **G.1 Documentación**: `docs/plan_photo2scene.md`, `TODO.md` y `CLAUDE.md` al día.

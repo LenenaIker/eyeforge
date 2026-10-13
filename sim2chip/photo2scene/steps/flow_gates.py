@@ -68,6 +68,8 @@ def main():
     env = scene.get('env', [])
     em = np.load(os.path.join(d, 'env_masks.npz'))
     masks = em['masks']
+    vp = os.path.join(d, 'vegetation.npz')
+    veg_masks = np.load(vp)['masks'] if os.path.exists(vp) else np.zeros((0, 1, 1), bool)
     items = [(np.asarray(floor['points']), np.array([[0, 1, 2], [0, 2, 3]]))]
     for e in env:  # env_add.py leaves the surroundings in the photo camera frame (identity in every view)
         items.append((arr[f"obj{e['index']}_points"], arr[f"obj{e['index']}_faces"]))
@@ -97,7 +99,9 @@ def main():
                                              20000, seed=0)[0]
         base = float(np.percentile(surf @ up - under(surf), 0.5))
         mi = int(e['name'][:3])
-        mask = masks[mi] if mi < len(masks) else np.zeros((h, w), bool)
+        veg = bool(e.get('vegetation'))  # an NVIDIA tree (flow_vegetation.py): not the photo's own shape
+        pool = veg_masks if veg else masks
+        mask = pool[mi] if mi < len(pool) else np.zeros((h, w), bool)
         sil = ids == k + 2
         iou = float((sil & mask).sum() / max((sil | mask).sum(), 1))
         err = rel_err(mask & sil)
@@ -107,11 +111,13 @@ def main():
             'silhouette on its mask': iou >= args.min_iou,
             'depth like the photo': err is None or err <= args.max_depth_err,
         }
+        if veg:  # placed on the floor by us; another species than the photo's, so no silhouette or depth to match
+            checks = {'stands on the ground': checks['stands on the ground']}
         why = [c for c, ok in checks.items() if not ok]
         report['meshes'].append({'index': e['index'], 'name': e['name'], 'height_m': round(hgt, 2),
                                  'base_gap_m': round(base, 2), 'iou': round(iou, 3), 'depth_err': err,
-                                 'checks': checks, 'why': why})
-        if why:
+                                 'checks': checks, 'why': why, **({'vegetation': True} if veg else {})})
+        if why and not veg:
             drop.append(mi)
     report['drop'] = drop
     # The floor piece must lie under every ground pixel of the photo: on 2026-10-07 a floor of a few metres left
@@ -127,8 +133,9 @@ def main():
     for k, mr in enumerate(report['meshes']):
         sil = ids == k + 2
         mi = int(mr['name'][:3])
-        if mi < len(masks):
-            out[masks[mi]] = out[masks[mi]] * 0.7 + np.array([60, 60, 255]) * 0.3
+        pool = veg_masks if mr.get('vegetation') else masks
+        if mi < len(pool):
+            out[pool[mi]] = out[pool[mi]] * 0.7 + np.array([60, 60, 255]) * 0.3
         edge = sil & ~(np.roll(sil, 1, 0) & np.roll(sil, -1, 0) & np.roll(sil, 1, 1) & np.roll(sil, -1, 1))
         for dy in (-1, 0, 1):
             out[np.roll(edge, dy, 0)] = [255, 40, 40] if mr['why'] else [40, 255, 40]

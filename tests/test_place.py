@@ -253,3 +253,12 @@ def test_classifying_in_a_street_shows_one_class_per_view(tmp_path, monkeypatch)
     assert [(f["file"], f["class"]) for f in frames] == [
         ("photo_2/populated/isaac/render_01.png", "bus"), ("photo_2/populated/isaac/render_02.png", "empty"),
         ("photo_1/populated/isaac/render_01.png", "car"), ("photo_1/populated/isaac/render_02.png", "empty")]
+
+
+def test_trees_and_shrubs_go_to_nvidia_assets_hedges_stay_with_sam3d():
+    import sys
+    sys.path.insert(0, str(STEPS))
+    from flow_vegetation import group_of
+    assert group_of("tree") == group_of("tall pine trees") == "tree"
+    assert group_of("bush") == group_of("shrubs") == "shrub"
+    assert group_of("hedge") is None and group_of("house") is None and group_of("low stone wall") is None

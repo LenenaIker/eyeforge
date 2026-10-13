@@ -25,7 +25,8 @@ import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
 
-from crossroad import ASPHALT, BRICKS, ROAD_WORDS, _axis_rotation, look, photo_keys, quad, rebrick
+from crossroad import (ASPHALT, BRICKS, ROAD_WORDS, _axis_rotation, affine, look, photo_keys, quad, rebrick, usd_keys,
+                       usd_of)
 
 
 def main():
@@ -80,9 +81,11 @@ def main():
         if i not in names:
             continue
         p = arr[f'obj{i}_points'] @ np.asarray(t)[:3, :3].T + np.asarray(t)[:3, 3]
-        p = p + (level - np.percentile(p @ up, 0.5)) * up
+        lift = (level - np.percentile(p @ up, 0.5)) * up
+        p = p + lift
         s = 1 if float((p.mean(0) - centre) @ b) >= 0 else -1
-        sides[s].append((p, arr[f'obj{i}_faces'], arr[f'obj{i}_colors'], names[i], photo_keys(arr, i)))
+        sides[s].append((p, arr[f'obj{i}_faces'], arr[f'obj{i}_colors'], names[i], photo_keys(arr, i),
+                         usd_of(arr, i, affine(move=lift) @ np.asarray(t))))
     # Facade planes env_add.py kept where no mesh stands: they go with their side, like the meshes.
     facades = {1: [], -1: []}
     for p in scene['pieces']:
@@ -107,7 +110,10 @@ def main():
         width = 2 * half
         rot = np.asarray(_axis_rotation(up, math.pi))
         # The turned side is a copy: rebricked, without the photo's texture.
-        sides[-s0] = [((p - centre) @ rot.T + centre, f, col, n, {}) for p, f, col, n, _ in sides[s0]]
+        turn = affine(rot, centre - rot @ centre)
+        sides[-s0] = [((p - centre) @ rot.T + centre, f, col, n, {},
+                       usd and {'url': usd['url'], 'pose': turn @ usd['pose']})
+                      for p, f, col, n, _, usd in sides[s0]]
         facades[-s0] = [{**fp, 'points': ((np.asarray(fp['points']) - centre) @ rot.T + centre).tolist()}
                         for fp in facades[s0]]
 
@@ -133,12 +139,13 @@ def main():
                 if k and not along_street(fp):
                     continue
                 facade_quads.append({**fp, 'points': (np.asarray(fp['points']) + shift).tolist()})
-            for p, f, col, n, photo in block:
+            for p, f, col, n, photo, usd in block:
                 if any(w in n for w in ('house', 'wall', 'building')):
                     col = rebrick(col, brick)
                 out_arr[f'obj{objects}_points'] = (p + shift).astype(np.float32)
                 out_arr[f'obj{objects}_faces'] = f
                 out_arr[f'obj{objects}_colors'] = np.asarray(col, np.float32)
+                out_arr.update(usd_keys(objects, usd, affine(move=shift)))
                 if k == 0:  # the block where the photo has it keeps the photo's texture; copies are rebricked
                     out_arr.update({f'obj{objects}_{key}': v for key, v in photo.items()})
                 objects += 1

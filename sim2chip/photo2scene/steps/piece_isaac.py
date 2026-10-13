@@ -111,9 +111,17 @@ for i, pc in enumerate(scene["pieces"]):
 
 # Objects: SAM 3D meshes with vertex colours, one prim each, posed and shown per view. Faces the photo saw
 # (env_add.py --photo-texture) take the photo itself as texture, through a face subset with its own material.
-objs = []
+objs, refs = [], []
 for i in range(scene["objects"]):
     xf = UsdGeom.Xform.Define(stage, f"/World/Objects/o{i}")
+    if f"obj{i}_usd" in arr.files:  # an NVIDIA tree or shrub (env_add.py vegetation): the asset itself, posed
+        asset = UsdGeom.Xform.Define(stage, f"/World/Objects/o{i}/asset")
+        asset.AddTransformOp().Set(Gf.Matrix4d(np.asarray(arr[f"obj{i}_usd_pose"]).T.tolist()))
+        ref = stage.DefinePrim(f"/World/Objects/o{i}/asset/Ref")
+        ref.GetReferences().AddReference(str(arr[f"obj{i}_usd"]))
+        refs.append(ref)
+        objs.append((xf, xf.AddTransformOp()))
+        continue
     m = mesh(f"/World/Objects/o{i}/mesh", arr[f"obj{i}_points"], arr[f"obj{i}_faces"])
     m.CreateDisplayColorPrimvar(UsdGeom.Tokens.vertex).Set(Vt.Vec3fArray.FromNumpy(linear(arr[f"obj{i}_colors"]) * ALBEDO))
     mat, sh = surface(f"/World/Looks/Obj{i}", 0.45)
@@ -148,6 +156,18 @@ for i in range(scene["objects"]):
                                                   "materialBind")
             UsdShade.MaterialBindingAPI.Apply(sub.GetPrim()).Bind(mat)
     objs.append((xf, xf.AddTransformOp()))
+
+# Remote assets load in the background: render only once each has a size (an unloaded tree measured 0 and came
+# out missing; Isaac caches them in ~/.cache/ov for the next run).
+if refs:
+    cache = UsdGeom.BBoxCache(0, ["default", "render"])
+    for _ in range(600):
+        cache.Clear()
+        if all(not cache.ComputeWorldBound(r).ComputeAlignedRange().IsEmpty() for r in refs):
+            break
+        app.update()
+    else:
+        print("some vegetation assets did not load", flush=True)
 
 # Light: an HDRI sky (one per scene, turned per view) and a sun outdoors; indoors (closed room) a ceiling panel
 # and a lamp moved per view.

@@ -228,6 +228,57 @@ def turntable(meshes, out, t=256, angles=(0, 45, 90, 180, 270)):
     sheet.save(out, quality=90)
 
 
+def vegetation(args, scene, arr, up, floor):
+    """flow_vegetation.py's NVIDIA trees and shrubs into the place: each where its mask's depth points stand, its
+    height above the floor the mask's, turned at random. meshes.npz gets the asset's proxy (veg_catalog.py) for the
+    pyrender steps and its USD URL with the pose from the USD's own units and axes (obj<i>_usd, obj<i>_usd_pose)
+    for Isaac. Returns the scene's new env entries."""
+    import veg_catalog
+    picks = json.load(open(args.vegetation))['assets']
+    vz = np.load(os.path.join(os.path.dirname(args.vegetation), 'vegetation.npz'))
+    dp = np.load(os.path.join(args.scene, 'depth_background.npz'))
+    cat = {c['name']: c for c in veg_catalog.catalog(args.veg_dir)}
+    e1 = np.cross(up, [1.0, 0, 0]) if abs(up[0]) < 0.9 else np.cross(up, [0, 0, 1.0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(up, e1)
+    out = []
+    for a in picks:
+        m = vz['masks'][a['index']] & (dp['mask'] > 0)
+        Q = dp['points'][m]
+        Q = Q[np.isfinite(Q).all(1) & (np.linalg.norm(Q, axis=1) < 80)]
+        if len(Q) < 50:
+            print(f"{a['phrase']} ({a['name']}): too few depth points, left out")
+            continue
+        height = float(np.percentile(Q @ up - floor(Q), 98))
+        # The photo sees the crown's front: the trunk stands about half a crown behind its median point.
+        flat = Q - np.outer(Q @ up, up)
+        centre = np.median(flat, 0)
+        away = centre / max(np.linalg.norm(centre), 1e-6)
+        side = np.cross(up, away)
+        width = float(np.ptp(np.percentile(Q @ side, [5, 95])))
+        centre = centre + away * 0.25 * width
+        base = centre + (floor(centre)[0] - centre @ up) * up
+        z = np.load(veg_catalog.proxy(args.veg_dir, cat[a['name']]))
+        k = float(np.clip(height / float(z['height_m']), 0.3, 3.0))
+        yaw = np.random.default_rng(a['index']).uniform(0, 2 * np.pi)
+        ca, sa = np.cos(yaw), np.sin(yaw)
+        place = np.eye(4)  # proxy (metres, Z up) -> the place: x, y turned about up, z along up, scaled by k
+        place[:3, :3] = np.stack([ca * e1 + sa * e2, -sa * e1 + ca * e2, up], 1) * k
+        place[:3, 3] = base
+        pts = z['points'] @ place[:3, :3].T + base
+        i = scene['objects']
+        arr[f'obj{i}_points'] = pts.astype(np.float32)
+        arr[f'obj{i}_faces'] = z['faces'].astype(np.int32)
+        arr[f'obj{i}_colors'] = z['colors'].astype(np.float32)
+        arr[f'obj{i}_usd'] = np.array(a['url'])
+        arr[f'obj{i}_usd_pose'] = (place @ z['to_proxy']).astype(np.float64)
+        scene['objects'] = i + 1
+        print(f"{a['phrase']} -> {a['name']}: {height:.1f} m (asset {float(z['height_m']):.1f} m, x{k:.2f}), "
+              f"at {base.round(1).tolist()}")
+        out.append({'index': i, 'name': f"{a['index']:03d} {a['phrase']}", 'vegetation': a['name']})
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--env', required=True, help='Mira case of the surroundings, after stage 5')
@@ -243,9 +294,16 @@ def main():
     ap.add_argument('--photo-texture', action='store_true', help='faces the photo sees take the photo as texture')
     ap.add_argument('--keep', default=None, help='comma-separated mask indices of the meshes to add (the ones '
                     'flow_check_meshes.py passed); default all')
+    ap.add_argument('--vegetation', default=None, help="flow_vegetation.py's picks: NVIDIA trees and shrubs "
+                    'placed where the photo has them (with --veg-dir, veg_catalog.py --dir)')
+    ap.add_argument('--veg-dir', default=None)
     args = ap.parse_args()
-    meshes = env_meshes(args.env, args.max_faces)
-    graph = json.load(open(os.path.join(args.env, 'scene_graph.json')))
+    graph_path = os.path.join(args.env, 'scene_graph.json')
+    if os.path.exists(graph_path):
+        meshes = env_meshes(args.env, args.max_faces)
+        graph = json.load(open(graph_path))
+    else:  # every surroundings mask was vegetation: SAM 3D made nothing
+        meshes, graph = {}, {'nodes': []}
     names = {n['id']: f"{n['mask_index']:03d} {n['name']}" for n in graph['nodes'] if n['kind'] == 'object'}
     meshes = {next((v for k, v in names.items() if k in node or v[:3] in node), node): m
               for node, m in sorted(meshes.items())}
@@ -309,6 +367,11 @@ def main():
         print(f'{name}: {len(m.faces)} faces, {np.ptp(pts, 0).round(2).tolist()} m, at {pts.mean(0).round(1).tolist()}')
     scene['objects'] = first + len(meshes)
     scene['env'] = [{'index': first + k, 'name': name} for k, name in enumerate(meshes)]
+    if args.vegetation and os.path.exists(args.vegetation):
+        for e in vegetation(args, scene, arr, up, floor):
+            for v in scene['views']:
+                v['objects'].append([e['index'], np.eye(4).tolist()])
+            scene['env'].append(e)
     walls = tuple(f'tex_wall{j}.png' for j in range(9))
     if args.drop_walls:
         scene['pieces'] = [p for p in scene['pieces'] if not (p['texture'] or '').endswith(walls)]

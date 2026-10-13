@@ -57,6 +57,7 @@ def place_meshes(scene, arr, view):
         meshes.append(trimesh.Trimesh(c, [[0, 1, 2], [0, 2, 3], [0, 2, 1], [0, 3, 2]], process=False))
     for i, t in view['objects']:
         m = trimesh.Trimesh(arr[f'obj{i}_points'], arr[f'obj{i}_faces'], process=False)
+        m.metadata['vegetation'] = f'obj{i}_usd' in arr  # an NVIDIA tree: nothing is put on its crown
         meshes.append(m.apply_transform(np.asarray(t)))
     return meshes
 
@@ -199,7 +200,8 @@ def main():
         reach = max(a['size'].max() for a in assets) * fx / args.min_px
         fwd = pose_cv[:3, 2]
         centre = eye + fwd * min(reach, 8.0) / 2
-        hm = HeightMap(meshes, up, centre, min(reach, 8.0) / 2 + 1.0, args.res)
+        hm = HeightMap([m for m in meshes if not m.metadata.get('vegetation')], up, centre, min(reach, 8.0) / 2 + 1.0,
+                       args.res)
         s = pyrender.Scene()
         for m in meshes:
             s.add(pyrender.Mesh.from_trimesh(m, smooth=False))

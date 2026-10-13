@@ -52,6 +52,12 @@ def photo_png(d: Path, photo: Path) -> Path:
     return d / "photo.png"
 
 
+def vegetation_dir(d: Path) -> Path:
+    """The NVIDIA vegetation catalog and proxies (veg_catalog.py), shared by every scene: next to the scenes in the
+    cache (a scene is built in <cache>/scenes/<key>)."""
+    return Path(config.env("SIM2CHIP_VEG_DIR") or d.parent.parent / "vegetation")
+
+
 def observe(flow: Flow, photo: Path) -> dict:
     """1.1 and 1.2: what the photo shows (three VLM samples voted) and the route by rules. Returns route.json
     with the observation under "observe"; raises Stop when the photo is out of scope or the answers disagree."""
@@ -117,9 +123,16 @@ def build(flow: Flow, photo: Path, targets: list[str]) -> dict:
     flow.run("1.3c_check_masks", "sam3", "flow_check_masks.py", ["--dir", d], ["env_masks.json"])
     if not any(c["keep"] for c in flow.json("env_masks.json")["candidates"]):
         raise Stop("no house, tree or furniture of the photo passed the mask check")
+    # 1.5v Trees and shrubs: NVIDIA assets the VLM picks, not SAM 3D meshes (roadmap V; they leave env_masks.npz).
+    veg = vegetation_dir(d)
+    if (d / "meshes/scene_graph.json").exists() and not (d / "vegetation.json").exists():
+        (d / "vegetation.json").write_text(json.dumps({"assets": []}))  # built before: its trees are SAM 3D's
+    flow.run("1.5v_catalog", "mesh", "veg_catalog.py", ["--dir", veg], [veg / "catalog.json"])
+    flow.run("1.5v_pick", "sam3", "flow_vegetation.py", ["--dir", d, "--catalog", veg], ["vegetation.json"])
+    trees = len(flow.json("vegetation.json")["assets"])
     # 1.5 Meshes of the surroundings. A mask that fails twice is too big for the GPU (a whole row of houses): it
     # leaves the kept masks and the meshes are made again without it (their indices follow the masks).
-    for attempt in range(2):
+    for attempt in range(2 if len(np.load(d / "env_masks.npz")["phrases"]) else 0):
         flow.run(f"1.5a_sam3d_{attempt}", "mesh", "flow_sam3d.py", ["--dir", d, "--fresh", "--voxels", "sam3d"],
                  ["meshes/scene_graph.json"])
         n = len(np.load(d / "env_masks.npz")["phrases"])
@@ -136,11 +149,14 @@ def build(flow: Flow, photo: Path, targets: list[str]) -> dict:
         flow.log(f"  no mesh for {', '.join(str(z['phrases'][i]) for i in missing)}: left out")
         shutil.rmtree(d / "meshes", ignore_errors=True)
     else:
-        raise Stop("SAM 3D made no mesh for some surroundings even after leaving the others out")
-    flow.run("1.5b_refine", "mesh", "flow_refine.py", ["--dir", d], ["refine.json"])
-    flow.run("1.5c_check_meshes", "mesh", "flow_check_meshes.py", ["--dir", d], ["meshes.json"])
-    keep = [x["index"] for x in flow.json("meshes.json")["meshes"] if x["keep"]]
-    if not keep:
+        if len(np.load(d / "env_masks.npz")["phrases"]):
+            raise Stop("SAM 3D made no mesh for some surroundings even after leaving the others out")
+    keep = []
+    if len(np.load(d / "env_masks.npz")["phrases"]):
+        flow.run("1.5b_refine", "mesh", "flow_refine.py", ["--dir", d], ["refine.json"])
+        flow.run("1.5c_check_meshes", "mesh", "flow_check_meshes.py", ["--dir", d], ["meshes.json"])
+        keep = [x["index"] for x in flow.json("meshes.json")["meshes"] if x["keep"]]
+    if not keep and not trees:
         raise Stop("no mesh of the surroundings passed the check")
     imitate(flow, r, keep)
     extend(flow, r)
@@ -159,7 +175,8 @@ def imitate(flow: Flow, r: dict, keep: list[int]):
     for attempt in range(2):
         flow.run(f"2.2a_env_{attempt}", "mesh", "env_add.py",
                  ["--env", d / "meshes", "--scene", d, "--out", d / "place", "--fill-ground", "--photo-texture",
-                  "--keep", ",".join(map(str, keep))] + (["--drop-covered-walls"] if kind == "--outdoor" else []),
+                  "--keep", ",".join(map(str, keep)), "--vegetation", d / "vegetation.json",
+                  "--veg-dir", vegetation_dir(d)] + (["--drop-covered-walls"] if kind == "--outdoor" else []),
                  ["place/isaac/scene.json"])
         flow.run(f"2.2b_gates_{attempt}", "mesh", "flow_gates.py", ["--dir", d], ["gates.json"])
         g = flow.json("gates.json")
@@ -173,7 +190,7 @@ def imitate(flow: Flow, r: dict, keep: list[int]):
     if not g["ok"]:
         raise Stop(f"the rebuilt ground is off the photo (depth error {g['ground_depth_err']}, cover "
                    f"{g.get('ground_cover')})")
-    if not keep or drop:
+    if drop or not (keep or any(m.get("vegetation") for m in g["meshes"])):
         raise Stop(f"meshes still fail the gates: {drop}")
     # 2.3 Light and sky: the route's HDRI group, then the photo's light by measurement (view 0 under a fixed set of
     # lights, the closest kept).

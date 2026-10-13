@@ -42,6 +42,32 @@ def photo_keys(arr, i):
     return {key: arr[f'obj{i}_{key}'] for key in PHOTO_KEYS if f'obj{i}_{key}' in arr}
 
 
+def affine(rot=None, move=None):
+    """4x4 of x -> rot x + move."""
+    m = np.eye(4)
+    if rot is not None:
+        m[:3, :3] = rot
+    if move is not None:
+        m[:3, 3] = move
+    return m
+
+
+def usd_of(arr, i, move):
+    """An NVIDIA asset's URL and its pose in the place after `move` (env_add.py vegetation), or None: copies and
+    shifts of the object must carry the asset with them."""
+    if f'obj{i}_usd' not in arr:
+        return None
+    return {'url': str(arr[f'obj{i}_usd']), 'pose': move @ np.asarray(arr[f'obj{i}_usd_pose'], float)}
+
+
+def usd_keys(n, usd, move=None):
+    """meshes.npz keys of object n for the asset, moved again by `move`."""
+    if usd is None:
+        return {}
+    return {f'obj{n}_usd': np.array(usd['url']),
+            f'obj{n}_usd_pose': (move if move is not None else np.eye(4)) @ usd['pose']}
+
+
 def rebrick(colours, brick):
     """Brick-coloured vertices (orange to red, not grey) moved to another brick; the rest is left alone."""
     hue, ks, kv = brick
@@ -174,12 +200,16 @@ def main():
         if i in names:
             # Far surroundings come out of the photo's depth floating or sunk (a house 4 m up): set them on the
             # sidewalk; their lowest points, not one stray vertex.
-            p = p + (level - np.percentile(p @ up, 0.5)) * up
+            lift = (level - np.percentile(p @ up, 0.5)) * up
+            p = p + lift
+        else:
+            lift = np.zeros(3)
+        usd = usd_of(arr, i, affine(move=lift) @ t)
         flat = p - (p @ up)[:, None] * up
         far = float(np.linalg.norm(flat.mean(0) - (corner - (corner @ up) * up))) > args.far and i in names
         if far and args.far_mode == 'drop':
             continue
-        block.append((p, arr[f'obj{i}_faces'], arr[f'obj{i}_colors'], name, far, photo_keys(arr, i)))
+        block.append((p, arr[f'obj{i}_faces'], arr[f'obj{i}_colors'], name, far, photo_keys(arr, i), usd))
     # Facade planes env_add.py kept where no mesh stands go round with the block.
     facades = [p for p in scene['pieces'] if re.search(r'tex_wall\d+\.png$', p['texture'] or '')]
     out_arr, objects, boxes = {}, 0, []
@@ -192,7 +222,7 @@ def main():
         brick = BRICKS[0] if k == 0 else BRICKS[1 + rng.integers(len(BRICKS) - 1)]
         for fp in facades:
             boxes.append({**fp, 'points': (np.asarray(fp['points']) @ rot[:3, :3].T + rot[:3, 3]).tolist()})
-        for j, (p, f, c, name, far, photo) in enumerate(block):
+        for j, (p, f, c, name, far, photo, usd) in enumerate(block):
             if any(w in name for w in ('house', 'wall')):
                 c = rebrick(c, brick)
             if far:
@@ -202,6 +232,7 @@ def main():
             out_arr[f'obj{objects}_points'] = (p @ rot[:3, :3].T + rot[:3, 3]).astype(np.float32)
             out_arr[f'obj{objects}_faces'] = f
             out_arr[f'obj{objects}_colors'] = np.asarray(c, np.float32)
+            out_arr.update(usd_keys(objects, usd, rot))
             if k == 0:  # the corner as the photo shows it keeps the photo's texture; turned copies are rebricked
                 out_arr.update({f'obj{objects}_{key}': v for key, v in photo.items()})
             objects += 1
