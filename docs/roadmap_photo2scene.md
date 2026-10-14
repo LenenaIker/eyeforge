@@ -242,6 +242,15 @@ Los árboles y arbustos salen de SAM 3D como bloques verdes y el filtro de parec
 - **Límite conocido**: SAM 3D convierte un bloque largo que se aleja por la calle en una torre estrecha (roads foto 3), y no extrae pretiles ni barandillas.
 - `env_add` tardó 8,5 min la primera vez en una calle arbolada (descarga y proxies de especies nuevas); con la caché caliente, 98 s, de ellos 65 s en las 6 rondas de ajuste con pyrender (sube todas las mallas en cada ronda: se puede acelerar). En Nebius la caché de vegetación de cada trabajo empieza vacía si no se sube al bucket.
 
+## Fase J: Cosmos Reason como juez real frente a sintético (usuario, 2026-10-14)
+
+- [ ] **J.1 Probar Cosmos Reason** (NVIDIA, modelo abierto pensado para razonar sobre física y escenas) como juez que valore el parecido entre la foto real y la escena sintética, y compararlo con los jueces actuales:
+  - Jueces actuales: `flow_compare.py` (2.4, preguntas cerradas a Qwen3.8-27B en los dos órdenes), `flow_check_views.py` (3.4b, vistas de la plantilla), el delta E de `flow_photometry.py` y el filtro de parecido (`SIM2CHIP_LIKENESS`).
+  - Disponibilidad: hoy no sale en nuestra lista de modelos de Token Factory (ni Cosmos Reason 2 ni Cosmos3-Super-Reasoner). Mirar primero si se puede pedir allí; si no, servirlo en la L40S (la versión de 8B cabe) solo para la prueba.
+  - Banco de pruebas: escenas que ya tenemos con veredicto conocido (roads foto 3 antes y después del arreglo de árboles, `p2s_test/var3` y `par/`; la esquina de la foto 24; las 13 vistas de calle que el filtro rechazó en `roads_cars_nb2`; vistas buenas de botellas y HOPE) más la revisión a ojo del usuario como verdad.
+  - Medir: acuerdo con el ojo del usuario, estabilidad entre ejecuciones (mismas preguntas varias veces), tiempo y coste por escena, frente a Qwen3.8-27B.
+  - Se adopta solo si no empeora (regla de los patrocinadores) y con hoja de comparación para el usuario. Suma además como uso de un modelo de NVIDIA en la entrega.
+
 ## Fase G: cierre
 
 - [ ] **G.1 Documentación**: `docs/plan_photo2scene.md`, `TODO.md` y `CLAUDE.md` al día.
