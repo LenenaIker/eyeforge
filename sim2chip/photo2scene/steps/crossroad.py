@@ -176,7 +176,7 @@ def main():
     ap.add_argument('--curb', type=float, default=0.12, help='sidewalk height over the road, metres')
     ap.add_argument('--reach', type=float, default=60.0, help='sidewalk size from the curb, metres')
     ap.add_argument('--views', type=int, default=12)
-    ap.add_argument('--clearance', type=float, default=7.0, help='metres from a camera to anything at least')
+    ap.add_argument('--clearance', type=float, default=3.0, help='metres from a camera to anything at least')
     ap.add_argument('--drop', default='', help='env mesh indices to leave out (bad SAM 3D meshes)')
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--no-objects', action='store_true', help='the place only: objects come from Replicator')
@@ -318,21 +318,28 @@ def main():
         uv = rng.uniform(0, 1, (300, 2))
         env_pts = np.concatenate([env_pts, c[0] + uv[:, :1] * (c[1] - c[0]) + uv[:, 1:] * (c[3] - c[0])])
     tree = cKDTree(env_pts)
-    while len(views) <= args.views:
-        along = rng.uniform(-25, 25)
-        across = rng.uniform(-args.road / 2 - 1.5, args.road / 2 + 1.5)
-        u, v = (along, across) if rng.random() < 0.5 else (across, along)
-        pos = centre + u * a + v * b + rng.uniform(1.3, 4.0) * up
+    half, tries = args.road / 2, 0
+    while len(views) <= args.views and tries < 5000:
+        tries += 1
+        # A person on one of the two roads, as the photo's camera (1.9 m, 6 degrees down): mostly looking along it,
+        # to the far end and the crossing, some views turned to a corner. Cameras anywhere up to 4 m aimed at the
+        # middle of a block saw one wall filling the picture, which the view check calls no street or inside
+        # (terrace, 2026-10-14: 7 of 17 views).
+        k = rng.integers(2)
+        ra, rb = (a, b) if k == 0 else (b, a)  # the road runs along ra
+        along = rng.random() < 0.7
+        across = rng.uniform(-half, half) if along else rng.uniform(-half - 2, half + 2)
+        pos = centre + rng.uniform(-25, 25) * ra + across * rb + rng.uniform(1.4, 2.2) * up
         if tree.query(pos)[0] < args.clearance:
-            continue  # against a wall or in a hedge: nothing but a texture in view
-        # Toward one of the corners (its middle, about 8 m into the block), give or take 35 degrees.
-        k = rng.integers(4)
-        r = np.asarray(_axis_rotation(up, k * math.pi / 2))
-        aim = centre + r @ ((args.road / 2 + 8) * (a + b)) - pos
-        aim -= (aim @ up) * up
-        yaw = math.atan2(aim @ b, aim @ a) + math.radians(rng.uniform(-35, 35))
-        pitch = math.radians(rng.uniform(4, 18))
-        fwd = math.cos(pitch) * (math.cos(yaw) * a + math.sin(yaw) * b) - math.sin(pitch) * up
+            continue  # in a hedge or against a wall
+        if along:
+            yaw = (0 if rng.random() < 0.5 else math.pi) + math.radians(rng.uniform(-20, 20))
+        else:
+            yaw = (math.pi / 2 if rng.random() < 0.5 else -math.pi / 2) + math.radians(rng.uniform(-40, 40))
+        pitch = math.radians(rng.uniform(-4, 8))
+        fwd = math.cos(pitch) * (math.cos(yaw) * ra + math.sin(yaw) * rb) - math.sin(pitch) * up
+        if not sees_well(env_pts, pos, fwd):
+            continue
         views.append({'pose': look(pos, fwd, up).tolist(), 'objects': [], 'lamp': None})
     views.append({'pose': look(centre + 45 * up - 20 * b, 20 * b - 45 * up, b).tolist(), 'objects': [],
                   'lamp': None})
@@ -345,9 +352,26 @@ def main():
     json.dump(scene, open(os.path.join(args.out, 'isaac', 'scene.json'), 'w'))
     np.savez_compressed(os.path.join(args.out, 'isaac', 'meshes.npz'), **out_arr)
     shutil.copy(os.path.join(args.scene, 'photo.png'), args.out)
-    print(json.dumps({'corner_ab': [round(a0, 2), round(b0, 2)], 'meshes': objects, 'boxes_and_facades': len(boxes),
+    print(json.dumps({'corner_ab': [round(a0, 2), round(b0, 2)], 'meshes': objects, 'tries': tries,
+                      'boxes_and_facades': len(boxes),
                       'views': len(views),
                       'pieces': len(pieces)}))
+
+
+SEE_CONE, SEE_M, SEE_SHARE = 30.0, 40.0, 0.02  # a view must have this much of the scene ahead
+NEAR_CONE, NEAR_M = 12.0, 8.0  # and nothing straight ahead closer than this: a wall filling the picture
+
+
+def sees_well(env_pts, pos, fwd):
+    """Houses, walls or plants in the middle of the view (a share of the scene's surface samples within SEE_CONE
+    degrees of the view axis and SEE_M metres), none of them right before the camera (within NEAR_CONE degrees
+    and NEAR_M metres)."""
+    d = env_pts - pos
+    dist = np.linalg.norm(d, axis=1)
+    cos = (d @ fwd) / np.maximum(dist, 1e-6)
+    if np.any((cos > math.cos(math.radians(NEAR_CONE))) & (dist < NEAR_M)):
+        return False
+    return np.mean((cos > math.cos(math.radians(SEE_CONE))) & (dist < SEE_M)) >= SEE_SHARE
 
 
 def plant(args, section, out_arr, objects, up, a, b, centre, level):
