@@ -129,6 +129,17 @@ def usable(store, bucket: str, wid: str, started: float | None = None) -> bool:
     return hb.get("state") in ("setup", "ready") and time.time() - hb.get("t", 0) < STALE_S
 
 
+def room(store, bucket: str, w: dict) -> int:
+    """Tasks the GPU can still take: its places (its heartbeat's "parallel", else what it was asked with) less the
+    tasks it runs and those waiting for it. A run that finds no room gets a GPU of its own instead of waiting a
+    whole run behind another (the scene GPU's runs take 30 to 50 min)."""
+    hb = heartbeat(store, bucket, w["wid"]) or {}
+    places = hb.get("parallel", w.get("parallel", PARALLEL))
+    running = set(hb.get("running", []))
+    waiting = {Path(k).stem for k in store.listing(bucket, key(w["wid"], "tasks") + "/")} - running
+    return places - len(running) - len(waiting)
+
+
 def keep_alive(store, bucket: str, wid: str, seconds: float) -> None:
     """Stay up at least `seconds` from now (never shortens an earlier promise)."""
     now = time.time()
@@ -269,12 +280,13 @@ class WarmGPU:
             return None
         return w
 
-    def start(self, reason: str = "", who: str | None = None) -> None:
-        """Ask for the GPU unless one is up (in the background: the caller never waits for Nebius)."""
+    def start(self, reason: str = "", who: str | None = None, runs: int = 1) -> None:
+        """Ask for the GPU unless one is up (in the background: the caller never waits for Nebius). runs: the runs
+        that will use it, which pick the scene GPU's machine (nebius.scene_platforms)."""
         note(self.home, "keep", who, why=reason)
-        threading.Thread(target=self._start, args=(reason,), daemon=True).start()
+        threading.Thread(target=self._start, args=(reason, runs), daemon=True).start()
 
-    def _start(self, reason: str) -> None:
+    def _start(self, reason: str, runs: int = 1) -> None:
         with self._lock:
             try:
                 w = self._alive()
@@ -283,7 +295,7 @@ class WarmGPU:
                     return
                 if w is not None:  # stopping or silent: let it end, a new one takes over
                     self.give_up(w)
-                w = self.backend.start_warm(self.home, self.kind)
+                w = self.backend.start_warm(self.home, self.kind, runs)
                 keep_alive(self.backend.store, self._bucket(), w["wid"], KEEP_S)
                 self.log(f"warm GPU {w['job_id']} ({self.kind}) asked for ({reason})")
             except Exception as e:  # never in the way of the user

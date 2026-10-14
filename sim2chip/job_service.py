@@ -84,6 +84,7 @@ class JobService:
         self.launcher = launcher or launch_run
         self.warm, self.public, self.max_runs, self.daily_usd = warm, public, max_runs, daily_usd
         self.scenes = scenes
+        self.rendering: set[str] = set()  # the jobs whose run renders (the scene GPU's work)
         self.runs: dict[str, subprocess.Popen] = {}
         self.calibrations: dict[str, threading.Thread] = {}
         self.prefetching: set[str] = set()
@@ -98,9 +99,13 @@ class JobService:
     def start(self, job: Job, request: Path, start: str | None = None) -> None:
         (job.logs / "launched_at").write_text(f"{time.time():.3f}")
         note_run(job, start)
+        self.rendering.discard(job.name)
         if self.scenes is not None and self.over_budget() is None and self._renders(job, request, start):
-            # Asked before the run's upload, so it is starting by the time the run looks for it (nebius.warm_for)
-            self.scenes.start("a run that renders", job.name)
+            # Asked before the run's upload, so it is starting by the time the run looks for it (nebius.warm_for).
+            # The runs that render now, this one too, pick its machine (nebius.scene_platforms).
+            runs = 1 + sum(1 for name in self.rendering if (p := self.runs.get(name)) is not None and p.poll() is None)
+            self.rendering.add(job.name)
+            self.scenes.start("a run that renders", job.name, runs=runs)
         self.runs[job.name] = self.launcher(self.home, job, request, self.backend, self.max_usd, start=start)
 
     def _renders(self, job: Job, request: Path, start: str | None) -> bool:

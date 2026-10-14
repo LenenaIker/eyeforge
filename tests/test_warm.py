@@ -390,18 +390,22 @@ def test_a_task_waiting_on_a_full_gpu_is_queued_not_lost():
 def test_the_server_asks_for_the_scene_gpu_when_a_run_renders(tmp_path, monkeypatch):
     from sim2chip.job_service import JobService
 
+    class Proc:
+        def poll(self):
+            return None  # still running
+
     class Scenes:
         asked = []
 
-        def start(self, reason, who=None):
-            self.asked.append(who)
-    jobs = JobService(tmp_path, launcher=lambda *a, **k: None, scenes=Scenes())
-    job = Job(tmp_path / "jobs" / "j")
-    job.logs.mkdir(parents=True)
-    for name, renders in (("draw", True), ("plain", False)):
+        def start(self, reason, who=None, runs=1):
+            self.asked.append((who, runs))
+    jobs = JobService(tmp_path, launcher=lambda *a, **k: Proc(), scenes=Scenes())
+    for name, renders in (("a", True), ("plain", False), ("b", True)):
+        job = Job(tmp_path / "jobs" / name)
+        job.logs.mkdir(parents=True)
         monkeypatch.setattr(jobs, "_renders", lambda job, request, start, r=renders: r)
         jobs.start(job, tmp_path / "request.json")
-    assert Scenes.asked == ["j"]
+    assert Scenes.asked == [("a", 1), ("b", 2)]  # the second sees the first still rendering
 
 
 def test_a_warm_gpu_that_goes_silent_is_cancelled(tmp_path, monkeypatch):
@@ -419,3 +423,39 @@ def test_a_warm_gpu_that_goes_silent_is_cancelled(tmp_path, monkeypatch):
     assert gpu.silent(w)
     gpu.give_up(w)
     assert be.cli.cancelled == ["aijob-warm"] and warm.current(tmp_path) is None
+
+
+def test_the_scene_gpu_machine_follows_the_runs(tmp_path, monkeypatch):
+    monkeypatch.delenv("SIM2CHIP_SCENE_GPU", raising=False)
+    monkeypatch.setattr(nebius, "SCENE_BIG", "gpu-l40s-d/1gpu-16vcpu-96gb")
+    monkeypatch.setattr(nebius, "PLATFORM", "gpu-l40s-a")
+    monkeypatch.setattr(nebius, "PRESET", "1gpu-8vcpu-32gb")
+    monkeypatch.setattr(nebius, "FALLBACK", "gpu-l40s-d/1gpu-16vcpu-96gb")
+    assert nebius.scene_platforms(tmp_path, 1)[0] == ("gpu-l40s-a", "1gpu-8vcpu-32gb")
+    big, small = ("gpu-l40s-d", "1gpu-16vcpu-96gb"), ("gpu-l40s-a", "1gpu-8vcpu-32gb")
+    assert nebius.scene_platforms(tmp_path, 2) == [big, small]
+    nebius.note_no_gpu(tmp_path, "gpu-l40s-d")  # no AMD machine lately: Intel first
+    assert nebius.scene_platforms(tmp_path, 3)[0] == ("gpu-l40s-a", "1gpu-8vcpu-32gb")
+
+
+def test_a_full_scene_gpu_sends_the_run_to_its_own_gpu(tmp_path, monkeypatch):
+    store = Store()
+    w = {"wid": "w1", "job_id": "aijob-warm", "started": time.time(), "parallel": 1}
+    assert warm.room(store, "cache", w) == 1  # starting: its places, as asked
+    warm.submit(store, "cache", "w1", {"id": "t1"})
+    assert warm.room(store, "cache", w) == 0  # one waiting takes the place
+    store.put("cache", warm.key("w1", "state.json"), json.dumps(
+        {"state": "ready", "t": time.time(), "running": ["t1"], "parallel": 3}).encode())
+    assert warm.room(store, "cache", w) == 2  # running, not counted twice
+    monkeypatch.setattr(nebius, "REGISTRY", "cr.example/abc")
+    monkeypatch.setattr(nebius, "IMAGE_TAG", "t1")
+    be = NebiusBackend(max_usd=10.0, cli=CLI(), store=store, poll_s=0)
+    (tmp_path / "warm").mkdir()
+    image = nebius.worker_runtime(True).image
+    warm.worker_file(tmp_path, "isaac").write_text(json.dumps({**w, "image": image, "kind": "isaac"}))
+    store.put("sim2chip-cache", warm.key("w1", "state.json"), json.dumps(
+        {"state": "ready", "t": time.time(), "running": ["t1"], "parallel": 1}).encode())
+    assert be.warm_for(Cache(tmp_path / "cache"), nebius.worker_runtime(True)) is None
+    store.put("sim2chip-cache", warm.key("w1", "state.json"), json.dumps(
+        {"state": "ready", "t": time.time(), "running": ["t1"], "parallel": 3}).encode())
+    assert be.warm_for(Cache(tmp_path / "cache"), nebius.worker_runtime(True)) is not None

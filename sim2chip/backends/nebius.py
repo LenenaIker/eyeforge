@@ -130,9 +130,8 @@ class NoGPU(RuntimeError):
     """Nebius found no machine for a job in PROVISION_S."""
 
 
-def platforms(home: Path | None) -> list[tuple[str, str]]:
-    """(platform, preset) to ask in turn: the ones that found no machine lately (home/logs/no_gpu.json) last."""
-    out = [(PLATFORM, PRESET)] + ([tuple(FALLBACK.split("/", 1))] if FALLBACK else [])
+def _sick_last(home: Path | None, out: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """out with the platforms that found no machine lately (home/logs/no_gpu.json) moved last."""
     try:
         sick = json.loads((home / "logs" / "no_gpu.json").read_text()) if home else {}
     except (OSError, ValueError):
@@ -140,11 +139,25 @@ def platforms(home: Path | None) -> list[tuple[str, str]]:
     return sorted(out, key=lambda pp: time.time() - sick.get(pp[0], 0) < NO_GPU_S)
 
 
-def scene_platforms(home: Path | None) -> list[tuple[str, str]]:
-    """Where the scene GPU (warm.py) is asked: SIM2CHIP_SCENE_GPU ("platform/preset") when set, else as any run."""
+def platforms(home: Path | None) -> list[tuple[str, str]]:
+    """(platform, preset) to ask in turn: the ones that found no machine lately last."""
+    return _sick_last(home, [(PLATFORM, PRESET)] + ([tuple(FALLBACK.split("/", 1))] if FALLBACK else []))
+
+
+# The scene GPU for several runs at once: three fit in its 96 GB (2026-10-14, 0.51 $ a run against 1.02 to 1.15 $
+# with one run per 32 GB machine). For one run alone it costs 17 % more than PLATFORM's 32 GB, which holds one.
+SCENE_BIG = config.env("SIM2CHIP_SCENE_BIG", "gpu-l40s-d/1gpu-16vcpu-96gb")
+
+
+def scene_platforms(home: Path | None, runs: int = 1) -> list[tuple[str, str]]:
+    """Where the scene GPU (warm.py) is asked, in turn: SIM2CHIP_SCENE_GPU ("platform/preset") when set; else, for
+    two runs or more, SCENE_BIG first; else as any run. Platforms that found no machine lately go last."""
     if (where := _env("SIM2CHIP_SCENE_GPU")):
         return [tuple(where.split("/", 1))]
-    return platforms(home)
+    if runs < 2 or not SCENE_BIG:
+        return platforms(home)
+    big = tuple(SCENE_BIG.split("/", 1))
+    return _sick_last(home, [big] + [pp for pp in platforms(home) if pp[0] != big[0]])
 
 
 def note_no_gpu(home: Path | None, platform: str) -> None:
@@ -743,7 +756,7 @@ class NebiusBackend:
 
     # Warm GPU (warm.py): one job kept up between runs; a run goes to it as a task when it is up.
 
-    def start_warm(self, home: Path, kind: str = "light") -> dict:
+    def start_warm(self, home: Path, kind: str = "light", runs: int = 1) -> dict:
         """Asks Nebius for the warm GPU of that kind (warm.KINDS) and notes it in its worker file. Its kits are
         checked first."""
         from .. import warm
@@ -759,7 +772,7 @@ class NebiusBackend:
         runtime = worker_runtime(kind == "isaac")
         isaac = runtime.python == RUNTIMES["isaac"].python
         script.write_text(warm_script(isaac))
-        where = scene_platforms(home)[0] if kind == "isaac" else platforms(home)[0]
+        where = scene_platforms(home, runs)[0] if kind == "isaac" else platforms(home)[0]
         hours = warm.HOURS if kind == "light" else WORKER_HOURS + 1  # a run that renders takes up to WORKER_HOURS
         parallel = warm.parallel_for(kind, where[1])
         env = {"S2C_CACHE_BUCKET": cache_bucket, "SIM2CHIP_REGION": REGION, "S2C_WARM_ID": wid,
@@ -787,8 +800,10 @@ class NebiusBackend:
             if w is None or runtime.image not in (worker_runtime(False).image, w.get("image")):
                 continue
             try:
+                bucket = f"{self.prefix}-cache"
                 if self.cli.job_state(w["job_id"]) not in TERMINAL and \
-                        warm.usable(self.store, f"{self.prefix}-cache", w["wid"], w.get("started")):
+                        warm.usable(self.store, bucket, w["wid"], w.get("started")) and \
+                        (kind != "isaac" or warm.room(self.store, bucket, w) > 0):
                     return w
             except Exception as e:  # the run starts its own GPU instead
                 print(f"  warm GPU not checked ({type(e).__name__}: {e})", flush=True)
