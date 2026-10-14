@@ -235,6 +235,8 @@ def vegetation(args, scene, arr, up, floor):
     for Isaac. Returns the scene's new env entries."""
     import veg_catalog
     picks = json.load(open(args.vegetation))['assets']
+    if not picks:  # a place built before the NVIDIA trees (place.py writes no picks and no masks for it)
+        return []
     vz = np.load(os.path.join(os.path.dirname(args.vegetation), 'vegetation.npz'))
     dp = np.load(os.path.join(args.scene, 'depth_background.npz'))
     from section_fill import pose
