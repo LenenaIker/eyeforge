@@ -174,6 +174,9 @@ def main():
     ap.add_argument('--far-mode', choices=['box', 'drop'], default='box',
                     help='box: a box with a tiny picture of it; drop: left to the HDRI')
     ap.add_argument('--far-px', type=int, default=24, help='box picture size, pixels along the longer edge')
+    ap.add_argument('--veg-dir', default=None, help="veg_catalog.py's NVIDIA vegetation: the photo's street bands "
+                    "(<photo-scene>/section.json) planted again along every corner's curbs")
+    ap.add_argument('--plant-reach', type=float, default=30.0, help='metres along each curb the bands are planted')
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
     src = os.path.join(args.scene, 'isaac')
@@ -183,6 +186,12 @@ def main():
     up /= np.linalg.norm(up)
     drop = {int(i) for i in args.drop.split(',') if i}
     names = {e['index']: e['name'] for e in scene.get('env', [])}
+    sec_path = os.path.join(args.photo_scene, 'section.json')
+    section = json.load(open(sec_path)) if args.veg_dir and os.path.exists(sec_path) else None
+    if section:
+        # env_add.py's filled plants were laid along the photo's road: copied with the block they stood in the
+        # template's roads, trunks in front of nearly every view (terrace, 2026-10-14). Planted again below.
+        drop |= {e['index'] for e in scene['env'] if e.get('filled')}
 
     # Grid axes: b into the block (against the facade's normal), a along the facade, to the photo's right.
     walls = json.load(open(os.path.join(args.photo_scene, 'pieces.json')))['walls']
@@ -260,6 +269,9 @@ def main():
                 out_arr.update({f'obj{objects}_{key}': v for key, v in photo.items()})
             objects += 1
 
+    if section:
+        objects = plant(args, section, out_arr, objects, up, a, b, centre, level)
+
     # Ground: the road under everything, per corner a sidewalk with the photo's material and its two curb faces.
     floor = next((p for p in scene['pieces'] if p['texture'] and p['texture'].endswith('tex_floor.png')), None)
     size = json.load(open(os.path.join(args.photo_scene, 'pieces.json')))['materials']['floor']['size_m']
@@ -327,6 +339,48 @@ def main():
     print(json.dumps({'corner_ab': [round(a0, 2), round(b0, 2)], 'meshes': objects, 'boxes_and_facades': len(boxes),
                       'views': len(views),
                       'pieces': len(pieces)}))
+
+
+def plant(args, section, out_arr, objects, up, a, b, centre, level):
+    """The photo's street bands (flow_section.py) planted along both curbs of every corner by section_fill.fill,
+    as env_add.py does along the photo's road: the bands on the block's side of that road, measured from the
+    template's curb instead, off the block's meshes and the plants already set. Returns the new object count."""
+    import section_fill
+    # The block's side of the photo's road: the side of its buildings, else the side the block's meshes are on.
+    built = [x['side'] for x in section['bands'] if x['kind'] == 'building']
+    if built:
+        mine = built[0]
+    else:
+        mid = np.concatenate([out_arr[f'obj{i}_points'] for i in range(objects)]).mean(0) if objects else centre
+        mine = 1 if (mid - np.asarray(section['road']['centre'], float)) @ np.asarray(section['road']['across']) >= 0 \
+            else -1
+    if section_fill.curb_section(section, mine, centre, a, b, 1.0) is None:
+        return objects
+    avoid = [out_arr[f'obj{i}_points'][:: max(1, len(out_arr[f'obj{i}_points']) // 400)] for i in range(objects)]
+    floor = lambda X: np.full(len(np.atleast_2d(X)), level)  # noqa: E731
+    half = args.road / 2
+    n0 = objects
+    for k in range(4):
+        r = np.asarray(_axis_rotation(up, k * math.pi / 2))
+        ka, kb = r @ a, r @ b
+        for e, (along, into) in enumerate(((ka, kb), (kb, ka))):
+            sec = section_fill.curb_section(section, mine, centre, along, into, half)
+            got, _ = section_fill.fill(sec, up, floor, (half + 1.0, half + args.plant_reach), args.veg_dir,
+                                       seed=100 * args.seed + 10 * k + e,
+                                       avoid=np.concatenate(avoid) if avoid else ())
+            for o in got:
+                m, z = o['place'], o['proxy']
+                pts = (z['points'] @ m[:3, :3].T + m[:3, 3]).astype(np.float32)
+                out_arr[f'obj{objects}_points'] = pts
+                out_arr[f'obj{objects}_faces'] = z['faces'].astype(np.int32)
+                out_arr[f'obj{objects}_colors'] = z['colors'].astype(np.float32)
+                out_arr[f'obj{objects}_usd'] = np.array(o['url'])
+                out_arr[f'obj{objects}_usd_pose'] = (m @ z['to_proxy']).astype(np.float64)
+                hgt = pts @ up
+                avoid.append(pts[hgt < hgt.min() + 1.0][:: 50])  # its trunk: the next curb's plants keep off it
+                objects += 1
+    print(f"planted {objects - n0} plants along the curbs from the photo's side {mine} of its road")
+    return objects
 
 
 def _axis_rotation(axis, angle):

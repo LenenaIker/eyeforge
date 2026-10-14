@@ -262,3 +262,27 @@ def test_trees_and_shrubs_go_to_nvidia_assets_hedges_stay_with_sam3d():
     assert group_of("tree") == group_of("tall pine trees") == "tree"
     assert group_of("bush") == group_of("shrubs") == "shrub"
     assert group_of("hedge") is None and group_of("house") is None and group_of("low stone wall") is None
+
+
+def test_the_corner_template_plants_the_photo_bands_off_its_roads():
+    """crossroad.py plants the photo's street bands again from its own curbs (section_fill.curb_section): only the
+    plant bands on the block's side of the photo's road, starting past the template's curb, never on its road.
+    Copied with the block, the trees across the photo's road stood in the template's roads (terrace, 2026-10-14)."""
+    import sys
+    import numpy as np
+    sys.path.insert(0, str(STEPS))
+    import section_fill
+    section = {"road": {"centre": [5, 0, 5], "along": [0, 0, 1], "across": [1, 0, 0], "half": [2.5, 2.5]},
+               "bands": [{"kind": "sidewalk", "side": 1, "from_m": 0, "to_m": 2},
+                         {"kind": "building", "side": 1, "from_m": 2, "to_m": 9},
+                         {"kind": "tree", "side": 1, "from_m": 20, "to_m": 28},
+                         {"kind": "tree", "side": -1, "from_m": 0.1, "to_m": 0.4}]}
+    up, a, b, centre = np.array([0, 1.0, 0]), np.array([1.0, 0, 0]), np.array([0, 0, 1.0]), np.zeros(3)
+    sec = section_fill.curb_section(section, 1, centre, a, b, 3.5)
+    assert [(x["kind"], x["side"], x["from_m"]) for x in sec["bands"]] == [("tree", 1, 20)]
+    edge, at = section_fill.frame(sec, up, lambda X: np.zeros(len(np.atleast_2d(X))))
+    lo, hi = section_fill.band_span(sec["bands"][0], edge)
+    for u in (lo, hi):
+        p = at(u, 4.5)
+        assert p @ b >= 3.5 + 20 and p @ a > 3.5  # in the block's quadrant, past both roads
+    assert section_fill.curb_section({**section, "bands": section["bands"][:2]}, 1, centre, a, b, 3.5) is None

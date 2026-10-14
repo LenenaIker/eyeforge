@@ -88,6 +88,18 @@ def frame(section, up, floor):
     return edge, at
 
 
+def curb_section(section, side, centre, along, into, half):
+    """The section's plant bands on one side of the photo's road, measured instead from a template's curb: a road
+    of half width `half` with its centre line through `centre` along `along`, the bands on its `into` side. None
+    without such bands."""
+    bands = [{**x, 'side': 1} for x in section['bands'] if x['side'] == side and x['kind'] in GROUP]
+    if not bands:
+        return None
+    road = {**section['road'], 'centre': list(map(float, centre)), 'along': list(map(float, along)),
+            'across': list(map(float, into)), 'half': [half, half]}
+    return {**section, 'bands': bands, 'road': road}
+
+
 def band_span(band, edge):
     """A band's inner and outer distance from the road's centre line."""
     lo = edge[band['side']] + max(band['from_m'], 0.0)

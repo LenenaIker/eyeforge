@@ -317,7 +317,7 @@ def extend(flow: Flow, r: dict):
     t = r["template"]
     args = ["--scene", d / "place", "--out", d / "extended", "--views", EXTEND_VIEWS]
     if t == "crossroads":
-        args += ["--photo-scene", d, "--no-objects"]
+        args += ["--photo-scene", d, "--no-objects", "--veg-dir", vegetation_dir(d)]
     elif t == "straight_street":
         args += ["--photo-scene", d]
     flow.run("3.2_extend", "mesh", TEMPLATES[t], args, ["extended/isaac/scene.json"])
