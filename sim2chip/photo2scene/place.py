@@ -31,6 +31,7 @@ MAX_DE = 35  # mean colour difference (delta E) to the photo above which the pla
 COMPOSED = ("populated",)
 
 
+GATE_ROUNDS = 3  # builds of the place at most, each without the meshes the gates failed
 GREEN_COVER = 0.25  # trees and shrubs over this share of the photo: the green skies (Poly Haven parks and lanes)
 
 
@@ -235,7 +236,9 @@ def imitate(flow: Flow, r: dict, keep: list[int]):
                 # compose() reads the route again from disk: it must render under the same skies.
                 (d / "route.json").write_text(json.dumps({**flow.json("route.json"), "hdri_group": "green"}, indent=1))
     # 2.2 The surroundings meshes into the place, then the geometric gates; a mesh that fails is dropped once.
-    for attempt in range(2):
+    # A mesh that fails is dropped and the place is built again without it, up to GATE_ROUNDS times: a stone wall that
+    # failed only once the houses beside it were dropped threw away roads photo 21's whole street (2026-10-14).
+    for attempt in range(GATE_ROUNDS):
         flow.run(f"2.2a_env_{attempt}", "mesh", "env_add.py",
                  ["--env", d / "meshes", "--scene", d, "--out", d / "place", "--fill-ground", "--photo-texture",
                   "--keep", ",".join(map(str, keep)), "--vegetation", d / "vegetation.json",
@@ -244,7 +247,7 @@ def imitate(flow: Flow, r: dict, keep: list[int]):
         flow.run(f"2.2b_gates_{attempt}", "mesh", "flow_gates.py", ["--dir", d], ["gates.json"])
         g = flow.json("gates.json")
         drop = [i for i in g["drop"] if i in keep]
-        if not drop or attempt == 1:
+        if not drop or attempt == GATE_ROUNDS - 1:
             break
         keep = [i for i in keep if i not in drop]
         flow.log(f"  the gates dropped meshes {drop}")
