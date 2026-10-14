@@ -81,6 +81,9 @@ def main():
         masks[kind] = np.any(inst, 0) if inst else np.zeros((h, w), bool)
     del model
     torch.cuda.empty_cache()
+    # The photo's plants, before any kind claims their pixels: env_add.py leaves out a filled plant the photo's
+    # camera sees where the photo shows none (a tree right in front of the camera, roads photo 3, 2026-10-14).
+    np.savez_compressed(os.path.join(d, 'plants.npz'), mask=masks['tree'] | masks['hedge'] | masks['shrub'])
     claimed = np.zeros((h, w), bool)
     for kind in KINDS:  # one kind per pixel, in KINDS' order
         masks[kind] = masks[kind] & ~claimed

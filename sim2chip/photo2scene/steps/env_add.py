@@ -425,6 +425,35 @@ def lots(args, scene, arr, up, floor, high):
     return out
 
 
+def off_photo_plants(args, scene, arr, fixed, objects, min_show=0.003, min_on=0.5):
+    """The filled plants without those the photo's camera sees (at least min_show of the picture) mostly where the
+    photo shows no plant (under min_on of their pixels on flow_section.py's plants.npz): the photo is the truth for
+    what it sees. A row laid along the camera's own path put a tree in front of it, 8 to 12 % of the picture with
+    18 to 34 % on plants, against 74 to 78 % for the photo's own tree (roads photo 3, 2026-10-14)."""
+    from flow_gates import render
+    path = os.path.join(os.path.dirname(args.section), 'plants.npz')
+    if not objects or not os.path.exists(path):
+        return objects
+    plants = np.load(path)['mask']
+    w, h = scene['size']
+    items = fixed + [(o['proxy']['points'] @ o['place'][:3, :3].T + o['place'][:3, 3], o['proxy']['faces'])
+                     for o in objects]
+    _, ids = render(scene, arr, items, w, h)
+    if plants.shape != ids.shape:
+        return objects
+    keep = []
+    for k, o in enumerate(objects):
+        sil = ids == len(fixed) + k + 1
+        n = int(sil.sum())
+        on = (sil & plants).sum() / max(n, 1)
+        if n >= min_show * sil.size and on < min_on:
+            print(f"left out a {o['band']} ({o['name']}): {n / sil.size:.1%} of the photo, {on:.0%} on its plants",
+                  flush=True)
+        else:
+            keep.append(o)
+    return keep
+
+
 def bands(args, scene, arr, up, floor, rounds=6, tolerance=0.15):
     """flow_section.py's bands filled over the street the photo sees (section_fill.py): a front row of trees at the
     photo's height and spacing, a back row taller and leaning over the road, hedges and shrubs, kept off the
@@ -474,6 +503,7 @@ def bands(args, scene, arr, up, floor, rounds=6, tolerance=0.15):
             look['tilt'] = float(np.clip(look['tilt'] + (3.0 if off['tree_top'] < 1 else -3.0), 0.0, 12.0))
         if 'shrub' in off:
             look['shrub'] = float(np.clip(look['shrub'] / max(off['shrub'], 1e-3), 0.3, 3.0))
+    objects = off_photo_plants(args, scene, arr, fixed, objects)
     scene['pieces'] += strips
     out = []
     for k, o in enumerate(objects):
