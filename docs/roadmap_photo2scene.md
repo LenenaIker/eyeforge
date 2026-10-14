@@ -267,6 +267,11 @@ Los árboles y arbustos salen de SAM 3D como bloques verdes y el filtro de parec
   - Banco de pruebas: escenas que ya tenemos con veredicto conocido (roads foto 3 antes y después del arreglo de árboles, `p2s_test/var3` y `par/`; la esquina de la foto 24; las 13 vistas de calle que el filtro rechazó en `roads_cars_nb2`; vistas buenas de botellas y HOPE) más la revisión a ojo del usuario como verdad.
   - Medir: acuerdo con el ojo del usuario, estabilidad entre ejecuciones (mismas preguntas varias veces), tiempo y coste por escena, frente a Qwen3.8-27B.
   - Se adopta solo si no empeora (regla de los patrocinadores) y con hoja de comparación para el usuario. Suma además como uso de un modelo de NVIDIA en la entrega.
+  - Medido (2026-10-14, banco `cosmos/bench.py` del scratchpad; resultados en `runs/p2s_test/cosmos_j1/`): 27 casos de fase 2 y 162 vistas, mismas preguntas más una nota de 1 a 5.
+    - Qwen3.8-27B: aprueba los 27 casos (la hilera sin casa incluida); en 3 pasadas cambia el veredicto en 2 de 27 casos y en el 15 % de las vistas. ~350 mil tokens de salida por pasada (~1,2 $), 7,5 s por llamada.
+    - Cosmos-Reason2-8B (local, 3090): aprueba los 27, nota casi siempre 5, rechaza la mitad de las vistas por "no parece una calle". Descartado.
+    - Cosmos3-Super-Reasoner (endpoint dedicado, 2 H100): rechaza 8 de 27 (hilera sin casa, calles con coches, foto 21 de roads) por horizonte y suelo; ~10 mil tokens de salida en total, 2 s por llamada, 63 s el banco entero. Solo existe como dedicado; pedido el endpoint público a Nebius.
+    - Falta la verdad: hoja ciega `compare/J1_cosmos/etiquetar.html` para el usuario.
 
 ## Fase G: cierre
 
