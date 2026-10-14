@@ -35,7 +35,14 @@ def main():
     scene = json.load(open(os.path.join(src, 'scene.json')))
     arr = np.load(os.path.join(src, 'meshes.npz'))
     w, h = scene['size']
-    _, ids = render(scene, arr, items_of(scene, arr)[0], w, h)
+    items, labels = items_of(scene, arr)
+    _, ids = render(scene, arr, items, w, h)
+    # All the vegetation is one part of the score: by object, the 24 NVIDIA trees of a leafy avenue outvoted its
+    # road, and their dark materials chose a strong sun that burnt the road white (roads photo 29, 2026-10-14).
+    veg = {e['index'] for e in scene.get('env', []) if e.get('vegetation')}
+    group = np.arange(len(items) + 1)
+    group[[k + 1 for k, (kind, i, _) in enumerate(labels) if kind == 'object' and i in veg]] = len(items) + 1
+    ids = np.where(ids > 0, group[np.clip(ids, 0, len(items))], 0)
     erased = np.asarray(Image.open(os.path.join(d, 'erased.png')).resize((w, h))) > 0
     grid = np.zeros((h, w), bool)
     grid[STEP // 2::STEP, STEP // 2::STEP] = True

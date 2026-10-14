@@ -252,6 +252,9 @@ def like_photos(ctx: Context, out, labels: list[dict]) -> list[dict]:
     from .ingest import train_photos
     if not labels:
         return labels
+    if os.environ.get("SIM2CHIP_LIKENESS") == "0":  # to measure what the frames do without it (roadmap V.6)
+        ctx.log(f"likeness filter off (SIM2CHIP_LIKENESS=0): all {len(labels)} synthetic frames go in")
+        return labels
     real = train_photos(ctx)
     if len(real) < 2:
         ctx.log(f"only {len(real)} training photos to compare with: every synthetic frame goes in")

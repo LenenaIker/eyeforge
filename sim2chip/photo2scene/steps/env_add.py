@@ -379,7 +379,7 @@ def lots(args, scene, arr, up, floor, high):
     fronts = [w[1] for i in high.values() if (w := in_front(*[footprint(i)[k] for k in (1, 2, 4, 5)]))]
     shared = max(set(fronts), key=fronts.count) if fronts else None
     tiles = {w: t for w in dict.fromkeys(fronts)
-             if (t := wall_tile(arr, w, up, os.path.join(args.out, 'isaac', f'tex_wall{w}.png')))}
+             if (t := wall_tile(arr, w, up, os.path.join(args.out, 'isaac', f'tex_lot_wall{w}.png')))}
     for name, i in high.items():
         top, side, inner, outer, v0, v1 = footprint(i)
         front, wall = inner - 0.5, shared
