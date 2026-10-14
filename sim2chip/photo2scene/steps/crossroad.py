@@ -93,6 +93,8 @@ def rebrick(colours, brick):
         return colours
     hsv = np.array([colorsys.rgb_to_hsv(*c) for c in colours])
     sel = (hsv[:, 1] > 0.12) & ((hsv[:, 0] < 0.17) | (hsv[:, 0] > 0.95))
+    if not sel.any():  # no brick-coloured vertex (terrace_row, 2026-10-14: the assignment below failed)
+        return colours
     if hue is not None:
         hsv[sel, 0] = hue
     hsv[sel, 1] = np.clip(hsv[sel, 1] * ks, 0, 1)
