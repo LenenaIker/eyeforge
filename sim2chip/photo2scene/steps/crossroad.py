@@ -27,6 +27,8 @@ import trimesh
 from PIL import Image
 from scipy.spatial import cKDTree
 
+import section_fill
+
 # Bricks for the copies: (hue or None to keep it, saturation factor, value factor). The first keeps the photo's.
 BRICKS = [(None, 1.0, 1.0), (0.02, 1.8, 0.75), (0.06, 1.3, 0.55), (None, 0.15, 1.25),
           (0.04, 1.5, 0.9), (0.09, 0.6, 0.8)]
@@ -260,19 +262,27 @@ def main():
     floor = next((p for p in scene['pieces'] if p['texture'] and p['texture'].endswith('tex_floor.png')), None)
     size = json.load(open(os.path.join(args.photo_scene, 'pieces.json')))['materials']['floor']['size_m']
     big = args.reach + args.road
+    # The photo's light on its ground (flow_photometry.py baked_gain), as in street_template.py: without it the
+    # road and sidewalks burn white under a strong sun.
+    gp = next((p for p in scene['pieces'] if p.get('ground_photo')), None)
+    lit = np.asarray((gp or {}).get('baked_gain') or [1.0, 1.0, 1.0], float)
+    lit_colour = lambda c: section_fill.to_srgb(section_fill.to_linear(c) * lit).tolist()  # noqa: E731
+    floor_tex = floor and floor['texture'] and (
+        section_fill.tinted(floor['texture'], lit, 'lit_' + '_'.join(f'{x:.3f}' for x in lit)) if np.any(lit != 1)
+        else floor['texture'])
     pieces = [quad([centre + s * big * a + t * big * b for s, t in ((-1, -1), (1, -1), (1, 1), (-1, 1))],
-                   colour=ASPHALT)] + boxes
+                   colour=lit_colour(ASPHALT))] + boxes
     for k in range(4):
         r = np.asarray(_axis_rotation(up, k * math.pi / 2))
         ka, kb = r @ a, r @ b
         c0 = centre + args.road / 2 * (ka + kb) + args.curb * up
         side = [c0, c0 + args.reach * ka, c0 + args.reach * (ka + kb), c0 + args.reach * kb]
         uv = [[0, 0], [args.reach / size[0], 0], [args.reach / size[0], args.reach / size[1]], [0, args.reach / size[1]]]
-        pieces.append(quad(side, uv, floor['texture'] if floor else None, floor['colour'] if floor else [0.5] * 3))
+        pieces.append(quad(side, uv, floor_tex or None, lit_colour(floor['colour'] if floor else [0.5] * 3)))
         pieces[-1]['gain'] = (floor or {}).get('gain')  # the photometry gain of the photo's ground
         for e in (ka, kb):
             pieces.append(quad([c0, c0 + args.reach * e, c0 + args.reach * e - args.curb * up, c0 - args.curb * up],
-                               colour=[0.55, 0.54, 0.52]))
+                               colour=lit_colour([0.55, 0.54, 0.52])))
 
     # Views: the photo's camera, then cameras on the roads (or by the curbs) looking any way, and one from above.
     views = [{'pose': np.eye(4).tolist(), 'objects': [], 'lamp': None}]

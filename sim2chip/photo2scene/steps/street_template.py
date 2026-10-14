@@ -216,7 +216,7 @@ def main():
                 k = 2 * span / section_fill.TILE_M, (args.reach - walk) / section_fill.TILE_M
                 pieces[-1].update(texture=tex, uv=[[0, 0], [k[0], 0], [k[0], k[1]], [0, k[1]]])
         pieces.append(quad([c0 - span * a, c0 + span * a, c0 + span * a - args.curb * up,
-                            c0 - span * a - args.curb * up], colour=[0.55, 0.54, 0.52]))
+                            c0 - span * a - args.curb * up], colour=lit_colour([0.55, 0.54, 0.52])))
     # The photo's own ground seen from above (piece_build.ground_photo) where the photo stands: its side lane and
     # its cracks. The template's ground is level and the road a curb lower: lifted to stay over both.
     for p in scene['pieces']:
