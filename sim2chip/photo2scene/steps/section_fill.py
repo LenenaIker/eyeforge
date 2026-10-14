@@ -25,21 +25,26 @@ def to_srgb(c):
     return np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)
 
 
+def tinted(path, gain, tag):
+    """A copy of the texture at path times gain in linear light, saved next to it under tag (Isaac caches textures
+    by path, so each gain needs its own name)."""
+    out = path.rsplit('.', 1)[0] + '_' + tag + '.jpg'
+    if not os.path.exists(out):
+        im = to_linear(np.asarray(Image.open(path).convert('RGB'), float) / 255)
+        Image.fromarray((to_srgb(im * np.asarray(gain)) * 255).round().astype(np.uint8)).save(out, quality=92)
+    return out
+
+
 def ground_texture(section, kind, colour):
     """A copy of the band kind's texture in section['textures'] (place.ground_textures) tinted so its mean is the
     band's colour (0-1 sRGB): it keeps its grain and takes the photo's tone. Baked in, since RTX ignores a
-    texture's scale (flow_photometry.py), and named by the colour, since Isaac caches textures by path. None
-    without a texture."""
+    texture's scale (flow_photometry.py). None without a texture."""
     path = (section.get('textures') or {}).get(kind)
     if not path:
         return None
     rgb = np.asarray(np.clip(colour, 0, 1), float)
-    out = path.rsplit('.', 1)[0] + '_' + ''.join(f'{int(round(x * 255)):02x}' for x in rgb) + '.jpg'
-    if not os.path.exists(out):
-        im = to_linear(np.asarray(Image.open(path).convert('RGB'), float) / 255)
-        gain = to_linear(rgb) / np.maximum(im.reshape(-1, 3).mean(0), 1e-3)
-        Image.fromarray((to_srgb(im * gain) * 255).round().astype(np.uint8)).save(out, quality=92)
-    return out
+    mean = to_linear(np.asarray(Image.open(path).convert('RGB').resize((64, 64)), float) / 255).reshape(-1, 3).mean(0)
+    return tinted(path, to_linear(rgb) / np.maximum(mean, 1e-3), ''.join(f'{int(round(x * 255)):02x}' for x in rgb))
 
 
 def pose(base, height, proxy, up, yaw, lean=None):

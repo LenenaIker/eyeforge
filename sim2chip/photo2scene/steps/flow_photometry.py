@@ -253,7 +253,9 @@ def apply(d, report, args, samples):
             # A new name per gain: Isaac caches textures by path, and one file rewritten each round rendered stale.
             path = orig.replace('.png', '_gain_' + '_'.join(f'{x:.3f}' for x in g) + '.png')
             Image.fromarray(baked).save(path)
-            pc.update({'texture_orig': orig, 'texture': path, 'gain': [1.0, 1.0, 1.0]})
+            # baked_gain: the templates light their own road and sidewalks with it (street_template.py).
+            pc.update({'texture_orig': orig, 'texture': path, 'gain': [1.0, 1.0, 1.0],
+                       'baked_gain': [float(x) for x in g]})
         elif o['kind'] == 'piece':
             scene['pieces'][o['index']]['gain'] = applied[key]
         else:

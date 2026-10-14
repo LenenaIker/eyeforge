@@ -175,7 +175,14 @@ def main():
     half = width / 2
     road_pts = [centre + x * span * a + y * (half + args.reach) * b - args.curb * up
                 for x, y in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
-    pieces = [quad(road_pts, colour=ASPHALT)] + facade_quads
+    # The photo's light on its ground (flow_photometry.py baked it into the photo's own ground): the template's
+    # road, sidewalks and land take it too. Without it a sunlit road came out white past the photo's own patch
+    # (roads photo 12, 2026-10-14).
+    gp = next((p for p in scene['pieces'] if p.get('ground_photo')), None)
+    lit = np.asarray((gp or {}).get('baked_gain') or [1.0, 1.0, 1.0], float)
+    lit_colour = lambda c: section_fill.to_srgb(section_fill.to_linear(c) * lit).tolist()  # noqa: E731
+    lit_tag = 'lit_' + '_'.join(f'{x:.3f}' for x in lit)
+    pieces = [quad(road_pts, colour=lit_colour(ASPHALT))] + facade_quads
     size = json.load(open(os.path.join(args.photo_scene, 'pieces.json')))['materials']['floor'].get('size_m', [1, 1])
     sec_path = os.path.join(args.photo_scene, 'section.json')
     section = json.load(open(sec_path)) if os.path.exists(sec_path) else None
@@ -194,14 +201,17 @@ def main():
             land = (np.mean([x['colour'] for x in outer], 0) / 255 * 0.8).tolist() if outer else [0.32, 0.36, 0.24]
         side = [c0 - span * a, c0 + span * a, c0 + span * a + s * walk * b, c0 - span * a + s * walk * b]
         uv = [[0, 0], [2 * span / size[0], 0], [2 * span / size[0], walk / size[1]], [0, walk / size[1]]]
-        pieces.append(quad(side, uv, floor['texture'], floor['colour']))
+        tex = floor['texture'] and (section_fill.tinted(floor['texture'], lit, lit_tag) if np.any(lit != 1)
+                                    else floor['texture'])
+        pieces.append(quad(side, uv, tex, lit_colour(floor['colour'])))
         pieces[-1]['gain'] = floor.get('gain')  # the photometry gain of the photo's ground
         if land is not None:
             c1 = c0 + s * walk * b
             pieces.append(quad([c1 - span * a, c1 + span * a, c1 + span * a + s * (args.reach - walk) * b,
                                 c1 - span * a + s * (args.reach - walk) * b], colour=land))
             # The land past the sidewalk is the photo's grass when it has some: textured, not a flat green.
-            tex = section_fill.ground_texture(section, 'grass', land)
+            pieces[-1]['colour'] = lit_colour(land)
+            tex = section_fill.ground_texture(section, 'grass', lit_colour(land))
             if tex:
                 k = 2 * span / section_fill.TILE_M, (args.reach - walk) / section_fill.TILE_M
                 pieces[-1].update(texture=tex, uv=[[0, 0], [k[0], 0], [k[0], k[1]], [0, k[1]]])
@@ -215,8 +225,10 @@ def main():
             pieces.append({**p, 'points': (q + (level + 0.06 - q @ up)[:, None] * up).tolist()})
     # The photo's street bands (flow_section.py): its asphalt's colour, grass and sidewalk strips the whole length.
     if section:
-        pieces[0]['colour'] = [x / 255 for x in section['road']['colour']]
-        pieces += section_fill.strips(section, up, lambda X: np.full(len(np.atleast_2d(X)), level), (-span, span))
+        pieces[0]['colour'] = lit_colour([x / 255 for x in section['road']['colour']])
+        lit_band = lambda x: {**x, 'colour': [v * 255 for v in lit_colour([c / 255 for c in x['colour']])]}  # noqa
+        lit_section = {**section, 'bands': [lit_band(x) for x in section['bands']]}
+        pieces += section_fill.strips(lit_section, up, lambda X: np.full(len(np.atleast_2d(X)), level), (-span, span))
 
     # Views: the photo's camera, then cameras over the road and sidewalks looking along the street or at a side.
     def quad_points(fp, n=300):
