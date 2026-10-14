@@ -402,3 +402,20 @@ def test_the_server_asks_for_the_scene_gpu_when_a_run_renders(tmp_path, monkeypa
         monkeypatch.setattr(jobs, "_renders", lambda job, request, start, r=renders: r)
         jobs.start(job, tmp_path / "request.json")
     assert Scenes.asked == ["j"]
+
+
+def test_a_warm_gpu_that_goes_silent_is_cancelled(tmp_path, monkeypatch):
+    # 2026-10-14: two scene builds filled 32 GB of RAM, the GPU stopped beating and its job billed on.
+    store = Store()
+    run_setup(tmp_path, monkeypatch, store)
+    be = NebiusBackend(max_usd=10.0, cli=CLI(), store=store, poll_s=0)
+    gpu = warm.WarmGPU(tmp_path, backend=be, log=lambda line: None)
+    w = warm.current(tmp_path)
+    beat = lambda t: store.put("sim2chip-cache", warm.key("w1", "state.json"),  # noqa: E731
+                               json.dumps({"state": "ready", "t": t}).encode())
+    beat(time.time() - warm.STALE_S - 1)  # late, not yet given up
+    assert not gpu.silent(w)
+    beat(time.time() - warm.SILENT_S - 1)
+    assert gpu.silent(w)
+    gpu.give_up(w)
+    assert be.cli.cancelled == ["aijob-warm"] and warm.current(tmp_path) is None

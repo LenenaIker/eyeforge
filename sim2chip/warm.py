@@ -53,6 +53,9 @@ KINDS = ("light", "isaac")
 RUN_RAM_GB = float(config.env("SIM2CHIP_RUN_RAM_GB", "30"))
 POLL_S = 3        # how often the GPU and a waiting run look at the bucket
 STALE_S = 120     # a heartbeat older than this: the GPU is gone or stuck, runs go elsewhere
+# Silent this long, its job still running: stuck (two scene builds in 32 GB of RAM, 2026-10-14, its tasks lost and
+# the job billing on towards its timeout). It is cancelled.
+SILENT_S = float(config.env("SIM2CHIP_WARM_SILENT_S", "300"))
 PICK_S = 180      # a task the GPU has not started by then, while it says ready, goes elsewhere
 # A GPU with no heartbeat this long after it was asked for never came up (2026-10-13: Nebius kept the job in
 # PROVISIONING, its instance FAILED, for over 12 min): it is given up, and its tasks go elsewhere. A start-up
@@ -328,9 +331,18 @@ class WarmGPU:
             f.write(json.dumps(rec) + "\n")
         worker_file(self.home, self.kind).unlink(missing_ok=True)
 
+    def silent(self, w: dict) -> bool:
+        """Up once, and no heartbeat for SILENT_S: stuck."""
+        hb = heartbeat(self.backend.store, self._bucket(), w["wid"])
+        return hb is not None and hb.get("state") != "stopped" and time.time() - hb.get("t", 0) > SILENT_S
+
     def give_up(self, w: dict) -> None:
-        """Forget this GPU; one that never came up is cancelled, or Nebius would bill it once it does."""
-        if heartbeat(self.backend.store, self._bucket(), w["wid"]) is None:
+        """Forget this GPU; one that never came up is cancelled, or Nebius would bill it once it does, and so is
+        one that went silent."""
+        if self.silent(w):
+            self.log(f"warm GPU {w['job_id']} silent for {SILENT_S / 60:.0f} min: cancelled")
+            self.backend.cli.cancel(w["job_id"])
+        elif heartbeat(self.backend.store, self._bucket(), w["wid"]) is None:
             from .backends.nebius import PLATFORM, note_no_gpu
             self.log(f"warm GPU {w['job_id']} not up after {(time.time() - w['started']) / 60:.0f} min: cancelled")
             self.backend.cli.cancel(w["job_id"])
@@ -350,8 +362,9 @@ class WarmGPU:
                 try:
                     with self._lock:
                         w = self._alive()
-                        if w is not None and not usable(self.backend.store, self._bucket(), w["wid"], w.get("started")) \
-                                and heartbeat(self.backend.store, self._bucket(), w["wid"]) is None:
+                        if w is not None and (self.silent(w) or not usable(
+                                self.backend.store, self._bucket(), w["wid"], w.get("started"))
+                                and heartbeat(self.backend.store, self._bucket(), w["wid"]) is None):
                             self.give_up(w)
                             w = None
                         if w is None:
