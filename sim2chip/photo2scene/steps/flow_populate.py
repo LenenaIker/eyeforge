@@ -33,6 +33,9 @@ import trimesh
 from env_add import simplify
 
 CV2GL = np.diag([1.0, -1.0, -1.0, 1.0])
+# A thing stands on another only with a footprint this share of the other's at most (a cup on a box): cars came
+# out stacked two and three high on the roads photos' streets (2026-10-13).
+STACK_SHARE = 0.25
 
 
 def frame(up):
@@ -219,6 +222,7 @@ def main():
             order = rng.permutation(len(assets))[:want]
         placed, why = [], Counter()
         heights = hm.h.copy()
+        below = np.full(heights.shape, np.inf)  # footprint area (m2) of the asset each cell's top belongs to
         # Candidate cells: surface the camera sees, in the frame and not too close.
         valid = np.argwhere(np.isfinite(heights))
         pts = hm.world(valid[:, 0], valid[:, 1], heights[valid[:, 0], valid[:, 1]])
@@ -250,6 +254,9 @@ def main():
                 if not np.all(np.isfinite(under)) or np.ptp(under) > args.flat:
                     why['not flat'] += 1
                     continue
+                if wd * dp > STACK_SHARE * below[cells].min():
+                    why['too big to stand on another'] += 1
+                    continue
                 base = hm.world(r, c, base_h)
                 # Seen by this camera: the middle of the asset in the image, in front of what the place shows.
                 mid = np.linalg.inv(pose_cv) @ np.append(base + up * ht / 2, 1)
@@ -273,6 +280,7 @@ def main():
                 t[:3, 3] = base
                 placed.append([n_place + int(k), t.tolist()])
                 heights[cells] = base_h + ht  # the next one may stand on it, never inside it
+                below[cells] = wd * dp
                 break
         view['objects'] = list(view['objects']) + placed
         report.append({'view': vi, 'asked': want, 'placed': [assets[i - n_place]['name'] for i, _ in placed],
