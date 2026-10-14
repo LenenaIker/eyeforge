@@ -124,7 +124,7 @@ PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets", "scene_pl
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,
                launcher=None, public: bool = False, key: str | None = None, max_runs: int = 2,
                daily_usd: float | None = None, auth=None, accounts=None, contact: str | None = None, warm=None,
-               describer=None, payments=None):
+               describer=None, payments=None, scenes=None):
     """public: a server others can reach. Specs may only use photos uploaded through it (no server paths),
     at most `max_runs` runs at a time, and, with `key`, the API needs it (a link with ?key=... or POST /api/key
     sets a cookie); the pages and the app's files stay open, so anyone sees the landing and the app asks for the
@@ -134,7 +134,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     belong to the account (so they follow it to the phone), and interviews and runs are paid with credits,
     free for judges (docs/plan_login.md). contact: the address judges write to for free access.
     warm (warm.WarmGPU): a cloud GPU asked for when a user uploads photos and kept while they check the teacher,
-    so their runs skip the start-up (Nebius only)."""
+    so their runs skip the start-up (Nebius only). scenes: the scene GPU, where the runs that render queue."""
     import hmac
 
     from fastapi.responses import JSONResponse
@@ -246,7 +246,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     new_session = interviewer
     lib = library.Library(home, home / "cache")
     jobs = JobService(home, backend, max_usd, launcher=launcher, warm=warm, public=public, max_runs=max_runs,
-                      daily_usd=daily_usd, on_labels=lib.take_teacher)
+                      daily_usd=daily_usd, on_labels=lib.take_teacher, scenes=scenes)
     profiling: set[str] = set()  # datasets whose profile is being made
     from concurrent.futures import ThreadPoolExecutor
     profiler = ThreadPoolExecutor(1, thread_name_prefix="profile")
@@ -2005,9 +2005,11 @@ def serve(home: Path, backend: str, host: str, port: int, max_usd: float | None,
     from .payments import Payments
     payments = Payments.from_env(accounts, auth.public_url) if accounts is not None else None
     gpu = warm_mod.WarmGPU(home) if backend == "nebius" and warm_mod.enabled() else None
-    if gpu is not None and warm_mod.current(home):  # one left by the previous server process: note its end
-        gpu.watch()
+    scenes = warm_mod.WarmGPU(home, kind="isaac") if gpu is not None and warm_mod.scene_queue() else None
+    for g in (gpu, scenes):
+        if g is not None and warm_mod.current(home, g.kind):  # one left by the previous server process: note its end
+            g.watch()
     uvicorn.run(create_app(home, backend, max_usd, public=public, key=key, max_runs=max_runs, daily_usd=daily_usd,
-                           auth=auth, accounts=accounts, contact=contact, warm=gpu,
+                           auth=auth, accounts=accounts, contact=contact, warm=gpu, scenes=scenes,
                            describer=default_describer(home), payments=payments),
                 host=host, port=port, proxy_headers=True)

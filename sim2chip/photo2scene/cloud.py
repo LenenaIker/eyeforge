@@ -66,7 +66,16 @@ def _env(kit: str | None, names: list[str]) -> dict[str, str]:
 
 
 def ready(python: str, script: str, log=print) -> dict[str, str]:
-    """The kit of `python` and the weights of `script`, pulled once. Returns the variables the step needs."""
+    """The kit of `python` and the weights of `script`, pulled once. Returns the variables the step needs. Runs on
+    the scene GPU's machine build at once (warm.py): one pulls, the others wait and find it there."""
+    import fcntl
+    Path(ENVS).mkdir(parents=True, exist_ok=True)
+    with open(Path(ENVS, ".pull.lock"), "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        return _ready(python, script, log)
+
+
+def _ready(python: str, script: str, log) -> dict[str, str]:
     from ..cloud_sync import S3Store
     kit = python if python in KITS else None
     names = SCRIPT_WEIGHTS.get(script, [])

@@ -342,3 +342,62 @@ def test_a_keep_alive_is_spent_by_the_task_it_waited_for():
     assert warm.keep_until({"until": 500.0, "t": 300.0}, 200.0) == 500.0  # asked for after it
     assert warm.keep_until({"until": 500.0}, 200.0) == 0.0               # from before this rule: spent
     assert warm.keep_until(None, None) == 0.0
+
+
+def test_the_scene_gpu_takes_as_many_runs_as_its_memory_holds(tmp_path, monkeypatch):
+    monkeypatch.delenv("SIM2CHIP_SCENE_PARALLEL", raising=False)
+    assert warm.parallel_for("light", "1gpu-16vcpu-96gb") == warm.PARALLEL
+    assert warm.parallel_for("isaac", "1gpu-8vcpu-32gb") == 1    # one build took 27.2 GB of 32 (2026-10-14)
+    assert warm.parallel_for("isaac", "1gpu-16vcpu-96gb") == 3
+    monkeypatch.setenv("SIM2CHIP_SCENE_PARALLEL", "2")
+    assert warm.parallel_for("isaac", "1gpu-8vcpu-32gb") == 2
+    store = Store()
+    monkeypatch.setattr(nebius, "REGISTRY", "cr.example/abc")
+    monkeypatch.setattr(nebius, "IMAGE_TAG", "t1")
+    monkeypatch.setenv("SIM2CHIP_SCENE_GPU", "gpu-l40s-d/1gpu-16vcpu-96gb")
+    monkeypatch.delenv("SIM2CHIP_SCENE_PARALLEL")
+    for k in nebius.KITS:
+        store.put("sim2chip-cache", f"envs/t1/{k}.tar.zst", b"kit")
+    be = NebiusBackend(max_usd=10.0, cli=CLI(), store=store, poll_s=0)
+    monkeypatch.setattr(be, "_secrets", lambda llm: ["llm"] if llm else [])
+    w = be.start_warm(tmp_path, "isaac")
+    job = be.cli.jobs[0]
+    assert job["image"].endswith("eyeforge-isaac:t1") and job["where"] == ("gpu-l40s-d", "1gpu-16vcpu-96gb")
+    assert job["env"]["S2C_WARM_PARALLEL"] == "3" and float(job["env"]["S2C_WARM_HOURS"]) > warm.HOURS
+    assert warm.current(tmp_path, "isaac") == w and warm.current(tmp_path) is None
+    assert "SIM2CHIP_ISAAC_PYTHON" in (tmp_path / "warm" / "isaac.nebius.sh").read_text()
+    # A run that renders goes to it; one that does not, too, while no light GPU is up.
+    warm.worker_file(tmp_path, "isaac").write_text(json.dumps({**w, "job_id": "aijob-warm"}))
+    cache = Cache(tmp_path / "cache")
+    assert be.warm_for(cache, nebius.worker_runtime(True))["kind"] == "isaac"
+    assert be.warm_for(cache, nebius.worker_runtime(False))["kind"] == "isaac"
+
+
+def test_a_task_waiting_on_a_full_gpu_is_queued_not_lost():
+    store = Store()
+    old = time.time() - warm.PICK_S - 1
+
+    def beat(running, parallel):
+        store.put("cache", warm.key("w1", "state.json"), json.dumps(
+            {"state": "ready", "t": time.time(), "running": running, "parallel": parallel}).encode())
+    beat(["a", "b"], 2)
+    assert warm.task_state(store, "cache", "w1", "t3", False, old) == "QUEUED"
+    beat(["a"], 2)  # a free place and still not taken: the GPU does not see it
+    assert warm.task_state(store, "cache", "w1", "t3", False, old) == "LOST"
+
+
+def test_the_server_asks_for_the_scene_gpu_when_a_run_renders(tmp_path, monkeypatch):
+    from sim2chip.job_service import JobService
+
+    class Scenes:
+        asked = []
+
+        def start(self, reason, who=None):
+            self.asked.append(who)
+    jobs = JobService(tmp_path, launcher=lambda *a, **k: None, scenes=Scenes())
+    job = Job(tmp_path / "jobs" / "j")
+    job.logs.mkdir(parents=True)
+    for name, renders in (("draw", True), ("plain", False)):
+        monkeypatch.setattr(jobs, "_renders", lambda job, request, start, r=renders: r)
+        jobs.start(job, tmp_path / "request.json")
+    assert Scenes.asked == ["j"]

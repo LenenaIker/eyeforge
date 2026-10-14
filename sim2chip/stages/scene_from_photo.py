@@ -18,6 +18,7 @@ Output: scene_from_photo/scenes.json  the scenes built here, for the library (li
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -76,6 +77,16 @@ def _link(src, dst):
         os.link(src, dst)
     except OSError:
         shutil.copy2(src, dst)
+
+
+@contextlib.contextmanager
+def _building(work: Path):
+    """One build of a scene folder at a time on this machine (a file lock next to it)."""
+    import fcntl
+    work.parent.mkdir(parents=True, exist_ok=True)
+    with open(work.with_name(work.name + ".lock"), "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
 
 
 def no_route(spec) -> str | None:
@@ -163,11 +174,13 @@ class SceneFromPhoto(Stage):
                 route = "none"  # out of scope until the observation says otherwise
                 try:
                     flow = p2s.Flow(work, usage, ctx.log)
-                    route = ROUTES.get(place.observe(flow, photo)["route"], "support")
-                    ctx.log(f"photo {pid} takes the {route} route")
-                    if route == "street" and not STREET_ROUTE:
-                        raise p2s.Stop(NO_STREETS)
-                    summary = (p2s.build if route == "support" else place.build)(flow, photo, targets)
+                    with _building(work):  # another run on this machine (the scene GPU) may build it too: it waits,
+                        # then finds every step's outputs and goes on
+                        route = ROUTES.get(place.observe(flow, photo)["route"], "support")
+                        ctx.log(f"photo {pid} takes the {route} route")
+                        if route == "street" and not STREET_ROUTE:
+                            raise p2s.Stop(NO_STREETS)
+                        summary = (p2s.build if route == "support" else place.build)(flow, photo, targets)
                 except p2s.Stop as e:
                     ctx.log(f"photo {pid} makes no scene: {e}")
                     built.append({"photo_id": pid, "route": route, "status": "failed", "why": str(e)})

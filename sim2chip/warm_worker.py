@@ -3,10 +3,10 @@
     python -m sim2chip.warm_worker --id <warm id>
 
 First the teachers' weights (SAM 3, SigLIP 2) come from the cache bucket and teacher_server.py loads them on
-the GPU, where they stay: tasks ask it instead of loading the weights each time. Then it
-looks for tasks every POLL_S seconds and runs up to PARALLEL at once, each as `cloud_worker` in its own folder
-with the code its run uploaded (a server deployed meanwhile sends the new code) and the shared cache, which keeps
-the teachers' answers, the weights and the asset files between tasks. A task that trains PicoDet waits for that
+the GPU, where they stay: tasks ask it instead of loading the weights each time. Then it looks for tasks every
+POLL_S seconds and runs up to S2C_WARM_PARALLEL at once (warm.parallel_for), each as `cloud_worker` in its own
+folder with the code its run uploaded (a server deployed meanwhile sends the new code) and the shared cache, which
+keeps the teachers' answers, the weights and the asset files between tasks. A task that trains PicoDet waits for that
 kit, unpacked in the background after start-up. The task's output goes to its job bucket as logs/<task log>.
 It stops warm.IDLE_S after its last task (a keep-alive asked for after that task started holds it longer), or
 shortly before its job's timeout.
@@ -83,9 +83,11 @@ def main() -> int:
     p.add_argument("--id", required=True)
     args = p.parse_args()
     wid, bucket = args.id, os.environ["S2C_CACHE_BUCKET"]
+    parallel = int(os.environ.get("S2C_WARM_PARALLEL", warm.PARALLEL))
     store = S3Store()
     t0 = time.time()
-    deadline = t0 + warm.HOURS * 3600 - 600  # leave room to push the last task before the job's timeout
+    hours = float(os.environ.get("S2C_WARM_HOURS", warm.HOURS))  # the job's timeout
+    deadline = t0 + hours * 3600 - 600  # leave room to push the last task before the job's timeout
     CACHE.mkdir(parents=True, exist_ok=True)
     tasks: dict[str, Task] = {}
     finished: set[str] = set()
@@ -94,7 +96,7 @@ def main() -> int:
     def beat(state: str) -> None:
         try:
             warm.put(store, bucket, warm.key(wid, "state.json"),
-                     {"state": state, "t": time.time(), "running": sorted(tasks), "since": t0,
+                     {"state": state, "t": time.time(), "running": sorted(tasks), "parallel": parallel, "since": t0,
                       "picodet": Path(warm.LATE_READY).exists()})
         except Exception as e:  # a missed heartbeat is not worth the run
             say(f"heartbeat failed: {e}")
@@ -135,7 +137,7 @@ def main() -> int:
         pending = sorted(k for k in listing if k.startswith(warm.key(wid, "tasks") + "/"))
         for k in pending:
             tid = Path(k).stem
-            if tid in tasks or tid in finished or len(tasks) >= warm.PARALLEL or time.time() > deadline:
+            if tid in tasks or tid in finished or len(tasks) >= parallel or time.time() > deadline:
                 continue
             spec = warm.read(store, bucket, k)
             if spec is None:

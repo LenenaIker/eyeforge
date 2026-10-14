@@ -73,15 +73,17 @@ def cloud_job(job: Job) -> dict | None:
 
 class JobService:
     """launcher: how a run starts (launch_run, or a fake in tests). warm (warm.WarmGPU): the shared cloud GPU,
-    or None. max_runs counts only on a public server."""
+    or None; scenes: the scene GPU (a WarmGPU of kind "isaac"), asked for when a run renders, or None. max_runs
+    counts only on a public server."""
 
     def __init__(self, home: Path, backend: str = "local", max_usd: float | None = None, launcher=None,
                  warm=None, public: bool = False, max_runs: int = 2, daily_usd: float | None = None,
-                 on_labels=None):
+                 on_labels=None, scenes=None):
         self.home, self.backend, self.max_usd = home, backend, max_usd
         self.on_labels = on_labels  # on_labels(job): the teacher marked photos of the job (library.take_teacher)
         self.launcher = launcher or launch_run
         self.warm, self.public, self.max_runs, self.daily_usd = warm, public, max_runs, daily_usd
+        self.scenes = scenes
         self.runs: dict[str, subprocess.Popen] = {}
         self.calibrations: dict[str, threading.Thread] = {}
         self.prefetching: set[str] = set()
@@ -96,7 +98,20 @@ class JobService:
     def start(self, job: Job, request: Path, start: str | None = None) -> None:
         (job.logs / "launched_at").write_text(f"{time.time():.3f}")
         note_run(job, start)
+        if self.scenes is not None and self.over_budget() is None and self._renders(job, request, start):
+            # Asked before the run's upload, so it is starting by the time the run looks for it (nebius.warm_for)
+            self.scenes.start("a run that renders", job.name)
         self.runs[job.name] = self.launcher(self.home, job, request, self.backend, self.max_usd, start=start)
+
+    def _renders(self, job: Job, request: Path, start: str | None) -> bool:
+        """The run has a stage to run that renders in Isaac Sim (the scene GPU's work)."""
+        from .pipeline import Pipeline
+        try:
+            plans = Pipeline(spec_mod.load(request), job, self.cache).plan(start, retry=True)
+        except Exception as e:  # the run says why itself; no scene GPU for it
+            print(f"{job.name}: run not planned here ({type(e).__name__}: {e})", flush=True)
+            return False
+        return any(p.action == "run" and (p.stage.runtime == "isaac" or p.stage.gpu == "rtx") for p in plans)
 
     def running(self, job: Job) -> bool:
         """This server's run process, or a cloud job left by an earlier server process (still in time)."""

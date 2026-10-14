@@ -23,6 +23,12 @@ each with who (an interview session or a job; "job" links the two); gaps() reads
 Its cost is the job's whole life, idle time included: logs/warm_usage.jsonl in the server's home (record_end).
 A task's own records in its job's cloud_usage.jsonl say "warm": the usage panel shows them, the daily budget
 counts the GPU once.
+
+Two kinds at once (KINDS): "light", in the light image, for the teachers' work and runs without synthetic images;
+"isaac", in Isaac Sim's image, the scene queue: every run that renders goes to it as a task, so the scene builds
+and renders of several jobs share one GPU (photo2scene's heavy steps take turns on it, photo2scene.gpu_turn). The
+server asks for it when such a run starts (JobService.start). Each kind has its own worker file; tasks at once
+follow the machine's memory (parallel_for).
 """
 from __future__ import annotations
 
@@ -40,7 +46,11 @@ PREFIX = "warm"
 IDLE_S = float(config.env("SIM2CHIP_WARM_IDLE_S", "20"))    # without tasks, past the keep-alive: stop
 KEEP_S = float(config.env("SIM2CHIP_WARM_KEEP_S", "300"))   # an upload or a new job waits this long for a first task
 HOURS = int(config.env("SIM2CHIP_WARM_HOURS", "2"))         # the job's timeout, a cap on any forgotten GPU
-PARALLEL = 2      # tasks at once (two users); more queue
+PARALLEL = 2      # tasks at once (two users) on the light GPU; more queue
+KINDS = ("light", "isaac")
+# The memory one run that builds a scene needs at its peak: 27.2 GB of 32 at Nebius (2026-10-14, one street scene).
+# The scene GPU takes as many runs at once as its machine holds.
+RUN_RAM_GB = float(config.env("SIM2CHIP_RUN_RAM_GB", "30"))
 POLL_S = 3        # how often the GPU and a waiting run look at the bucket
 STALE_S = 120     # a heartbeat older than this: the GPU is gone or stuck, runs go elsewhere
 PICK_S = 180      # a task the GPU has not started by then, while it says ready, goes elsewhere
@@ -57,20 +67,39 @@ def enabled() -> bool:
     return bool(REGISTRY and IMAGE_TAG) and config.env("SIM2CHIP_WARM", "1") != "0"
 
 
+def scene_queue() -> bool:
+    """Runs that render share the scene GPU (on by default); SIM2CHIP_SCENE_QUEUE=0: each its own Isaac job."""
+    return config.env("SIM2CHIP_SCENE_QUEUE", "1") != "0"
+
+
 def key(wid: str, *parts: str) -> str:
     return "/".join([PREFIX, wid, *parts])
 
 
-def worker_file(home: Path) -> Path:
-    """This server's warm GPU: {"wid", "job_id", "started"}, while it may be up."""
-    return home / "warm" / "worker.json"
+def worker_file(home: Path, kind: str = "light") -> Path:
+    """This server's warm GPU of that kind: {"wid", "job_id", "started", "kind"}, while it may be up."""
+    return home / "warm" / ("worker.json" if kind == "light" else f"{kind}.json")
 
 
-def current(home: Path) -> dict | None:
+def current(home: Path, kind: str = "light") -> dict | None:
     try:
-        return json.loads(worker_file(home).read_text())
+        return json.loads(worker_file(home, kind).read_text())
     except (OSError, ValueError):
         return None
+
+
+def parallel_for(kind: str, preset: str) -> int:
+    """Tasks at once: two on the light GPU; on the scene GPU, as many runs as the preset's memory holds
+    ("1gpu-16vcpu-96gb": 3), SIM2CHIP_SCENE_PARALLEL to set it."""
+    if kind == "light":
+        return PARALLEL
+    if (n := config.env("SIM2CHIP_SCENE_PARALLEL")):
+        return max(1, int(n))
+    try:
+        gb = float(preset.rsplit("-", 1)[-1].removesuffix("gb"))
+    except ValueError:
+        return 1
+    return max(1, int(gb // RUN_RAM_GB))
 
 
 def read(store, bucket: str, k: str) -> dict | None:
@@ -141,7 +170,9 @@ def task_state(store, bucket: str, wid: str, tid: str, worker_ended: bool, submi
         return "LOST"
     if hb is None and time.time() - submitted > SETUP_S:  # the GPU never came up
         return "LOST"
-    if not started and hb and hb.get("state") == "ready" and time.time() - submitted > PICK_S:
+    # A GPU busy with as many tasks as it takes is a queue, not a loss: the task waits its turn.
+    full = hb and len(hb.get("running", [])) >= hb.get("parallel", PARALLEL)
+    if not started and hb and hb.get("state") == "ready" and not full and time.time() - submitted > PICK_S:
         return "LOST"
     return "RUNNING" if started else "QUEUED"
 
@@ -196,19 +227,19 @@ def spent(home: Path, since: float) -> float:
                 total += rec.get("usd_estimate", 0.0)
     except (OSError, ValueError):
         pass
-    w = current(home)
-    if w:
-        total += ((time.time() - w["started"]) + IDLE_S) / 3600 * usd_per_hour(w.get("platform"))
+    for kind in KINDS:
+        if w := current(home, kind):
+            total += ((time.time() - w["started"]) + IDLE_S) / 3600 * usd_per_hour(w.get("platform"))
     return total
 
 
 class WarmGPU:
     """The server's side: start the GPU when a user shows up, keep it while they are around, note its cost when it
     ends. One at a time; every method is safe to call from request threads and never raises (a warm GPU is a
-    speed-up: without it runs start their own job as before)."""
+    speed-up: without it runs start their own job as before). kind: KINDS."""
 
-    def __init__(self, home: Path, backend=None, log=print):
-        self.home, self.log = home, log
+    def __init__(self, home: Path, backend=None, log=print, kind: str = "light"):
+        self.home, self.log, self.kind = home, log, kind
         self._backend = backend
         self._lock = threading.Lock()
         self._watching = False
@@ -222,7 +253,7 @@ class WarmGPU:
 
     def _alive(self) -> dict | None:
         """The current GPU if its job has not ended (else its cost is noted and it is forgotten)."""
-        w = current(self.home)
+        w = current(self.home, self.kind)
         if w is None:
             return None
         from .backends.nebius import TERMINAL
@@ -249,9 +280,9 @@ class WarmGPU:
                     return
                 if w is not None:  # stopping or silent: let it end, a new one takes over
                     self.give_up(w)
-                w = self.backend.start_warm(self.home)
+                w = self.backend.start_warm(self.home, self.kind)
                 keep_alive(self.backend.store, self._bucket(), w["wid"], KEEP_S)
-                self.log(f"warm GPU {w['job_id']} asked for ({reason})")
+                self.log(f"warm GPU {w['job_id']} ({self.kind}) asked for ({reason})")
             except Exception as e:  # never in the way of the user
                 self.log(f"warm GPU: could not start it: {e}")
         self.watch()
@@ -261,7 +292,7 @@ class WarmGPU:
         note(self.home, "keep", who, why="touch")
         def go():
             try:
-                w = current(self.home)
+                w = current(self.home, self.kind)
                 if w is not None:
                     keep_alive(self.backend.store, self._bucket(), w["wid"], seconds)
             except Exception as e:
@@ -274,7 +305,7 @@ class WarmGPU:
     def record_end(self, w: dict, state: str) -> None:
         """Its cost, from its start to its last heartbeat (or now), once."""
         from .backends.nebius import usd_per_hour
-        if current(self.home) != w:
+        if current(self.home, self.kind) != w:
             return
         hb = None
         try:
@@ -283,7 +314,8 @@ class WarmGPU:
             self.log(f"warm GPU {w['wid']}: no last heartbeat ({type(e).__name__}: {e})")
         end = min(time.time(), hb["t"] + 60) if hb and hb.get("t") else time.time()
         hours = max(0.0, end - w["started"]) / 3600
-        rec = {"t": round(time.time()), "job_id": w["job_id"], "state": state, "hours": round(hours, 4),
+        rec = {"t": round(time.time()), "job_id": w["job_id"], "kind": self.kind, "state": state,
+               "hours": round(hours, 4),
                "usd_estimate": round(hours * usd_per_hour(w.get("platform")), 4)}
         try:  # how much of that the GPU worked (gpu_usage.py), written by the GPU as it stops
             gpu = read(self.backend.store, self._bucket(), key(w["wid"], "gpu.json"))
@@ -294,7 +326,7 @@ class WarmGPU:
         usage_file(self.home).parent.mkdir(parents=True, exist_ok=True)
         with open(usage_file(self.home), "a") as f:
             f.write(json.dumps(rec) + "\n")
-        worker_file(self.home).unlink(missing_ok=True)
+        worker_file(self.home, self.kind).unlink(missing_ok=True)
 
     def give_up(self, w: dict) -> None:
         """Forget this GPU; one that never came up is cancelled, or Nebius would bill it once it does."""

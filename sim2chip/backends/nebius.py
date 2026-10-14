@@ -140,6 +140,13 @@ def platforms(home: Path | None) -> list[tuple[str, str]]:
     return sorted(out, key=lambda pp: time.time() - sick.get(pp[0], 0) < NO_GPU_S)
 
 
+def scene_platforms(home: Path | None) -> list[tuple[str, str]]:
+    """Where the scene GPU (warm.py) is asked: SIM2CHIP_SCENE_GPU ("platform/preset") when set, else as any run."""
+    if (where := _env("SIM2CHIP_SCENE_GPU")):
+        return [tuple(where.split("/", 1))]
+    return platforms(home)
+
+
 def note_no_gpu(home: Path | None, platform: str) -> None:
     if home is None:
         return
@@ -733,48 +740,56 @@ class NebiusBackend:
 
     # Warm GPU (warm.py): one job kept up between runs; a run goes to it as a task when it is up.
 
-    def start_warm(self, home: Path) -> dict:
-        """Asks Nebius for the warm GPU and notes it in home/warm/worker.json. Its kits are checked first."""
+    def start_warm(self, home: Path, kind: str = "light") -> dict:
+        """Asks Nebius for the warm GPU of that kind (warm.KINDS) and notes it in its worker file. Its kits are
+        checked first."""
         from .. import warm
         cache_bucket = f"{self.prefix}-cache"
         self.cli.ensure_bucket(cache_bucket)
         kits = self._kit_urls(cache_bucket, teacher=True, picodet=True).split()  # pythons, py, teacher, picodet
         wid = token_hex(6)
         self.store.put(cache_bucket, warm.key(wid, "code.tgz"), code_archive())
-        script = home / "warm" / "warm.nebius.sh"
+        script = home / "warm" / ("warm.nebius.sh" if kind == "light" else f"{kind}.nebius.sh")
         script.parent.mkdir(parents=True, exist_ok=True)
-        # The light image: Isaac Sim's starts 2.2 min slower at Nebius (226 s against 92 s, 2026-10-10) and, the GPU
-        # stopping after its tasks, a run with synthetic images starts its own Isaac job anyway.
-        runtime = worker_runtime(False)
+        # The light one in the light image: Isaac Sim's starts 2.2 min slower at Nebius (226 s against 92 s,
+        # 2026-10-10). The scene GPU in Isaac Sim's, for the runs that render.
+        runtime = worker_runtime(kind == "isaac")
         isaac = runtime.python == RUNTIMES["isaac"].python
         script.write_text(warm_script(isaac))
+        where = scene_platforms(home)[0] if kind == "isaac" else platforms(home)[0]
+        hours = warm.HOURS if kind == "light" else WORKER_HOURS + 1  # a run that renders takes up to WORKER_HOURS
+        parallel = warm.parallel_for(kind, where[1])
         env = {"S2C_CACHE_BUCKET": cache_bucket, "SIM2CHIP_REGION": REGION, "S2C_WARM_ID": wid,
                "S2C_CODE_URL": self.store.url(cache_bucket, warm.key(wid, "code.tgz"), hours=warm.HOURS + 1),
-               "S2C_ENVS": " ".join(kits[:3]), "S2C_ENVS_LATE": kits[3]}
-        secrets = self._secrets(bool(_env("SIM2CHIP_NEBIUS_SECRET")))  # rounds may put phrases in English
-        where = platforms(home)[0]
-        job_id = self.cli.create_job(f"s2c-warm-{wid}", runtime, env, script, warm.HOURS, secrets, where)
-        w = {"wid": wid, "job_id": job_id, "started": time.time(), "image": runtime.image, "platform": where[0]}
-        warm.worker_file(home).write_text(json.dumps(w))
+               "S2C_ENVS": " ".join(kits[:3]), "S2C_ENVS_LATE": kits[3], "S2C_WARM_PARALLEL": str(parallel),
+               "S2C_WARM_HOURS": str(hours)}
+        # Rounds may put phrases in English; runs on the scene GPU call the vision models.
+        secrets = self._secrets(kind == "isaac" or bool(_env("SIM2CHIP_NEBIUS_SECRET")))
+        job_id = self.cli.create_job(f"s2c-warm-{wid}", runtime, env, script, hours, secrets, where)
+        w = {"wid": wid, "job_id": job_id, "started": time.time(), "image": runtime.image, "platform": where[0],
+             "preset": where[1], "kind": kind, "parallel": parallel}
+        warm.worker_file(home, kind).write_text(json.dumps(w))
         return w
 
     def warm_for(self, cache: Cache, runtime: Runtime) -> dict | None:
-        """The warm GPU of the server whose home holds this cache, when it can take this run: our own images, Isaac
+        """A warm GPU of the server whose home holds this cache that can take this run: our own images, Isaac
         Sim's only if the GPU runs in it (older ones ran in the light image, noted without "image"), its job not
-        ended, not stopping."""
+        ended, not stopping. A run that renders looks at the scene GPU first, others at the light one."""
         from .. import warm
         if not runtime.kits:
             return None
-        w = warm.current(cache.root.parent)
-        if w is None or runtime.image not in (worker_runtime(False).image, w.get("image")):
-            return None
-        try:
-            if self.cli.job_state(w["job_id"]) in TERMINAL:
-                return None
-            return w if warm.usable(self.store, f"{self.prefix}-cache", w["wid"], w.get("started")) else None
-        except Exception as e:  # the run starts its own GPU instead
-            print(f"  warm GPU not checked ({type(e).__name__}: {e}), starting a new job", flush=True)
-            return None
+        renders = runtime.image != worker_runtime(False).image
+        for kind in ("isaac", "light") if renders else ("light", "isaac"):
+            w = warm.current(cache.root.parent, kind)
+            if w is None or runtime.image not in (worker_runtime(False).image, w.get("image")):
+                continue
+            try:
+                if self.cli.job_state(w["job_id"]) not in TERMINAL and \
+                        warm.usable(self.store, f"{self.prefix}-cache", w["wid"], w.get("started")):
+                    return w
+            except Exception as e:  # the run starts its own GPU instead
+                print(f"  warm GPU not checked ({type(e).__name__}: {e})", flush=True)
+        return None
 
     def _warm_task(self, w: dict, job: Job, task: dict, follow) -> tuple[str, float | None]:
         """Sends a task to the warm GPU and waits for it with `follow(state_of)`. Returns its final state and when
