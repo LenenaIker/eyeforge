@@ -286,3 +286,50 @@ def test_the_corner_template_plants_the_photo_bands_off_its_roads():
         p = at(u, 4.5)
         assert p @ b >= 3.5 + 20 and p @ a > 3.5  # in the block's quadrant, past both roads
     assert section_fill.curb_section({**section, "bands": section["bands"][:2]}, 1, centre, a, b, 3.5) is None
+
+
+def _box(size, tilt_deg):
+    """A closed box (a building) with its base centre at the origin, tilted about x; y is up."""
+    import numpy as np
+    import trimesh
+    m = trimesh.creation.box(extents=size)
+    m.apply_translation([0, size[1] / 2, 0])
+    m.apply_transform(trimesh.transformations.rotation_matrix(np.radians(tilt_deg), [1, 0, 0]))
+    return np.asarray(m.vertices, float), np.asarray(m.faces)
+
+
+def test_a_tilted_building_is_straightened_by_its_walls():
+    """standing.straighten: SAM 3D posed terrace's row of houses 2.5 degrees off the vertical, its base a metre
+    over the sidewalk at one end (2026-10-14). Its walls give its own vertical, whatever its proportions."""
+    import sys
+    import numpy as np
+    sys.path.insert(0, str(STEPS))
+    import standing
+    up = np.array([0, 1.0, 0])
+    for size in ((28, 8, 10), (10, 8, 10), (30, 8, 0.5)):  # a long row, a cube, one facade
+        pts, faces = _box(size, 3.0)
+        out, deg = standing.straighten(pts, faces, up)
+        assert abs(deg - 3.0) < 0.1
+        assert np.ptp(np.sort(out @ up)[:4]) < 1e-6  # the base level again
+    pts, faces = _box((28, 8, 10), 0.2)
+    assert standing.straighten(pts, faces, up)[1] == 0.0  # straight enough: left alone
+
+
+def test_the_photo_says_where_a_building_stands():
+    """standing.photo_gap reads the base's height off the photo's depth at the mask's lowest pixels;
+    standing.flatten keeps each point's height over a sloped floor on a level one."""
+    import sys
+    import numpy as np
+    sys.path.insert(0, str(STEPS))
+    import standing
+    up = np.array([0, 1.0, 0])
+    pts = np.zeros((40, 60, 3))
+    pts[..., 1] = np.linspace(3, 0, 40)[:, None]  # height falls down the image
+    mask = np.zeros((40, 60), bool)
+    mask[5:30, 10:50] = True  # lowest row 29: height 3 * (1 - 29 / 39)
+    gap = standing.photo_gap(mask, pts, up, lambda X: np.zeros(len(X)))
+    assert abs(gap - 3 * (1 - 29 / 39)) < 1e-6
+    assert standing.photo_gap(mask[:, :15], pts, up, lambda X: np.zeros(len(X))) is None
+    plane = ([0, 1.0, -0.05], 0.0)  # the floor rises 5 cm a metre along z
+    p = np.array([[0, 1.0, 0], [0, 1.5, 10]])  # each 1 m over the floor under it
+    assert np.allclose(standing.flatten(p, up, 0.2, plane)[:, 1], 1.2)

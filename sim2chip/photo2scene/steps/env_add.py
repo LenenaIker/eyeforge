@@ -31,6 +31,7 @@ from PIL import Image, ImageDraw, ImageFilter
 from scipy.spatial import ConvexHull, cKDTree
 
 from bg_build import floor_height
+import standing
 
 GL2CV = np.diag([1.0, -1.0, -1.0, 1.0])
 
@@ -295,6 +296,23 @@ def raised(name, pts, up, floor):
         return None
     gap = float(np.percentile(pts @ up - floor(pts), LOT_BASE_PCT))
     return gap if LOT_MIN < gap < LOT_MAX else None
+
+
+def stand(name, pts, faces, up, floor, masks, depth_pts):
+    """A building straightened along up (standing.straighten) and, where the photo sees its base, set at the
+    height over the floor the photo's depth gives there: on the floor, or on a lot as high as the photo shows."""
+    pts, deg = standing.straighten(pts, np.asarray(faces), up)
+    gap = None
+    if masks is not None and name[:3].isdigit() and int(name[:3]) < len(masks) \
+            and masks[int(name[:3])].shape == depth_pts.shape[:2]:
+        gap = standing.photo_gap(masks[int(name[:3])], depth_pts, up, floor)
+    was = float(np.percentile(pts @ up - floor(pts), LOT_BASE_PCT))
+    if gap is not None:
+        want = gap if LOT_MIN < gap < LOT_MAX else 0.0
+        pts = pts + (want - was) * up
+    print(f"{name}: straightened {deg:.1f} deg, base {was:.2f} m over the floor, the photo's "
+          f"{'unseen' if gap is None else f'{gap:.2f} m'}", flush=True)
+    return pts
 
 
 TILE_ODD = 0.05  # a wall's crop with more of its pixels this far from its median shade has something before it
@@ -583,6 +601,12 @@ def main():
         tex_path = os.path.abspath(os.path.join(args.out, 'isaac', 'tex_photo.png'))
         shutil.copy(os.path.join(args.scene, 'background.png'), tex_path)
     high = {}  # buildings standing over the street: env name -> object index
+    # The photo's own view of each building's base (standing.photo_gap): its masks and the erased photo's depth.
+    mpath = os.path.join(args.scene, 'env_masks.npz')
+    dpath = next((x for x in (os.path.join(args.scene, f'depth_{k}.npz') for k in ('background', 'photo'))
+                  if os.path.exists(x)), None)
+    env_masks = np.load(mpath)['masks'] if os.path.exists(mpath) and dpath else None
+    depth_pts = np.load(dpath)['points'] if env_masks is not None else None
     for k, (name, m) in enumerate(meshes.items()):
         i = first + k
         pts = trimesh.transform_points(m.vertices, GL2CV) * s
@@ -592,6 +616,8 @@ def main():
             m, uv, photo_faces, cols = tex[name]
             pts = trimesh.transform_points(m.vertices, GL2CV) * s
             faces = m.faces
+        if any(w in name for w in BUILDING_WORDS):
+            pts = stand(name, pts, faces, up, floor, env_masks, depth_pts)
         if raised(name, pts, up, floor) is not None:  # on a lot (lots()): neither moved down nor skirted
             high[name] = i
         elif args.snap_ground:  # catalog entry 1: a base hidden in the photo comes out floating or sunk

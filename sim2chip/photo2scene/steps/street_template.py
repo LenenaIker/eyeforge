@@ -84,12 +84,10 @@ def main():
     for i, t in scene['views'][0]['objects']:
         if i not in names:
             continue
-        p = arr[f'obj{i}_points'] @ np.asarray(t)[:3, :3].T + np.asarray(t)[:3, 3]
-        lift = moves[i]
-        p = p + lift
+        p, move = moves[i]
         s = 1 if float((p.mean(0) - centre) @ b) >= 0 else -1
         sides[s].append((p, arr[f'obj{i}_faces'], arr[f'obj{i}_colors'], names[i], photo_keys(arr, i),
-                         usd_of(arr, i, affine(move=lift) @ np.asarray(t))))
+                         usd_of(arr, i, move @ np.asarray(t))))
     # Facade planes env_add.py kept where no mesh stands: they go with their side, like the meshes.
     facades = {1: [], -1: []}
     for p in scene['pieces']:

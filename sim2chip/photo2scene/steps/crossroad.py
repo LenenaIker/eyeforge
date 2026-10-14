@@ -28,6 +28,7 @@ from PIL import Image
 from scipy.spatial import cKDTree
 
 import section_fill
+import standing
 
 # Bricks for the copies: (hue or None to keep it, saturation factor, value factor). The first keeps the photo's.
 BRICKS = [(None, 1.0, 1.0), (0.02, 1.8, 0.75), (0.06, 1.3, 0.55), (None, 0.15, 1.25),
@@ -55,19 +56,29 @@ def affine(rot=None, move=None):
 
 
 def lifts(scene, arr, up, level):
-    """Each surroundings object's move onto the template's level: its lowest points to it (the far ones come out of
-    the photo's depth floating or sunk); a building on a raised lot (env_add.lots) moves with its lot, keeping the
-    terrace."""
+    """Each surroundings object posed as in the photo and set on the template's level ground: {index: (points,
+    4x4 move for its NVIDIA asset)}. Over the photo's floor plane first (standing.flatten), so each keeps its
+    height over the ground right under it, then its lowest points to the level (the far ones come out of the
+    photo's depth floating or sunk); a building on a raised lot (env_add.lots) moves with its lot, keeping the
+    terrace. An asset is moved whole, by the floor under its base."""
     env = {e['index']: e for e in scene.get('env', [])}
     posed = {i: np.asarray(t) for i, t in scene['views'][0]['objects'] if i in env}
-    out = {}
+    plane = scene.get('floor_plane')
+    out, lift = {}, {}
     for i, t in posed.items():
         p = arr[f'obj{i}_points'] @ t[:3, :3].T + t[:3, 3]
-        out[i] = (level - np.percentile(p @ up, 0.5)) * up
+        shift = np.zeros(3)
+        if plane is not None:
+            h = p @ up
+            base = p[h < h.min() + 0.5].mean(0)
+            shift = standing.flatten(base[None], up, level, plane)[0] - base
+            p = p + shift if f'obj{i}_usd' in arr else standing.flatten(p, up, level, plane)
+        out[i] = (p, shift)
+        lift[i] = level - np.percentile(p @ up, 0.5)
     for i, e in env.items():
-        if e.get('on') is not None and e['on'] in out and i in out:
-            out[i] = out[e['on']]
-    return out
+        if e.get('on') is not None and e['on'] in lift and i in lift:
+            lift[i] = lift[e['on']]
+    return {i: (p + lift[i] * up, affine(move=shift + lift[i] * up)) for i, (p, shift) in out.items()}
 
 
 def usd_of(arr, i, move):
@@ -227,14 +238,12 @@ def main():
         name = names.get(i, 'object')
         if args.no_objects and i not in names:
             continue
+        move = np.eye(4)
         if i in names:
             # Far surroundings come out of the photo's depth floating or sunk (a house 4 m up): set them on the
             # sidewalk; their lowest points, not one stray vertex (with its lot, a building on one).
-            lift = moves[i]
-            p = p + lift
-        else:
-            lift = np.zeros(3)
-        usd = usd_of(arr, i, affine(move=lift) @ t)
+            p, move = moves[i]
+        usd = usd_of(arr, i, move @ t)
         flat = p - (p @ up)[:, None] * up
         far = float(np.linalg.norm(flat.mean(0) - (corner - (corner @ up) * up))) > args.far and i in names
         if far and args.far_mode == 'drop':
