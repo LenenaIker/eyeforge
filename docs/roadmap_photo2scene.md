@@ -225,13 +225,22 @@ Check de cada apagado: un trabajo de principio a fin sin esa pieza en el registr
 
 Los árboles y arbustos salen de SAM 3D como bloques verdes y el filtro de parecido tira las vistas (roads, C.6). En vez de SAM 3D (caro, de 20 s a 2 min de GPU por árbol) o de tarjetas recortadas de la foto, se usan los assets de vegetación del bucket público de NVIDIA (`Assets/Vegetation`: 44 árboles y 37 arbustos; de 24.000 a 87.000 triángulos más ramas instanciadas; en cm y con Z arriba; materiales MDL con hojas recortadas; miniaturas en `.thumbs`). Comparación de opciones en la conversación del 2026-10-13: los assets ahorran la GPU de SAM 3D, se ven bien desde cualquier ángulo y dan variedad gratis en la extrapolación.
 
-- [ ] **V.1 Catálogo**: lista de árboles y arbustos con su miniatura, altura y grupo, cacheada; proxy ligero de cada uno (malla simplificada con colores) para los pasos que renderizan con pyrender (controles, etiquetas, mapa de alturas).
-- [ ] **V.2 Elección** (paso 1.5v, tras el control de máscaras): las máscaras de vegetación no van a SAM 3D; el VLM elige del catálogo, con la hoja de miniaturas y el recorte, la especie más parecida (forma de copa, color, tamaño).
-- [ ] **V.3 Colocación** (en `env_add`): base en el suelo bajo la máscara y altura medida con MoGe sobre el suelo (con la vertical de las paredes), giro al azar. En `meshes.npz` el proxy y la referencia al USD con su pose.
-- [ ] **V.4 Isaac**: `piece_isaac` referencia el USD en lugar de la malla, y espera a que cargue; las plantillas de la fase 3 copian la pose con cada copia; en la extrapolación se puede cambiar de especie.
-- [ ] **V.5 Controles**: `flow_gates` no pide coincidencia de silueta a la vegetación (no es su árbol); `flow_populate` no pone objetos sobre las copas.
+- [x] **V.1 Catálogo**: lista de árboles y arbustos con su miniatura, altura y grupo, cacheada; proxy ligero de cada uno (malla simplificada con colores) para los pasos que renderizan con pyrender (controles, etiquetas, mapa de alturas).
+- [x] **V.2 Elección** (paso 1.5v, tras el control de máscaras): las máscaras de vegetación no van a SAM 3D; el VLM elige del catálogo, con la hoja de miniaturas y el recorte, la especie más parecida (forma de copa, color, tamaño).
+- [x] **V.3 Colocación** (en `env_add`): base en el suelo bajo la máscara y altura medida con MoGe sobre el suelo (con la vertical de las paredes), giro al azar. En `meshes.npz` el proxy y la referencia al USD con su pose.
+- [x] **V.4 Isaac**: `piece_isaac` referencia el USD en lugar de la malla, y espera a que cargue; las plantillas de la fase 3 copian la pose con cada copia; en la extrapolación se puede cambiar de especie.
+- [x] **V.5 Controles**: `flow_gates` no pide coincidencia de silueta a la vegetación (no es su árbol); `flow_populate` no pone objetos sobre las copas.
 - [ ] **V.6 Medida**: hoja de antes y después en la foto 21 de roads y en la 24 de macetas; F1 de roads_cars con 3 ejecuciones (C.6: 0,651 solo fotos, 0,662 con calle).
-- [ ] **V.7 Nebius**: los USD se referencian por URL pública (Isaac los cachea); los proxies van a la caché del bucket.
+- [x] **V.7 Nebius**: los USD se referencian por URL pública (Isaac los cachea); los proxies van a la caché del bucket. Hecho y medido el 2026-10-14 (`roads_cars_nb2`): hacía falta pasar a cada paso el fichero de certificados (los Python de los kits no tenían, `5f70663`) y bajar los cielos de Poly Haven a la caché (`28056bf`). Trabajo completo con escena de calle: 51,2 min, 1,32 $; la escena 37,9 min con la GPU al 4 % (descargas, carga de modelos, VLM, `env_add`); CPU media 16 % de 8 núcleos, RAM 27,2 de 32 GB (lo más justo); el filtro de parecido dejó 0 de 13 vistas.
+
+### Hallazgos de la noche del 2026-10-14 (fotos 27 de macetas y 3, 12 y 29 de roads)
+
+- **Velo en el suelo**: con el cielo ×3 el reflejo de Fresnel a ángulo rasante cubría la calzada de un gris uniforme (se perdían flecha y líneas). El suelo pasa a material mate.
+- **Calzada quemada en la fase 3**: la fotometría solo oscurecía la ortofoto de la vista 0; la plantilla aplica ahora la misma ganancia (`baked_gain`) a calzada, aceras y césped.
+- **Cámaras de la fase 3**: a altura de persona sobre la calzada mirando a lo largo, y solo vistas con algo delante (foto 27: de 62 % a 94 % de vistas válidas).
+- **Parcelas**: laterales con la piedra del muro de la foto, descartando recortes con algo delante (un coche).
+- **Límite conocido**: SAM 3D convierte un bloque largo que se aleja por la calle en una torre estrecha (roads foto 3), y no extrae pretiles ni barandillas.
+- `env_add` tardó 8,5 min la primera vez en una calle arbolada (descarga y proxies de especies nuevas); con la caché caliente, 98 s, de ellos 65 s en las 6 rondas de ajuste con pyrender (sube todas las mallas en cada ronda: se puede acelerar). En Nebius la caché de vegetación de cada trabajo empieza vacía si no se sube al bucket.
 
 ## Fase G: cierre
 

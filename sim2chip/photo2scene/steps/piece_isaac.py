@@ -65,12 +65,17 @@ def mesh(path, points, faces):
     return m
 
 
-def surface(path, roughness):
+def surface(path, roughness, matte=False):
+    """A UsdPreviewSurface; matte: no specular at all. The ground is matte: under a sky three times as bright its
+    Fresnel reflection at grazing angles veiled the photo's own road a uniform grey (roads photo 29, 2026-10-14)."""
     mat = UsdShade.Material.Define(stage, path)
     sh = UsdShade.Shader.Define(stage, path + "/Surface")
     sh.CreateIdAttr("UsdPreviewSurface")
-    sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
+    sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(1.0 if matte else roughness)
     sh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+    if matte:
+        sh.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(1)
+        sh.CreateInput("specularColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0, 0, 0))
     mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
     return mat, sh
 
@@ -88,7 +93,7 @@ def albedo(points):
 
 for i, pc in enumerate(scene["pieces"]):
     m = mesh(f"/World/Pieces/p{i}", pc["points"], [[0, 1, 2], [0, 2, 3]])
-    mat, sh = surface(f"/World/Looks/Piece{i}", 0.8)
+    mat, sh = surface(f"/World/Looks/Piece{i}", 0.8, matte=albedo(pc["points"]) == ALBEDO_GROUND)
     if pc["texture"]:
         UsdGeom.PrimvarsAPI(m).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex).Set(
             Vt.Vec2fArray.FromNumpy(np.asarray(pc["uv"], np.float32)))
