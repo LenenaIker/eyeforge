@@ -20,9 +20,12 @@ with its own seed on its own copy of the scene.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +39,10 @@ PYTHONS = {"sam3": "SIM2CHIP_SAM3_PYTHON", "mesh": "SIM2CHIP_SCENE_PYTHON", "era
 PASS_ON = ("HF_HOME", "HF_HUB_CACHE", "TORCH_HOME", "MOGE_ROOT", "MOGE_DEPS", "MOGE_CKPT", "SIM2CHIP_SAM3D_DIR",
            "SIM2CHIP_LAMA", "SIM2CHIP_PLAN_MODEL", "SIM2CHIP_OBSERVE_MODEL", "SIM2CHIP_REVIEW_MODEL")
 STEP_TIMEOUT_S = 30 * 60
+# Steps that take 10+ GB of GPU memory (Qwen eraser ~11 GB, SAM 3D Objects): one at a time per GPU, so several
+# scene builds can share it. Two builds at once on the 3090 without the lock both ran out of memory; with it,
+# 730 s a scene instead of 1070 (2026-10-14).
+HEAVY = ("erase_qwen.py", "flow_sam3d.py")
 MIN_SUPPORT = 0.03  # share of the photo the support must cover
 LONG_SIDE = 1344    # the photo's long side in the scene (bg_prepare.py's default)
 # What compose() writes into a scene folder: one job's layout, not part of the scene the library keeps.
@@ -70,6 +77,23 @@ def ca_file() -> str | None:
     except ImportError:
         return None
 
+@contextlib.contextmanager
+def gpu_turn(log=print, step: str = ""):
+    """Waits for this GPU's turn (a file lock per CUDA_VISIBLE_DEVICES, so other processes' builds wait too) and
+    holds it until the block ends. The lock goes with the process when it dies."""
+    gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "all").replace(",", "_") or "none"
+    path = Path(config.env("SIM2CHIP_GPU_LOCK_DIR") or tempfile.gettempdir()) / f"sim2chip_gpu_{gpu}.lock"
+    t0 = time.time()
+    with open(path, "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        if (waited := time.time() - t0) > 1:
+            log(f"  {step}: waited {waited:.0f} s for the GPU")
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
 @dataclass
 class Flow:
     d: Path                         # the scene folder
@@ -97,7 +121,8 @@ class Flow:
             env["SSL_CERT_FILE"] = ca
         t0 = time.time()
         logf = self.d / "logs" / f"{step}.log"
-        with open(logf, "w") as fh:
+        turn = gpu_turn(self.log, step) if script in HEAVY else contextlib.nullcontext()
+        with open(logf, "w") as fh, turn:
             try:
                 code = subprocess.run([config.env(PYTHONS[python]), str(STEPS / script), *map(str, args)],
                                       stdout=fh, stderr=subprocess.STDOUT, env=env, cwd=STEPS,
