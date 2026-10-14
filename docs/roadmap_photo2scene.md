@@ -242,6 +242,18 @@ Los árboles y arbustos salen de SAM 3D como bloques verdes y el filtro de parec
 - **Límite conocido**: SAM 3D convierte un bloque largo que se aleja por la calle en una torre estrecha (roads foto 3), y no extrae pretiles ni barandillas.
 - `env_add` tardó 8,5 min la primera vez en una calle arbolada (descarga y proxies de especies nuevas); con la caché caliente, 98 s, de ellos 65 s en las 6 rondas de ajuste con pyrender (sube todas las mallas en cada ronda: se puede acelerar). En Nebius la caché de vegetación de cada trabajo empieza vacía si no se sube al bucket.
 
+### Hallazgos del 2026-10-14 por la tarde (cola de escenas, árboles, esquinas)
+
+- **Cola de escenas** (`8863fba`, sin desplegar): las ejecuciones que renderizan van como tareas a una GPU caliente con Isaac compartida entre trabajos; los pasos pesados se turnan con el cerrojo (`7c283dd`). Medido en Nebius con `roads_cars_nb2` partido en tercios:
+  - Intel `1gpu-8vcpu-32gb`, una construcción por máquina: escena 27-31 min con la GPU al 3-7 %, 1,02-1,15 $ por ejecución.
+  - Intel con dos a la vez: la máquina se quedó sin latido al cargar los dos los 18 GB del borrador; en 32 GB cabe una.
+  - AMD `1gpu-16vcpu-96gb` con tres a la vez: 1,53 $ los tres (0,51 $ cada uno, un 55 % menos), escenas de 31-39 min, RAM media 34 GB. Una vez Nebius no tuvo AMD en 7 min y el respaldo a Intel funcionó.
+  - Propuesta pendiente del usuario: GPU de escenas por defecto la AMD de 96 GB con 3 tareas.
+- **Árboles delante de la cámara** (`b32a69c`): la misma foto daba delta E de 24,6 a 43,1 según lo que viera el segmentador; un árbol de relleno quedaba en el camino de la cámara. Ahora se quita la planta de relleno que la foto contradice: las dos construcciones malas pasan a 19,5 y 20,4. Hoja: `p2s_test/compare/arboles_roads3_2026-10-14.jpg`.
+- **dd42df6 (luz del suelo en la esquina)**: en la foto 24 de macetas no hace nada (la fotometría se revierte, no hay `baked_gain`); en `terrace_row` la calzada sale algo más clara y azulada, sin cambio claro (vistas que pasan: 41 % antes, 35 % después, ruido del VLM). No hace daño; se puede desplegar con lo demás. Hojas: `p2s_test/compare/esquina_dd42df6_photo24.jpg` y `esquina_dd42df6_terrace.jpg`.
+- **Nuevo problema en la esquina**: con `terrace_row` las vistas de la plantilla tienen troncos delante de casi todas las cámaras y sombras muy oscuras; fallan por "floating" y "street_view", y `3.2_extend` tardó 696 s. Pendiente: cámaras de la plantilla de esquinas lejos de los troncos de relleno.
+- Arreglados de paso: `rebrick` con selección vacía (`339e82c`, una de las tres escenas de Nebius se perdió por él), escenas antiguas sin árboles de NVIDIA (`d12684c`), Python de photo2scene en la GPU caliente (`994a067`), GPU caliente muda cancelada a los 5 min (`96c08c4`).
+
 ## Fase J: Cosmos Reason como juez real frente a sintético (usuario, 2026-10-14)
 
 - [ ] **J.1 Probar Cosmos Reason** (NVIDIA, modelo abierto pensado para razonar sobre física y escenas) como juez que valore el parecido entre la foto real y la escena sintética, y compararlo con los jueces actuales:
