@@ -451,6 +451,9 @@ def warm_script(isaac: bool = True) -> str:
         f'{fetch} "$S2C_CODE_URL" /tmp/s2c/code.tgz',
         "tar xzf /tmp/s2c/code.tgz -C /tmp/s2c/code",
         f"export SIM2CHIP_PICODET_PYTHON={KIT_PICODET} SIM2CHIP_PADDLEDET={KIT_PADDLEDET}",
+        # photo2scene's own Pythons, unpacked from the cache bucket when a step first needs one (photo2scene.cloud);
+        # without them the scene GPU's runs failed at the eraser (2026-10-14)
+        f"export SIM2CHIP_SCENE_PYTHON={SCENE_KITS['mesh']} SIM2CHIP_ERASE_PYTHON={SCENE_KITS['erase']}",
         f"export SIM2CHIP_SAM3_PYTHON={KIT_TEACHER} HF_HUB_CACHE=/tmp/s2c/hf SIM2CHIP_WEIGHTS_DIR=/tmp/s2c/weights",
         # Tasks run side by side: TensorFlow must not take the whole GPU at its first use.
         "export TF_FORCE_GPU_ALLOW_GROWTH=true",
