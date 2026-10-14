@@ -68,6 +68,24 @@ def hdri_dir(group: str, d: Path) -> Path:
     return dest
 
 
+GRASS = "leafy_grass"  # Poly Haven's lawn, tinted to each grass band's colour (section_fill.py): flat green bands
+                       # read as no ground at all (pots photo 27, 2026-10-14)
+
+
+def ground_textures(d: Path) -> None:
+    """The texture of the street's grass bands into section.json ("textures": {"grass": path}), fetched once into
+    the cache next to the scenes; without it the bands keep their flat colour."""
+    sec = json.loads((d / "section.json").read_text())
+    if "textures" in sec or not any(b["kind"] == "grass" for b in sec.get("bands", [])):
+        return
+    from .. import polyhaven
+    try:
+        path = polyhaven.download(GRASS, "textures", d.parent.parent / "textures" / "photo2scene")
+    except Exception:  # noqa: BLE001 - no texture, flat colour
+        return
+    (d / "section.json").write_text(json.dumps({**sec, "textures": {"grass": str(path)}}, indent=1))
+
+
 def _phrases(entries) -> str:
     return ",".join(e["phrase"] if isinstance(e, dict) else e for e in entries)
 
@@ -209,6 +227,7 @@ def imitate(flow: Flow, r: dict, keep: list[int]):
                  ["section.json"], must=False)
         if (d / "section.json").exists():
             section = ["--section", d / "section.json"]
+            ground_textures(d)
             # A leafy street under the open country's dry hills looked like no photo (roads, 2026-10-13).
             cover = flow.json("section.json").get("image_cover", {})
             if cover.get("tree", 0) + cover.get("shrub", 0) >= GREEN_COVER:

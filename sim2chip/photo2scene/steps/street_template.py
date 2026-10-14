@@ -25,6 +25,7 @@ import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
 
+import section_fill
 from crossroad import (ASPHALT, BRICKS, ROAD_WORDS, _axis_rotation, affine, lifts, look, photo_keys, quad, rebrick,
                        usd_keys, usd_of)
 
@@ -199,6 +200,11 @@ def main():
             c1 = c0 + s * walk * b
             pieces.append(quad([c1 - span * a, c1 + span * a, c1 + span * a + s * (args.reach - walk) * b,
                                 c1 - span * a + s * (args.reach - walk) * b], colour=land))
+            # The land past the sidewalk is the photo's grass when it has some: textured, not a flat green.
+            tex = section_fill.ground_texture(section, 'grass', land)
+            if tex:
+                k = 2 * span / section_fill.TILE_M, (args.reach - walk) / section_fill.TILE_M
+                pieces[-1].update(texture=tex, uv=[[0, 0], [k[0], 0], [k[0], k[1]], [0, k[1]]])
         pieces.append(quad([c0 - span * a, c0 + span * a, c0 + span * a - args.curb * up,
                             c0 - span * a - args.curb * up], colour=[0.55, 0.54, 0.52]))
     # The photo's own ground seen from above (piece_build.ground_photo) where the photo stands: its side lane and
@@ -209,7 +215,6 @@ def main():
             pieces.append({**p, 'points': (q + (level + 0.06 - q @ up)[:, None] * up).tolist()})
     # The photo's street bands (flow_section.py): its asphalt's colour, grass and sidewalk strips the whole length.
     if section:
-        import section_fill
         pieces[0]['colour'] = [x / 255 for x in section['road']['colour']]
         pieces += section_fill.strips(section, up, lambda X: np.full(len(np.atleast_2d(X)), level), (-span, span))
 

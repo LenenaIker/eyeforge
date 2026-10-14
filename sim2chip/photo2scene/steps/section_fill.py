@@ -3,12 +3,43 @@ NVIDIA asset at the measured spacing, height and cover, kept off the road, the h
 photo already placed; grass and sidewalk bands as ground strips of their colour. Used by env_add.py over the stretch
 the photo sees and by street_template.py over the whole street. Pure numpy over veg_catalog.py's proxies.
 """
+import os
+
 import numpy as np
+from PIL import Image
 
 import veg_catalog
 
 STRIP_LIFT = 0.03  # ground strips this far over the floor, so they do not flicker against it
 GROUND_KINDS = ('grass', 'sidewalk')
+TILE_M = 2.0  # metres one repeat of a ground texture covers
+
+
+def to_linear(c):
+    c = np.asarray(c, float)
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def to_srgb(c):
+    c = np.clip(np.asarray(c, float), 0, 1)
+    return np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)
+
+
+def ground_texture(section, kind, colour):
+    """A copy of the band kind's texture in section['textures'] (place.ground_textures) tinted so its mean is the
+    band's colour (0-1 sRGB): it keeps its grain and takes the photo's tone. Baked in, since RTX ignores a
+    texture's scale (flow_photometry.py), and named by the colour, since Isaac caches textures by path. None
+    without a texture."""
+    path = (section.get('textures') or {}).get(kind)
+    if not path:
+        return None
+    rgb = np.asarray(np.clip(colour, 0, 1), float)
+    out = path.rsplit('.', 1)[0] + '_' + ''.join(f'{int(round(x * 255)):02x}' for x in rgb) + '.jpg'
+    if not os.path.exists(out):
+        im = to_linear(np.asarray(Image.open(path).convert('RGB'), float) / 255)
+        gain = to_linear(rgb) / np.maximum(im.reshape(-1, 3).mean(0), 1e-3)
+        Image.fromarray((to_srgb(im * gain) * 255).round().astype(np.uint8)).save(out, quality=92)
+    return out
 
 
 def pose(base, height, proxy, up, yaw, lean=None):
@@ -69,8 +100,14 @@ def strips(section, up, floor, along):
         lo, hi = band_span(band, edge)
         corners = [at(side * u, v) + STRIP_LIFT * up for u, v in
                    ((lo, along[0]), (lo, along[1]), (hi, along[1]), (hi, along[0]))]
-        out.append({'points': [x.tolist() for x in corners], 'uv': [[0, 0]] * 4, 'texture': None,
-                    'colour': [x / 255 for x in band['colour']], 'band': band['kind']})
+        colour = [x / 255 for x in band['colour']]
+        piece = {'points': [x.tolist() for x in corners], 'uv': [[0, 0]] * 4, 'texture': None, 'colour': colour,
+                 'band': band['kind']}
+        tex = ground_texture(section, band['kind'], colour)
+        if tex:
+            w, ln = (hi - lo) / TILE_M, (along[1] - along[0]) / TILE_M
+            piece.update(texture=tex, uv=[[0, 0], [0, ln], [w, ln], [w, 0]])
+        out.append(piece)
     return out
 
 
