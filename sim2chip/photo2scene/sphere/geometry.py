@@ -1,0 +1,202 @@
+"""S.2 of the sphere route, geometry: the ground plane, the vertical and the scale, and the proxy mesh, from the
+360 distance map (steps/depth.py) and the ground votes (steps/stuff.py). Numpy only.
+
+The plane is fitted by RANSAC on the points SAM 3 calls ground within FIT_RANGE_M of the camera, with a tolerance
+that grows with distance. Its normal is the vertical (a phone's stitcher levels the horizon, so a tilt of more than
+a few degrees means a bad fit or a bad stitch) and the camera's height over it is MoGe-2's metric measure. That is
+the scale unless the user gives a capture height more than HEIGHT_OVERRIDE apart from it (then the user's height
+over the measured one is the scale; within it, MoGe's measure stands, user, 2026-10-16): on the flat
+spheres of 2026-10-16 MoGe said 1.7-1.8 m for a phone held at face height by a 1.85 m tall person. Only the near ground fits: farther away the measured ground rises over the plane, about
+linearly with distance (2-4 degrees on the flat court of 2026-10-16, an angle or depth bias of the stitch or of
+MoGe's merge), and real ground is not always flat (the park's slope).
+
+So the proxy does not replace the ground by the plane: it is the distance map itself as one mesh, every vertex on
+its pixel's ray, which keeps it consistent with the panorama whatever that bias is (an object put on it lands on
+the pixel the ground shows). Ground within NEAR_GROUND_M of the plane is moved onto it along its ray (clean, flat
+shadows; the blur the merge leaves at the foot of cars and walls goes with it), the ground under the capture's lower
+edge is filled with the plane along the rays, sky is left out, and faces across depth jumps are cut (they would hide
+targets and cast false shadows), except between ground pixels, whose distances jump at grazing angles.
+
+Frame: the sphere's (capture.py), levelled: the capture point at the origin, +y down to the plane at
+y = the camera's height, metres.
+
+Once S.3 has erased the objects, the proxy is built again from the depth of the erased panorama (depth_bg.npz),
+brought to the first depth's scale by their median ratio where nothing was erased; the plane and the scale stay
+the first depth's.
+
+Writes in the place folder geometry.json, proxy.npz (vertices, faces, ground: per vertex) and proxy.ply.
+"""
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+from . import capture
+
+GROUND_SHARE = 0.5      # share of the cuts' votes that makes a pixel ground
+FIT_RANGE_M = 10.0      # the plane is fitted on ground nearer than this (MoGe's scale)
+GROUND_TOL = 0.02       # RANSAC inlier distance to the plane, as a share of the point's distance
+MAX_TILT_DEG = 15.0     # a plane tilted more than this from the stitcher's vertical is not taken
+RANSAC_ITERS = 800
+RANSAC_POINTS = 20000
+MESH_STEP = 2           # proxy vertices every MESH_STEP pixels of the distance map (1024 x 512)
+EDGE_RTOL = 0.06        # a face whose corners' distances differ by more than this share crosses a depth jump
+NEAR_GROUND_M = 0.15    # surfaces this close to the plane (or under it) are ground, moved onto it
+MAX_DISTANCE_M = 150.0  # farther surfaces are background only, no proxy
+FILL_MIN_DOWN_DEG = 5.0  # uncaptured rays at least this far below the horizon are filled with the plane
+HEIGHT_OVERRIDE = 0.10  # a given capture height replaces MoGe's when they differ by more than this share
+UP = np.array([0.0, -1.0, 0.0])
+
+
+class GroundError(ValueError):
+    pass
+
+
+def fit_plane(p: np.ndarray) -> tuple[np.ndarray, float]:
+    """Least squares plane n.p + d = 0 through points, n pointing up (towards the camera above it)."""
+    c = p.mean(0)
+    n = np.linalg.svd(p - c, full_matrices=False)[2][-1]
+    if n @ UP < 0:
+        n = -n
+    return n, float(-n @ c)
+
+
+def fit_ground(points: np.ndarray, seed: int = 0) -> dict:
+    """RANSAC plane through ground points (N, 3) seen from the origin: normal (up), the camera's height over it,
+    its tilt from the sphere's vertical, inliers and their median distance to it."""
+    if len(points) < 100:
+        raise GroundError(f"only {len(points)} ground points")
+    rng = np.random.default_rng(seed)
+    sub = points[rng.choice(len(points), min(RANSAC_POINTS, len(points)), replace=False)]
+    tol = GROUND_TOL * np.linalg.norm(sub, axis=1)
+    best, best_count = None, 0
+    cos_max = math.cos(math.radians(MAX_TILT_DEG))
+    for _ in range(RANSAC_ITERS):
+        a, b, c = sub[rng.choice(len(sub), 3, replace=False)]
+        n = np.cross(b - a, c - a)
+        if np.linalg.norm(n) < 1e-9:
+            continue
+        n /= np.linalg.norm(n)
+        if n @ UP < 0:
+            n = -n
+        if n @ UP < cos_max:
+            continue
+        count = int((np.abs(sub @ n - n @ a) < tol).sum())
+        if count > best_count:
+            best, best_count = (n, float(-n @ a)), count
+    if best is None:
+        raise GroundError("no near-level plane among the ground points")
+    n, d = best
+    tol_all = GROUND_TOL * np.linalg.norm(points, axis=1)
+    for _ in range(3):  # refit on the inliers of the whole set
+        inl = np.abs(points @ n + d) < tol_all
+        n, d = fit_plane(points[inl])
+    resid = np.abs(points[inl] @ n + d)
+    return {"normal": n.tolist(), "height_m": d, "tilt_deg": math.degrees(math.acos(min(1.0, float(n @ UP)))),
+            "inliers": round(float(inl.mean()), 3), "residual_m": float(np.median(resid)), "points": len(points)}
+
+
+def levelling(n) -> np.ndarray:
+    """Rotation taking the ground's normal to straight up (Rodrigues)."""
+    n = np.asarray(n, float)
+    v, c = np.cross(n, UP), float(n @ UP)
+    if np.linalg.norm(v) < 1e-12:
+        return np.eye(3)
+    k = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + k + k @ k / (1 + c)
+
+
+def grid_faces(keep: np.ndarray, distance: np.ndarray, smooth: np.ndarray | None = None) -> np.ndarray:
+    """Two triangles per pixel quad of an equirectangular grid (wrapping around), where its four corners are kept
+    and their distances agree within EDGE_RTOL, or all four are `smooth` (ground). Vertex index = row * width +
+    column."""
+    H, W = keep.shape
+    idx = np.arange(H * W).reshape(H, W)
+    a, b = idx[:-1], np.roll(idx, -1, 1)[:-1]       # top-left, top-right
+    c, d = idx[1:], np.roll(idx, -1, 1)[1:]         # bottom-left, bottom-right
+    corners = np.stack([a, b, c, d], -1)
+    dd = distance.ravel()[corners]
+    ok = dd.max(-1) <= dd.min(-1) * (1 + EDGE_RTOL)
+    if smooth is not None:
+        ok |= smooth.ravel()[corners].all(-1)
+    ok &= keep.ravel()[corners].all(-1)
+    q = corners[ok]
+    return np.concatenate([q[:, [0, 2, 1]], q[:, [1, 2, 3]]]).astype(np.int32)
+
+
+def far_rise(points: np.ndarray, n: np.ndarray, h: float, lo: float, hi: float) -> float | None:
+    """Median height of ground points between lo and hi metres over the plane: how far the measured ground drifts
+    from it (MoGe's scale)."""
+    r = np.linalg.norm(points, axis=1)
+    sel = (r >= lo) & (r < hi)
+    return float(np.median(points[sel] @ n + h)) if sel.sum() > 100 else None
+
+
+def write_ply(path: Path, vertices: np.ndarray, faces: np.ndarray) -> None:
+    head = (f"ply\nformat binary_little_endian 1.0\nelement vertex {len(vertices)}\nproperty float x\n"
+            f"property float y\nproperty float z\nelement face {len(faces)}\nproperty list uchar int vertex_indices\n"
+            "end_header\n").encode()
+    f = np.zeros(len(faces), [("n", "u1"), ("v", "<i4", 3)])
+    f["n"], f["v"] = 3, faces
+    Path(path).write_bytes(head + vertices.astype("<f4").tobytes() + f.tobytes())
+
+
+def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | None = None) -> dict:
+    """The ground, scale and proxy of a place whose depth.npz and stuff.npz exist (see the module docstring).
+    capture_height_m: the height the user says the sphere was taken at, if any; it is used only when it differs
+    from MoGe-2's measure by more than HEIGHT_OVERRIDE. proxy_depth: the depth file of the erased panorama, for
+    the proxy (S.3); without it the proxy comes from the first depth."""
+    d = Path(d)
+    depth, stuff = np.load(d / "depth.npz"), np.load(d / "stuff.npz")
+    distance, valid = depth["distance"], depth["valid"]
+    H, W = distance.shape
+    seen = np.asarray(Image.open(d / "seen.png").resize((W, H), Image.Resampling.NEAREST)) > 127
+    ground = (stuff["ground"].astype(np.float32) > GROUND_SHARE) & valid
+    rays = capture.pixel_rays(W, H)
+    points = rays * distance[..., None]
+    near = ground & (distance < FIT_RANGE_M)
+    g = fit_ground(points[near])
+    n, h = np.array(g["normal"]), g["height_m"]
+    g["rise_10_20_m"] = far_rise(points[ground], n, h, 10, 20)
+    given = bool(capture_height_m) and abs(capture_height_m - h) > HEIGHT_OVERRIDE * h
+    height = capture_height_m if given else h
+    scale = height / h
+    R = levelling(n)
+
+    if proxy_depth:
+        bg = np.load(d / proxy_depth)
+        erased = np.asarray(Image.open(d / "erased.png").resize((W, H), Image.Resampling.BILINEAR)) > 0
+        same = valid & bg["valid"] & ~erased
+        ratio = float(np.median(distance[same] / np.maximum(bg["distance"][same], 1e-6)))
+        distance, valid = bg["distance"] * ratio, bg["valid"]
+    s = MESH_STEP
+    ray, dist, ok, grd = rays[::s, ::s], distance[::s, ::s].copy(), valid[::s, ::s], ground[::s, ::s]
+    down = -(ray @ n)  # how steeply each ray points at the plane
+    plane = np.where(down > 1e-6, h / np.maximum(down, 1e-6), np.inf)  # distance along the ray to the plane
+    over = (ray * dist[..., None]) @ n + h
+    snap = ok & (over < NEAR_GROUND_M / scale)
+    fill = ~seen[::s, ::s] & (down > math.sin(math.radians(FILL_MIN_DOWN_DEG)))
+    dist = np.where(snap | fill, plane, dist)
+    is_ground = grd | snap | fill
+    dist_m = dist * scale
+    keep = (ok | fill) & (dist_m < MAX_DISTANCE_M)
+    faces = grid_faces(keep, dist_m, smooth=is_ground)
+    vertices = ((ray * dist_m[..., None]) @ R.T).reshape(-1, 3)
+    used = np.unique(faces)
+    remap = np.full(len(vertices), -1, np.int64)
+    remap[used] = np.arange(len(used))
+    vertices, faces = vertices[used].astype(np.float32), remap[faces].astype(np.int32)
+    np.savez_compressed(d / "proxy.npz", vertices=vertices, faces=faces, ground=is_ground.ravel()[used])
+    write_ply(d / "proxy.ply", vertices, faces)
+    out = {"camera_height_m": round(height, 4), "height_from": "given" if given else "moge",
+           "height_given_m": capture_height_m, "proxy_from": proxy_depth or "depth.npz",
+           "scale": round(scale, 4), "levelling": R.round(6).tolist(),
+           "ground": {k: (round(v, 4) if isinstance(v, float) else v) for k, v in g.items()},
+           "proxy": {"vertices": len(vertices), "faces": len(faces),
+                     "ground_vertices": round(float(is_ground.ravel()[used].mean()), 3)}}
+    (d / "geometry.json").write_text(json.dumps(out, indent=1))
+    return out
