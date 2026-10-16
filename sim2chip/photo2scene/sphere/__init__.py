@@ -31,15 +31,18 @@ GROUND_KINDS = {"road": ("road", "street"), "parking": ("parking lot", "parking 
 SKY_PHRASES = ("sky",)
 
 
+def stuff_args(d: Path) -> list:
+    groups = [a for kind, phrases in GROUND_KINDS.items() for a in ("--group", f"{kind}={','.join(phrases)}")]
+    return ["--dir", d, *groups, "--group", "sky=" + ",".join(SKY_PHRASES), "--union",
+            "ground=" + ",".join(GROUND_KINDS)]
+
+
 def build_geometry(flow: Flow, photosphere: Path, capture_height_m: float | None = None) -> dict:
     """S.1 and S.2 for one place in flow.d: cuts, 360 depth, ground votes, ground plane, scale and proxy. The scale is
     MoGe-2's own unless capture_height_m differs from it by more than 10 % (geometry.HEIGHT_OVERRIDE)."""
     info = capture.prepare(photosphere, flow.d)
     flow.run("sphere_depth", "mesh", str(STEPS / "depth.py"), ["--dir", flow.d], outputs=["depth.npz"])
-    groups = [a for kind, phrases in GROUND_KINDS.items() for a in ("--group", f"{kind}={','.join(phrases)}")]
-    flow.run("sphere_stuff", "sam3", str(STEPS / "stuff.py"),
-             ["--dir", flow.d, *groups, "--group", "sky=" + ",".join(SKY_PHRASES),
-              "--union", "ground=" + ",".join(GROUND_KINDS)], outputs=["stuff.npz"])
+    flow.run("sphere_stuff", "sam3", str(STEPS / "stuff.py"), stuff_args(flow.d), outputs=["stuff.npz"])
     return {**info, "geometry": geometry.solve(flow.d, capture_height_m)}
 
 
@@ -55,5 +58,8 @@ def build_background(flow: Flow, targets: list[str], movables: list[str],
              outputs=["background.jpg", "erase.json"])
     flow.run("sphere_depth_bg", "mesh", str(STEPS / "depth.py"),
              ["--dir", flow.d, "--image", "background.jpg", "--out", "depth_bg.npz"], outputs=["depth_bg.npz"])
+    flow.run("sphere_stuff_bg", "sam3", str(STEPS / "stuff.py"),
+             [*stuff_args(flow.d), "--pano", "background.jpg", "--out", "stuff_bg.npz"], outputs=["stuff_bg.npz"])
     return {"instances": flow.json("instances.json"), "erase": flow.json("erase.json"),
-            "geometry": geometry.solve(flow.d, capture_height_m, proxy_depth="depth_bg.npz")}
+            "geometry": geometry.solve(flow.d, capture_height_m, proxy_depth="depth_bg.npz",
+                                       proxy_stuff="stuff_bg.npz")}

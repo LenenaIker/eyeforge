@@ -145,11 +145,13 @@ def write_ply(path: Path, vertices: np.ndarray, faces: np.ndarray) -> None:
     Path(path).write_bytes(head + vertices.astype("<f4").tobytes() + f.tobytes())
 
 
-def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | None = None) -> dict:
+def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | None = None,
+          proxy_stuff: str | None = None) -> dict:
     """The ground, scale and proxy of a place whose depth.npz and stuff.npz exist (see the module docstring).
     capture_height_m: the height the user says the sphere was taken at, if any; it is used only when it differs
     from MoGe-2's measure by more than HEIGHT_OVERRIDE. proxy_depth: the depth file of the erased panorama, for
-    the proxy (S.3); without it the proxy comes from the first depth."""
+    the proxy (S.3); without it the proxy comes from the first depth. proxy_stuff: the ground votes on the erased
+    panorama, for the proxy's ground (where the erased objects stood is ground now)."""
     d = Path(d)
     depth, stuff = np.load(d / "depth.npz"), np.load(d / "stuff.npz")
     distance, valid = depth["distance"], depth["valid"]
@@ -167,12 +169,15 @@ def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | Non
     scale = height / h
     R = levelling(n)
 
+    ratio = 1.0
     if proxy_depth:
         bg = np.load(d / proxy_depth)
         erased = np.asarray(Image.open(d / "erased.png").resize((W, H), Image.Resampling.BILINEAR)) > 0
         same = valid & bg["valid"] & ~erased
         ratio = float(np.median(distance[same] / np.maximum(bg["distance"][same], 1e-6)))
         distance, valid = bg["distance"] * ratio, bg["valid"]
+    if proxy_stuff:
+        ground = (np.load(d / proxy_stuff)["ground"].astype(np.float32) > GROUND_SHARE) & valid
     s = MESH_STEP
     ray, dist, ok, grd = rays[::s, ::s], distance[::s, ::s].copy(), valid[::s, ::s], ground[::s, ::s]
     down = -(ray @ n)  # how steeply each ray points at the plane
@@ -194,6 +199,8 @@ def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | Non
     write_ply(d / "proxy.ply", vertices, faces)
     out = {"camera_height_m": round(height, 4), "height_from": "given" if given else "moge",
            "height_given_m": capture_height_m, "proxy_from": proxy_depth or "depth.npz",
+           "proxy_depth_ratio": round(ratio, 5),
+           "proxy_ground_from": proxy_stuff or "stuff.npz",
            "scale": round(scale, 4), "levelling": R.round(6).tolist(),
            "ground": {k: (round(v, 4) if isinstance(v, float) else v) for k, v in g.items()},
            "proxy": {"vertices": len(vertices), "faces": len(faces),

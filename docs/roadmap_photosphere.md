@@ -113,11 +113,20 @@ Medidas (2026-10-16, objetivo `car`):
 
 ### S.4 Render (1,5 días)
 
-- [ ] `bg_isaac` generalizado. Cámara con rumbo, inclinación y altura. El fondo es el corte de la panorámica borrada, con los mismos intrínsecos que el render.
-- [ ] El proxy recibe sombras (cociente A/B, como ahora) y tapa los objetivos que quedan detrás: la composición respeta la profundidad.
-- [ ] Luz: la panorámica en HDR lineal como DomeLight, más el sol ajustado en la réplica.
-- [ ] Retoque de cámara según el perfil de hardware: desenfoque, ruido, color, JPEG. Alhaija: 43,8 → 49,7 AP50.
-- Check: vistas giradas con un coche puesto a mano en cada esfera.
+- [x] Render diferencial generalizado a una cámara que gira (`sphere/render_plan.py` en el entorno principal, `sphere/steps/render.py` en Isaac). Rumbo e inclinación en el marco nivelado. El fondo es el corte de la panorámica borrada a lo largo de los mismos rayos, con los mismos intrínsecos que el render. Pasadas B (sin objetos) y A (con ellos); fondo × A/B y objetos a la exposición que lleva B al fondo.
+- [x] El proxy lleva como albedo el color de la panorámica con el color de la luz del cielo dividido (sin eso, el tono del cielo volvía dos veces y los coches salían cálidos y saturados). Recibe sombras y tapa lo que queda detrás. El cociente A/B se calcula sobre las pasadas suavizadas y vale 1 donde B es casi negro (el ruido de dos renders se disparaba).
+- [x] Luz: domo del color medio del cielo (Alhaija: la panorámica correcta apenas importa) más el sol cuando está arriba. La posición del sol sale de GPS, hora y rumbo de brújula (`sphere/sun.py`); su intensidad se ajusta en S.5. Las esferas del 16 se hicieron con el sol ya puesto (−0,1 a −1,9°).
+- [x] Path tracing por defecto: con luz de cielo sombrea mejor los coches y cuesta 0,3 s por vista en la 3090.
+- [x] Retoque de cámara por perfil (`sphere/camera_fx.py`). ESP32-CAM: OV2640 de 66°, RGB565 a QVGA (como lee nuestro firmware), desenfoque, aberración, ruido y dominante. Móvil: ruido ligero y JPEG. Los rangos son una primera estimación: hay que medirlos en las fotos del usuario (S.5).
+- [x] Colocación sobre el suelo medido: el centro se busca entre los píxeles de suelo del rumbo, y la huella entera del objeto (rejilla sobre su rectángulo) debe ser suelo y estar a la profundidad esperada a la altura del centro (`render_plan.Ground`). Con el plano fallaba por la deriva del suelo lejano, y con solo ±1 m el coche se metía en bordillos y fachadas.
+- [x] Check: `experiments/sphere/s4_sheet.py`, hojas en `data/sphere_test/sheet_s4_*.jpg` (2026-10-16).
+
+Hallazgos y pendientes:
+- Los USD de Objaverse convertidos antes del 2026-10-01 llevan rutas absolutas a `datasets/nvidia/usd/raw`, que ya no existe. `render_plan.resolve_asset` escribe una copia con la referencia buena, sin tocar los datos.
+- La escala de `assets.json` no vale para los envoltorios (ya están en metros). El render escala cada asset a su longitud real (`size_m`) midiendo su caja.
+- La calidad de los assets manda. Varios coches del catálogo local salen grises, de pocos polígonos o transparentes (`5639713f`, `ed4d1dca`, `b8b5705f`). La clase `small_vehicle` incluye carritos de golf. En el producto, los objetivos vienen de `fetch_assets` y `qa_assets` (P.5).
+- Park no encuentra sitio para un coche: su suelo es una loma y la huella se comprueba a la altura del centro. Falta inclinar el objeto según el terreno.
+- Las sombras de contacto con luz de cielo salen suaves. Hay que compararlas con las reales en la réplica (S.5).
 
 ### S.5 Imitación como control (0,5 día)
 
