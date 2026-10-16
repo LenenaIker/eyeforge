@@ -107,3 +107,27 @@ def test_a_bowed_wall_comes_out_straight_and_on_its_rays():
     z = (rays * out[..., None])[..., 2][moved]
     assert moved.sum() > 0.9 * ahead.sum() and np.ptp(z) < 0.02  # straight, within 2 cm
     assert abs(np.median(z) - 6.07) < 0.06
+
+
+def test_a_wall_takes_the_distance_of_its_base_on_the_flat_ground():
+    """A wall 8 m to the side standing on paved ground, seen by MoGe 15 % short at its ends as on corner_cars: the
+    ground goes to the plane and the wall to the distance where its base meets it."""
+    W, H = 512, 256
+    h = 1.7
+    rays = capture.pixel_rays(W, H)
+    hor = np.hypot(rays[..., 0], rays[..., 2])
+    right = rays[..., 0] > 0.5  # the side facing +x
+    t_wall = 8.0 / np.maximum(rays[..., 0], 1e-6)  # where the ray meets the wall x = 8
+    t_ground = h / np.maximum(rays[..., 1], 1e-6)
+    wall = right & ((rays[..., 1] <= 0) | (t_wall < t_ground))
+    paved = right & ~wall & (rays[..., 1] > 0)
+    true = np.where(wall, t_wall, np.where(paved, t_ground, 0.0))
+    yaw = np.degrees(np.arctan2(rays[..., 0], rays[..., 2]))
+    moge = true * (1 - 0.15 * np.abs(yaw - 90) / 60)  # shortened towards the oblique ends
+    valid = wall | paved
+    out, flat = geometry.flat_ground(moge, rays, paved, h)
+    out, on, per_col = geometry.contact_distances(out, rays, wall, paved, valid, h)
+    near = valid & (true * hor < geometry.CONTACT_MAX_M)
+    assert np.allclose(out[flat], true[flat], rtol=1e-6)
+    err = np.abs(out[on & near] / true[on & near] - 1)
+    assert on[wall & near].mean() > 0.9 and np.median(err) < 0.02  # the wall back where it stands, within 2 %

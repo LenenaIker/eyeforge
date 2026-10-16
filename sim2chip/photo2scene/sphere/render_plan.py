@@ -159,18 +159,22 @@ GROUND_SEARCH_DEG = (2.0, 45.0)  # depressions below the horizon searched for gr
 
 
 class Ground:
-    """The erased panorama's measured ground, for putting objects on it: its depth (depth_bg.npz at the proxy's
-    scale) and SAM 3's ground votes on it (stuff_bg.npz)."""
+    """The erased panorama's ground, for putting objects on it: the proxy's distances and ground (proxy_distance.npz,
+    after the ground-contact correction), else the raw depth (depth_bg.npz) and SAM 3's votes (stuff_bg.npz)."""
 
     def __init__(self, d: Path):
         d = Path(d)
         geo = json.loads((d / "geometry.json").read_text())
         self.R, self.h = np.array(geo["levelling"]), geo["camera_height_m"]
-        bg = np.load(d / "depth_bg.npz")
-        self.dist = bg["distance"] * geo["scale"] * geo.get("proxy_depth_ratio", 1.0)
+        if (d / "proxy_distance.npz").exists():  # the proxy's own distances, corrected by the ground contact
+            px = np.load(d / "proxy_distance.npz")
+            self.dist, self.floor = px["distance"], px["ground"] & px["valid"]
+        else:
+            bg = np.load(d / "depth_bg.npz")
+            self.dist = bg["distance"] * geo["scale"] * geo.get("proxy_depth_ratio", 1.0)
+            votes = d / "stuff_bg.npz" if (d / "stuff_bg.npz").exists() else d / "stuff.npz"
+            self.floor = (np.load(votes)["ground"].astype(np.float32) > 0.5) & bg["valid"]
         self.H, self.W = self.dist.shape
-        votes = d / "stuff_bg.npz" if (d / "stuff_bg.npz").exists() else d / "stuff.npz"
-        self.floor = (np.load(votes)["ground"].astype(np.float32) > 0.5) & bg["valid"]
 
     def look(self, p_level: np.ndarray):
         """For points of the levelled frame: whether their pixel is ground, and the measured distance there."""

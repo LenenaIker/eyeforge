@@ -72,6 +72,18 @@ WALL_MAX_MOVE = 0.06       # a point moves onto its wall at most this share of i
 WALL_GAP_M = 1.5           # a wall is one stretch: a gap this wide along its line ends it
 WALL_MAX_DIST_M = 40.0     # farther, the depth is too rough to tell a wall from a row of things
 WALL_MIN_INCIDENCE = 0.2   # rays grazing a wall (|cos| under this) are left as they were
+# Distances from the ground contact (single view metrology: Criminisi et al. 2000, Hoiem et al. 2006). MoGe
+# shortens far and oblique distances (corner_cars 2026-10-17: 94-96 % of the true distance in front of the camera,
+# 75-83 % at a wall's oblique ends), which bowed straight walls and lifted the far ground. Paved ground is taken as
+# flat and becomes the ruler: its distance is where its ray meets the plane, and a wall, fence or facade standing on
+# it takes, down its whole column, the horizontal distance of the point where its base meets it.
+PAVED = ("road", "parking", "sidewalk", "floor")  # ground kinds taken as flat (grass may slope: MoGe stays there)
+CONTACT_MAX_M = 25.0       # farther, one pixel of error in the base is metres: MoGe stays
+CONTACT_GAP_PX = 3         # ground this close under a structure run (mesh pixels) is the run's base
+CONTACT_SMOOTH = 9         # columns: running median of the contact distance along a wall (a pixel at 10 m ~ 4 %)
+CONTACT_FILL = 20          # columns: shorter gaps along a wall (a lamp post, a tree) take their neighbours'
+CONTACT_JUMP = 0.15        # neighbouring columns whose contacts differ more are different walls
+CONTACT_RATIO = (0.7, 1.6)  # a contact distance this far from MoGe's is a wrong contact: MoGe stays
 UP = np.array([0.0, -1.0, 0.0])
 
 
@@ -243,6 +255,91 @@ def straighten(dist_m: np.ndarray, rays_level: np.ndarray, walls: list[dict]) ->
     return out.reshape(dist_m.shape), moved.reshape(dist_m.shape)
 
 
+def pool(m: np.ndarray, s: int) -> np.ndarray:
+    """A map averaged over s x s blocks (the votes at the mesh's resolution, still soft)."""
+    H, W = m.shape[0] // s * s, m.shape[1] // s * s
+    return m[:H, :W].astype(np.float32).reshape(H // s, s, W // s, s).mean((1, 3))
+
+
+def flat_ground(dist_m: np.ndarray, rays_level: np.ndarray, paved: np.ndarray, height: float):
+    """Paved ground at the distance where its ray meets the plane (up to CONTACT_MAX_M): new distances and the
+    mask of the pixels set."""
+    ry = rays_level[..., 1]
+    hor = np.hypot(rays_level[..., 0], rays_level[..., 2])
+    use = paved & (ry > 0) & (height * hor < CONTACT_MAX_M * np.maximum(ry, 1e-9))
+    return np.where(use, height / np.maximum(ry, 1e-9), dist_m), use
+
+
+def runs(col: np.ndarray) -> list[tuple[int, int]]:
+    """(first, last) rows of each run of True in a column."""
+    k = np.flatnonzero(np.diff(np.concatenate([[0], col.astype(np.int8), [0]])))
+    return list(zip(k[::2], k[1::2] - 1))
+
+
+def smooth_along(inv: np.ndarray) -> np.ndarray:
+    """1/D along the columns (wrapping): gaps up to CONTACT_FILL between agreeing walls filled linearly, then a
+    running median of CONTACT_SMOOTH inside each wall (a jump of CONTACT_JUMP starts another)."""
+    W = len(inv)
+    out = inv.copy()
+    have = np.flatnonzero(~np.isnan(inv))
+    if len(have) < 2:
+        return out
+    for a, b in zip(have, np.roll(have, -1)):
+        gap = (b - a) % W
+        if 1 < gap <= CONTACT_FILL and abs(inv[b] / inv[a] - 1) < CONTACT_JUMP:
+            for k in range(1, gap):
+                out[(a + k) % W] = inv[a] + (inv[b] - inv[a]) * k / gap
+    sm = out.copy()
+    r = CONTACT_SMOOTH // 2
+    for x in np.flatnonzero(~np.isnan(out)):
+        win = out[[(x + k) % W for k in range(-r, r + 1)]]
+        win = win[~np.isnan(win) & (np.abs(win / out[x] - 1) < CONTACT_JUMP)]
+        sm[x] = np.median(win)
+    return sm
+
+
+def contact_distances(dist_m: np.ndarray, rays_level: np.ndarray, structure: np.ndarray, paved: np.ndarray,
+                      valid: np.ndarray, height: float):
+    """Each column's structure standing on paved ground at the horizontal distance of its base (see PAVED). Per
+    column, the lowest structure run whose base lies within CONTACT_GAP_PX of paved ground; the contact is taken
+    halfway between the run's last row and the ground's first. Returns the new distances, the mask of pixels set
+    and the per-column contact distances (horizontal, metres; NaN where none)."""
+    H, W = dist_m.shape
+    hor = np.hypot(rays_level[..., 0], rays_level[..., 2])
+    inv = np.full(W, np.nan)
+    span = [None] * W
+    for x in range(W):
+        for top, bottom in reversed(runs(structure[:, x] & valid[:, x])):
+            below = np.flatnonzero(paved[bottom + 1:bottom + 1 + CONTACT_GAP_PX, x])
+            if not len(below):
+                continue
+            g = bottom + 1 + below[0]
+            r = rays_level[bottom, x] + rays_level[g, x]
+            r /= np.linalg.norm(r)
+            if r[1] <= 0:
+                break
+            D = height * math.hypot(r[0], r[2]) / r[1]
+            moge = np.median(dist_m[top:bottom + 1, x] * hor[top:bottom + 1, x])
+            if D < CONTACT_MAX_M and CONTACT_RATIO[0] <= D / max(moge, 1e-6) <= CONTACT_RATIO[1]:
+                inv[x], span[x] = 1 / D, (top, bottom)
+            break
+    sm = smooth_along(inv)
+    out, set_ = dist_m.copy(), np.zeros_like(valid)
+    for x in np.flatnonzero(~np.isnan(sm)):
+        if span[x] is None:  # a filled gap: the structure between its neighbours' rows
+            near = [span[(x + k) % W] for k in range(-CONTACT_FILL, CONTACT_FILL + 1) if span[(x + k) % W]]
+            if not near:
+                continue
+            top, bottom = min(t for t, _ in near), max(b for _, b in near)
+            rows = np.arange(top, bottom + 1)
+            rows = rows[structure[rows, x] & valid[rows, x]]
+        else:
+            rows = np.arange(span[x][0], span[x][1] + 1)
+        out[rows, x] = (1 / sm[x]) / np.maximum(hor[rows, x], 1e-6)
+        set_[rows, x] = True
+    return out, set_, np.where(np.isnan(sm), np.nan, 1 / sm)
+
+
 def far_rise(points: np.ndarray, n: np.ndarray, h: float, lo: float, hi: float) -> float | None:
     """Median height of ground points between lo and hi metres over the plane: how far the measured ground drifts
     from it (MoGe's scale)."""
@@ -261,7 +358,7 @@ def write_ply(path: Path, vertices: np.ndarray, faces: np.ndarray) -> None:
 
 
 def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | None = None,
-          proxy_stuff: str | None = None, straighten_walls: bool = True) -> dict:
+          proxy_stuff: str | None = None, straighten_walls: bool = True, contacts: bool = True) -> dict:
     """The ground, scale and proxy of a place whose depth.npz and stuff.npz exist (see the module docstring).
     capture_height_m: the height the user says the sphere was taken at, if any; it is used only when it differs
     from MoGe-2's measure by more than HEIGHT_OVERRIDE. proxy_depth: the depth file of the erased panorama, for
@@ -304,9 +401,19 @@ def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | Non
     dist = np.where(snap | fill, plane, dist)
     is_ground = grd | snap | fill
     dist_m = dist * scale
+    rays_level = ray @ R.T
+    contact = {}
+    if contacts and all(k in stuff for k in (*PAVED, "structure")):
+        paved = np.max([pool(stuff[k], s) for k in PAVED], 0) > GROUND_SHARE
+        paved &= ok[:paved.shape[0], :paved.shape[1]]
+        structure = pool(stuff["structure"], s) > STRUCTURE_SHARE
+        dist_m, flat = flat_ground(dist_m, rays_level, paved, height)
+        is_ground |= flat
+        dist_m, on_contact, per_col = contact_distances(dist_m, rays_level, structure & ~is_ground, paved, ok, height)
+        contact = {"paved_px": int(flat.sum()), "structure_px": int(on_contact.sum()),
+                   "columns": int(np.isfinite(per_col).sum())}
     walls = []
     if straighten_walls:
-        rays_level = ray @ R.T
         P = rays_level * dist_m[..., None]
         candidate = ok & ~is_ground & (dist_m < WALL_MAX_DIST_M) & (height - P[..., 1] > WALL_MIN_HEIGHT_M)
         normals = grid_normals(P)
@@ -323,6 +430,9 @@ def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | Non
     remap[used] = np.arange(len(used))
     vertices, faces = vertices[used].astype(np.float32), remap[faces].astype(np.int32)
     np.savez_compressed(d / "proxy.npz", vertices=vertices, faces=faces, ground=is_ground.ravel()[used])
+    # The corrected distances on the mesh grid (pano frame rays, metres), for placing objects on the same ground.
+    np.savez_compressed(d / "proxy_distance.npz", distance=dist_m.astype(np.float32), valid=ok | fill,
+                        ground=is_ground, step=s)
     write_ply(d / "proxy.ply", vertices, faces)
     out = {"camera_height_m": round(height, 4), "height_from": "given" if given else "moge",
            "height_given_m": capture_height_m, "proxy_from": proxy_depth or "depth.npz",
@@ -330,6 +440,7 @@ def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | Non
            "proxy_ground_from": proxy_stuff or "stuff.npz",
            "scale": round(scale, 4), "levelling": R.round(6).tolist(),
            "ground": {k: (round(v, 4) if isinstance(v, float) else v) for k, v in g.items()},
+           "contact": contact,
            "walls": [{k: v for k, v in w.items() if k != "points"} | {"vertices": len(w["points"])}
                      for w in walls],
            "proxy": {"vertices": len(vertices), "faces": len(faces),
