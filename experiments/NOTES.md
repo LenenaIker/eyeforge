@@ -772,3 +772,11 @@ De principio a fin (E.3), bottles_few (8 fotos, contar), ruta de soporte, foto 4
 - Los pasos van algo más lentos que en la 3090 (Isaac 174 s frente a 133; S.4 assets 158 frente a 14, por cargar SAM 3 desde un disco lento). Lo que más pesa es descomprimir el kit mesh en el nodo (168 s; 18 s en local).
 - Calle (`SIM2CHIP_STREET_ROUTE=1`): no probada; está apagada por decisión del usuario y no aporta nada a medir aquí.
 - Gasto de la fase: unos 6,4 $ en 10 trabajos (4 fallaron por cosas que no se veían en local: diffusers pregunta al Hub con un modelo por id aun sin conexión, faltaban las notas .md de los pasos en el código enviado, SAM 3D baja MoGe v1 por su cuenta, y `--from` tras cancelar dejó etapas sin sus salidas).
+
+## Nemotron 3.5 Super VL (2026-10-16)
+
+Salió el 2026-10-15 y ya está en Token Factory (`nvidia/Nemotron-3.5-Super-VL`). Es el primer Nemotron de Token Factory que acepta imágenes. Primera prueba barata (unos 0,10 $ en total):
+
+- **Entrevista** (`interview_bench`, brazo `NV`: VL para todo con `SYSTEM_LEAN`, 6 personas x 2): 11/12 specs correctos (el fallo: `errors balanced` en cat), 0,17 specs rechazados, 13,1 s y 0,0038 $ por entrevista. Comparación: L (Super, prompt corto) 14/18, 0,11 rechazados, 11,8 s, 0,0026 $; K (Kimi conversa y Super escribe el spec) 15/18, 157 s, 0,07 $. El banco simula el análisis de fotos: no mide aún que la entrevista mire las fotos ella misma.
+- **Perfil de escena** (`scene_profile.describe`, 9 fotos de `data/street_test`): Kimi K2.6 86 s y 59k tokens de salida; VL 34 s y 31k. Mismo contexto y luz; altura de cámara igual. VL ve los coches pequeños del fondo que Kimi da por ausentes (terrace_row, corner_timber), pero inventa dos personas donde hay un perro (straight_whitewash) y llama bicicleta a un scooter (facade_car). Kimi da 3 m de distancia en una calle larga (whitewash); VL 20.
+- **vlm_scene** (tamaños con verdad, sin SAM): botellas error mediano 0,134 (Kimi K2.6 0,056, GLM 0,0); hope_val1 0,203 (Kimi 0,21); sesgo de escala 1,16 a 1,38 (Kimi K2.6 1,02 a 1,21). Con 8192 tokens se queda sin respuesta en 2 de 4 casos: necesita los 16384 de `REASONING_TOKENS`.

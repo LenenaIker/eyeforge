@@ -81,6 +81,13 @@ def test_model_selection(server, monkeypatch):
     assert c.model_for("describe") == "openbmb/MiniCPM-V-4_5"
     monkeypatch.setenv("SIM2CHIP_VISION_MODEL", "x/y")
     assert c.model_for("vision") == "x/y"
+    # The interviewer: Nemotron 3.5 Super VL when listed, else Super.
+    for role in ("INTERVIEW", "SCENE"):
+        monkeypatch.delenv(f"SIM2CHIP_{role}_MODEL", raising=False)
+    assert c.model_for("interview") == "nvidia/nemotron-3-super-120b-a12b"
+    c._models = c.models() + ["nvidia/Nemotron-3.5-Super-VL"]
+    assert c.model_for("interview") == "nvidia/Nemotron-3.5-Super-VL"
+    assert c.model_for("scene") == "nvidia/Nemotron-3.5-Super-VL"
 
 
 def test_parse_json_variants():

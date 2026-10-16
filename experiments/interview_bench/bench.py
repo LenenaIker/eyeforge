@@ -44,6 +44,7 @@ JUDGE_MODEL = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 ULTRA = "nvidia/Nemotron-3-Ultra-550b-a55b"
 KIMI = "moonshotai/Kimi-K2.6"
 QWEN = "Qwen/Qwen3.5-397B-A17B"
+NVL = "nvidia/Nemotron-3.5-Super-VL"
 MAX_USER_TURNS = 14
 # Reasoning models other than Super: more room, so a long reasoning is not cut (finish "length") and a slow answer
 # is not retried at the client's 120 s.
@@ -85,6 +86,9 @@ VARIANTS = {
     # The short system prompt without the scene template's parts (interview.SYSTEM_LEAN, 2026-10-13).
     "S13": {"desc": "Nemotron 3 Super, full system prompt, code of 2026-10-13 (L's control)"},
     "L": {"desc": "Nemotron 3 Super with the short system prompt (SYSTEM_LEAN)", "lean": True},
+    # Nemotron 3.5 Super VL (out 2026-10-15): one NVIDIA model that could also see the photos itself.
+    "NV": {"desc": "Nemotron 3.5 Super VL for everything, short system prompt", "model": NVL, "lean": True,
+           "interview": ROOMY},
     "L2": {"desc": "L, the photo analysis note also gives the camera's downward pitch", "lean": True},
 }
 

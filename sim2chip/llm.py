@@ -31,7 +31,10 @@ DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 # Preferred model families per role, matched against the live /models list (ids change over time).
 PREFERENCES = {
     "text": [r"nemotron-3-super", r"nemotron-3.*nano-30b", r"nemotron"],
-    # Holds the interview's conversation; Nemotron ("text") still writes the spec (interview.SPLIT_NOTE).
+    # The interviewer, conversation and spec alike (user, 2026-10-16): Nemotron 3.5 Super VL, one NVIDIA model
+    # that also sees photos. interview_bench arm NV: 11/12 right specs, 13 s, 0.004 $ (experiments/NOTES.md).
+    "interview": [r"nemotron.*super.*vl", r"nemotron-3-super"],
+    # Kimi K2.6 conversing while Nemotron wrote the spec (interview.SPLIT_NOTE), the interview until 2026-10-16.
     "chat": [r"Kimi-K2\.6", r"nemotron-3-super"],
     # No Nemotron on Token Factory accepts images (checked 2026-09-24); prefer one if it appears. GLM-5.3-Flash
     # agreed best with the human asset review (88.9%), see experiments/NOTES.md.
@@ -42,7 +45,9 @@ PREFERENCES = {
     # Kimi 11 s for 6 photos, GLM timed out on all). 2026-09-30, one facade photo: Kimi-K2.6
     # 10 s and right (brick facade, two balconies, several pots), MiniCPM-V 1.5 s but saw one pot on a railing,
     # gemma-3-27b 86 s, GLM-5.3-Flash no answer in 120 s.
-    "scene": [r"nemotron.*omni", r"Kimi-K2\.6", r"GLM-5\.3-Flash", r"MiniCPM-V"],
+    # 2026-10-16, 9 street photos: Nemotron 3.5 Super VL 34 s against Kimi's 86 s, same reading of place and light,
+    # sees small far cars Kimi missed, but once saw people where a dog was (experiments/NOTES.md). User's choice.
+    "scene": [r"nemotron.*super.*vl", r"nemotron.*omni", r"Kimi-K2\.6", r"GLM-5\.3-Flash", r"MiniCPM-V"],
     # Renders beside photos: a strong vision model. Its differences go to the biggest Nemotron to reason on.
     # Kimi-K2.6: as concrete as K3 and 30 s instead of 4 to 24 min per comparison (2026-09-29).
     "compare": [r"nemotron.*omni", r"Kimi-K2\.6", r"Kimi-K3", r"GLM-5\.3-Flash"],

@@ -21,7 +21,7 @@ Proyecto para el **Nebius x NVIDIA Global AI Hackathon** (https://nebiusglobalai
 
 Detalle, subprocesos opcionales y tareas abiertas en `TODO.md`.
 
-1. **Entrevista inicial (Nemotron, Token Factory)**: preguntas al usuario para fijar el spec del dataset (clases, iluminación, tiempo, entorno, cámara, detalles como personas montadas en motos, hardware objetivo). Sale un spec estructurado.
+1. **Entrevista inicial (Nemotron 3.5 Super VL, Token Factory)**: un solo modelo conversa, escribe el spec y mira la muestra de fotos del usuario (usuario, 2026-10-16; sustituye a Kimi conversando y Super escribiendo el spec). Preguntas al usuario para fijar el spec del dataset (clases, iluminación, tiempo, entorno, cámara, detalles como personas montadas en motos, hardware objetivo). Sale un spec estructurado.
 2. **Datos propios del usuario (opcional)**: etiquetados se usan directos; crudos los etiqueta un profesor elegido por tarea (benchmark en `docs/profesor_modelos.md`): SigLIP 2 para clasificar (aprende el criterio del usuario de unas pocas correcciones, decisión 2026-09-30), SAM 3 para contar (umbral según la preferencia de errores) y Molmo2-8B para seguir líneas o caminos (señala el punto lejano; centro calibrado con unas pocas fotos del usuario; comparativa en `experiments/NOTES.md`, decisión 2026-10-03). Los modelos siempre eligen una de las clases del usuario, nunca "duda" ni una clase de fondo inventada si las clases cubren toda la foto (usuario, 2026-09-30). Se reparten en train, validación y test.
 3. **Generación sintética**: Isaac Sim (Replicator, headless) guiado por el spec. Assets de Objaverse-LVIS. Opcional: Cosmos para realismo.
 4. **Control de calidad**: Nemotron VL filtra assets y renders malos.

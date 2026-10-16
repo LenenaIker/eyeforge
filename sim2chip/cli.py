@@ -87,7 +87,7 @@ def cmd_interview(args) -> int:
 
     home = Path(args.home)
     client = Client(usage_log=home / "logs" / "llm_usage.jsonl")
-    model = client.model_for("text")
+    model = client.model_for("interview")
     print(f"EyeForge interview with {model} (Nebius Token Factory). Ctrl+C to quit.\n")
     objaverse_dir = home / "cache" / "objaverse"
     cats = interview.CategoryIndex(cache_dir=objaverse_dir, live=interview.live_searcher(objaverse_dir))

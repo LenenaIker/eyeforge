@@ -1197,10 +1197,11 @@ class Session:
 
         # Full reasoning, T 0.3: in experiments/interview_bench (2026-10-03, 20 interviews each) low effort, no
         # reasoning and T 1.0 all gave more rejected specs or wrong fields. No answer reached 4096 tokens; 8192
-        # is headroom, as reasoning counts inside max_tokens.
+        # is headroom, as reasoning counts inside max_tokens. Nemotron 3.5 Super VL reasons longer: 16384, as in
+        # interview_bench arm NV (2026-10-16).
         if not self.chat_model:
             return self.client.chat(self.messages, self.model, purpose="interview", temperature=0.3,
-                                    max_tokens=8192)
+                                    max_tokens=16384)
         text = self.client.chat(self.messages, self.chat_model, purpose="interview", temperature=0.3, **CHAT_CALL)
         try:
             action = parse_json(text)
