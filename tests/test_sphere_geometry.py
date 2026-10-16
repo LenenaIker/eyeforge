@@ -88,3 +88,22 @@ def test_the_proxy_can_come_from_the_erased_depth_at_the_first_scale(tmp_path):
     again = geometry.solve(tmp_path, proxy_depth="depth_bg.npz")
     assert again["proxy_from"] == "depth_bg.npz" and again["scale"] == first["scale"]
     assert np.allclose(np.load(tmp_path / "proxy.npz")["vertices"], v1, atol=1e-4)
+
+
+def test_a_bowed_wall_comes_out_straight_and_on_its_rays():
+    """A wall 6 m ahead, bowed 15 cm in the middle as MoGe's merge leaves it: found and moved onto a plane, each
+    point along its own ray."""
+    W, H = 512, 256
+    rays = capture.pixel_rays(W, H)
+    ahead = (rays[..., 2] > 0.6) & (np.abs(rays[..., 1]) < 0.4)
+    x = rays[..., 0] / np.maximum(rays[..., 2], 1e-6) * 6.0  # where each ray meets the plane z = 6
+    bow = 0.15 * np.clip(1 - (x / 4) ** 2, 0, 1)  # the middle 15 cm farther, the ends on the plane
+    dist = np.where(ahead, (6.0 + bow) / np.maximum(rays[..., 2], 1e-6), 0.0)
+    P = rays * dist[..., None]
+    normals = geometry.grid_normals(P)
+    walls = geometry.fit_walls(P, normals, ahead & (np.abs(normals[..., 1]) < geometry.WALL_MAX_UP))
+    assert len(walls) == 1 and abs(abs(walls[0]["normal"][2]) - 1) < 0.01
+    out, moved = geometry.straighten(dist, rays, walls)
+    z = (rays * out[..., None])[..., 2][moved]
+    assert moved.sum() > 0.9 * ahead.sum() and np.ptp(z) < 0.02  # straight, within 2 cm
+    assert abs(np.median(z) - 6.07) < 0.06

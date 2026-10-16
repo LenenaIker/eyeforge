@@ -20,6 +20,11 @@ targets and cast false shadows), except between ground pixels, whose distances j
 Frame: the sphere's (capture.py), levelled: the capture point at the origin, +y down to the plane at
 y = the camera's height, metres.
 
+Big vertical planes (walls, facades) are straightened the same way: found by RANSAC among the points whose normal
+is horizontal and that SAM 3 calls building, wall or fence (never trees or hedges), seen from above as lines (the
+vertical is known), and their points moved onto them along their rays.
+MoGe's per-view bias, spread by the merge, bowed straight walls by 1-2 % of their distance.
+
 Once S.3 has erased the objects, the proxy is built again from the depth of the erased panorama (depth_bg.npz),
 brought to the first depth's scale by their median ratio where nothing was erased; the plane and the scale stay
 the first depth's.
@@ -49,6 +54,24 @@ NEAR_GROUND_M = 0.15    # surfaces this close to the plane (or under it) are gro
 MAX_DISTANCE_M = 150.0  # farther surfaces are background only, no proxy
 FILL_MIN_DOWN_DEG = 5.0  # uncaptured rays at least this far below the horizon are filled with the plane
 HEIGHT_OVERRIDE = 0.10  # a given capture height replaces MoGe's when they differ by more than this share
+# Walls: big vertical planes found in the proxy and straightened (user, 2026-10-17: straight walls came out bowed,
+# 1-2 % of their distance, from MoGe's per-view bias spread by the merge).
+WALL_MAX_UP = 0.3          # a point's normal with |vertical part| under this is on a vertical surface
+WALL_MIN_HEIGHT_M = 0.3    # wall points stand this much over the ground (kerbs and bases are left alone)
+STRUCTURE_SHARE = 0.5      # and SAM 3 calls them building, wall or fence (stuff.py's "structure" votes)
+WALL_TOL = 0.03            # RANSAC inlier distance to a wall, as a share of the point's horizontal distance
+WALL_TOL_MIN_M = 0.08      # but never under this
+WALL_NORMAL_AGREE = 0.85   # a wall point's normal within about 30 degrees of the wall's
+WALL_MIN_POINTS = 300      # fewer proxy vertices (at MESH_STEP) is not a wall worth straightening (a 1 m wall
+                           # 13 m away has a few hundred; SAM 3's structure votes keep trees out)
+WALL_MIN_SPAN_M = (3.0, 0.6)  # nor is one narrower or lower than this (width along it, height; a court's low
+                              # surrounding wall is about 1 m)
+MAX_WALLS = 12
+WALL_ITERS = 400
+WALL_MAX_MOVE = 0.06       # a point moves onto its wall at most this share of its distance
+WALL_GAP_M = 1.5           # a wall is one stretch: a gap this wide along its line ends it
+WALL_MAX_DIST_M = 40.0     # farther, the depth is too rough to tell a wall from a row of things
+WALL_MIN_INCIDENCE = 0.2   # rays grazing a wall (|cos| under this) are left as they were
 UP = np.array([0.0, -1.0, 0.0])
 
 
@@ -128,6 +151,96 @@ def grid_faces(keep: np.ndarray, distance: np.ndarray, smooth: np.ndarray | None
     return np.concatenate([q[:, [0, 2, 1]], q[:, [1, 2, 3]]]).astype(np.int32)
 
 
+def grid_normals(P: np.ndarray) -> np.ndarray:
+    """Unit normals of an equirectangular point grid (H, W, 3), from its neighbours (wrapping around); the sign
+    is arbitrary."""
+    dx = np.roll(P, -1, 1) - np.roll(P, 1, 1)
+    dy = np.zeros_like(P)
+    dy[1:-1] = P[2:] - P[:-2]
+    n = np.cross(dy, dx)
+    return n / np.maximum(np.linalg.norm(n, axis=-1, keepdims=True), 1e-9)
+
+
+def fit_walls(P: np.ndarray, normals: np.ndarray, candidate: np.ndarray, seed: int = 0) -> list[dict]:
+    """Vertical planes through candidate points of a levelled metric point grid, one after another, biggest
+    first: each a line seen from above, n.(x, z) + c = 0. RANSAC draws a point and takes the line through it
+    along its own normal; inliers lie within WALL_TOL of the line and face the same way."""
+    rng = np.random.default_rng(seed)
+    idx = np.flatnonzero(candidate.ravel())
+    q = P.reshape(-1, 3)[idx][:, [0, 2]]
+    nq = normals.reshape(-1, 3)[idx][:, [0, 2]]
+    nq = nq / np.maximum(np.linalg.norm(nq, axis=1, keepdims=True), 1e-9)
+    tol = np.maximum(WALL_TOL * np.linalg.norm(q, axis=1), WALL_TOL_MIN_M)
+    y = P.reshape(-1, 3)[idx][:, 1]
+    left = np.ones(len(idx), bool)
+    walls = []
+    for _ in range(MAX_WALLS):
+        pool = np.flatnonzero(left)
+        if len(pool) < WALL_MIN_POINTS:
+            break
+        sub = pool[rng.choice(len(pool), min(RANSAC_POINTS, len(pool)), replace=False)]
+        best, best_count = None, 0
+        for k in rng.choice(sub, min(WALL_ITERS, len(sub)), replace=False):
+            n2 = nq[k]
+            on = (np.abs((q[sub] - q[k]) @ n2) < tol[sub]) & (np.abs(nq[sub] @ n2) > WALL_NORMAL_AGREE)
+            if on.sum() > best_count:
+                best, best_count = (n2, float(-q[k] @ n2)), int(on.sum())
+        if best is None:
+            break
+        n2, c = best
+        for _ in range(2):  # refit on the inliers of everything left, then take them again
+            on = left & (np.abs(q @ n2 + c) < tol) & (np.abs(nq @ n2) > WALL_NORMAL_AGREE)
+            if on.sum() < 3:
+                break
+            centre = q[on].mean(0)
+            t = np.linalg.svd(q[on] - centre, full_matrices=False)[2][0]
+            n2 = np.array([-t[1], t[0]])
+            c = float(-centre @ n2)
+        on = stretch(on, q, n2)
+        along = q[on] @ np.array([-n2[1], n2[0]])
+        span = (float(np.ptp(along)) if on.any() else 0.0, float(np.ptp(y[on])) if on.any() else 0.0)
+        left &= ~on
+        if on.sum() < WALL_MIN_POINTS or span[0] < WALL_MIN_SPAN_M[0] or span[1] < WALL_MIN_SPAN_M[1]:
+            continue
+        walls.append({"normal": [float(n2[0]), 0.0, float(n2[1])], "offset": c, "points": idx[on],
+                      "width_m": round(span[0], 2), "height_m": round(span[1], 2),
+                      "residual_m": round(float(np.median(np.abs(q[on] @ n2 + c))), 4)})
+    return walls
+
+
+def stretch(on: np.ndarray, q: np.ndarray, n2: np.ndarray) -> np.ndarray:
+    """Of a line's inliers, the longest run without a gap of WALL_GAP_M along it: one wall, not every building
+    and tree that happens to line up with it."""
+    k = np.flatnonzero(on)
+    if len(k) < 2:
+        return on
+    along = q[k] @ np.array([-n2[1], n2[0]])
+    order = np.argsort(along)
+    cuts = np.flatnonzero(np.diff(along[order]) > WALL_GAP_M) + 1
+    runs = np.split(order, cuts)
+    out = np.zeros_like(on)
+    out[k[max(runs, key=len)]] = True
+    return out
+
+
+def straighten(dist_m: np.ndarray, rays_level: np.ndarray, walls: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    """Distances along the rays with each wall's points moved onto its plane (at most WALL_MAX_MOVE of their
+    distance, never along grazing rays), and the mask of the points moved."""
+    out, moved = dist_m.copy().ravel(), np.zeros(dist_m.size, bool)
+    r = rays_level.reshape(-1, 3)
+    for w in walls:
+        k = w["points"]
+        cos = r[k] @ np.array(w["normal"])
+        t = -w["offset"] / np.where(np.abs(cos) > 1e-9, cos, np.nan)
+        ok = (np.abs(cos) > WALL_MIN_INCIDENCE) & (t > 0) & (np.abs(t - out[k]) <= WALL_MAX_MOVE * out[k])
+        n3 = np.array(w["normal"])
+        w["stray_before_m"] = round(float(np.sqrt(np.mean((r[k] * out[k, None] @ n3 + w["offset"]) ** 2))), 4)
+        out[k[ok]], moved[k[ok]] = t[ok], True
+        w["stray_after_m"] = round(float(np.sqrt(np.mean((r[k] * out[k, None] @ n3 + w["offset"]) ** 2))), 4)
+        w["moved"] = round(float(ok.mean()), 3)
+    return out.reshape(dist_m.shape), moved.reshape(dist_m.shape)
+
+
 def far_rise(points: np.ndarray, n: np.ndarray, h: float, lo: float, hi: float) -> float | None:
     """Median height of ground points between lo and hi metres over the plane: how far the measured ground drifts
     from it (MoGe's scale)."""
@@ -146,7 +259,7 @@ def write_ply(path: Path, vertices: np.ndarray, faces: np.ndarray) -> None:
 
 
 def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | None = None,
-          proxy_stuff: str | None = None) -> dict:
+          proxy_stuff: str | None = None, straighten_walls: bool = True) -> dict:
     """The ground, scale and proxy of a place whose depth.npz and stuff.npz exist (see the module docstring).
     capture_height_m: the height the user says the sphere was taken at, if any; it is used only when it differs
     from MoGe-2's measure by more than HEIGHT_OVERRIDE. proxy_depth: the depth file of the erased panorama, for
@@ -177,7 +290,8 @@ def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | Non
         ratio = float(np.median(distance[same] / np.maximum(bg["distance"][same], 1e-6)))
         distance, valid = bg["distance"] * ratio, bg["valid"]
     if proxy_stuff:
-        ground = (np.load(d / proxy_stuff)["ground"].astype(np.float32) > GROUND_SHARE) & valid
+        stuff = np.load(d / proxy_stuff)
+        ground = (stuff["ground"].astype(np.float32) > GROUND_SHARE) & valid
     s = MESH_STEP
     ray, dist, ok, grd = rays[::s, ::s], distance[::s, ::s].copy(), valid[::s, ::s], ground[::s, ::s]
     down = -(ray @ n)  # how steeply each ray points at the plane
@@ -188,6 +302,17 @@ def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | Non
     dist = np.where(snap | fill, plane, dist)
     is_ground = grd | snap | fill
     dist_m = dist * scale
+    walls = []
+    if straighten_walls:
+        rays_level = ray @ R.T
+        P = rays_level * dist_m[..., None]
+        candidate = ok & ~is_ground & (dist_m < WALL_MAX_DIST_M) & (height - P[..., 1] > WALL_MIN_HEIGHT_M)
+        normals = grid_normals(P)
+        candidate &= np.abs(normals[..., 1]) < WALL_MAX_UP
+        if "structure" in stuff:
+            candidate &= stuff["structure"][::s, ::s].astype(np.float32) > STRUCTURE_SHARE
+        walls = fit_walls(P, normals, candidate)
+        dist_m, moved = straighten(dist_m, rays_level, walls)
     keep = (ok | fill) & (dist_m < MAX_DISTANCE_M)
     faces = grid_faces(keep, dist_m, smooth=is_ground)
     vertices = ((ray * dist_m[..., None]) @ R.T).reshape(-1, 3)
@@ -203,6 +328,8 @@ def solve(d: Path, capture_height_m: float | None = None, proxy_depth: str | Non
            "proxy_ground_from": proxy_stuff or "stuff.npz",
            "scale": round(scale, 4), "levelling": R.round(6).tolist(),
            "ground": {k: (round(v, 4) if isinstance(v, float) else v) for k, v in g.items()},
+           "walls": [{k: v for k, v in w.items() if k != "points"} | {"vertices": len(w["points"])}
+                     for w in walls],
            "proxy": {"vertices": len(vertices), "faces": len(faces),
                      "ground_vertices": round(float(is_ground.ravel()[used].mean()), 3)}}
     (d / "geometry.json").write_text(json.dumps(out, indent=1))

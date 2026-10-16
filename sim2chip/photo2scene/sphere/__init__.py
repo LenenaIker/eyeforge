@@ -29,12 +29,14 @@ STEPS = Path(__file__).resolve().parent / "steps"
 GROUND_KINDS = {"road": ("road", "street"), "parking": ("parking lot", "parking space"),
                 "sidewalk": ("sidewalk", "pavement"), "grass": ("grass", "lawn"), "floor": ("ground", "floor")}
 SKY_PHRASES = ("sky",)
+# Built surfaces: only these are straightened as walls in the proxy (geometry.py), never trees or hedges.
+STRUCTURE_PHRASES = ("building", "wall", "fence")
 
 
 def stuff_args(d: Path) -> list:
     groups = [a for kind, phrases in GROUND_KINDS.items() for a in ("--group", f"{kind}={','.join(phrases)}")]
-    return ["--dir", d, *groups, "--group", "sky=" + ",".join(SKY_PHRASES), "--union",
-            "ground=" + ",".join(GROUND_KINDS)]
+    return ["--dir", d, *groups, "--group", "sky=" + ",".join(SKY_PHRASES), "--group",
+            "structure=" + ",".join(STRUCTURE_PHRASES), "--union", "ground=" + ",".join(GROUND_KINDS)]
 
 
 def build_geometry(flow: Flow, photosphere: Path, capture_height_m: float | None = None) -> dict:
