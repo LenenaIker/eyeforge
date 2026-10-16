@@ -37,12 +37,11 @@ def above(v: np.ndarray, height: float, walls=()) -> Image.Image:
         draw.line([(0, p), (TOP, p)], fill=(205, 205, 205))
     c = TOP / 2
     draw.ellipse([c - 6, c - 6, c + 6, c + 6], fill=(255, 0, 0))
-    for w in walls:  # its line across the view, n.(x, z) + c = 0
-        n = np.array([w["normal"][0], w["normal"][2]])
-        t = np.array([-n[1], n[0]])
-        p0 = -w["offset"] * n
-        a, b = p0 - 60 * t, p0 + 60 * t
-        draw.line([(a[0] * s + c, c - a[1] * s), (b[0] * s + c, c - b[1] * s)], fill=(230, 30, 30), width=1)
+    for k, w in enumerate(walls):  # the wall's own stretch, numbered as in the text below
+        (ax, az), (bx, bz) = w["ends_xz"]
+        draw.line([(ax * s + c, c - az * s), (bx * s + c, c - bz * s)], fill=(230, 30, 30), width=5)
+        mx, mz = (ax + bx) / 2 * s + c, c - (az + bz) / 2 * s
+        draw.text((mx + 6, mz - 10), str(k), fill=(230, 30, 30), font_size=22, stroke_width=3, stroke_fill="white")
     return out
 
 
@@ -77,7 +76,7 @@ def main():
         panel = Image.new("RGB", (2 * TOP + 20, TOP + 34 + 24 * len(lines)), "white")
         draw = ImageDraw.Draw(panel)
         draw.text((8, 6), "before", fill=(0, 0, 0), font_size=22)
-        draw.text((TOP + 28, 6), "after (walls in red)", fill=(0, 0, 0), font_size=22)
+        draw.text((TOP + 28, 6), "after: each red segment is one wall found and straightened", fill=(0, 0, 0), font_size=22)
         panel.paste(left, (0, 34))
         panel.paste(right, (TOP + 20, 34))
         for k, line in enumerate(lines):

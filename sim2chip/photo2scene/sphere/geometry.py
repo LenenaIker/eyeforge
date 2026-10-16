@@ -202,7 +202,9 @@ def fit_walls(P: np.ndarray, normals: np.ndarray, candidate: np.ndarray, seed: i
         left &= ~on
         if on.sum() < WALL_MIN_POINTS or span[0] < WALL_MIN_SPAN_M[0] or span[1] < WALL_MIN_SPAN_M[1]:
             continue
-        walls.append({"normal": [float(n2[0]), 0.0, float(n2[1])], "offset": c, "points": idx[on],
+        t2 = np.array([-n2[1], n2[0]])
+        ends = [(-c * n2 + a * t2).round(3).tolist() for a in (float(along.min()), float(along.max()))]
+        walls.append({"normal": [float(n2[0]), 0.0, float(n2[1])], "offset": c, "points": idx[on], "ends_xz": ends,
                       "width_m": round(span[0], 2), "height_m": round(span[1], 2),
                       "residual_m": round(float(np.median(np.abs(q[on] @ n2 + c))), 4)})
     return walls
