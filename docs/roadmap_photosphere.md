@@ -173,8 +173,8 @@ Hallazgos:
 - [x] Etiquetas del simulador: mapa de instancias de Replicator por objeto (`inst_NAME.png`) y cajas ajustadas a lo visible. Un objeto con menos del 30 % de la silueta de su caja visible no se etiqueta.
 - [x] Cámara: desenfoque de los objetos medido en S.5 (1-1,25 px) y después el perfil del móvil.
 - [x] Filtro de parecido (SigLIP 2, `likeness.py`) contra las fotos sueltas del usuario.
-- [ ] Revisión del VLM de las vistas: pendiente.
-- Check: `data/sphere_test/sheet_s6_*.jpg` (20 vistas por esfera con las cajas).
+- [x] Revisión del VLM por vista (`sphere/review.py`, Cosmos Reason 2 local, nota 0-10, fuera por debajo de 3 como `bg_review`). Las vistas sin coches no se puntúan: son negativos, y el modelo les ponía 0 a todas por no tener coche. Sus notas son casi binarias (0 o 10), y los ceros caen donde se ve: el todoterreno negro sin textura, el coche de madera, los taxis de aspecto de juguete. Pasan 15, 12, 14 y 14 de 20.
+- Check: `data/sphere_test/sheet_s6_*.jpg` (20 vistas por esfera con las cajas, la similitud y la nota del VLM).
 
 | Esfera | Coches colocados | Etiquetados | Vistas que pasan el filtro de parecido |
 |---|---|---|---|

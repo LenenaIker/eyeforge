@@ -18,7 +18,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from sim2chip.photo2scene import Flow
-from sim2chip.photo2scene.sphere import STEPS, camera_fx, extrapolate, render_plan, replica
+from sim2chip.photo2scene.sphere import STEPS, camera_fx, extrapolate, render_plan, replica, review
 from sim2chip.workspace import Cache, default_home
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -111,16 +111,19 @@ def likeness(places: list[Path], photos: list[Path]) -> dict:
     return {"threshold": thr, "places": out}
 
 
-def sheet(d: Path, plan: dict, labels: dict, liked: dict | None = None, cols: int = 4) -> Image.Image:
+def sheet(d: Path, plan: dict, labels: dict, liked: dict | None = None, rated: dict | None = None,
+          cols: int = 4) -> Image.Image:
     views = plan["views"]
     rows = math.ceil(len(views) / cols)
     out = Image.new("RGB", (cols * (THUMB[0] + 6), 40 + rows * (THUMB[1] + 22)), "white")
     draw = ImageDraw.Draw(out)
     n = sum(len(b) for b in labels.values())
     liked = liked or {}
+    rated = rated or {}
     kept = sum(1 for v in views if liked.get(v["name"], (0, True))[1])
-    draw.text((6, 8), f"{d.name}: {len(views)} views, {n} labelled cars; {kept} views look like the user's photos "
-              f"(red: filtered out)", fill=(0, 0, 0), font_size=20)
+    passed = sum(1 for v in views if rated.get(v["name"], {"keep": True})["keep"])
+    draw.text((6, 8), f"{d.name}: {len(views)} views, {n} labelled cars; {kept} look like the user's photos, "
+              f"{passed} pass the VLM review (red: out)", fill=(0, 0, 0), font_size=20)
     for k, v in enumerate(views):
         x, y = (k % cols) * (THUMB[0] + 6), 40 + (k // cols) * (THUMB[1] + 22)
         img = Image.open(d / "render" / f"final_{v['name']}.png").convert("RGB")
@@ -133,9 +136,10 @@ def sheet(d: Path, plan: dict, labels: dict, liked: dict | None = None, cols: in
         out.paste(t, (x, y + 20))
         froms = ",".join(sorted({o["heading_from"].split(" ")[0] for o in v["objects"]})) or "-"
         sim, ok = liked.get(v["name"], (None, True))
-        draw.text((x + 2, y + 2), f"{v['name']} yaw {v['yaw_deg']:.0f} pitch {v['pitch_deg']:.0f}: "
-                  f"{len(labels.get(v['name'], []))}/{len(v['objects'])} cars ({froms}) sim {sim}",
-                  fill=(0, 0, 0) if ok else (200, 0, 0), font_size=13)
+        r = rated.get(v["name"], {"score": None, "keep": True})
+        draw.text((x + 2, y + 2), f"{v['name']}: {len(labels.get(v['name'], []))}/{len(v['objects'])} cars "
+                  f"({froms}) sim {sim} vlm {r['score']}", fill=(0, 0, 0) if ok and r["keep"] else (200, 0, 0),
+                  font_size=13)
     return out
 
 
@@ -190,10 +194,12 @@ def main():
         mine = liked["places"].get(d, {})
         (d / "render" / "likeness.json").write_text(json.dumps({"threshold": liked["threshold"], "views": mine},
                                                                indent=1))
+        rated = review.review_views(d, "car")
         path = d.parent / f"sheet_s6_{d.name}{args.tag}.jpg"
-        sheet(d, plan, labels, mine).save(path, quality=88)
+        sheet(d, plan, labels, mine, rated).save(path, quality=88)
         print(f"{d.name}: {sum(ok for _, ok in mine.values())}/{len(mine)} views kept by the similarity filter "
-              f"(threshold {liked['threshold']}) -> {path}", flush=True)
+              f"(threshold {liked['threshold']}), {sum(r['keep'] for r in rated.values())} by the VLM review "
+              f"-> {path}", flush=True)
 
 
 if __name__ == "__main__":
