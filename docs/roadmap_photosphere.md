@@ -138,9 +138,28 @@ Hallazgos y pendientes:
 
 ### S.5 Imitación como control (0,5 día)
 
-- [ ] Réplica: los objetivos borrados vuelven a donde estaban y se renderizan en sus rumbos, frente a los cortes reales.
-- [ ] Control fotométrico (`flow_photometry`) y revisión del VLM, como hoy.
-- Check: hoja de corte real frente a réplica.
+- [x] Réplica (`sphere/replica.py`, hoja `experiments/sphere/s5_sheet.py`): cada objetivo borrado vuelve a donde estaba como asset de su clase y se renderiza en una vista centrada en él sobre la panorámica borrada; la referencia es la misma vista de la panorámica original.
+  - **Dónde:** una caja del tamaño típico de la clase (cada lado entre 0,8 y 1,25 veces) se apoya en el suelo del proxy bajo la máscara (contacto, como los muros de S.2) y se ajusta por IoU de silueta. El suelo del proxy y no un plano: con el plano, los coches de más de 20 m quedaban detrás del proxy (MoGe sube y acerca el suelo lejano). Se descartan ajustes con IoU < 0,7 (coches medio tapados). Un coche reflejado en una puerta de cristal se apoya en el cristal y no encaja: se descarta solo.
+  - **Hacia dónde:** la silueta de una caja no distingue un coche de tres cuartos de uno de lado (ponía en fila los coches aparcados en batería) ni el frente de la trasera. Lo da **Orient Anything V2** (`sphere/steps/orient.py`, entorno de SAM 3 más `ORIANY_*` en `.env`) sobre el recorte de cada coche. Su acimut se calibró con renders de rumbo conocido: mediana de 5° de error. La caja gira solo ±15° alrededor de su rumbo.
+  - **El frente de cada asset** está donde lo puso su autor: el mismo modelo sobre un primer render dice cuáles salen al revés (4 de 9 en corner_cars) y se giran 180°.
+- [x] Medidas (`replica/measure.json`):
+
+| Esfera | Vistas | IoU mediana (render frente a real) | Sombra de contacto real / réplica | Desenfoque que iguala bordes | Ruido añadido |
+|---|---|---|---|---|---|
+| corner_cars | 13 | 0,67 | 0,47 / 0,89 | 1,0 px | 0 |
+| townhouses | 11 | 0,66 | 0,77 / 0,74 | 1,25 px | 0 |
+
+  Court y park no tienen coches.
+- [ ] Revisión del VLM de la réplica: pendiente; la comparación numérica ya cubre posición, rumbo y cámara.
+- Check: `data/sphere_test/sheet_s5_*.jpg` (corte real, réplica, réplica con la cámara medida).
+
+Hallazgos:
+- **Cámara del móvil:** los bordes de los objetos renderizados tienen casi el doble de detalle fino que los reales (0,52 frente a 0,30). Con 1-1,25 px de desenfoque gaussiano se igualan (`replica.match_objects`). El ruido de la panorámica es casi nulo (el móvil la limpia): no hace falta añadirlo. Esto va al perfil `generic` en S.6.
+- **Sombra de contacto:** igual en townhouses, más débil en la réplica junto a los coches aparcados en batería de corner_cars. Un domo de cielo cubierto CIE (tres veces más luz en el cenit, `render_plan.overcast_sky`) no la cambia (0,87 frente a 0,88), así que el domo uniforme se queda. Lo que la decide es la forma del asset: con pickups elevados y un Hummer entraba luz bajo la carrocería, y con turismos bajos mejora. Queda abierta hasta tener assets revisados.
+- **El brillo de los objetos no se puede comparar:** la pintura del asset no es la del coche real. Se informa, no se ajusta.
+- **Assets:** el catálogo local de coches es pobre (antiguos, de dibujos, uno sin texturas). La clase `small_vehicle` entera mete pickups y todoterrenos donde había turismos: la hoja usa solo turismos, taxis y coches de policía de LVIS. En el producto lo decide `qa_assets`. Se añadieron a `data/usd/exclude.txt` los tres assets rotos vistos en S.4.
+- `s4_sheet` sumaba `yaw_fix_deg` al rumbo, pero los envoltorios ya llevan ese giro aplicado: dos coches salían de lado. Corregido.
+- Isaac referenciaba cada asset una vez: dos objetos con el mismo asset en una vista eran el mismo prim y solo se veía uno. Ahora cada objeto tiene su prim (`key`).
 
 ### S.6 Extrapolación (1 día)
 

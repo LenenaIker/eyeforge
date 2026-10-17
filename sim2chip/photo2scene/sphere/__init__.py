@@ -11,6 +11,11 @@ Steps:
     steps/instances.py S.3 SAM 3 targets and movable things, one object per thing across the cuts (sam3 Python)
     erase_plan.py      S.3 the eraser's groups and views
     steps/erase.py     S.3 the objects erased from the panorama, once each (erase Python)
+    render_plan.py     S.4 the views, their backgrounds, the objects' places and the light
+    steps/render.py    S.4 Isaac's two passes and the differential composite (Isaac Python)
+    camera_fx.py       S.4 the target hardware's camera on the frame
+    replica.py         S.5 the erased targets put back as assets and compared with the real panorama
+    steps/orient.py    S.5 which way each object faces, Orient Anything V2 (sam3 Python)
 
 Frame of the sphere, shared by every step: the capture point at the origin, OpenCV axes for heading 0 (the
 panorama's centre column): +x right, +y down, +z forward. Headings (yaw) grow to the right, pitches downwards.

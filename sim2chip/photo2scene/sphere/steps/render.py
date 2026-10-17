@@ -7,11 +7,12 @@ the objects behind it: where A's depth is the proxy's, the pixel is background. 
 
     python.sh render.py --dir data/sphere_test/<place>
 
-Light: a dome of the sky's mean colour (Alhaija et al. 2018: the matching environment map barely matters) and, when
+Light: a dome of the sky's mean colour (Alhaija et al. 2018: the matching environment map barely matters), or the
+plan's sky texture (render_plan.overcast_sky), and, when
 plan.json has one, a sun.
 
-Writes <dir>/render/render_NAME.png (composite), raw_NAME.png (pass A), obj_NAME.png (the objects' visible pixels)
-and render.json (exposure gains, seconds).
+Writes <dir>/render/ (or --sub) render_NAME.png (composite), raw_NAME.png (pass A), obj_NAME.png (the objects'
+visible pixels) and render.json (exposure gains, seconds).
 """
 import argparse
 import json
@@ -23,6 +24,7 @@ from isaacsim import SimulationApp
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--dir", required=True)
+ap.add_argument("--sub", default="render", help="the plan's folder under --dir (render_plan.write)")
 ap.add_argument("--subframes", type=int, default=16)
 ap.add_argument("--path-tracing", action="store_true", help="path tracing (soft sky shadows) instead of real time")
 ap.add_argument("--spp", type=int, default=64)
@@ -57,7 +59,7 @@ def smooth(x):
 
 
 def main():
-    src = os.path.join(args.dir, "render")
+    src = os.path.join(args.dir, args.sub)
     plan = json.load(open(os.path.join(src, "plan.json")))
     height = plan["camera_height_m"]
 
@@ -106,7 +108,11 @@ def main():
     # Light.
     dome = UsdLux.DomeLight.Define(stage, "/World/Sky")
     dome.CreateIntensityAttr().Set(DOME_INTENSITY)
-    dome.CreateColorAttr().Set(Gf.Vec3f(*plan["sky_rgb"]))
+    if plan.get("sky_texture"):  # its pole is the dome's local +Z on this Z-up stage, as piece_isaac.py found
+        dome.CreateTextureFileAttr().Set(plan["sky_texture"])
+        dome.CreateTextureFormatAttr().Set("latlong")
+    else:
+        dome.CreateColorAttr().Set(Gf.Vec3f(*plan["sky_rgb"]))
     if plan.get("sun"):
         sun = UsdLux.DistantLight.Define(stage, "/World/Sun")
         sun.CreateAngleAttr().Set(float(plan["sun"].get("angle_deg", 1.0)))
@@ -119,23 +125,27 @@ def main():
         rot[:3, 0], rot[:3, 1], rot[:3, 2] = x, np.cross(z, x), z
         sun.AddTransformOp().Set(Gf.Matrix4d(rot.T.tolist()))
 
-    # Objects: every USD the views use, referenced once, moved and shown per view. The reference sits on a child prim
-    # (some assets carry their own double3 ops) and is recentred on its measured box: base on z = 0, centred in x, y.
+    # Objects: one prim per object key (an object's "key", else its USD, so two objects of one asset in a view are
+    # two prims), moved and shown per view. The reference sits on a child prim (some assets carry their own double3
+    # ops) and is recentred on its measured box: base on z = 0, centred in x, y.
+    def key(o):
+        return o.get("key", o["usd"])
+
     assets = {}
     for v in plan["views"]:
         for o in v["objects"]:
-            if o["usd"] in assets:
+            if key(o) in assets:
                 continue
             k = len(assets)
             prim = stage.DefinePrim(f"/World/Objects/a{k}", "Xform")
             ref = stage.DefinePrim(f"/World/Objects/a{k}/Ref", "Xform")
             ref.GetReferences().AddReference(o["usd"])
             xf = UsdGeom.Xformable(prim)
-            assets[o["usd"]] = (prim, xf.AddTranslateOp(), xf.AddRotateZOp(), xf.AddScaleOp(), ref)
+            assets[key(o)] = (prim, xf.AddTranslateOp(), xf.AddRotateZOp(), xf.AddScaleOp(), ref)
     for _ in range(20):
         app.update()
     lengths = {}  # each asset's measured long side, in its own units: the scale comes from the real length
-    for usd, (prim, _, _, _, ref) in assets.items():
+    for usd, (prim, _, _, _, ref) in assets.items():  # usd: the object's key
         r = None
         for _ in range(60):  # a heavy asset may still be loading: wait for its geometry
             bc = UsdGeom.BBoxCache(0, [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
@@ -178,14 +188,14 @@ def main():
 
 
     def show(view):
-        used = {o["usd"] for o in view["objects"]}
-        for usd, (prim, *_r) in assets.items():
-            UsdGeom.Imageable(prim).MakeVisible() if usd in used else UsdGeom.Imageable(prim).MakeInvisible()
+        used = {key(o) for o in view["objects"]}
+        for k, (prim, *_r) in assets.items():
+            UsdGeom.Imageable(prim).MakeVisible() if k in used else UsdGeom.Imageable(prim).MakeInvisible()
         for o in view["objects"]:
-            _, t_op, r_op, s_op, _ = assets[o["usd"]]
+            _, t_op, r_op, s_op, _ = assets[key(o)]
             t_op.Set(Gf.Vec3d(*o["pos"]))
             r_op.Set(float(o.get("yaw_deg", 0.0)))
-            s = float(o["length_m"]) / lengths[o["usd"]] if lengths.get(o["usd"]) else 0.0
+            s = float(o["length_m"]) / lengths[key(o)] if lengths.get(key(o)) else 0.0
             s_op.Set(Gf.Vec3f(s, s, s))
 
 

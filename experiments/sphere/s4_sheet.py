@@ -48,7 +48,7 @@ def plan_views(d: Path, n: int, hardware: str, rng) -> list[dict]:
         if spot is not None:
             pos, D = spot
             objects.append({"usd": car["usd"], "length_m": car["size_m"][0], "pos": pos,
-                            "yaw_deg": axis + car.get("yaw_fix_deg", 0.0), "label": "car", "uid": car["uid"]})
+                            "yaw_deg": axis, "label": "car", "uid": car["uid"]})
         views.append({"name": f"v{k}", "yaw_deg": round(heading % 360, 2), "pitch_deg": 0.0,
                       "fov_deg": sensor.fov_deg, "size": [w, w * 3 // 4], "objects": objects,
                       "car_distance_m": D})

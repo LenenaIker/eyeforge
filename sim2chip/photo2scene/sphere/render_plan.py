@@ -92,6 +92,34 @@ def sky_color(background: np.ndarray, sky_share: np.ndarray) -> list[float]:
     return (c / max(float(c.max()), 1e-6)).round(4).tolist()
 
 
+SKY_SIZE = (512, 256)   # the overcast dome's latlong texture
+GROUND_BOUNCE = 0.2     # the dome under the horizon, as a share of the horizon's light: what the proxy does not cover
+
+
+def write_hdr(path: Path, rgb: np.ndarray) -> None:
+    """A float (H, W, 3) image as Radiance RGBE (.hdr), flat scanlines."""
+    m = rgb.max(-1)
+    mant, exp = np.frexp(m)
+    scale = np.where(m > 1e-32, mant * 256 / np.maximum(m, 1e-32), 0)
+    rgbe = np.zeros(rgb.shape[:2] + (4,), np.uint8)
+    rgbe[..., :3] = np.clip(rgb * scale[..., None], 0, 255).astype(np.uint8)
+    rgbe[..., 3] = np.where(m > 1e-32, exp + 128, 0).astype(np.uint8)
+    h, w = m.shape
+    with open(path, "wb") as f:
+        f.write(f"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y {h} +X {w}\n".encode())
+        f.write(rgbe.tobytes())
+
+
+def overcast_sky(path: Path, rgb, size=SKY_SIZE) -> None:
+    """A latlong dome of the CIE standard overcast sky (Moon and Spencer 1942: luminance (1 + 2 sin e) / 3 at
+    elevation e, three times brighter at the zenith than at the horizon) in the sky's colour; under the horizon a
+    dim ground (GROUND_BOUNCE). Row 0 is the zenith, as Isaac's latlong domes on a Z-up stage."""
+    w, h = size
+    e = np.radians(90 - (np.arange(h) + 0.5) / h * 180)
+    lum = np.where(e >= 0, (1 + 2 * np.sin(e)) / 3, GROUND_BOUNCE / 3)
+    write_hdr(path, np.repeat(lum[:, None, None], w, 1) * np.asarray(rgb, np.float32))
+
+
 def resolve_asset(usd: str, out_dir: Path) -> str:
     """The asset as Isaac can open it: the converted wrapper itself when its reference resolves, else a copy in
     out_dir whose reference points at the same file name in the wrapper's own raw/ folder. The
@@ -123,22 +151,23 @@ def resolve_asset(usd: str, out_dir: Path) -> str:
     return str(out)
 
 
-def write(d: Path, views: list[dict], sun: dict | None = None) -> dict:
+def write(d: Path, views: list[dict], sun: dict | None = None, sub: str = "render", sky: str = "uniform") -> dict:
     """The render folder for these views. Each view: name, yaw_deg, pitch_deg, fov_deg, size, objects (each
     {"usd", "length_m": its real long side (the render scales the measured asset to it), "pos": world xyz of its
     base centre, "yaw_deg" about the vertical, "label"}), optional
-    "offset" (camera, world metres)."""
+    "offset" (camera, world metres). sub: the folder under d (the replica writes its own, S.5). sky: "uniform" (a
+    dome of the sky's mean colour) or "overcast" (overcast_sky)."""
     d = Path(d)
     geo = json.loads((d / "geometry.json").read_text())
     R, height = np.array(geo["levelling"]), geo["camera_height_m"]
     background = np.asarray(Image.open(d / "background.jpg").convert("RGB"))
     seen = np.asarray(Image.open(d / "seen.png")) > 127
     proxy = np.load(d / "proxy.npz")
-    out = d / "render"
+    out = d / sub
     out.mkdir(exist_ok=True)
     stuff = np.load(d / "stuff.npz")
-    sky = sky_color(background, stuff["sky"])
-    np.save(out / "proxy_colors.npy", proxy_colors(proxy["vertices"], background, seen, R, proxy["ground"], sky))
+    sky_rgb = sky_color(background, stuff["sky"])
+    np.save(out / "proxy_colors.npy", proxy_colors(proxy["vertices"], background, seen, R, proxy["ground"], sky_rgb))
     plan_views = []
     for v in views:
         for o in v.get("objects", []):
@@ -148,8 +177,10 @@ def write(d: Path, views: list[dict], sun: dict | None = None) -> dict:
         Image.fromarray(background_cut(background, v, R)).save(out / f"bg_{name}.png")
         plan_views.append({**v, "name": name, "pose": camera_pose(v, height, v.get("offset", (0, 0, 0))),
                            "captured": round(captured_share(seen, v, R), 4)})
-    plan = {"camera_height_m": height, "sky_rgb": sky, "sun": sun,
-            "views": plan_views}
+    plan = {"camera_height_m": height, "sky_rgb": sky_rgb, "sky": sky, "sun": sun, "views": plan_views}
+    if sky == "overcast":
+        overcast_sky(out / "sky.hdr", sky_rgb)
+        plan["sky_texture"] = str((out / "sky.hdr").resolve())
     (out / "plan.json").write_text(json.dumps(plan, indent=1))
     return plan
 

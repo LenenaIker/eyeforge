@@ -36,7 +36,8 @@ STEPS = Path(__file__).resolve().parent / "steps"
 PYTHONS = {"sam3": "SIM2CHIP_SAM3_PYTHON", "mesh": "SIM2CHIP_SCENE_PYTHON", "erase": "SIM2CHIP_ERASE_PYTHON",
            "isaac": "SIM2CHIP_ISAAC_PYTHON"}
 # Where the steps find their weights and code, passed on when set (.env or the worker's environment).
-PASS_ON = ("HF_HOME", "HF_HUB_CACHE", "TORCH_HOME", "MOGE_ROOT", "MOGE_DEPS", "MOGE_CKPT", "SIM2CHIP_SAM3D_DIR",
+PASS_ON = ("HF_HOME", "HF_HUB_CACHE", "TORCH_HOME", "MOGE_ROOT", "MOGE_DEPS", "MOGE_CKPT", "ORIANY_ROOT", "ORIANY_DEPS",
+           "ORIANY_CKPT", "SIM2CHIP_SAM3D_DIR",
            "SIM2CHIP_LAMA", "SIM2CHIP_PLAN_MODEL", "SIM2CHIP_OBSERVE_MODEL", "SIM2CHIP_REVIEW_MODEL")
 STEP_TIMEOUT_S = 30 * 60
 # Steps that take 10+ GB of GPU memory (Qwen eraser ~11 GB, SAM 3D Objects): one at a time per GPU, so several

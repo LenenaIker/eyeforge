@@ -82,6 +82,23 @@ Lo que hay que saber para implementar `docs/roadmap_photosphere.md` con criterio
 - GeoSim (CVPR 2021): coloca según carriles y sin choques, renderiza y compone con oclusión por geometría.
 - Para S.6: plano del suelo + tipo de suelo de SAM 3 + rumbo según los objetivos borrados o la calle; descartar posiciones cuya caja choque con el proxy por encima del suelo; de 1 a 5 objetivos; visibles en la vista.
 
+## 10. Antes de S.5 y S.6 (2026-10-17)
+
+Repaso hecho tras S.4, antes de la réplica.
+
+- **Perfil que importa: el móvil.** No hay fotos reales de ESP32-CAM, y la mayoría de usuarios empezarán con el móvil (usuario, 2026-10-17). El fondo ya sale del móvil, así que el retoque no debe ensuciar el fondo: el objeto renderizado se lleva a la nitidez y al ruido medidos en el propio corte de la panorámica, y luego se mide la diferencia entre la panorámica y las fotos sueltas del usuario (que sí verá el alumno en test) para aplicarla a toda la imagen.
+  - Ruido: modelo Poisson-Gauss (varianza lineal en la intensidad; Foi et al., IEEE TIP 2008), estimado en bloques lisos de una sola imagen. Para JPEG de móvil basta una varianza por nivel de brillo, medida en bloques de poca textura.
+  - Nitidez: anchura de los bordes (perfil de un borde fuerte) en el corte de fondo y en el render, misma medida en los dos.
+  - El perfil ESP32 se queda como primera estimación hasta que haya fotos reales.
+- **Rumbo de los objetos borrados (réplica).** Una silueta no distingue el frente de la trasera (lo dice `bg_build.fit_pose`).
+  - El eje largo sale de la geometría: los puntos del coche en la profundidad original (`depth.npz`, antes del borrado), vistos desde arriba, con la orientación por mínimos rectángulos. Se afina por IoU de silueta como en `fit_pose`.
+  - Medido en S.5 (2026-10-17): la caja sola pone en fila los coches aparcados en batería, y el modelo acierta su rumbo; con renders de rumbo conocido su acimut queda a una mediana de 5° (convención: 0 es frente a la cámara, crece hacia la derecha del frente). Se usa para el rumbo y el sentido, y la caja afina ±15°.
+  - El sentido (frente o trasera) lo puede dar **Orient Anything V2** (NeurIPS 2025, sobre VGGT): acimut, elevación y giro desde una foto, y simetrías. Código CC-BY-4.0 y pesos en Hugging Face (`Viglong/OriAnyV2_ckpt`, 5 GB). La licencia de los pesos no está escrita aparte: confirmarla antes de usarlo en producto. Para la réplica basta como control; si no se puede usar, el sentido se deja al ajuste fotométrico (frente y trasera tienen colores distintos: faros, lunas).
+- **Igualar color.** Alhaija igualó curvas y gamma globales. La armonización de composiciones (Wang et al., CVPR 2023) dice que lo global no basta: hace falta un mapa de sombreado local. En nuestro caso ese mapa lo da el render diferencial (A/B). Queda ajustar por réplica: exposición y dominante globales (mundo gris de `flow_photometry`), una ganancia de brillo por objeto (como `bg_isaac.fit_colours`, sin tocar el tono) y la fuerza del cielo frente al sol.
+- **Sombras con cielo cubierto o sol puesto.** Con la luz de cielo, la sombra de contacto es oclusión ambiental: el path tracing con domo ya la calcula si el proxy está bien. Lo que la estropea es un proxy malo (las sombras salen más cortas de lo que son; No Shadow Left, CVPR 2021). DiPIR (ECCV 2024) usa un simple plano de suelo como receptor de sombras, que es lo que da nuestro suelo plano hasta 25 m. Control en la réplica: oscuridad bajo el coche real (panorámica original / borrada) frente a A/B.
+- **Luz de las esferas del 16.** El sol está bajo el horizonte en las cuatro, así que el ajuste se reduce a la intensidad del domo y la exposición. El barrido de dirección del sol de `bg_isaac` solo hará falta con esferas a pleno sol.
+- **S.6.** Etiquetas desde Replicator (instancias y cajas 2D ajustadas a lo visible), revisión del VLM (`bg_review` con Cosmos Reason 2) y filtro de parecido (`likeness.py`, SigLIP 2) contra las fotos del usuario. En terreno inclinado (park) el objeto se inclina con la normal local del suelo.
+
 ## Fuentes
 
 - [Alhaija et al., IJCV 2018](https://ar5iv.labs.arxiv.org/html/1708.01566)
@@ -94,3 +111,7 @@ Lo que hay que saber para implementar `docs/roadmap_photosphere.md` con criterio
 - [SE360, edición semántica en 360°](https://arxiv.org/pdf/2512.19943)
 - [Notas de versión del renderizador RTX](https://docs.omniverse.nvidia.com/materials-and-rendering/latest/rtx-renderer_release_notes.html), [DomeLight de USD](https://openusd.org/dev/user_guides/schemas/usdLux/DomeLight_1.html)
 - [Calidad de imagen de la OV2640 (foro de Espressif)](https://esp32.com/viewtopic.php?p=65848)
+- [Orient Anything V2, NeurIPS 2025](https://arxiv.org/abs/2601.05573), [código](https://github.com/SpatialVision/Orient-Anything-V2)
+- [Wang et al., Semi-Supervised Parametric Real-World Image Harmonization, CVPR 2023](https://openaccess.thecvf.com/content/CVPR2023/papers/Wang_Semi-Supervised_Parametric_Real-World_Image_Harmonization_CVPR_2023_paper.pdf)
+- Foi et al., Practical Poissonian-Gaussian noise modeling and fitting for single-image raw-data, IEEE TIP 2008
+- [No Shadow Left Behind, CVPR 2021 (suplemento)](https://openaccess.thecvf.com/content/CVPR2021/supplemental/Zhang_No_Shadow_Left_CVPR_2021_supplemental.pdf)
