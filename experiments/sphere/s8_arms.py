@@ -74,6 +74,7 @@ def main():
     ap.add_argument("--places", nargs="+", type=Path, required=True)
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--arms", nargs="+", default=["photos", "sphere"])
+    ap.add_argument("--keep-ingest", action="store_true", help="never rerun ingest (keeps a hand-fixed test truth)")
     args = ap.parse_args()
     base = json.loads((HOME / "jobs" / args.job / "spec.json").read_text())
     results = {}
@@ -88,7 +89,7 @@ def main():
             log = HOME / f"arm_{args.job}_s8_{arm}_{r}.log"
             # ingest's split is the same for both arms (it reads no generation settings); the frames come in at
             # render, which reruns the similarity filter
-            start = "render" if arm == "sphere" else "ingest" if r == 1 else "train"
+            start = "render" if arm == "sphere" else "ingest" if r == 1 and not args.keep_ingest else "train"
             score = run(path, args.job, start, log)
             results.setdefault(arm, []).append(score)
             line = f"S.8 {args.job} {arm} run {r}: {score}"

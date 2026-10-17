@@ -804,3 +804,14 @@ Por clase (5 semillas, un acierto es un punto dentro de la caja de la verdad):
 - Las esferas empeoran (0,07, por encima del ruido de PicoDet). Los falsos positivos suben en marrón y azul, también sin mirar la clase: no es solo confundir colores.
 - Solo mejora el verde (iglús y cubos grandes de pie, lo que mejor imita el sintético).
 - Lo que el sintético no cubre: los cubos marrones colgados (62 % de los marrones, la clase más frecuente del test), la luz (fotos con sol frente a esferas nubladas al anochecer) y la forma (dumpsters pintados de marrón o gris donde el usuario tiene cubos de 0,4 m).
+
+**Con el test revisado a mano (2026-10-17).** El test lo había etiquetado solo SAM 3 (umbral 0,5). El usuario lo revisó en una página: de 36 cajas del profesor, 31 bien, 5 falsas y 12 que faltaban (11 son cubos marrones colgados de una sola foto); ningún color cambiado. Verdad original en `ingest/test/points_teacher.json`, la revisada en `points_human.json` (y `points.json`); `s8_arms.py --keep-ingest` para no pisarla.
+
+| Brazo | Ejecuciones | Media |
+|---|---|---|
+| Solo fotos | 0,355, 0,380, 0,352 | 0,362 |
+| Fotos + esferas | 0,379, 0,360, 0,350 | 0,363 |
+
+- Con la verdad buena las esferas ya no empeoran: empatan. Buena parte de la caída de antes eran aciertos sobre cubos que el profesor no había marcado.
+- El profesor también etiqueta el entrenamiento y se le escapan los colgados: corregir unas pocas fotos de entrenamiento (el ajuste del profesor del producto) es lo siguiente que más puede dar.
+
