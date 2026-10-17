@@ -73,3 +73,9 @@ class AssetDB:
 def concept_of(asset: dict) -> str:
     """What the asset was found for: its Objaverse-LVIS category or live search query."""
     return asset.get("category") or asset["class"]
+
+
+def review_concept(asset: dict, realistic: bool = False) -> str:
+    """The concept a QA verdict is stored under: a review that keeps only realistic models (qa.realistic) is a
+    different question, so its verdicts neither reuse nor overwrite the plain ones."""
+    return concept_of(asset) + (" [realistic]" if realistic else "")

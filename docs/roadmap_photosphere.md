@@ -163,11 +163,31 @@ Hallazgos:
 
 ### S.6 Extrapolación (1 día)
 
-- [ ] Vistas: rumbos al azar (con más peso hacia la dirección de la cámara del usuario, si la da), e inclinación y altura del spec con un poco de variación.
-- [ ] De 1 a 5 objetivos por vista, sobre el plano del suelo, dentro de las zonas donde la esfera mostraba objetivos o de su mismo tipo de suelo.
-- [ ] Orientación según la de los objetivos borrados o la dirección de la calle. Sin solapes y visibles.
-- [ ] Etiquetas del simulador; revisión del VLM y filtro de parecido.
-- Check: hoja de 20 vistas por esfera.
+- [x] Assets de los objetivos (2026-10-17, `experiments/sphere/car_assets.py`): las etapas de assets del producto (descarga, conversión, vistas previas y QA) sobre `specs/benchmarks/sphere_cars.json`, 160 turismos de Objaverse-LVIS (coche, taxi, policía, monovolumen, descapotable). Las etapas están apagadas en el producto desde que se retiró la plantilla; aquí se fuerzan.
+  - Opción nueva `qa.realistic`: el QA descarta modelos de dibujos, de juguete, de videojuego, sin textura o de otra época, porque van sobre fotos reales. Sus veredictos se guardan bajo su propio concepto (`asset_db.review_concept`) y no pisan los del QA normal, que acepta modelos estilizados para cámaras de baja resolución.
+  - El VLM local (Cosmos Reason 2 8B) es blando: se quedó 96 de 159 y llamó "actuales" a los coches de 1900. Encima va un filtro de SigLIP 2 por parejas con la frase de la clase ("coche moderno" frente a "coche antiguo", "autobús" y "carrito de golf"): quita 16 más. "Juguete" y "dibujo" ganan en todos los renders por igual y no sirven de filtro. Quedan 78.
+  - El frente de cada asset se mide con Orient Anything V2 sobre un render a rumbo conocido: 34 de 69 salen al revés y se giran.
+- [x] Vistas (`sphere/extrapolate.py`): rumbo al azar (o alrededor del de la cámara del usuario si lo da), inclinación del spec ±4° acotada para que la vista no salga de la banda capturada (la photosphere llega a unos 28-31° bajo el horizonte; sin el límite se veía el negro), y la cámara ±0,2 m en altura.
+- [x] De 1 a 5 objetivos por vista, sobre el suelo medido (huella libre de `render_plan.Ground`), con el 80 % de la huella sobre los tipos de suelo que pisaban los objetivos borrados (si no había, los pavimentados) y a 0,4 m de los demás.
+- [x] Orientación: la del objetivo borrado más cercano si está a menos de 6 m (con su frente de S.5, ±8°, y un 30 % girados 180°), si no a lo largo del muro más cercano, si no al azar.
+- [x] Etiquetas del simulador: mapa de instancias de Replicator por objeto (`inst_NAME.png`) y cajas ajustadas a lo visible. Un objeto con menos del 30 % de la silueta de su caja visible no se etiqueta.
+- [x] Cámara: desenfoque de los objetos medido en S.5 (1-1,25 px) y después el perfil del móvil.
+- [x] Filtro de parecido (SigLIP 2, `likeness.py`) contra las fotos sueltas del usuario.
+- [ ] Revisión del VLM de las vistas: pendiente.
+- Check: `data/sphere_test/sheet_s6_*.jpg` (20 vistas por esfera con las cajas).
+
+| Esfera | Coches colocados | Etiquetados | Vistas que pasan el filtro de parecido |
+|---|---|---|---|
+| corner_cars | 34 | 28 | 10 de 20 |
+| court | 58 | 43 | 3 de 20 |
+| townhouses | 53 | 41 | 1 de 20 |
+| park | 30 | 23 | 1 de 20 |
+
+Hallazgos:
+- Colocación, escala y orientación se ven bien: los coches siguen la calle o la fila de aparcados.
+- **Filtro de parecido:** el umbral sale de las fotos del usuario entre sí (la menor similitud con su vecina). Las fotos sueltas del 16 son ráfagas casi iguales y el umbral sube a 0,80: tira casi todo, incluidas vistas sin coches de sitios que salen en las fotos. Con ráfagas, el umbral tiene que salir de fotos distintas (una por sitio) o de otra regla. Pendiente de decidir.
+- **Assets:** siguen colándose algunos raros (un coche de madera, un todoterreno negro sin textura, un coche quemado). Los coches salen más vivos de color que el fondo de anochecer.
+- **Court es una cancha de baloncesto:** sin coches borrados, los pavimentados permiten ponerlos en la cancha. Es correcto geométricamente, pero no es un sitio de coches; el usuario elegirá esferas de su caso.
 
 ### S.7 Producto (1 día, solo si S.8 gana)
 

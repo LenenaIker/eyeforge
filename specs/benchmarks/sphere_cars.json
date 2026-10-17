@@ -1,0 +1,12 @@
+{
+  "name": "sphere_cars",
+  "hardware": "generic",
+  "classes": [
+    {"id": "car", "description": "passenger cars: sedans, hatchbacks, estates, small vans and taxis",
+     "size_m": {"measure": "width", "range": [1.65, 1.95]},
+     "assets": {"source": "objaverse_lvis", "count": 160,
+                "categories": ["car_(automobile)", "cab_(taxi)", "police_cruiser", "minivan",
+                               "convertible_(automobile)"]}}
+  ],
+  "qa": {"mode": "auto", "strategy": "describe_then_decide", "realistic": true}
+}

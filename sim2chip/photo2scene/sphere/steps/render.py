@@ -12,7 +12,8 @@ plan's sky texture (render_plan.overcast_sky), and, when
 plan.json has one, a sun.
 
 Writes <dir>/render/ (or --sub) render_NAME.png (composite), raw_NAME.png (pass A), obj_NAME.png (the objects'
-visible pixels) and render.json (exposure gains, seconds).
+visible pixels), inst_NAME.png (1 + the index of the object each pixel shows) and render.json (exposure gains, each
+object's visible pixels and tight box, seconds).
 """
 import argparse
 import json
@@ -178,6 +179,9 @@ def main():
     prod = (rp, rep.AnnotatorRegistry.get_annotator("rgb"), rep.AnnotatorRegistry.get_annotator("distance_to_image_plane"))
     prod[1].attach([rp])
     prod[2].attach([rp])
+    # Which object each pixel shows, for the labels: Replicator's instance ids, mapped back to the object prims.
+    inst = rep.AnnotatorRegistry.get_annotator("instance_id_segmentation_fast")
+    inst.attach([rp])
     for _ in range(args.warmup):
         app.update()
 
@@ -230,7 +234,26 @@ def main():
         Image.fromarray(np.clip(out, 0, 255).astype(np.uint8)).save(os.path.join(src, f"render_{name}.png"))
         Image.fromarray(np.clip(a, 0, 255).astype(np.uint8)).save(os.path.join(src, f"raw_{name}.png"))
         Image.fromarray((obj * 255).astype(np.uint8)).save(os.path.join(src, f"obj_{name}.png"))
+        # Instance map of pass A: 1 + the object's index in the view, 0 elsewhere (proxy, sky).
+        seg = inst.get_data()
+        ids, labels = np.asarray(seg["data"]), seg["info"]["idToLabels"]
+        index = np.zeros(ids.shape, np.uint8)
+        prims = {str(assets[key(o)][0].GetPath()): k + 1 for k, o in enumerate(view["objects"]) if key(o) in assets}
+        for i, path in labels.items():
+            path = path if isinstance(path, str) else str(path)
+            for root, k in prims.items():
+                if path == root or path.startswith(root + "/"):
+                    index[ids == int(i)] = k
+        index[~obj] = 0
+        Image.fromarray(index).save(os.path.join(src, f"inst_{name}.png"))
+        boxes = []
+        for k, o in enumerate(view["objects"]):
+            ys, xs = np.nonzero(index == k + 1)
+            boxes.append(None if not len(xs) else
+                         {"pixels": int(len(xs)), "box": [int(xs.min()), int(ys.min()), int(xs.max()) + 1,
+                                                          int(ys.max()) + 1]})
         report.append({"name": name, "gain": np.round(gain, 3).tolist(), "object_pixels": int(obj.sum()),
+                       "objects": boxes,
                        "seconds": round(time.time() - t, 1)})
         print(json.dumps(report[-1]), flush=True)
     json.dump({"views": report}, open(os.path.join(src, "render.json"), "w"), indent=1)

@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 
-from ..asset_db import concept_of
+from ..asset_db import review_concept
 from . import base
 from .base import Context, Stage
 
@@ -49,6 +49,7 @@ factually; do not judge whether it is useful. Answer only with JSON:
 {"object": "<what it is, a few words>", "style": "realistic" | "stylized" | "fantasy_or_scifi",
  "upright": true | false, "on_plinth_or_base": true | false, "scene_or_diorama": true | false,
  "object_count": <integer>, "only_a_part": true | false, "textured": true | false,
+ "era": "current" | "vintage", "looks_like": "photo" | "video_game" | "toy_or_cartoon",
  "details": "<one sentence: shape, parts, anything unusual>"}"""
 
 DECIDE = """You are the quality gate of a synthetic-data generator. A 3D model downloaded from the internet will be
@@ -77,6 +78,13 @@ Decide if the model is usable as an example of a class, as seen by a low-resolut
 Answer only with JSON:
 {{"decision": "keep" | "discard", "class": "<one of: {ids}>", "problems": [subset of {problems}],
   "no_color": true | false, "reason": "<one short sentence>"}}"""
+
+# qa.realistic: the models go onto real photos, where a stylized one stands out from everything around it.
+REALISTIC = """
+The models will be composited onto real photos of today's places, next to real things: DISCARD stylized,
+cartoon, toy-like, video-game or low-poly models, untextured ones and designs from another era (antique or
+vintage), even when the class is recognizable. Keep only models that could pass for a photo of the real thing
+seen there today; when unsure, discard."""
 
 
 class QAAssets(Stage):
@@ -172,7 +180,7 @@ class QAAssets(Stage):
         verdicts, todo = {}, []
         for a in assets:
             r = {"decision": mine[a["uid"]], "reason": "set by the user in review"} if a["uid"] in mine \
-                else db.lookup(a["uid"], concept_of(a))
+                else db.lookup(a["uid"], review_concept(a, ctx.spec.qa.realistic))
             if r:
                 verdicts[a["uid"]] = {"decision": r["decision"], "no_color": r.get("no_color", False),
                                       "reason": r.get("reason", ""), "from_db": True}
@@ -188,7 +196,7 @@ class QAAssets(Stage):
                 continue  # no valid answer (transient): judge again next time
             # A model moved to another class of this spec is not a good example of the concept it was found for.
             keep = v["decision"] == "keep" and v.get("class") in (None, a["class"])
-            records.append({**a, "concept": concept_of(a), "decision": "keep" if keep else "discard",
+            records.append({**a, "concept": review_concept(a, ctx.spec.qa.realistic), "decision": "keep" if keep else "discard",
                             "no_color": v.get("no_color", False), "problems": v.get("problems"),
                             "reason": v.get("reason") if keep or v["decision"] == "discard"
                             else f"judged as {v.get('class')}: {v.get('reason', '')}", "judge": v.get("judge")})
@@ -256,16 +264,24 @@ class QAAssets(Stage):
                 return a["uid"], None
             fields = dict(classes=classes, category=a.get("category", ""), name=a.get("name", ""), cls=a["class"],
                           ids=ids, problems=PROBLEMS)
+            extra = REALISTIC if ctx.spec.qa.realistic else ""
             is_verdict = lambda v: v.get("decision") in ("keep", "discard")  # noqa: E731
             if strategy == "vision":
-                msg = [{"role": "user", "content": [{"type": "text", "text": PROMPT.format(**fields)}, image_part(path)]}]
+                msg = [{"role": "user", "content": [{"type": "text", "text": PROMPT.format(**fields) + extra},
+                                                    image_part(path)]}]
                 v = ask(msg, model, "qa_assets", is_verdict)
                 return a["uid"], ({**v, "judge": model} if v else None)
             desc = ask([{"role": "user", "content": [{"type": "text", "text": DESCRIBE}, image_part(path)]}], model,
                        "qa_describe", lambda v: "object" in v)
             if desc is None:
                 return a["uid"], None
-            msg = [{"role": "user", "content": DECIDE.format(description=json.dumps(desc), **fields)}]
+            if ctx.spec.qa.realistic and (desc.get("style") != "realistic" or desc.get("textured") is False
+                                          or desc.get("era") == "vintage" or desc.get("looks_like") != "photo"):
+                return a["uid"], {"decision": "discard", "class": a["class"], "problems": [], "no_color": False,
+                                  "reason": f"not realistic ({desc.get('style')}, {desc.get('looks_like')}, "
+                                            f"{desc.get('era')}, textured {desc.get('textured')})",
+                                  "description": desc, "judge": model}
+            msg = [{"role": "user", "content": DECIDE.format(description=json.dumps(desc), **fields) + extra}]
             v = ask(msg, text_model, "qa_decide", is_verdict)
             return a["uid"], ({**v, "description": desc, "judge": f"{model} + {text_model}"} if v else None)
 

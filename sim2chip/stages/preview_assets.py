@@ -72,11 +72,11 @@ class PreviewAssets(Stage):
         cam.CreateFocalLengthAttr(18.0)
 
         from ..asset_db import AssetDB
-        from ..asset_db import concept_of
+        from ..asset_db import review_concept
 
         assets = json.loads((ctx.job.stage_dir("convert_assets") / "assets.json").read_text())
         db = AssetDB(ctx.cache.db)
-        known = [a for a in assets if db.lookup(a["uid"], concept_of(a))]
+        known = [a for a in assets if db.lookup(a["uid"], review_concept(a, ctx.spec.qa.realistic))]
         assets = [a for a in assets if a not in known]  # already reviewed: no preview needed
         ctx.log(f"{len(known)} assets already reviewed, previewing {len(assets)}")
         if not assets:

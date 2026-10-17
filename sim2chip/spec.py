@@ -203,6 +203,8 @@ class QASpec:
     exclude: str | None = None          # text file, one uid per line
     class_override: str | None = None   # JSON {uid: {"class": new_class}}
     no_color: str | None = None         # JSON list of uids whose model has no color (always repainted)
+    realistic: bool = False             # auto mode: keep only realistic models (the sphere route composites
+                                        # them on real panoramas, where a cartoon car stands out)
 
 
 @dataclass
