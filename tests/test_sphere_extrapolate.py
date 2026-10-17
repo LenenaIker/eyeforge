@@ -37,3 +37,32 @@ def test_views_stay_inside_the_captured_band():
     lo, hi = extrapolate.pitch_range({"up_deg": 30.0, "down_deg": 30.0}, 68.0, (1024, 768))
     vfov = 2 * np.degrees(np.arctan(np.tan(np.radians(34)) * 0.75))
     assert abs(hi - (30 - vfov / 2 - 1)) < 1e-6 and abs(lo + hi) < 1e-6
+
+
+class FlatGround:
+    """A flat ground 1.6 m under the camera, seen everywhere (render_plan.Ground's interface)."""
+    h = 1.6
+
+    def look(self, p):
+        p = np.asarray(p, float)
+        return np.ones(len(p), bool), np.linalg.norm(p, axis=1)
+
+
+def test_a_target_against_a_wall_stands_in_front_of_it_facing_the_camera_side():
+    walls = [{"ends_xz": [[-10.0, 6.0], [10.0, 6.0]], "normal": [0.0, 0.0, 1.0]}]  # a wall 6 m ahead
+    rng = np.random.default_rng(0)
+    spots = [extrapolate.wall_spot(FlatGround(), walls, 0.6, 0.7, 0.15, rng, 0.0, 70.0, (2.0, 12.0))
+             for _ in range(50)]
+    spots = [s for s in spots if s is not None]
+    assert spots
+    for p, front in spots:
+        assert abs(p[2] - (6.0 - 0.38)) < 1e-6 and abs(p[1] - 1.6) < 1e-6  # half its depth plus 3 cm off the wall
+        assert abs((front + 90) % 360) < 1e-6 or abs(front - 270) < 1e-6  # facing -z, away from the wall
+
+
+def test_a_small_bin_takes_a_small_bins_shape():
+    pool = [{"uid": "dumpster", "height_m": 1.4}, {"uid": "bucket", "height_m": 0.45}]
+    rng = np.random.default_rng(0)
+    assert extrapolate.pick_sized(pool, 0.4, rng, among=2)["uid"] == "bucket"
+    L, W, H = extrapolate.sized({"dims": [60.0, 50.0, 100.0]}, 1.0)
+    assert (L, W, H) == (0.6, 0.5, 1.0)

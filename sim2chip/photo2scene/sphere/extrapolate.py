@@ -6,6 +6,8 @@ hand; more than 5 cars per image does worse (docs/conocimiento_photosphere.md, p
 Where: on the kinds of ground the erased targets stood on (their contacts' SAM 3 votes; a sphere without targets
 takes the paved kinds), on ground the proxy measured (render_plan.Ground), with the whole footprint free and apart
 from the others.
+With a context prior from the user's photos (context.py; a sphere holding none of the targets, bins): their
+class, height, ground, wall and distance, and their colour as paint (place_by_context).
 Heading: the erased target nearest the spot, if one stood within NEIGHBOUR_M (rows of parked cars keep their
 order; its front from Orient Anything, S.5), else along the nearest wall (the street), else any.
 View: a heading drawn at random (around the user's camera heading when given), the spec's pitch with a little
@@ -131,8 +133,10 @@ def asset_size(asset: dict, rng) -> tuple[float, float, float]:
 
 
 def plan_views(d: Path, pool: list[dict], n: int, rng, fov_deg: float, size, label: str,
-               pitch_deg: float = 0.0, heading_deg: float | None = None) -> list[dict]:
-    """n views of the sphere with their targets (render_plan.write's format)."""
+               pitch_deg: float = 0.0, heading_deg: float | None = None, prior: dict | None = None) -> list[dict]:
+    """n views of the sphere with their targets (render_plan.write's format). prior (context.prior, from the
+    user's photos): targets placed, sized, labelled and painted as those photos show them, for a class the sphere
+    holds none of; else as the erased targets stood (label: their class)."""
     d = Path(d)
     geo = json.loads((d / "geometry.json").read_text())
     R, h = np.array(geo["levelling"]), geo["camera_height_m"]
@@ -144,6 +148,7 @@ def plan_views(d: Path, pool: list[dict], n: int, rng, fov_deg: float, size, lab
     kind_map = KindMap(d, R)
     kinds = allowed_kinds(kind_map, fits)
     ground = render_plan.Ground(d)
+    colours = Colours(d, R) if prior else None
     views = []
     for k in range(n):
         yaw = float(rng.uniform(0, 360)) if heading_deg is None else \
@@ -152,13 +157,15 @@ def plan_views(d: Path, pool: list[dict], n: int, rng, fov_deg: float, size, lab
         dz = float(rng.uniform(-HEIGHT_SPREAD_M, HEIGHT_SPREAD_M))
         placed = []
         for _ in range(int(rng.integers(OBJECTS_PER_VIEW[0], OBJECTS_PER_VIEW[1] + 1))):
-            o = place_one(ground, kind_map, kinds, fits, walls, pool, placed, rng, yaw, fov_deg, h)
+            o = place_by_context(ground, kind_map, walls, pool, prior, placed, rng, yaw, fov_deg, h, colours) if prior \
+                else place_one(ground, kind_map, kinds, fits, walls, pool, placed, rng, yaw, fov_deg, h)
             if o is not None:
                 placed.append(o)
-        objects = [{"usd": o["usd"], "length_m": o["size"][0], "size_m": [round(v, 3) for v in o["size"]],
+        objects = [{"usd": o["usd"], "length_m": max(o["size"][:2]), "size_m": [round(v, 3) for v in o["size"]],
                     "box_yaw_deg": round(o["yaw"], 2), "pos": o["pos"], "yaw_deg": o["render_yaw"],
-                    "label": label, "uid": o["uid"], "key": f"v{k}_{i}", "distance_m": o["distance_m"],
-                    "heading_from": o["heading_from"]} for i, o in enumerate(placed)]
+                    "label": o.get("label", label), "uid": o["uid"], "key": f"v{k}_{i}",
+                    "distance_m": o["distance_m"], "heading_from": o["heading_from"],
+                    **({"paint": o["paint"]} if o.get("paint") else {})} for i, o in enumerate(placed)]
         views.append({"name": f"x{k:03d}", "yaw_deg": round(yaw % 360, 2), "pitch_deg": round(pitch, 2),
                       "fov_deg": fov_deg, "size": list(size), "offset": [0.0, 0.0, round(dz, 3)],
                       "objects": objects})
@@ -202,6 +209,165 @@ def place_one(ground, kind_map, kinds, fits, walls, pool, placed, rng, view_yaw,
                 "render_yaw": (yaw + asset.get("front_flip_deg", 0.0)) % 360,
                 "pos": render_plan.to_world(p, h).tolist(), "distance_m": round(float(np.linalg.norm(xz)), 2),
                 "heading_from": source}
+    return None
+
+
+def srgb_to_linear(c) -> list[float]:
+    c = np.asarray(c, float)
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4).round(4).tolist()
+
+
+def sized(asset: dict, height_m: float) -> tuple[float, float, float]:
+    """The asset's (length, width, height) in metres scaled to a height."""
+    L, W, H = (float(v) for v in asset["dims"])
+    k = height_m / H
+    return L * k, W * k, height_m
+
+
+def pick_sized(pool: list[dict], height_m: float, rng, among: int = 4) -> dict:
+    """Of a few assets drawn at random, the one whose own real height (pool "height_m", the vision model's) is
+    nearest the wanted one: a 0.4 m bucket takes a small bin's shape rather than a dumpster's."""
+    cands = [pool[int(i)] for i in rng.choice(len(pool), min(among, len(pool)), replace=False)]
+    return min(cands, key=lambda a: abs(math.log(a.get("height_m", height_m) / height_m)))
+
+
+def wall_spot(ground, walls, along_m, depth_m, gap_m, rng, view_yaw, fov_deg, dist_range):
+    """A spot against a wall of the proxy for a footprint along_m wide and depth_m deep, in the view and at a wanted
+    distance: (levelled ground point, the wall's normal towards the camera as a yaw) or None. gap_m: from the wall
+    to the footprint's centre, as measured in the user's photos (never less than half its depth)."""
+    w = walls[int(rng.integers(len(walls)))]
+    a, b = (np.asarray(e, float) for e in w["ends_xz"])
+    run = np.linalg.norm(b - a)
+    if run < along_m + 0.4:
+        return None
+    u = (b - a) / run
+    n = np.asarray(w["normal"], float)[[0, 2]]
+    n = n / np.linalg.norm(n)
+    if n @ (-a) < 0:  # the side the camera is on
+        n = -n
+    t = float(rng.uniform(along_m / 2 + 0.2, run - along_m / 2 - 0.2))
+    xz = a + t * u + n * max(gap_m, depth_m / 2 + 0.03)
+    D = float(np.linalg.norm(xz))
+    off = (math.degrees(math.atan2(xz[0], xz[1])) - view_yaw + 180) % 360 - 180
+    if not dist_range[0] <= D <= dist_range[1] or abs(off) > 0.45 * fov_deg:
+        return None
+    ray = np.array([xz[0], ground.h, xz[1]])
+    ok, dist = ground.look(ray[None])
+    if not ok[0] or abs(dist[0] - np.linalg.norm(ray)) > 0.1 * np.linalg.norm(ray):
+        return None
+    p = ray / np.linalg.norm(ray) * dist[0]
+    return p, math.degrees(math.atan2(n[1], n[0]))
+
+
+def at_edge(ground, kind_map, q, kind, radius_m, n_dirs: int = 16) -> bool:
+    """Whether the edge of q's ground (another kind, or no ground: a kerb, a wall, a lawn's border) comes within
+    radius_m of it."""
+    for a in np.linspace(0, 2 * math.pi, n_dirs, endpoint=False):
+        r = q + radius_m * np.array([math.cos(a), 0.0, math.sin(a)])
+        ok, dist = ground.look(r[None])
+        if not ok[0] or abs(dist[0] - np.linalg.norm(r)) > 0.1 * np.linalg.norm(r) or kind_map.at(r) != kind:
+            return True
+    return False
+
+
+class Colours:
+    """The albedo the render gives the proxy under a levelled point: the erased panorama's linear colour over the
+    light, at render_plan.proxy_colors' scale (its vertices' 99.5th percentile to ALBEDO_MAX)."""
+
+    def __init__(self, d: Path, R: np.ndarray):
+        from PIL import Image
+        d = Path(d)
+        self.background = np.asarray(Image.open(d / "background.jpg").convert("RGB"))
+        self.light = np.maximum(np.asarray(render_plan.sky_color(self.background, np.load(d / "stuff.npz")["sky"]),
+                                           np.float32), 1e-3)
+        self.R = R
+        v = np.load(d / "proxy.npz")["vertices"]
+        col = self.linear(v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-9)) / self.light
+        self.k = render_plan.ALBEDO_MAX / max(float(np.percentile(col, 99.5)), 1e-6)
+
+    def linear(self, dirs: np.ndarray) -> np.ndarray:
+        return render_plan.srgb_to_linear(capture.sample(self.background, render_plan.pano_rays(dirs, self.R)))
+
+    def at(self, p_level: np.ndarray) -> np.ndarray:
+        d = np.asarray(p_level, float)[None] / np.linalg.norm(p_level)
+        return np.clip(self.linear(d)[0] / self.light * self.k, 0, render_plan.ALBEDO_MAX)
+
+
+def paint_for(p: dict, ground_lin: np.ndarray) -> list[float] | None:
+    """A class's paint in this sphere: its chroma at its measured brightness over the ground next to it, times the
+    sphere's ground there (photometry by proportions to the floor, as flow_photometry: the user's sunny photos
+    and an overcast sphere differ in light, not in the bin's share of the ground's brightness)."""
+    if not p.get("chroma") or not p.get("to_ground"):
+        return srgb_to_linear(p["colour_srgb"]) if p.get("colour_srgb") else None
+    g = float(ground_lin @ np.array([0.2126, 0.7152, 0.0722]))
+    return np.clip(np.asarray(p["chroma"]) * p["to_ground"] * g, 0.0, 0.9).round(4).tolist()
+
+
+def place_by_context(ground, kind_map, walls, pool, prior, placed, rng, view_yaw, fov_deg, h,
+                     colours: "Colours | None" = None) -> dict | None:
+    """One target placed as the user's photos show them (context.prior): its class drawn by how often it stands in
+    them, its height one of theirs, on their kinds of ground, against a wall as often as theirs are (front away
+    from it), at their distances from the camera, painted their colour."""
+    classes = [c for c, p in prior.items() if p.get("standing") and p.get("heights")]
+    if not classes:
+        return None
+    weights = np.array([prior[c]["standing"] for c in classes], float)
+    cls = classes[int(rng.choice(len(classes), p=weights / weights.sum()))]  # once: a class hard to place still
+    p = prior[cls]                                                          # keeps its share
+    # Distances: how the user frames their photos, not a class's own (a few photos each): all classes together.
+    ranges = [prior[c]["distance_m"] for c in classes if prior[c].get("distance_m")]
+    lo, hi = (min(r[0] for r in ranges), max(r[1] for r in ranges)) if ranges else DISTANCE_M
+    dist_range = (max(lo, 1.5), max(hi, lo + 2.0))
+    kinds = {k for k in p.get("ground") or {} if k in kind_map.kinds} or set(PAVED)
+    against = bool(walls) and rng.random() < (p.get("wall_share") or 0.0)
+    for t in range(TRIES):
+        height = float(rng.choice(p["heights"]))
+        asset = pick_sized(pool, height, rng)
+        size = sized(asset, height)
+        front = None
+        if against and t < TRIES // 2:  # no wall at the user's distances in this view: it stands free
+            turned = round(asset.get("front_deg", 0.0) / 90) % 2  # its front along its width, not its length
+            along, depth = (size[0], size[1]) if turned else (size[1], size[0])
+            spot = wall_spot(ground, walls, along, depth, p.get("wall_gap_m") or 0.1, rng, view_yaw, fov_deg,
+                             dist_range)
+            if spot is None:
+                continue
+            q, front = spot
+            source = "wall"
+        else:
+            heading = view_yaw + float(rng.uniform(-0.45, 0.45)) * fov_deg
+            D = float(rng.uniform(*dist_range))
+            points = ground.along(heading)
+            if not points:
+                continue
+            horiz = np.array([math.hypot(r[0], r[2]) for r in points])
+            i = int(np.argmin(np.abs(horiz - D)))
+            if abs(horiz[i] - D) > 0.5:
+                continue
+            q = points[i]
+            front, source = float(rng.uniform(0, 360)), "free"
+        kind = kind_map.at(q)
+        if source == "free":
+            if kind not in kinds:
+                continue
+            gaps = p.get("edge_gaps") or []
+            if gaps and rng.random() < (p.get("edge_share") or 0.0):  # at its ground's edge, as in the photos
+                if not at_edge(ground, kind_map, q, kind, max(float(rng.choice(gaps)), min(size[:2]) / 2) + 0.15):
+                    continue
+        render_yaw = (front - asset.get("front_deg", 0.0)) % 360  # the asset at render_yaw faces front_deg more
+        xz = np.array([q[0], q[2]])
+        if any(overlaps(xz, render_yaw, size[:2], o["xz"], o["yaw"], o["size"][:2]) for o in placed):
+            continue
+        if not ground.footprint_free(q, size[0], size[1], render_yaw):
+            continue
+        if source == "free":
+            on = [kind_map.at(r) in kinds for r in footprint_points(q, size[0], size[1], render_yaw)]
+            if sum(on) < FOOTPRINT_ON_KIND * len(on):
+                continue
+        return {"usd": asset["usd"], "uid": asset["uid"], "size": size, "xz": xz, "yaw": render_yaw,
+                "render_yaw": render_yaw, "pos": render_plan.to_world(q, h).tolist(),
+                "distance_m": round(float(np.linalg.norm(xz)), 2), "heading_from": source, "label": cls,
+                "paint": paint_for(p, colours.at(q)) if colours else srgb_to_linear(p["colour_srgb"])}
     return None
 
 

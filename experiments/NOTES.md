@@ -780,3 +780,27 @@ Salió el 2026-10-15 y ya está en Token Factory (`nvidia/Nemotron-3.5-Super-VL`
 - **Entrevista** (`interview_bench`, brazo `NV`: VL para todo con `SYSTEM_LEAN`, 6 personas x 2): 11/12 specs correctos (el fallo: `errors balanced` en cat), 0,17 specs rechazados, 13,1 s y 0,0038 $ por entrevista. Comparación: L (Super, prompt corto) 14/18, 0,11 rechazados, 11,8 s, 0,0026 $; K (Kimi conversa y Super escribe el spec) 15/18, 157 s, 0,07 $. El banco simula el análisis de fotos: no mide aún que la entrevista mire las fotos ella misma.
 - **Perfil de escena** (`scene_profile.describe`, 9 fotos de `data/street_test`): Kimi K2.6 86 s y 59k tokens de salida; VL 34 s y 31k. Mismo contexto y luz; altura de cámara igual. VL ve los coches pequeños del fondo que Kimi da por ausentes (terrace_row, corner_timber), pero inventa dos personas donde hay un perro (straight_whitewash) y llama bicicleta a un scooter (facade_car). Kimi da 3 m de distancia en una calle larga (whitewash); VL 20.
 - **vlm_scene** (tamaños con verdad, sin SAM): botellas error mediano 0,134 (Kimi K2.6 0,056, GLM 0,0); hope_val1 0,203 (Kimi 0,21); sesgo de escala 1,16 a 1,38 (Kimi K2.6 1,02 a 1,21). Con 8192 tokens se queda sin respuesta en 2 de 4 casos: necesita los 16384 de `REASONING_TOKENS`.
+
+## Esferas para contenedores: S.8 (2026-10-17)
+
+Trabajo `bins_count` (`experiments/sphere/bins_job.py`): las 40 fotos de contenedores del usuario, contar por color, etiquetas de SAM 3 sin revisar; 20 fotos de entrenamiento y 20 de test (36 objetos). Brazo esfera: 63 vistas de las cuatro esferas que pasan la revisión del VLM (`s6_sheet.py --context`, roadmap S.6b), 60 de ellas pasan el filtro de parecido. 5 semillas por ejecución (`experiments/sphere/s8_arms.py`).
+
+| Brazo | Ejecuciones | Media |
+|---|---|---|
+| Solo fotos | 0,400 / 0,387 / 0,329 / 0,328 | 0,361 |
+| Fotos + esferas | 0,309 / 0,297 / 0,268 | 0,291 |
+
+Por clase (5 semillas, un acierto es un punto dentro de la caja de la verdad):
+
+| Clase | Solo fotos: aciertos / falsos / perdidos | Con esferas |
+|---|---|---|
+| brown_bin | 42 / 69 / 63 | 36 / 123 / 69 |
+| gray_bin | 5 / 51 / 30 | 7 / 56 / 28 |
+| green_bin | 15 / 54 / 10 | 17 / 37 / 8 |
+| blue_bin | 7 / 10 / 3 | 5 / 32 / 5 |
+| yellow_bin | 0 / 10 / 5 | 0 / 9 / 5 |
+| Sin mirar la clase | 80 / 183 / 100 | 76 / 246 / 100 |
+
+- Las esferas empeoran (0,07, por encima del ruido de PicoDet). Los falsos positivos suben en marrón y azul, también sin mirar la clase: no es solo confundir colores.
+- Solo mejora el verde (iglús y cubos grandes de pie, lo que mejor imita el sintético).
+- Lo que el sintético no cubre: los cubos marrones colgados (62 % de los marrones, la clase más frecuente del test), la luz (fotos con sol frente a esferas nubladas al anochecer) y la forma (dumpsters pintados de marrón o gris donde el usuario tiene cubos de 0,4 m).

@@ -1,0 +1,14 @@
+{
+  "name": "sphere_bins",
+  "hardware": "generic",
+  "task": "count",
+  "classes": [
+    {"id": "bin", "description": "a street waste bin: wheelie bin, kerbside waste container, glass recycling igloo or litter bin on a post",
+     "size_m": {"measure": "height", "range": [0.8, 1.9]},
+     "assets": {"source": "search", "count": 60,
+                "queries": ["wheelie bin", "trash bin", "waste container", "garbage container", "recycling container",
+                            "recycling bin", "glass recycling container", "recycling igloo", "street litter bin",
+                            "garbage can", "dumpster"]}}
+  ],
+  "qa": {"mode": "auto", "strategy": "describe_then_decide", "realistic": true}
+}

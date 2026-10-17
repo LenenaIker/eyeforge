@@ -143,6 +143,11 @@ def main():
             ref.GetReferences().AddReference(o["usd"])
             xf = UsdGeom.Xformable(prim)
             assets[key(o)] = (prim, xf.AddTranslateOp(), xf.AddRotateZOp(), xf.AddScaleOp(), ref)
+            if o.get("paint"):  # the class is a colour (bins): one solid paint over the model's own materials, as
+                # scenes/common.Paint does for the product's renders
+                pm, psh = surface(f"/World/Looks/Paint{k}", float(o.get("roughness", 0.6)))
+                psh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*o["paint"]))
+                UsdShade.MaterialBindingAPI.Apply(prim).Bind(pm, UsdShade.Tokens.strongerThanDescendants)
     for _ in range(20):
         app.update()
     lengths = {}  # each asset's measured long side, in its own units: the scale comes from the real length

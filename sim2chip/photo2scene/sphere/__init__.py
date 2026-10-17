@@ -17,6 +17,8 @@ Steps:
     replica.py         S.5 the erased targets put back as assets and compared with the real panorama
     steps/orient.py    S.5 which way each object faces, Orient Anything V2 (sam3 Python)
     extrapolate.py     S.6 new views with targets placed where the sphere can hold them, and their labels
+    context.py         S.6 where the targets stand in the user's photos, for a sphere holding none of them
+    steps/photo_depth.py, steps/photo_stuff.py  S.6 MoGe-2 and SAM 3 on the user's photos, for context.py
 
 Frame of the sphere, shared by every step: the capture point at the origin, OpenCV axes for heading 0 (the
 panorama's centre column): +x right, +y down, +z forward. Headings (yaw) grow to the right, pitches downwards.

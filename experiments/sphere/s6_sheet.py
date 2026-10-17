@@ -7,6 +7,12 @@ The cars are the reviewed realistic ones (car_assets.py); their fronts are measu
 on one render each (an asset's front is wherever its modeller put it), into the asset job's fronts.json.
 
     python experiments/sphere/s6_sheet.py data/sphere_test/PXL_* [--views 20] [--hardware generic]
+
+Targets the spheres hold none of (bins, 2026-10-17) are placed by the context measured on the user's photos
+(--context, context.py), with their pool (--assets) and label (--label):
+
+    python experiments/sphere/s6_sheet.py data/sphere_test/PXL_* --assets data/jobs/sphere_bins \
+        --context data/sphere_test/bins/context.json --label "waste bin" --photos data/real/container --tag _bins
 """
 import argparse
 import json
@@ -18,7 +24,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from sim2chip.photo2scene import Flow
-from sim2chip.photo2scene.sphere import STEPS, camera_fx, extrapolate, render_plan, replica, review
+from sim2chip.photo2scene.sphere import STEPS, camera_fx, context, extrapolate, render_plan, replica, review
 from sim2chip.workspace import Cache, default_home
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,15 +34,18 @@ THUMB = (320, 240)
 FRONT_DISTANCES_M = (8.0, 9.0, 7.0, 10.0)
 
 
-def pool() -> list[dict]:
-    """The kept cars with absolute USD paths, metric sizes and their measured front."""
+def pool(job: Path = ASSET_JOB) -> list[dict]:
+    """The kept assets with absolute USD paths, metric sizes and their measured front."""
     cache = Cache(default_home() / "cache")
-    fronts = json.loads((ASSET_JOB / "fronts.json").read_text()) if (ASSET_JOB / "fronts.json").exists() else {}
+    fronts = json.loads((job / "fronts.json").read_text()) if (job / "fronts.json").exists() else {}
     out = []
-    for a in json.loads((ASSET_JOB / "pool.json").read_text())["kept"]:
+    for a in json.loads((job / "pool.json").read_text())["kept"]:
+        if not all(a.get("dims") or [0]):
+            continue  # no measured size: nothing to scale it by
         usd = Path(a["usd"]) if Path(a["usd"]).is_absolute() else cache.root / a["usd"]
+        f = fronts.get(a["uid"], {})
         out.append({**a, "usd": str(usd), "width_range_m": (1.65, 1.95),
-                    "front_flip_deg": fronts.get(a["uid"], {}).get("flip_deg", 0.0)})
+                    "front_flip_deg": f.get("flip_deg", 0.0), "front_deg": f.get("front_deg", 0.0)})
     return out
 
 
@@ -46,7 +55,7 @@ def measure_fronts(d: Path, cars: list[dict], rng) -> dict:
     ground = render_plan.Ground(d)
     views, intended = [], {}
     for k, a in enumerate(cars):
-        size = extrapolate.asset_size(a, rng)
+        size = extrapolate.sized(a, a["height_m"]) if a.get("height_m") else extrapolate.asset_size(a, rng)
         for _ in range(20):
             heading = float(rng.uniform(0, 360))
             yaw = (90 - heading) % 360 + 60  # three quarters: front or back clearly in view
@@ -57,7 +66,7 @@ def measure_fronts(d: Path, cars: list[dict], rng) -> dict:
             continue
         pos, _ = spot
         views.append({"name": f"f{k:03d}", "yaw_deg": round(heading % 360, 2), "pitch_deg": 5.0, "fov_deg": 50.0,
-                      "size": [768, 576], "objects": [{"usd": a["usd"], "length_m": size[0], "pos": pos,
+                      "size": [768, 576], "objects": [{"usd": a["usd"], "length_m": max(size[:2]), "pos": pos,
                                                        "yaw_deg": yaw, "label": "car", "uid": a["uid"],
                                                        "key": f"f{k}"}]})
         intended[f"o{k:03d}"] = (a["uid"], yaw)
@@ -82,7 +91,9 @@ def measure_fronts(d: Path, cars: list[dict], rng) -> dict:
     for name, (uid, yaw) in intended.items():
         h = heads.get(name)
         if h and h["front"]:
-            fronts[uid] = {"flip_deg": 180.0 if abs((h["yaw_deg"] - yaw + 180) % 360 - 180) > 90 else 0.0,
+            off = (h["yaw_deg"] - yaw) % 360  # where its front is, from its own axis (the model's: x)
+            fronts[uid] = {"flip_deg": 180.0 if abs((off + 180) % 360 - 180) > 90 else 0.0,
+                           "front_deg": float(round(off / 90) * 90 % 360),
                            "seen_yaw_deg": h["yaw_deg"], "given_yaw_deg": round(yaw % 360, 1)}
     return fronts
 
@@ -122,7 +133,7 @@ def sheet(d: Path, plan: dict, labels: dict, liked: dict | None = None, rated: d
     rated = rated or {}
     kept = sum(1 for v in views if liked.get(v["name"], (0, True))[1])
     passed = sum(1 for v in views if rated.get(v["name"], {"keep": True})["keep"])
-    draw.text((6, 8), f"{d.name}: {len(views)} views, {n} labelled cars; {kept} look like the user's photos, "
+    draw.text((6, 8), f"{d.name}: {len(views)} views, {n} labelled targets; {kept} look like the user's photos, "
               f"{passed} pass the VLM review (red: out)", fill=(0, 0, 0), font_size=20)
     for k, v in enumerate(views):
         x, y = (k % cols) * (THUMB[0] + 6), 40 + (k // cols) * (THUMB[1] + 22)
@@ -137,7 +148,7 @@ def sheet(d: Path, plan: dict, labels: dict, liked: dict | None = None, rated: d
         froms = ",".join(sorted({o["heading_from"].split(" ")[0] for o in v["objects"]})) or "-"
         sim, ok = liked.get(v["name"], (None, True))
         r = rated.get(v["name"], {"score": None, "keep": True})
-        draw.text((x + 2, y + 2), f"{v['name']}: {len(labels.get(v['name'], []))}/{len(v['objects'])} cars "
+        draw.text((x + 2, y + 2), f"{v['name']}: {len(labels.get(v['name'], []))}/{len(v['objects'])} targets "
                   f"({froms}) sim {sim} vlm {r['score']}", fill=(0, 0, 0) if ok and r["keep"] else (200, 0, 0),
                   font_size=13)
     return out
@@ -153,23 +164,28 @@ def main():
     ap.add_argument("--tag", default="")
     ap.add_argument("--photos", type=Path, default=ROOT / "data/real/photospheres-scenes",
                     help="the user's photos for the similarity filter (photospheres in it are left out)")
+    ap.add_argument("--assets", type=Path, default=ASSET_JOB, help="the asset job (car_assets.py) of the targets")
+    ap.add_argument("--context", type=Path, help="context.json measured on the user's photos (context.py): "
+                    "targets placed by it")
+    ap.add_argument("--label", default="car", help="what the targets are, for the review")
     args = ap.parse_args()
     places = [d.resolve() for d in args.places]
     rng = np.random.default_rng(args.seed)
-    if not (ASSET_JOB / "fronts.json").exists():
-        fronts = measure_fronts(places[0], pool(), rng)
-        (ASSET_JOB / "fronts.json").write_text(json.dumps(fronts, indent=1))
+    if not (args.assets / "fronts.json").exists():
+        fronts = measure_fronts(places[0], pool(args.assets), rng)
+        (args.assets / "fronts.json").write_text(json.dumps(fronts, indent=1))
         print(f"fronts: {len(fronts)} measured, {sum(f['flip_deg'] > 0 for f in fronts.values())} flipped",
               flush=True)
-    cars = [a for a in pool()]
+    cars = pool(args.assets)
+    prior = context.prior(json.loads(args.context.read_text())) if args.context else None
     sensor = camera_fx.sensor_for(args.hardware)
     blur = blur_for(places)
     done = {}
     for d in places:
         t0 = time.time()
         w, h = RENDER_SIZE.get(args.hardware, (1024, 768))
-        views = extrapolate.plan_views(d, cars, args.views, rng, sensor.fov_deg, (w, h), "car",
-                                       pitch_deg=args.pitch)
+        views = extrapolate.plan_views(d, cars, args.views, rng, sensor.fov_deg, (w, h), args.label,
+                                       pitch_deg=args.pitch, prior=prior)
         plan = render_plan.write(d, views, sun=None)
         Flow(d).run("sphere_render", "isaac", str(STEPS / "render.py"), ["--dir", d, "--path-tracing"])
         report = json.loads((d / "render" / "render.json").read_text())
@@ -188,13 +204,13 @@ def main():
         print(json.dumps({"place": d.name, "views": len(views), "placed": placed,
                           "labelled": sum(len(b) for b in labels.values()), "blur_px": blur[d],
                           "seconds": round(time.time() - t0)}), flush=True)
-    photos = sorted(p for p in args.photos.glob("*.jpg") if "PHOTOSPHERE" not in p.name)
+    photos = sorted(p.resolve() for p in args.photos.glob("*.jpg") if "PHOTOSPHERE" not in p.name)
     liked = likeness(places, photos) if photos else {"threshold": None, "places": {}}
     for d, (plan, labels) in done.items():
         mine = liked["places"].get(d, {})
         (d / "render" / "likeness.json").write_text(json.dumps({"threshold": liked["threshold"], "views": mine},
                                                                indent=1))
-        rated = review.review_views(d, "car")
+        rated = review.review_views(d, args.label)
         path = d.parent / f"sheet_s6_{d.name}{args.tag}.jpg"
         sheet(d, plan, labels, mine, rated).save(path, quality=88)
         print(f"{d.name}: {sum(ok for _, ok in mine.values())}/{len(mine)} views kept by the similarity filter "

@@ -189,6 +189,30 @@ Hallazgos:
 - **Assets:** siguen colándose algunos raros (un coche de madera, un todoterreno negro sin textura, un coche quemado). Los coches salen más vivos de color que el fondo de anochecer.
 - **Court es una cancha de baloncesto:** sin coches borrados, los pavimentados permiten ponerlos en la cancha. Es correcto geométricamente, pero no es un sitio de coches; el usuario elegirá esferas de su caso.
 
+### S.6b Contenedores con las mismas esferas (2026-10-17)
+
+Decisión del usuario (2026-10-17): las esferas también para el dataset de basuras, y casi mejor que para coches. Fotos: `data/real/container` (40, móvil, 2026-10-09). Trabajo `bins_count` (`experiments/sphere/bins_job.py`): contar por color (`blue_bin`, `yellow_bin`, `brown_bin`, `gray_bin`, `green_bin`), etiquetas de SAM 3 sin revisar, como C.0. Hoja: `data/sphere_test/bins/sheet_bins_labels.jpg`.
+
+- **Qué hay en las fotos:** cubos con ruedas junto a portales, iglús de vidrio en la calzada, papeleras en poste y, sobre todo, los cubos marrones de 0,4 m del puerta a puerta, el 62 % colgados de paneles. SAM 3 los encuentra bien (55 marcas). Ninguna de las cuatro esferas tiene contenedores.
+- **Assets:** buscar por color no da modelos (0 azules, 1 amarillo). Un solo pool de contenedores (`specs/benchmarks/sphere_bins.json`, 92 encontrados, 57 pasan la QA realista) y el color de la clase como pintura al renderizar.
+  - **Filtro por las fotos del usuario** (`car_assets.photo_gate`): SigLIP 2 en gris entre los renders y los recortes de sus contenedores; se queda la mitad más parecida (28). Arriba cubos con ruedas y papeleras; en medio dumpsters; abajo cápsulas y bidones.
+  - **Altura real de cada modelo** del VLM local (cubo con ruedas 1,05 m, dumpster 1,1 a 1,5 m). Sirve para emparejar forma y tamaño.
+- **Contexto medido en las fotos** (`sphere/context.py`, Dvornik et al., ECCV 2018: pegar por contexto ayuda y al azar empeora): MoGe-2 y SAM 3 en cada foto dan el plano del suelo, la base y la altura de cada contenedor sobre él (colgado si la base está a más de 0,2 m), el suelo bajo él, la distancia a la pared más cercana, la distancia a la cámara y el color. Cosmos se probó antes para esto y falló (decía que ningún cubo colgaba).
+
+| Clase | Marcas | Colgados | Suelo (de pie) | Contra pared | Altura mediana |
+|---|---|---|---|---|---|
+| brown_bin | 29 | 62 % | acera | 75 % | 0,41 m |
+| gray_bin | 11 | 50 % | calzada, césped, acera | 0 % | 1,09 m |
+| green_bin | 9 | 25 % | acera, calzada | 17 % | 1,42 m |
+| blue_bin | 4 | 25 % | acera | 100 % | 1,01 m |
+| yellow_bin | 2 | 0 % | acera | 50 % | 0,37 m |
+
+- **Colocación** (`extrapolate.place_by_context`): clase sorteada según cuántas hay de pie en las fotos; altura, una de las medidas; modelo con la altura más parecida entre 4; contra una pared del proxy tantas veces como en las fotos (frente hacia fuera, a la distancia medida del muro); si no hay pared a mano, libre sobre sus tipos de suelo; distancias a la cámara, las de todas las fotos juntas (2,4 a 13,6 m: es cómo encuadra el usuario, no la clase).
+- **Colgados fuera por ahora:** la ruta pone objetos en el suelo. Colgarlos de las paredes del proxy queda para después.
+- Orient Anything da frente a 1 de 27 contenedores (los ve simétricos): el resto se gira al azar o con el frente por defecto contra la pared.
+- Segunda pasada: en el borde de su suelo tantas veces como en las fotos (todas, a menos de 0,6 m de un bordillo, muro o borde del césped), y la pintura como proporción de brillo respecto al suelo junto a él (idea del usuario de la fotometría por proporciones), con el tono del propio contenedor, sobre el albedo del proxy de la esfera. Hojas: `data/sphere_test/sheet_s6_*_bins2.jpg`. Pasan la revisión del VLM 16, 18, 15 y 14 de 20.
+- **S.8 con contenedores: las esferas empeoran** (solo fotos 0,361 de media en 4 ejecuciones, con esferas 0,291 en 3; `experiments/NOTES.md`). Solo mejora el verde. Lo que falta: los cubos colgados, la luz del sol y las formas de los cubos pequeños.
+
 ### S.7 Producto (1 día, solo si S.8 gana)
 
 - [ ] Entrada separada de escenas: `input/places/<sitio>/` con la photosphere, y biblioteca de escenas.
