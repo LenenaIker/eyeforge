@@ -1,6 +1,7 @@
 """S.8 of the sphere route (docs/roadmap_photosphere.md): does the student count better with the spheres' frames?
 Arms on one count job of the user's photos (bins_job.py): photos only, and photos plus the frames S.6 made on the
-spheres (s6_sheet.py), 3 runs of 5 seeds each (PicoDet's noise, roadmap_photo2scene). The frames go in as the
+spheres (s6_sheet.py), and "staged": the same frames first, then a short fine-tune on the photos
+(TrainingSpec.schedule, on the frames the last sphere arm left), 3 runs of 5 seeds each (PicoDet's noise, roadmap_photo2scene). The frames go in as the
 job's scene_from_photo output, so the product's render stage takes them as it takes the user's place: the
 similarity filter, then points and training. Frames the VLM review rejected stay out.
 
@@ -79,7 +80,9 @@ def main():
     base = json.loads((HOME / "jobs" / args.job / "spec.json").read_text())
     results = {}
     for arm in args.arms:
-        spec = {**base, "generation": {**base["generation"], "photo_scenes": arm == "sphere"}}
+        spec = {**base, "generation": {**base["generation"], "photo_scenes": arm in ("sphere", "staged")}}
+        if arm == "staged":
+            spec["training"] = {**base.get("training", {}), "schedule": "synth_then_real"}
         path = HOME / "jobs" / args.job / f"spec_{arm}.json"
         path.write_text(json.dumps(spec, indent=1))
         if arm == "sphere":
@@ -90,6 +93,7 @@ def main():
             # ingest's split is the same for both arms (it reads no generation settings); the frames come in at
             # render, which reruns the similarity filter
             start = "render" if arm == "sphere" else "ingest" if r == 1 and not args.keep_ingest else "train"
+            start = "train" if arm == "staged" else start
             score = run(path, args.job, start, log)
             results.setdefault(arm, []).append(score)
             line = f"S.8 {args.job} {arm} run {r}: {score}"

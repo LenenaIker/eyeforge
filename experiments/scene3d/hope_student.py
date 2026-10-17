@@ -17,6 +17,8 @@ Arms:
        sim2chip/stages/train.py does and the detector path does not (training has a fixed number of steps)
     BQ A + the B and Q synthetic together
     BSQ A + the BS and Q synthetic together
+    BT B's synthetic first, then a short fine-tune on the real photos (TrainingSpec.schedule "synth_then_real")
+    QT the same with Q's synthetic
 Truth boxes: every instance's mask_visib. The threshold is picked on val, then F1 and count error on test with
 the product's point matching (sim2chip/counting.py). Results in runs/hope_student/<arm>/seed<k>/ and
 runs/hope_student/<arm>.json.
@@ -106,7 +108,7 @@ def points(boxes):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('arm', choices=['A', 'B', 'BW', 'BS', 'BQ', 'BSQ', 'C', 'Q', 'D', 'DQ', 'R'])
+    ap.add_argument('arm', choices=['A', 'B', 'BW', 'BS', 'BQ', 'BSQ', 'BT', 'C', 'Q', 'QT', 'D', 'DQ', 'R'])
     ap.add_argument('--seeds', type=int, default=3, help='repeated runs (PaddlePaddle is not seeded)')
     ap.add_argument('--synth', type=int, help='BS: product synthetic frames to pick (default: as many as Q)')
     args = ap.parse_args()
@@ -120,6 +122,7 @@ def main():
     test = photos(split['test'])
     real_train, real_val = split_val(real)
     synth = synthetic()
+    tune = None
     if args.arm == 'A':
         train, val = real_train, real_val
     elif args.arm == 'C':
@@ -145,6 +148,9 @@ def main():
             train += synthetic(QC_REJECTED)
     elif args.arm == 'BQ':
         train, val = real_train + product_synthetic() + synthetic(QC_REJECTED), real_val
+    elif args.arm in ('BT', 'QT'):
+        train = product_synthetic() if args.arm == 'BT' else synthetic(QC_REJECTED)
+        val, tune = real_val, real_train
     elif args.arm == 'D':
         train, val = split_val(synth)
     else:
@@ -158,7 +164,7 @@ def main():
         run.mkdir(parents=True, exist_ok=True)
         onnx = run / 'model.onnx'
         if not onnx.exists():
-            onnx = detector.train(train, val, LABELS, SIZE, run)
+            onnx = detector.train(train, val, LABELS, SIZE, run, tune=tune)
         blob = detector.to_tflite(onnx, SIZE)
         out = {}
         for side, paths, tr in (('val', [v['path'] for v in val], [points(v['boxes']) for v in val]),

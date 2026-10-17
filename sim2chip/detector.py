@@ -27,6 +27,8 @@ PREFERRED = 0.4      # among thresholds that score the same, the closest to this
 STEPS = 600          # about how many training steps, whatever the number of photos. On FSC-147 geese (2026-10-05,
                      # 3 seeds, test F1): 900 0.713, 600 0.714, 300 0.696, 200 0.686. SIM2CHIP_PICODET_STEPS
                      # overrides it (to compare budgets on a dataset)
+TUNE_STEPS = 200     # the real photos' fine-tune after the synthetic frames (TrainingSpec.schedule)
+TUNE_LR = 0.2        # of the first training's learning rate: a nudge, not a new training on 16 photos
 DEFAULT_BOX = 0.1    # side of a point's box in 0..1 when no marked object in the job has a size
 MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 
@@ -68,8 +70,9 @@ def boxes_of(points: list, labels: list[str], side: tuple[float, float]) -> list
 
 
 def train(train_items: list[dict], val_items: list[dict], labels: list[str], size: int, out: Path,
-          log=print) -> Path:
-    """Fine-tunes PicoDet-S in its own Python; items: {"path", "boxes"} (boxes_of). Returns the ONNX file."""
+          log=print, tune: list[dict] | None = None) -> Path:
+    """Fine-tunes PicoDet-S in its own Python; items: {"path", "boxes"} (boxes_of). With `tune`, those items
+    fine-tune the result again, shortly and at a lower rate. Returns the ONNX file."""
     found = setup()
     if found is None:
         raise DetectorError("counting with PicoDet needs SIM2CHIP_PICODET_PYTHON (PaddlePaddle) and "
@@ -78,6 +81,8 @@ def train(train_items: list[dict], val_items: list[dict], labels: list[str], siz
     req = {"paddledet": det, "out": str(out), "size": size, "classes": labels[1:],
            "steps": int(os.environ.get("SIM2CHIP_PICODET_STEPS") or STEPS),
            "train": train_items, "val": val_items}
+    if tune:
+        req["tune"] = {"train": tune, "steps": TUNE_STEPS, "lr_scale": TUNE_LR}
     from .subproc import python_env, run_module
 
     def show(line: str) -> None:

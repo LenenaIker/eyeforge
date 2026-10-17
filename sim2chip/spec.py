@@ -239,6 +239,9 @@ class TrainingSpec:
     epochs: int = 25
     real_weight: int = 4  # real photos are repeated to weigh ~1/real_weight of the synthetic set
     orientation: str | None = None  # one of ORIENTATIONS; None is "upright". Chooses the training augmentation
+    # None: synthetic and real in one set; "synth_then_real": the detector learns the synthetic frames first,
+    # then a short fine-tune on the real photos only (Tremblay et al. 2018). Count with PicoDet only.
+    schedule: str | None = None
 
 
 @dataclass

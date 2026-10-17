@@ -831,3 +831,16 @@ Detalle en `docs/roadmap_photosphere.md`, S.6c. Etiquetas de entrenamiento revis
 - Los soportes no se notan; el contexto sin el test y con buenas etiquetas sí (0,470 a 0,54). Las esferas siguen 0,07 por debajo de solo fotos.
 - Cosmos Reason 2 por objetivo: 18 de 23 de acuerdo con la base medida; la categoría del soporte no sirve, si toca el suelo sí. 100 s por objetivo por las respuestas desbocadas.
 
+
+### Primero sintético y después real (2026-10-18)
+
+Pregunta del usuario: ¿no sería mejor entrenar primero con el sintético y ajustar al final con las fotos reales, en vez de mezclarlos? Opción nueva `training.schedule: "synth_then_real"` (solo conteo con PicoDet; por defecto, la mezcla de siempre): PicoDet aprende las vistas sintéticas y su mejor punto de control se ajusta con las fotos reales, unos 300 pasos al 20 % del learning rate (`detector.TUNE_STEPS`, `TUNE_LR`), con la misma validación real.
+
+| Caso | Solo fotos | Mezcla | Primero sintético, después real |
+|---|---|---|---|
+| Contenedores (esferas, 45 vistas, 16 fotos; `s8_arms.py --arms staged`) | 0,611 | 0,541 | 0,550 (0,567, 0,519, 0,565) |
+| HOPE (133 vistas revisadas, 40 fotos; `hope_student.py QT`) | 0,819 | 0,830 | 0,816 (0,793, 0,831, 0,823), error de cuenta 3,27 |
+
+- No gana en ninguno: en contenedores queda igual que la mezcla, dentro del ruido; en HOPE, por debajo de la mezcla y al nivel de solo fotos.
+- En estos dos casos el sintético no ahoga a las reales (45 frente a 16, 133 frente a 40), así que lo que falla en las esferas es el aspecto y la forma de las vistas, no la proporción. El caso en que la mezcla sí ahogaba (HOPE B, 2000 vistas del producto, 0,776) ya no se puede repetir: esas vistas no están en disco.
+- La opción se queda apagada por defecto.

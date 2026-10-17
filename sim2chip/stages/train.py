@@ -117,8 +117,13 @@ class Train(Stage):
             raise ValueError("nothing to train on: no synthetic frames and no marked photos")
         random.Random(0).shuffle(real)
         held = max(1, round(len(real) * 0.2)) if len(real) >= 5 else 0
-        rep = real_repeats(ctx, len(real) - held, len(synth), {q[2] for _, p in synth for q in p})
-        val, fit = real[:held], real[held:] * rep + synth
+        val = real[:held]
+        staged = ctx.spec.training.schedule == "synth_then_real" and synth and real[held:]
+        if staged:
+            rep, fit, tune = 1, synth, real[held:]
+        else:
+            rep = real_repeats(ctx, len(real) - held, len(synth), {q[2] for _, p in synth for q in p})
+            fit, tune = real[held:] * rep + synth, []
         if not val:
             val = (real or synth)[:20]
             ctx.log(f"only {len(real)} real photos: the threshold is picked on training photos, expect it optimistic")
@@ -127,9 +132,13 @@ class Train(Stage):
         def items(pairs):
             return [{"path": str(f), "boxes": detector.boxes_of(p, labels, side)} for f, p in pairs]
 
-        ctx.log(f"PicoDet-S at {size} px: {len(real) - held} real (each {rep} times) and {len(synth)} synthetic images to train, "
-                f"{len(val)} real to validate, {sum(len(p) for _, p in fit)} objects")
-        args = {"fit": items(fit), "val": items(val), "val_photos": [str(f) for f, _ in val],
+        if staged:
+            ctx.log(f"PicoDet-S at {size} px: {len(synth)} synthetic images first, then {len(tune)} real ones, "
+                    f"{len(val)} real to validate")
+        else:
+            ctx.log(f"PicoDet-S at {size} px: {len(real) - held} real (each {rep} times) and {len(synth)} synthetic images "
+                    f"to train, {len(val)} real to validate, {sum(len(p) for _, p in fit)} objects")
+        args = {"fit": items(fit), "tune": items(tune), "val": items(val), "val_photos": [str(f) for f, _ in val],
                 "truth": [[tuple(q) for q in p] for _, p in val], "labels": labels, "size": size, "out": str(out)}
         seeds = ctx.spec.training.seeds
         workers = min(len(seeds), PARALLEL_SEEDS)
@@ -248,7 +257,7 @@ def _detector_seed(args: dict, seed: int) -> dict:
     def log(msg: str) -> None:
         Context.log(f"seed {seed}: {msg.strip()}")
 
-    onnx_file = detector.train(args["fit"], args["val"], labels, size, work, log)
+    onnx_file = detector.train(args["fit"], args["val"], labels, size, work, log, tune=args.get("tune"))
     blob = detector.to_tflite(onnx_file, size)
     shutil.rmtree(work)  # checkpoints: about 150 MB a seed
     (d / "model.tflite").write_bytes(blob)

@@ -4,7 +4,9 @@ PaddleDetection checkout (release 2.8.1). The train stage runs it through detect
     python -m sim2chip.detector_worker < request.json
 
 Request: {"paddledet", "out", "size", "classes": [name, ...], "steps" (about how many training steps),
-          "train": [{"path", "boxes": [[x0, y0, x1, y1, class index], ...]}], "val": [...]}, boxes in 0..1.
+          "train": [{"path", "boxes": [[x0, y0, x1, y1, class index], ...]}], "val": [...],
+          "tune" (optional): {"train": [...], "steps", "lr_scale"}}, boxes in 0..1. With "tune", the best
+          checkpoint is trained again on tune's items, from it and at lr_scale of the rate.
 Writes out/model.onnx: input "image" (1, 3, size, size) normalized as PicoDet wants, outputs the boxes of every
 anchor (1, anchors, 4) in input pixels and their class scores (1, classes, anchors), before NMS.
 The best checkpoint by box AP on val is the one exported. Progress lines on stdout.
@@ -68,12 +70,13 @@ def coco(items: list[dict], classes: list[str], path: Path) -> None:
     path.write_text(json.dumps(out))
 
 
-def config(req: dict, out: Path, epochs: int, batch: int) -> Path:
+def config(req: dict, out: Path, epochs: int, batch: int, part: str = "train", weights=None,
+           lr_scale: float = 1.0) -> Path:
     """The model zoo config with this job's data, classes, size and schedule. The learning rate follows the
     batch (the zoo's 0.32 is for 4 GPUs of 64), and the NMS keeps up to 1000 objects (crowds)."""
     size, base = req["size"], str(Path(req["paddledet"]) / BASE)
     local = Path(req["paddledet"]) / LOCAL_WEIGHTS
-    weights = local if local.with_suffix(".pdparams").exists() else WEIGHTS
+    weights = weights or (local if local.with_suffix(".pdparams").exists() else WEIGHTS)
     sizes = [s for s in range(size - 64, size + 65, 32) if s >= 96]
     norm = "{is_scale: true, mean: %s, std: %s}" % (MEAN, STD)
     data = lambda part: f"""  name: COCODataSet
@@ -91,13 +94,13 @@ epoch: {epochs}
 snapshot_epoch: {max(1, epochs // 15)}
 log_iter: 1000
 TrainDataset:
-{data('train')}  data_fields: ['image', 'gt_bbox', 'gt_class', 'is_crowd']
+{data(part)}  data_fields: ['image', 'gt_bbox', 'gt_class', 'is_crowd']
 EvalDataset:
 {data('val')}TestDataset:
   name: ImageFolder
   anno_path: {out / 'val.json'}
 LearningRate:
-  base_lr: {0.32 * batch / 256:.4f}
+  base_lr: {0.32 * batch / 256 * lr_scale:.4f}
   schedulers:
   - !CosineDecay
     max_epochs: {epochs}
@@ -134,7 +137,7 @@ TestReader:
   - NormalizeImage: {norm}
   - Permute: {{}}
 """
-    path = out / "picodet.yml"
+    path = out / f"picodet_{part}.yml" if part != "train" else out / "picodet.yml"
     path.write_text(text)
     return path
 
@@ -152,27 +155,39 @@ def run(cmd: list[str], cwd: str, label: str) -> None:
         raise SystemExit(f"{label} failed (exit {proc.returncode})")
 
 
+def train(req: dict, out: Path, items: list[dict], steps: int, part: str, weights=None, lr_scale: float = 1.0):
+    """One PaddleDetection training on `items` into out/run_<part>; returns its config and best checkpoint."""
+    n = len(items)
+    repeat = 1 if math.ceil(n / BATCH) >= MIN_STEPS_PER_EPOCH else math.ceil(MIN_STEPS_PER_EPOCH * BATCH / n)
+    coco(items * repeat, req["classes"], out / f"{part}.json")
+    batch = max(1, min(BATCH, n * repeat))
+    epochs = max(MIN_EPOCHS, math.ceil(steps / math.ceil(n * repeat / batch)))
+    cfg = config(req, out, epochs, batch, part, weights, lr_scale)
+    print(f"picodet on {n} {part}" + (f" (each {repeat} times per epoch)" if repeat > 1 else "")
+          + f" and {len(req['val'])} val photos, {epochs} epochs", flush=True)
+    # Run from the job's folder: PaddleDetection writes files (bbox.json) where it runs, and the checkout may be
+    # read-only.
+    save = out / ("run" if part == "train" else f"run_{part}")
+    run([sys.executable, str(Path(req["paddledet"]) / "tools" / "train.py"), "-c", str(cfg), "--eval", "-o",
+         f"save_dir={save}"], str(out), part)
+    return cfg, save / "best_model"
+
+
 def main():
     req = json.loads(sys.stdin.read())
     out, det, py = Path(req["out"]), req["paddledet"], sys.executable
     out.mkdir(parents=True, exist_ok=True)
     req["train"] = shrink(req["train"], req["size"], out / "images" / "train")
     req["val"] = shrink(req["val"], req["size"], out / "images" / "val")
-    n = len(req["train"])
-    repeat = 1 if math.ceil(n / BATCH) >= MIN_STEPS_PER_EPOCH else math.ceil(MIN_STEPS_PER_EPOCH * BATCH / n)
-    coco(req["train"] * repeat, req["classes"], out / "train.json")
     coco(req["val"], req["classes"], out / "val.json")
-    batch = max(1, min(BATCH, n * repeat))
-    epochs = max(MIN_EPOCHS, math.ceil(req["steps"] / math.ceil(n * repeat / batch)))
-    cfg = config(req, out, epochs, batch)
-    print(f"picodet on {n} train" + (f" (each {repeat} times per epoch)" if repeat > 1 else "")
-          + f" and {len(req['val'])} val photos, {epochs} epochs", flush=True)
-    # Run from the job's folder: PaddleDetection writes files (bbox.json) where it runs, and the checkout may be
-    # read-only.
+    cfg, best = train(req, out, req["train"], req["steps"], "train")
+    if req.get("tune"):
+        t = req["tune"]
+        items = shrink(t["train"], req["size"], out / "images" / "tune")
+        cfg, best = train(req, out, items, t["steps"], "tune", best, t["lr_scale"])
     tools = Path(det) / "tools"
-    run([py, str(tools / "train.py"), "-c", str(cfg), "--eval", "-o", f"save_dir={out / 'run'}"], str(out), "train")
     run([py, str(tools / "export_model.py"), "-c", str(cfg), "--output_dir", str(out / "infer"), "-o",
-         f"weights={out / 'run' / 'best_model'}", "export.post_process=True", "export.nms=False"], str(out), "export")
+         f"weights={best}", "export.post_process=True", "export.nms=False"], str(out), "export")
     infer = out / "infer" / cfg.stem
     paddle2onnx = Path(py).parent / "paddle2onnx"
     run([str(paddle2onnx), "--model_dir", str(infer), "--model_filename", "model.pdmodel", "--params_filename",
