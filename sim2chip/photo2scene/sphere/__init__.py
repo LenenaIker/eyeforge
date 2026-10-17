@@ -19,6 +19,8 @@ Steps:
     extrapolate.py     S.6 new views with targets placed where the sphere can hold them, and their labels
     context.py         S.6 where the targets stand in the user's photos, for a sphere holding none of them
     steps/photo_depth.py, steps/photo_stuff.py  S.6 MoGe-2 and SAM 3 on the user's photos, for context.py
+    support.py         S.6 what holds each target up in the user's photos (local VLM, checked by the base)
+    steps/photo_holders.py  S.6 SAM 3's instances of those holders, measured into rigs by context.py
 
 Frame of the sphere, shared by every step: the capture point at the origin, OpenCV axes for heading 0 (the
 panorama's centre column): +x right, +y down, +z forward. Headings (yaw) grow to the right, pitches downwards.

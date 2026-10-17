@@ -171,7 +171,8 @@ def write(d: Path, views: list[dict], sun: dict | None = None, sub: str = "rende
     plan_views = []
     for v in views:
         for o in v.get("objects", []):
-            o["usd"] = resolve_asset(o["usd"], out / "assets")
+            if o.get("usd"):  # a rig holder is a box, no asset
+                o["usd"] = resolve_asset(o["usd"], out / "assets")
     for k, v in enumerate(views):
         name = v.get("name", f"{k:02d}")
         Image.fromarray(background_cut(background, v, R)).save(out / f"bg_{name}.png")

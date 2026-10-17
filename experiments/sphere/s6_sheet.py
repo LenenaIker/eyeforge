@@ -165,6 +165,7 @@ def main():
     ap.add_argument("--photos", type=Path, default=ROOT / "data/real/photospheres-scenes",
                     help="the user's photos for the similarity filter (photospheres in it are left out)")
     ap.add_argument("--assets", type=Path, default=ASSET_JOB, help="the asset job (car_assets.py) of the targets")
+    ap.add_argument("--rigs", type=Path, help="rigs.json (context.measure_rigs): hanging targets with their holders")
     ap.add_argument("--context", type=Path, help="context.json measured on the user's photos (context.py): "
                     "targets placed by it")
     ap.add_argument("--label", default="car", help="what the targets are, for the review")
@@ -178,6 +179,7 @@ def main():
               flush=True)
     cars = pool(args.assets)
     prior = context.prior(json.loads(args.context.read_text())) if args.context else None
+    rigs = [r for v in json.loads(args.rigs.read_text()).values() for r in v] if args.rigs else None
     sensor = camera_fx.sensor_for(args.hardware)
     blur = blur_for(places)
     done = {}
@@ -185,7 +187,7 @@ def main():
         t0 = time.time()
         w, h = RENDER_SIZE.get(args.hardware, (1024, 768))
         views = extrapolate.plan_views(d, cars, args.views, rng, sensor.fov_deg, (w, h), args.label,
-                                       pitch_deg=args.pitch, prior=prior)
+                                       pitch_deg=args.pitch, prior=prior, rigs=rigs)
         plan = render_plan.write(d, views, sun=None)
         Flow(d).run("sphere_render", "isaac", str(STEPS / "render.py"), ["--dir", d, "--path-tracing"])
         report = json.loads((d / "render" / "render.json").read_text())

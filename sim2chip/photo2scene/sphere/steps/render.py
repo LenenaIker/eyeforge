@@ -130,7 +130,7 @@ def main():
     # two prims), moved and shown per view. The reference sits on a child prim (some assets carry their own double3
     # ops) and is recentred on its measured box: base on z = 0, centred in x, y.
     def key(o):
-        return o.get("key", o["usd"])
+        return o.get("key") or o["usd"]
 
     assets = {}
     for v in plan["views"]:
@@ -140,7 +140,12 @@ def main():
             k = len(assets)
             prim = stage.DefinePrim(f"/World/Objects/a{k}", "Xform")
             ref = stage.DefinePrim(f"/World/Objects/a{k}/Ref", "Xform")
-            ref.GetReferences().AddReference(o["usd"])
+            if o.get("box_m"):  # a rig's holder (extrapolate.place_rig): a box of its measured size
+                cube = UsdGeom.Cube.Define(stage, f"/World/Objects/a{k}/Ref/Box")
+                cube.CreateSizeAttr().Set(1.0)
+                cube.AddScaleOp().Set(Gf.Vec3f(*[float(v) for v in o["box_m"]]))
+            else:
+                ref.GetReferences().AddReference(o["usd"])
             xf = UsdGeom.Xformable(prim)
             assets[key(o)] = (prim, xf.AddTranslateOp(), xf.AddRotateZOp(), xf.AddScaleOp(), ref)
             if o.get("paint"):  # the class is a colour (bins): one solid paint over the model's own materials, as

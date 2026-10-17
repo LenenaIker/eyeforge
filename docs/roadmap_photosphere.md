@@ -213,6 +213,28 @@ Decisión del usuario (2026-10-17): las esferas también para el dataset de basu
 - Segunda pasada: en el borde de su suelo tantas veces como en las fotos (todas, a menos de 0,6 m de un bordillo, muro o borde del césped), y la pintura como proporción de brillo respecto al suelo junto a él (idea del usuario de la fotometría por proporciones), con el tono del propio contenedor, sobre el albedo del proxy de la esfera. Hojas: `data/sphere_test/sheet_s6_*_bins2.jpg`. Pasan la revisión del VLM 16, 18, 15 y 14 de 20.
 - **S.8 con contenedores: las esferas empeoran** (solo fotos 0,361 de media en 4 ejecuciones, con esferas 0,291 en 3; `experiments/NOTES.md`). Solo mejora el verde. Lo que falta: los cubos colgados, la luz del sol y las formas de los cubos pequeños.
 
+### S.6c Cubos colgados, medidos y copiados (2026-10-17)
+
+Petición del usuario: los cubos colgados tienen que salir de lo que el VLM ve en sus fotos y de las medidas, no de una regla mía, para que valga para cualquier dataset.
+
+- **Etiquetas revisadas a mano** (página de revisión, 40 fotos): el test tenía 36 cajas del profesor, 31 bien, 5 falsas y 12 que faltaban (11 cubos colgados de una foto); el entrenamiento pasó de 19 a 24 cajas. El contexto se mide ahora solo con las fotos de entrenamiento y estas cajas (antes, las 40 con las del profesor: el test se colaba), y el filtro de parecido usa solo las de entrenamiento.
+- **Qué sujeta cada objetivo** (`sphere/support.py`): el VLM local mira un recorte con la caja dibujada, primero describe y luego responde si la base toca el suelo, qué lo sujeta (categoría) y cómo se llama (1 a 3 palabras). Cinco respuestas votadas, tope de 512 tokens (Cosmos se desboca a 2048 en una de cada pocas). La categoría no sirve (a los cubos de barra les llama "otro objeto"); la base sí: coincide con la medida de MoGe en 18 de 23. Solo cuelgan los objetivos en que coinciden los dos. Unos 100 s por objetivo.
+- **Soportes medidos** (`steps/photo_holders.py`, `context.rigs_photo`): cada foto segmenta con SAM 3 lo que el VLM nombró para sus objetivos ("metal bracket", "metal rack", "gray metal pole"), MoGe mide cada instancia (ancho, fondo por el rango intercuartílico, base y altura sobre el suelo, color como proporción del suelo) y cada objetivo cuelga del soporte más grande a su alcance. Ejes del grupo: a lo largo de la pared que tiene detrás. Salen 5 grupos: 3 barras en pared con 3 cubos a 1,84, 0,68 y 0,70 m, una barra con un cubo a 0,6 m, una farola con papelera verde, un bastidor rojo con 2 cubos y una pila de cartones con un cubo azul encima.
+- **Copia en la esfera** (`extrapolate.place_rig`): el grupo entero, sus soportes como cajas de su tamaño y color y los cubos a sus alturas delante de su soporte; los que no llegan al suelo, de espaldas a una pared del proxy; los de poste, de pie y mirando a la cámara. Tantas veces como cuelgan objetivos en las fotos.
+- **Pintura:** la proporción de brillo se aplica sobre el albedo del tipo de suelo de las fotos en la esfera (la acera), no sobre el punto donde cae (asfalto: salían negros).
+- Hojas: `data/sphere_test/sheet_s6_*_rigs2.jpg` (con soportes) y `*_norigs.jpg` (sin ellos); recortes con la respuesta del VLM: `data/sphere_test/bins_train/sheet_support.jpg`.
+
+| Brazo (test revisado, entrenamiento revisado, 3 ejecuciones) | Media |
+|---|---|
+| Solo fotos | 0,611 |
+| Esferas de antes (contexto de las 40 fotos, sin soportes) | 0,470 |
+| Esferas con contexto de entrenamiento, con soportes | 0,551 |
+| Lo mismo, con la pintura por tipo de suelo | 0,538 |
+| Lo mismo, sin soportes | 0,541 |
+
+- Los soportes no cambian la medida (0,538 frente a 0,541). Lo que subió las esferas de 0,470 a 0,54 fue medir el contexto con buenas etiquetas y sin el test.
+- Con las etiquetas bien, las esferas restan 0,07 a solo fotos. La luz (esferas nubladas al anochecer, fotos con sol) y las formas siguen pendientes.
+
 ### S.7 Producto (1 día, solo si S.8 gana)
 
 - [ ] Entrada separada de escenas: `input/places/<sitio>/` con la photosphere, y biblioteca de escenas.

@@ -66,3 +66,21 @@ def test_a_small_bin_takes_a_small_bins_shape():
     assert extrapolate.pick_sized(pool, 0.4, rng, among=2)["uid"] == "bucket"
     L, W, H = extrapolate.sized({"dims": [60.0, 50.0, 100.0]}, 1.0)
     assert (L, W, H) == (0.6, 0.5, 1.0)
+
+
+def test_a_hung_rig_goes_on_a_wall_with_its_bins_at_their_heights_in_front_of_the_holder():
+    walls = [{"ends_xz": [[-10.0, 6.0], [10.0, 6.0]], "normal": [0.0, 0.0, 1.0]}]
+    rig = {"standing": False,
+           "holders": [{"x": 0.0, "y": 0.0, "w": 0.1, "d": 0.05, "bottom": 0.9, "top": 2.0, "colour": [0.6, 0.6, 0.6]}],
+           "targets": [{"class": "brown_bin", "x": 0.0, "y": 0.1, "base_m": 1.2, "height_m": 0.4}]}
+    pool = [{"uid": "bucket", "usd": "b.usd", "dims": [0.4, 0.35, 0.4], "height_m": 0.4, "front_deg": 0.0}]
+    prior = {"brown_bin": {"distance_m": [2.0, 10.0], "colour_srgb": [0.3, 0.25, 0.2]}}
+    rng = np.random.default_rng(0)
+    out = extrapolate.place_rig(FlatGround(), None, walls, pool, prior, [rig], [], rng, 0.0, 70.0, 1.6)
+    assert out is not None
+    holder, bin_ = out
+    assert holder["label"] is None and holder["box_m"] == [0.1, 0.05, 1.1] and abs(holder["pos"][2] - 0.9) < 1e-6
+    assert bin_["label"] == "brown_bin" and abs(bin_["pos"][2] - 1.2) < 1e-6
+    assert 6.0 - 0.06 < holder["pos"][1] < 6.0 - 0.025  # its back on the wall (wall_spot keeps 3 cm)
+    assert bin_["pos"][1] < holder["pos"][1]  # hung on the holder's front, on the camera's side
+    assert abs((bin_["render_yaw"] - 270) % 360) < 1e-6  # facing away from the wall

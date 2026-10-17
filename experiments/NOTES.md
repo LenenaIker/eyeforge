@@ -815,3 +815,19 @@ Por clase (5 semillas, un acierto es un punto dentro de la caja de la verdad):
 - Con la verdad buena las esferas ya no empeoran: empatan. Buena parte de la caída de antes eran aciertos sobre cubos que el profesor no había marcado.
 - El profesor también etiqueta el entrenamiento y se le escapan los colgados: corregir unas pocas fotos de entrenamiento (el ajuste del profesor del producto) es lo siguiente que más puede dar.
 
+## Cubos colgados por VLM y medida: S.6c (2026-10-17)
+
+Detalle en `docs/roadmap_photosphere.md`, S.6c. Etiquetas de entrenamiento revisadas por el usuario (19 a 24 cajas) y test revisado; 3 ejecuciones de 5 semillas por brazo (`s8_arms.py --keep-ingest`).
+
+| Brazo | Ejecuciones | Media |
+|---|---|---|
+| Solo fotos | 0,636, 0,602, 0,595 | 0,611 |
+| Esferas de antes (contexto de las 40 fotos, profesor) | 0,516, 0,417, 0,476 | 0,470 |
+| Contexto de entrenamiento + soportes | 0,550, 0,549, 0,554 | 0,551 |
+| Lo mismo + pintura por tipo de suelo | 0,542, 0,476, 0,595 | 0,538 |
+| Contexto de entrenamiento, sin soportes | 0,561, 0,509, 0,553 | 0,541 |
+
+- Solo fotos sube de 0,362 a 0,611 con 5 cajas más en entrenamiento (4 cubos colgados que el profesor no vio en una foto): la etiqueta pesa más que todo lo sintético.
+- Los soportes no se notan; el contexto sin el test y con buenas etiquetas sí (0,470 a 0,54). Las esferas siguen 0,07 por debajo de solo fotos.
+- Cosmos Reason 2 por objetivo: 18 de 23 de acuerdo con la base medida; la categoría del soporte no sirve, si toca el suelo sí. 100 s por objetivo por las respuestas desbocadas.
+

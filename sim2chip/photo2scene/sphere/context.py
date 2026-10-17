@@ -193,3 +193,167 @@ def prior(measured: dict) -> dict:
                     "chroma": [round(float(c), 3) for c in chroma],
                     "colour_srgb": [round(float(c), 3) for c in np.median([m["colour"] for m in ms], axis=0)]}
     return out
+
+
+# Rigs: what holds the hanging targets (support.py names it, steps/photo_holders.py segments it) and how the
+# targets hang on it, measured as one layout to copy into a sphere: the holders and their targets in a frame of
+# their own (x along them, y towards the camera, z up from the ground).
+LINK_M = 0.35         # a target this close (on the ground plane) to a holder's points hangs on it
+BATTERY_M = 1.0       # holders this close to each other are one rig (a row of rails on one wall)
+MIN_HOLDER_PX = 40
+ERODE_PX = 2          # a holder's mask is shrunk this much before measuring: its rim mixes depth with what is behind
+
+
+def erode(m: np.ndarray, px: int) -> np.ndarray:
+    """Binary erosion by a square of side 2 px + 1 (numpy only)."""
+    out = m.copy()
+    for _ in range(px):
+        e = out.copy()
+        e[1:] &= out[:-1]
+        e[:-1] &= out[1:]
+        e[:, 1:] &= out[:, :-1]
+        e[:, :-1] &= out[:, 1:]
+        out = e
+    return out
+
+
+def _own_points(pts, valid, ground, box):
+    """The target's own points: the core of its box, without the ground (as measure_photo)."""
+    H, W = valid.shape
+    cx = (box[0] + box[2]) / 2
+    core = np.zeros((H, W), bool)
+    core[int(box[1] * H):int(box[3] * H) + 1,
+         int((cx - CORE_W * (box[2] - box[0]) / 2) * W):int((cx + CORE_W * (box[2] - box[0]) / 2) * W) + 1] = True
+    return pts[core & valid & ~ground]
+
+
+WALL_NEAR_M = 1.5     # wall points this close to a rig give its axis
+
+
+def rig_axes(o, wall, up, d):
+    """A rig's horizontal axes: x along the wall behind it (the main direction of the wall's points within
+    WALL_NEAR_M), else across the camera's view; y towards the camera's side."""
+    cam = -d * up  # the camera's foot on the ground
+    toward = cam - o
+    toward -= (toward @ up) * up
+    toward /= max(np.linalg.norm(toward), 1e-9)
+    x = np.cross(up, toward)
+    if wall is not None and len(wall):
+        near = wall[np.linalg.norm(wall - o, axis=1) < WALL_NEAR_M]
+        if len(near) >= 50:
+            q = near - near.mean(0)
+            q -= np.outer(q @ up, up)
+            x = np.linalg.svd(q, full_matrices=False)[2][0]
+            x -= (x @ up) * up
+            x /= max(np.linalg.norm(x), 1e-9)
+    y = np.cross(x, up)
+    if y @ toward < 0:
+        y, x = -y, -x
+    return x, y
+
+
+def rigs_photo(img: Image.Image, depth: dict, stuff: dict, holders: dict, targets: list[dict], rng) -> list[dict]:
+    """The rigs of one photo: [{"holders": [{"x", "y", "w", "d", "bottom", "top", "colour", "chroma", "to_ground"}],
+    "targets": [{"class",
+    "x", "y", "base_m", "height_m"}], "standing": every holder reaches the ground, "wall_gap_m"}], only rigs that
+    hold a target."""
+    pts, valid = depth["points"], depth["mask"]
+    kinds = [k for k in GROUND_KINDS if k in stuff]
+    ground = np.any([stuff[k] for k in kinds], 0) & valid
+    plane = fit_ground(pts[ground], rng)
+    if plane is None or not len(holders.get("masks", [])):
+        return []
+    n, d = plane
+    flat = lambda q: q - np.outer(q @ n + d, n)  # noqa: E731
+    a = np.asarray(img, np.float32) / 255.0
+    g_lum = luma(lin(np.median(a[ground], axis=0))) if ground.any() else None
+    hs = []
+    for m in holders["masks"]:
+        m = erode(m, ERODE_PX) & valid
+        if m.sum() < MIN_HOLDER_PX:
+            continue
+        p = pts[m]
+        h = p @ n + d
+        hs.append({"flat": flat(p), "bottom": float(np.percentile(h, 3)), "top": float(np.percentile(h, 97)),
+                   "colour": np.median(a[m], axis=0)})
+    links = {}
+    for ti, t in enumerate(targets):
+        if not t.get("mounted"):
+            continue
+        p = _own_points(pts, valid, ground, t["box"])
+        if len(p) < 20:
+            continue
+        c = flat(p).mean(0)
+        # within reach, the biggest holder: the rail, not a bolt on it (a 130-pixel bracket was nearer than the
+        # bin's own 8000-pixel rail, 2026-10-17)
+        reach = [(len(hh["flat"]), hi) for hi, hh in enumerate(hs)
+                 if hh["bottom"] - 0.3 < t["base_m"] < hh["top"] + 0.3
+                 and float(np.min(np.linalg.norm(hh["flat"] - c, axis=1))) < LINK_M]
+        if reach:
+            links[ti] = (max(reach)[1], c)
+    used = sorted({hi for hi, _ in links.values()})
+    # holders one rig when close: single link on their centres
+    centre = {hi: np.median(hs[hi]["flat"], axis=0) for hi in used}
+    group = {hi: hi for hi in used}
+    for i in used:
+        for j in used:
+            if i < j and np.linalg.norm(centre[i] - centre[j]) < BATTERY_M:
+                gi, gj = group[i], group[j]
+                for k in used:
+                    if group[k] == gj:
+                        group[k] = gi
+    up = n
+    wall = None
+    if "structure" in stuff:
+        wall = pts[stuff["structure"] & valid]
+        wh = wall @ n + d
+        wall = flat(wall[(wh > 0.2) & (wh < 2.0)])
+    rigs = []
+    for g in sorted(set(group.values())):
+        members = [hi for hi in used if group[hi] == g]
+        o = np.mean([centre[hi] for hi in members], axis=0)
+        x, y = rig_axes(o, wall, up, d)
+        loc = lambda q: (float((q - o) @ x), float((q - o) @ y))  # noqa: E731
+        rig = {"holders": [], "targets": [], "standing": True}
+        for hi in members:
+            hh = hs[hi]
+            px, py = (hh["flat"] - o) @ x, (hh["flat"] - o) @ y
+            rig["holders"].append({
+                "x": round(float(np.median(px)), 3), "y": round(float(np.median(py)), 3),
+                "w": round(max(float(np.percentile(px, 95) - np.percentile(px, 5)), 0.03), 3),
+                # depth from the middle half of its points: across the view MoGe's depth is the noisy axis
+                "d": round(max(2 * float(np.percentile(py, 75) - np.percentile(py, 25)), 0.03), 3),
+                "bottom": round(max(hh["bottom"], 0.0), 3), "top": round(hh["top"], 3),
+                "colour": [round(float(c), 4) for c in hh["colour"]],
+                "chroma": [round(float(c), 3) for c in lin(hh["colour"]) / max(luma(lin(hh["colour"])), 1e-3)],
+                # its brightness over the photo's ground, for the sphere's paint (photometry by proportions)
+                "to_ground": round(luma(lin(hh["colour"])) / max(g_lum, 1e-3), 3) if g_lum else None})
+            rig["standing"] &= hh["bottom"] < MOUNTED_M
+        for ti, (hi, c) in links.items():
+            if hi in members:
+                t = targets[ti]
+                tx, ty = loc(c)
+                rig["targets"].append({"class": t["class"], "x": round(tx, 3), "y": round(ty, 3),
+                                       "base_m": t["base_m"], "height_m": t["height_m"]})
+        if wall is not None and len(wall):
+            rig["wall_gap_m"] = round(float(np.min(np.linalg.norm(wall - o, axis=1))), 2)
+        rigs.append(rig)
+    return rigs
+
+
+def measure_rigs(photos: Path, measured: dict, depth_dir: Path, stuff_dir: Path, holder_dir: Path, out: Path,
+                 seed: int = 0) -> dict:
+    """{photo: [rig]} for the photos with hanging targets and holders found (rigs_photo)."""
+    res = {}
+    for name, targets in sorted(measured.items()):
+        stem = Path(name).stem
+        if not any(t.get("mounted") for t in targets) or not (holder_dir / f"{stem}.npz").exists():
+            continue
+        depth, stuff = dict(np.load(depth_dir / f"{stem}.npz")), dict(np.load(stuff_dir / f"{stem}.npz"))
+        holders = dict(np.load(holder_dir / f"{stem}.npz"))
+        img = ImageOps.exif_transpose(Image.open(photos / name)).convert("RGB").resize(depth["mask"].shape[::-1])
+        rigs = rigs_photo(img, depth, stuff, holders, targets, np.random.default_rng(seed))
+        if rigs:
+            res[name] = rigs
+    out.write_text(json.dumps(res, indent=1))
+    return res
