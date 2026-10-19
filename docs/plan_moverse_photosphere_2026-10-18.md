@@ -297,6 +297,81 @@ Cómo funciona y qué sale de la investigación:
 - **Coste estimado** (de la prueba del 19): 8 clips de perímetro en 2 trabajos son ~1,5 h y ~5,3 $; 4 clips dirigidos en 2 trabajos, ~0,9 h y ~3,1 $. Supera el saldo actual, así que antes del 21 hay que recargar o recortar con `--budget`.
 - `tsdf_gen3c.py` ya funciona en un sitio sin el lote recto (`G_gen3c`): fusiona solo los clips añadidos.
 
-Pendiente mañana: ejecutar `audit` y `plan` en `PXL_20261018_130625084` sobre `TS2_scene` y comparar la auditoría con `coverage.py` (Isaac). Revisar `plan.png` y los `*_first.jpg` con el usuario antes de gastar.
+#### Primera ejecución (2026-10-19, `PXL_20261018_130625084`, `TS2_scene`)
+
+Las dos órdenes funcionaron a la primera, sin tocar el código. `audit` tarda 8 s y `plan` 18 s, con un pico de 2,8 GB de RAM (la escena de ~15 M de triángulos carga en 1 s). Logs en `experiments/sphere_walk/logs/nbv_*.log`.
+
+- **Auditoría frente a `coverage.py` (Isaac).** Nuestra cifra es 8,17 % de hueco (respaldo a menos de 20 m y nada bajo el horizonte), frente al 15,7 % del respaldo total de Isaac. Si quitamos el corte de 20 m, sale 15,79 % frente a 15,72 %: la diferencia media por vista es 0,07 puntos, la máxima 1,1 y la correlación entre las 648 vistas, 0,999. Los puntos peores son los mismos, (3, -4) y (4, -3), y el 0,05 % de rayos perdidos cuadra con el 0,06 % de huecos de Isaac. Por tanto, la mitad del respaldo que ve el alumno está a más de 20 m.
+- **Plan de la ronda 1.** De 96 candidatos de perímetro, todos factibles, 22 empiezan con menos del 3 % de hueco. Salen 6 clips (de los 8 sectores posibles), todos mirando hacia dentro, y el hueco esperado pasa del 8,17 % al 2,21 %:
+
+  | Clip | Ganancia | Hueco al inicio | Hueco máximo |
+  |---|---|---|---|
+  | 0 `per_r5_s04_in_cw` | 2,84 % | 2,4 % | 4,6 % |
+  | 1 `per_r4_s07_in_ccw` | 1,46 % | 2,4 % | 2,9 % |
+  | 2 `per_r3_s01_in_ccw` | 0,82 % | 2,9 % | 7,3 % |
+  | 3 `per_r3_s06_in_cw` | 0,50 % | 3,0 % | 3,6 % |
+  | 4 `per_r5_s05_in_ccw` | 0,17 % | 2,4 % | 2,6 % |
+  | 5 `per_r3_s00_in_ccw` | 0,17 % | 2,9 % | 3,4 % |
+
+- **Dentro o fuera.** Gana "dentro", pero es por el filtro, no por la puntuación. Las vistas hacia fuera empiezan con un 9-18 % de hueco (mediana 13,7 %), así que ninguna pasa la regla del 3 %. Sin filtros, 8 clips hacia fuera ganarían un 7,6 % y 8 hacia dentro un 6,0 %. Hacia fuera sería ir a pintar sin una vista conocida, que es justo lo que la literatura desaconseja.
+- **Primeros fotogramas** (`walk/N01/*_first.jpg`, hoja `walk/N01/firsts_sheet.jpg`): parecen vistas reales y sin agujeros, salvo vetas finas en los bordes de pilares y árboles. Los clips 0 y 4 arrancan en el mismo punto (límite entre los sectores 4 y 5) y salen en sentidos opuestos. Los clips 1 y 3 miran al mismo soportal.
+- **Coste** (`estimate()`; `launch` sin `--confirm` lo bloqueó el modo automático, aunque no gasta): 6 clips cuestan 4,15 $ en 2 trabajos (1,15 h) o 3,73 $ en 1 (2,1 h). Con `--budget 4` (ganancia 5,6 % de las 5,96 %), 3,05 $ en 2 trabajos o 2,63 $ en 1. No se ha lanzado nada.
+- **Pegas para la ronda 2.**
+  - El agrupado de huecos da un solo grupo con el 99 % del peso: el respaldo es una lámina continua vista desde arriba. Las rondas dirigidas necesitan otro agrupado, por ejemplo por dirección desde el centro o por la profundidad del oclusor.
+  - En `plan.png`, todos los puntos del alumno salen rojos porque la escala satura al 10 %.
+  - `plan.json` estima el coste con 1 trabajo y `launch` con 2.
+  - La ganancia esperada supone que un clip "arregla" todo vóxel que ve: es optimista.
+
+Las cifras de esta sección (8,17 %, 6 clips, 4,15 $) usan la regla de huecos antigua y quedan sustituidas por la siguiente.
+
+#### Regla de huecos única y plan de los seis sitios soleados (2026-10-20)
+
+**Por qué cambió la regla.** En el mismo sitio, la regla antigua daba 0,4 % de hueco en `BL_scene` y 8,17 % en `TS2_scene`, aunque TS2 es mejor:
+- En TS2 contaba como hueco todo lo que GEN3C no fusionó, aunque la panorámica lo viera bien.
+- En BL solo contaba la capa de detrás de los oclusores, y las fachadas vistas muy de lado pasaban por buenas.
+
+Por eso 131415152 salía "completo". La regla nueva es la misma para los dos tipos de escena. Un rayo del alumno es hueco si acaba en:
+- **una capa de detrás de los oclusores** (`back`, `farback`) a menos de 20 m: nadie la vio, la pintó LaMa;
+- **la superficie de la panorámica** (`front`, `far`) en un punto que la panorámica nunca vio (`seen.png`; en estos seis sitios lo vio todo), o visto con más de 20° de paralaje. El paralaje es el ángulo entre el rayo del alumno y el rayo de la cámara de la esfera al mismo punto. El suelo plano queda exento: aguanta desde cualquier sitio, según la prueba del 18;
+- **nada**, por debajo del horizonte.
+
+Lo que GEN3C fusionó (`seen`, `fused`) cuenta como visto. Con la regla nueva, en el mismo sitio, TS2 da 1,10 % y BL 5,47 %: el orden correcto.
+
+**Otros cambios.**
+- Un clip cuenta como destapado todo vóxel que sus fotogramas ven, sea hueco para él o no, porque la fusión lo toma desde su punto de vista.
+- Modo `mixed`: el perímetro y los grupos de huecos en la misma selección. Los sitios estrechos tienen pocos arcos libres en el borde (en 132135947 chocan 76 de 96).
+- La caché de GEN3C rellena el cielo con la panorámica, según la dirección del rayo. Antes iba en negro y GEN3C lo habría tomado como dato.
+- `launch` acepta varios sitios separados por comas y los reparte en los mismos trabajos: cada trabajo paga una sola vez la preparación y la carga del modelo.
+- `plan` borra las entradas de un plan anterior no lanzado.
+
+**Limitaciones.**
+- Lo que borró el borrador (coches, personas) cuenta como visto: no hay máscara panorámica de lo borrado.
+- Los 20° de paralaje son una suposición. A 5 m de lado equivalen a un punto a unos 14 m.
+- El agrupado de huecos sigue sacando un grupo enorme en algunos sitios.
+
+**Plan por sitio** (ronda 1, `--mode mixed`; escena: TS2 donde hay GEN3C, si no BL):
+
+| Sitio | Escena | Hueco | Clips | Ganancia | Hueco esperado | Decisión |
+|---|---|---|---|---|---|---|
+| 130625084 | TS2 | 1,10 % | 1 | 0,95 | 0,15 % | no lanzar: ya casi completo |
+| 131415152 | BL | 1,30 % | 2 | 0,52 + 0,16 | 0,62 % | no lanzar: poco que ganar |
+| 132135947 | BL | 7,00 % | 2 (dirigidos) | 1,57 + 1,56 | 3,86 % | no lanzar todavía: los dos empiezan con un soporte de cubos estirado en primer plano |
+| 132424956 | BL | 6,09 % | 1 (dirigido) | 1,52 | 4,58 % | **lanzar** |
+| 134318253 | BL | 11,47 % | 2 (dirigidos) | 5,02 + 4,84 | 1,62 % | **lanzar** |
+| 135805749 | BL | 11,18 % | 2 (perímetro, hacia dentro) | 6,43 + 3,43 | 1,32 % | **lanzar** |
+
+Primeros fotogramas de los 7 clips planificados de los cuatro sitios con huecos: `data/sphere_test/nbv_N01_firsts_sunny.jpg`. Cada plan está en `walk/N01/plan.json` y `plan.png`.
+
+**Para lanzar mañana** (5 clips; `estimate()`: 1 trabajo ~3,18 $ y 1,8 h, 2 trabajos ~3,60 $ y 1,15 h):
+
+```
+nbv.py launch --round 1 --jobs 1 --max-hours 2.5 --confirm \
+  --place PXL_20261018_132424956,PXL_20261018_134318253,PXL_20261018_135805749
+# al acabar, por sitio:
+nbv.py fetch --place <sitio> --round 1
+nbv.py fuse  --place <sitio> --round 1      # N01_scene + auditoría: comparar con el hueco esperado
+```
+
+Con 132135947 serían 7 clips, ~4,28 $ en 1 trabajo, que pide `--max-hours 3`.
 
 Fuentes añadidas: [ViewCrafter (2409.02048), planificación NBV](https://arxiv.org/html/2409.02048v1); [Taming, detalles de trayectoria](https://arxiv.org/pdf/2503.05082); [NBV como maximización submodular (2007.02084)](https://arxiv.org/pdf/2007.02084); [GEN3C, suplemento](https://research.nvidia.com/labs/toronto-ai/GEN3C/supplment.pdf).

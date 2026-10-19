@@ -3,8 +3,9 @@ recorridos por next-best-view"). Deterministic and without a GPU: the site's cur
 layers.json, as render_walk.py reads them) is ray cast with Open3D on the CPU.
 
 - audit: what the student's cameras see (a 1 m grid within STUDENT_RADIUS_M, 8 headings, as coverage.py) and which
-  of their pixels land on a guess (the backstop, HOLE_LAYERS, nearer than NEAR_M) or on nothing below the horizon.
-  The guessed spots are kept as voxels on the backstop, weighted by how many student pixels see them.
+  of their pixels land on a guess (behind the occluders, never seen by the panorama, seen with too much parallax,
+  or nothing below the horizon; see BACK_LAYERS). The guessed spots are kept as voxels, weighted by how many
+  student pixels see them.
 - plan: candidate clips that start from a well covered view and move sideways (parallax uncovers, turning does
   not): the perimeter walk (round 1: facing in or out, the score decides) or, later, strafes and arcs around each
   cluster of holes. Each candidate is scored by the student's hole voxels its frames see, and a greedy pick by gain
@@ -59,11 +60,20 @@ STUDENT_PITCH_DEG = 15.0
 STUDENT_FOV_DEG = 68.0
 STUDENT_SIZE = (128, 96)
 
-# What is a hole: a ray that ends on the backstop (our proxy pushed back, right only from the capture point; in a
-# B_layers scene its back layer) nearer than NEAR_M, or on nothing below the horizon. The backstop further away is
-# far geometry the panorama saw and the fusion does not reach (tsdf_gen3c's MAX_DEPTH_M).
-HOLE_LAYERS = ("far", "farback", "back")
+# What is a hole, the same rule for every scene kind (B_layers' front/back, tsdf_gen3c's seen/fused/far/farback):
+# a ray that ends on
+# - a layer behind the occluders (BACK_LAYERS: never seen by anyone, LaMa's paint) nearer than NEAR_M;
+# - the panorama's own surface (PANO_LAYERS) where the panorama never saw it (the texels LaMa painted), or seen
+#   from a direction more than PARALLAX_MAX_DEG away from the capture point's (a 2.5D surface holds near the
+#   direction it was measured from: steps, smears and stretched texels grow with that angle). The flat ground
+#   (GROUND_Z_M) holds from anywhere (2026-10-18: ground good to 4 m);
+# - nothing, below the horizon.
+# What GEN3C's frames fused (seen, fused) is known: someone observed it from near there.
+BACK_LAYERS = ("farback", "back")
+PANO_LAYERS = ("far", "front")
 NEAR_M = 20.0
+PARALLAX_MAX_DEG = 20.0  # a guess; 5 m sideways is 14 deg at 20 m, 27 deg at 10 m
+GROUND_Z_M = 0.05
 VOXEL_M = 0.25        # hole spots matched between the student's rays and a clip's rays
 CLUSTER_M = 0.5       # hole voxels this near (from above) are one cluster: what one occluder hides
 
@@ -146,14 +156,36 @@ class Scene:
                 continue
             pts = data[f"{name}_pts"].astype(np.float32)
             gid = self.rc.add_triangles(o3d.core.Tensor(pts), o3d.core.Tensor(faces.astype(np.uint32)))
-            entry = {"name": name, "faces": faces, "pts": pts, "hole": name in HOLE_LAYERS}
+            entry = {"name": name, "faces": faces, "pts": pts}
             if "tex" in layer:
                 entry["uv"], entry["tex"] = data[f"{name}_uv"], scene_dir / layer["tex"]
             else:
                 entry["col"] = data[f"{name}_col"]
             self.layers[gid] = entry
-        self.hole_ids = np.array([k for k, v in self.layers.items() if v["hole"]], np.uint32)
+        self.back_ids = np.array([k for k, v in self.layers.items() if v["name"] in BACK_LAYERS], np.uint32)
+        self.pano_ids = np.array([k for k, v in self.layers.items() if v["name"] in PANO_LAYERS], np.uint32)
         self._tex = {}
+        # The panorama: its levelling and the texels it never saw (prep.py paints them magenta in tex_proxy.png).
+        d = scene_dir.parents[1]
+        geo = json.loads((d / "geometry.json").read_text())
+        self.R, self.h = np.array(geo["levelling"]), geo["camera_height_m"]
+        tex = np.asarray(Image.open(d / "walk" / "tex_proxy.png").convert("RGB"))
+        self.unseen = (tex[..., 0] > 200) & (tex[..., 1] < 90) & (tex[..., 2] > 200)
+        sky = d / "walk" / "BL_scene" / "tex_front.png"  # the never-seen ground painted
+        self.sky = sky if sky.exists() else d / "walk" / "tex_proxy.png"
+
+    def guessed(self, pts: np.ndarray, d: np.ndarray) -> np.ndarray:
+        """Points on the panorama's surface that are a guess seen along rays d: never seen by the panorama, or
+        off the flat ground and seen more than PARALLAX_MAX_DEG away from the capture point's direction."""
+        lvl = np.stack([pts[:, 0], self.h - pts[:, 2], pts[:, 1]], -1)  # Isaac's world to the levelled frame
+        u = lvl / np.maximum(np.linalg.norm(lvl, axis=1, keepdims=True), 1e-6)
+        H, W = self.unseen.shape
+        px, py = capture.to_pixel(render_plan.pano_rays(u, self.R), W, H)
+        never = self.unseen[np.clip(np.round(py).astype(int), 0, H - 1), np.round(px).astype(int) % W]
+        u_world = np.stack([u[:, 0], u[:, 2], -u[:, 1]], -1)
+        cos = (u_world * d).sum(1) / np.linalg.norm(d, axis=1)
+        steep = (cos < math.cos(math.radians(PARALLAX_MAX_DEG))) & (pts[:, 2] > GROUND_Z_M)
+        return never | steep
 
     def cast(self, poses: list, size: tuple[int, int], fov: float) -> dict:
         """Rays through every pixel of every pose (camera-to-world, OpenCV axes, Isaac's world): (N, H, W) arrays."""
@@ -168,16 +200,23 @@ class Scene:
         t = ans["t_hit"].numpy().reshape(n, h, w)
         gid = ans["geometry_ids"].numpy().reshape(n, h, w)
         miss = ~np.isfinite(t)
-        hole = (np.isin(gid, self.hole_ids) & (t < NEAR_M)) | (miss & (d[..., 2].reshape(n, h, w) < 0))
         pts = o.reshape(n, h, w, 3) + np.where(miss, 0, t)[..., None] * d.reshape(n, h, w, 3)
+        hole = (np.isin(gid, self.back_ids) & (t < NEAR_M)) | (miss & (d[..., 2].reshape(n, h, w) < 0))
+        pano = np.isin(gid, self.pano_ids) & ~miss
+        if pano.any():
+            hole[pano] |= self.guessed(pts[pano], d.reshape(n, h, w, 3)[pano])
         return {"t": t, "gid": gid, "miss": miss, "hole": hole, "pts": pts, "cam_z": cam[:, 2].reshape(h, w),
                 "pid": ans["primitive_ids"].numpy().reshape(n, h, w),
-                "bary": ans["primitive_uvs"].numpy().reshape(n, h, w, 2)}
+                "bary": ans["primitive_uvs"].numpy().reshape(n, h, w, 2), "dir": d.reshape(n, h, w, 3)}
 
     def hole_voxels(self, hit: dict) -> np.ndarray:
         """The packed voxels of the hole rays that end on a surface (not the misses), one entry per ray."""
         sel = hit["hole"] & ~hit["miss"]
         return pack(np.floor(hit["pts"][sel] / VOXEL_M))
+
+    def hit_voxels(self, hit: dict) -> np.ndarray:
+        """The packed voxels of every ray that ends on a surface: what a clip's frames put into the fusion."""
+        return pack(np.floor(hit["pts"][~hit["miss"]] / VOXEL_M))
 
     def colors(self, hit: dict) -> np.ndarray:
         """sRGB uint8 of every ray's hit, black where nothing was hit."""
@@ -199,6 +238,16 @@ class Scene:
                 x = np.floor((uv[:, 0] % 1.0) * tw).astype(int) % tw
                 y = np.clip(np.floor((1 - uv[:, 1]) * th).astype(int), 0, th - 1)
                 out[sel] = tex[y, x]
+        # Nothing hit is the sky (or beyond the far geometry): the panorama along the ray, right from anywhere.
+        miss = hit["miss"]
+        if miss.any():
+            d = hit["dir"][miss]
+            lvl = np.stack([d[:, 0], -d[:, 2], d[:, 1]], -1)
+            tex = self.texture(self.sky)
+            x, y = capture.to_pixel(render_plan.pano_rays(lvl / np.linalg.norm(lvl, axis=1, keepdims=True), self.R),
+                                    tex.shape[1], tex.shape[0])
+            out[miss] = tex[np.clip(np.round(y).astype(int), 0, tex.shape[0] - 1),
+                            np.round(x).astype(int) % tex.shape[1]]
         return np.clip(out + 0.5, 0, 255).astype(np.uint8)
 
     def texture(self, path: Path) -> np.ndarray:
@@ -348,7 +397,8 @@ def score(c: dict, scene: Scene, h: float, voxels: np.ndarray) -> bool:
     c["max_hole"] = float(hit["hole"].mean((1, 2)).max())
     if c["max_hole"] > FRAME_MAX_HOLE:
         return False
-    seen = np.unique(np.concatenate([scene.hole_voxels(first), scene.hole_voxels(hit)]))
+    # Whatever the frames see counts, a hole for them or not: the fusion takes it from this clip's viewpoint.
+    seen = np.unique(np.concatenate([scene.hit_voxels(first), scene.hit_voxels(hit)]))
     i = np.clip(np.searchsorted(voxels, seen), 0, max(len(voxels) - 1, 0))
     c["sees"] = i[voxels[i] == seen] if len(voxels) else np.zeros(0, np.int64)
     return True
@@ -451,6 +501,10 @@ def do_plan(place: str, k: int, scene_name: str | None, mode: str | None, budget
     d = place_dir(place)
     out = round_dir(place, k)
     out.mkdir(parents=True, exist_ok=True)
+    if any(out.glob("*.mp4")):
+        raise SystemExit(f"{out} has fetched clips: plan the next round instead")
+    for f in [*out.glob(f"{place}_N{k:02d}_*.npz"), *out.glob(f"{place}_N{k:02d}_*_first.jpg")]:
+        f.unlink()  # an earlier plan of this round, never launched
     scene_name = scene_name or default_scene(place, k)
     mode = mode or ("perimeter" if k == 1 else "targeted")
     h = json.loads((d / "geometry.json").read_text())["camera_height_m"]
@@ -467,9 +521,11 @@ def do_plan(place: str, k: int, scene_name: str | None, mode: str | None, budget
         (out / "plan.json").write_text(json.dumps(plan, indent=1))
         print("complete: holes under", STOP_HOLE, flush=True)
         return
-    cands = perimeter_candidates() if mode == "perimeter" else cluster_candidates(cl)
+    # mixed: the edge and the clusters in one greedy pick (a cramped site has few clear arcs on its edge).
+    cands = (perimeter_candidates() if mode != "targeted" else []) + (cluster_candidates(cl) if mode != "perimeter"
+                                                                       else [])
     if budget is None:  # the whole edge once, or a round of CLIPS_PER_ROUND
-        budget = sectors() if mode == "perimeter" else CLIPS_PER_ROUND
+        budget = sectors() if mode != "targeted" else CLIPS_PER_ROUND
     obs = obstacles(d)
     tree = cKDTree(obs) if len(obs) else None
     cands = [c for c in cands if feasible(c, tree, obs)]
@@ -504,57 +560,86 @@ def estimate(clips: int, jobs: int) -> dict:
 
 
 def draw(a: dict, cl: list[dict], picked: list[dict], obs: np.ndarray, path: Path):
-    """From above: the student's points by their worst heading's holes, the hole voxels, what stands, and each
-    picked clip's path with its looking direction every 30 frames."""
+    """From above, north up, 1 m grid: what stands (grey), the hole voxels (pink, bigger where more student pixels
+    see them), each student point coloured and labelled by its worst heading's hole share (green 0 %, red 30 %
+    and over), and each picked clip's path from its start (dot) with where it looks every 30 frames."""
     s, r = 40, AREA_M + 4
     size = int(2 * r * s)
-    img = Image.new("RGB", (size, size), (255, 255, 255))
+    img = Image.new("RGB", (size, size + 110), (255, 255, 255))
     dr = ImageDraw.Draw(img)
     px = lambda x, y: (size / 2 + x * s, size / 2 - y * s)  # noqa: E731
-    for x, y in obs[:: max(1, len(obs) // 20000)]:
-        if abs(x) < r and abs(y) < r:
-            dr.point(px(x, y), fill=(160, 160, 160))
+    for m in range(-int(r), int(r) + 1):
+        col = (225, 225, 225) if m else (190, 190, 190)
+        dr.line([px(m, -r), px(m, r)], fill=col)
+        dr.line([px(-r, m), px(r, m)], fill=col)
+    for rad in (STUDENT_RADIUS_M, AREA_M):
+        X0, Y0 = px(-rad, rad)
+        X1, Y1 = px(rad, -rad)
+        dr.ellipse([X0, Y0, X1, Y1], outline=(150, 150, 150))
     if len(a["voxels"]):
         c = (unpack(a["voxels"]) + 0.5) * VOXEL_M
         wmax = a["weight"].max()
-        for (x, y, _), w in zip(c, a["weight"]):
-            q = 1 + 3 * w / wmax
+        for (x, y, _), w in sorted(zip(c, a["weight"]), key=lambda q: q[1]):
+            if abs(x) > r or abs(y) > r:
+                continue
+            q = 1 + 4 * math.sqrt(w / wmax)
             X, Y = px(x, y)
-            dr.ellipse([X - q, Y - q, X + q, Y + q], fill=(220, 40, 40))
+            dr.ellipse([X - q, Y - q, X + q, Y + q], fill=(245, 150, 170))
+    for x, y in obs[:: max(1, len(obs) // 20000)]:
+        if abs(x) < r and abs(y) < r:
+            dr.point(px(x, y), fill=(90, 90, 90))
     for q in a["worst"]:
         X, Y = px(q["x"], q["y"])
-        v = min(1.0, q["hole"] / 0.1)
-        dr.ellipse([X - 8, Y - 8, X + 8, Y + 8], fill=(int(255 * v), int(200 * (1 - v)), 60))
-    for i, c in enumerate(cl[:TOP_CLUSTERS]):
-        X, Y = px(*c["centre"][:2])
-        dr.text((X + 6, Y - 6), f"c{i}", fill=(120, 0, 0))
+        v = min(1.0, q["hole"] / 0.3)
+        dr.ellipse([X - 11, Y - 11, X + 11, Y + 11], fill=(int(40 + 200 * v), int(170 * (1 - v) + 30), 60))
+        dr.text((X - 8, Y - 5), f"{100 * q['hole']:.0f}", fill=(255, 255, 255))
     X0, Y0 = px(0, 0)
-    dr.ellipse([X0 - 5, Y0 - 5, X0 + 5, Y0 + 5], outline=(0, 0, 0), width=2)
+    dr.ellipse([X0 - 14, Y0 - 14, X0 + 14, Y0 + 14], outline=(0, 0, 0), width=3)
+    cols = [(30, 90, 220), (20, 150, 90), (200, 120, 0), (150, 40, 180), (0, 160, 190), (120, 80, 30)]
     for i, c in enumerate(picked):
-        col = [(30, 90, 220), (20, 160, 90), (200, 120, 0), (150, 40, 180)][i % 4]
-        dr.line([px(*p) for p in c["xy"]], fill=col, width=3)
+        col = cols[i % len(cols)]
+        dr.line([px(*p) for p in c["xy"]], fill=col, width=4)
         for k in range(0, g.FRAMES, 30):
             x, y = c["xy"][k]
             yaw = math.radians(c["yaw"][k])
-            dr.line([px(x, y), px(x + 0.8 * math.sin(yaw), y + 0.8 * math.cos(yaw))], fill=col, width=2)
-        dr.text(px(*c["xy"][0]), str(i), fill=col)
-    dr.text((10, 10), f"holes {100 * a['hole']:.2f} %  (grid {STUDENT_RADIUS_M:g} m, 1 m)", fill=(0, 0, 0))
+            dr.line([px(x, y), px(x + 1.0 * math.sin(yaw), y + 1.0 * math.cos(yaw))], fill=col, width=2)
+        X, Y = px(*c["xy"][0])
+        dr.ellipse([X - 6, Y - 6, X + 6, Y + 6], fill=col)
+        dr.text((X + 8, Y - 14), str(i), fill=col)
+    y0 = size + 6
+    dr.text((10, y0), f"holes {100 * a['hole']:.2f} % of the student's pixels (1 m grid within {STUDENT_RADIUS_M:g} m, "
+            f"8 headings); circles: {STUDENT_RADIUS_M:g} m student area, {AREA_M:g} m clip area; north up, 1 m grid",
+            fill=(0, 0, 0))
+    dr.text((10, y0 + 16), "student points: worst heading's hole %, green 0 to red 30+; pink: hole spots (size: "
+            "how many student pixels see them); grey: what stands", fill=(0, 0, 0))
+    for i, c in enumerate(picked):
+        dr.text((10, y0 + 36 + 14 * i), f"{i}: {c['name'].split('_N', 1)[-1]}  gain {100 * c['gain']:.2f} %, "
+                f"start hole {100 * c['start_hole']:.1f} %, max {100 * c['max_hole']:.1f} % (dot: start, ticks: "
+                "looking direction)", fill=cols[i % len(cols)])
     img.save(path)
 
 
-def do_launch(place: str, k: int, jobs: int, max_hours: float, gpu: str, confirm: bool, max_usd: float):
+def do_launch(places: list[str], k: int, jobs: int, max_hours: float, gpu: str, confirm: bool, max_usd: float):
+    """Round k's clips of every place in the same jobs (each job pays its setup and the model's load once). Each
+    clip's input and output live under its own place's prefix, so fetch and fuse stay per place."""
     from sim2chip.cloud_sync import S3Store
-    out = round_dir(place, k)
-    clips = json.loads((out / "paths.json").read_text())["paths"]
+    clips = []
+    for place in places:
+        out = round_dir(place, k)
+        clips += [{**c, "place": place, "dir": out} for c in json.loads((out / "paths.json").read_text())["paths"]]
     est = estimate(len(clips), jobs)
-    print(f"{len(clips)} clips in {est['jobs']} jobs on {gpu}: ~{est['hours_longest']} h, ~{est['usd']} $ (estimate)")
+    print(f"{len(clips)} clips of {len(places)} places in {est['jobs']} jobs on {gpu}: ~{est['hours_longest']} h, "
+          f"~{est['usd']} $ (estimate)")
     if est["usd"] > max_usd:
         raise SystemExit(f"over the cap of {max_usd} $: fewer clips (plan --budget) or a higher --max-usd")
+    if est["hours_longest"] * 1.25 > max_hours:
+        raise SystemExit(f"the longest job may pass --max-hours {max_hours}: more --jobs or a higher --max-hours")
     if not confirm:
         print("nothing launched: run again with --confirm")
         return
     store = S3Store()
-    prefix = f"{PREFIX}/{place}/N{k:02d}"
+    prefix = lambda c: f"{PREFIX}/{c['place']}/N{k:02d}"  # noqa: E731
+    batch = f"{PREFIX}/batch_N{k:02d}_{int(time.time())}"
     exp = max_hours + 2
     url = lambda key, op="get_object": store.s3.generate_presigned_url(  # noqa: E731
         op, Params={"Bucket": g.BUCKET, "Key": key}, ExpiresIn=int(exp * 3600))
@@ -566,24 +651,25 @@ def do_launch(place: str, k: int, jobs: int, max_hours: float, gpu: str, confirm
             continue
         fetch = []
         for c in part:
-            store.put(g.BUCKET, f"{prefix}/in/{c['cache']}.npz", (out / f"{c['cache']}.npz").read_bytes())
-            key = f"{prefix}/in/{c['cache']}.npz"
+            key = f"{prefix(c)}/in/{c['cache']}.npz"
+            store.put(g.BUCKET, key, (c["dir"] / f"{c['cache']}.npz").read_bytes())
             fetch.append(f'curl -s -o /tmp/in/{c["cache"]}.npz "{url(key)}"')
         spec = [{"name": c["name"], "npz": f"/tmp/in/{c['cache']}.npz", "steps": c["steps"], "prompt": PROMPT,
-                 "out": url(f"{prefix}/out/{c['name']}.mp4", "put_object"),
-                 "buf": url(f"{prefix}/out/{c['name']}_buffer.mp4", "put_object")} for c in part]
-        store.put(g.BUCKET, f"{prefix}/in/clips{j}.json", json.dumps(spec).encode())
-        script = out / f"job{j}.sh"
-        script.write_text(g.JOB.replace("__CASES__", BLOCK.format(clips=url(f"{prefix}/in/clips{j}.json"),
+                 "out": url(f"{prefix(c)}/out/{c['name']}.mp4", "put_object"),
+                 "buf": url(f"{prefix(c)}/out/{c['name']}_buffer.mp4", "put_object")} for c in part]
+        store.put(g.BUCKET, f"{batch}/clips{j}.json", json.dumps(spec).encode())
+        script = round_dir(places[0], k) / f"job{j}.sh"
+        script.write_text(g.JOB.replace("__CASES__", BLOCK.format(clips=url(f"{batch}/clips{j}.json"),
                                                                  fetch="\n".join(fetch), runner=RUNNER)))
         assert script.stat().st_size < 60_000, "the script must fit Nebius' 64 KiB inject limit"
         args = [cli, "ai", "job", "create", "--name", f"eyeforge-gen3c-nbv{k}-{j}-{int(time.time())}", "--image",
                 g.IMAGE, "--platform", platform, "--preset", preset, "--on-demand", "--timeout",
                 f"{int(max_hours * 60)}m", "--parent-id", os.environ["SIM2CHIP_NEBIUS_PROJECT"], "--inject-file",
                 f"{script}:/opt/gen3c_job.sh", "--container-command", "bash", "--args", "/opt/gen3c_job.sh",
-                "--env", f"LOG_URL={url(f'{prefix}/out/job{j}.log', 'put_object')}", "--async"]
+                "--env", f"LOG_URL={url(f'{batch}/job{j}.log', 'put_object')}", "--async"]
         r = subprocess.run(args, capture_output=True, text=True)
         print(f"job {j}: {len(part)} clips", r.stdout[-300:], r.stderr[-500:])
+    print("job logs under", batch)
 
 
 def do_fetch(place: str, k: int):
@@ -619,11 +705,12 @@ def do_fuse(place: str, k: int, extra: list[str]):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("step", choices=["audit", "plan", "launch", "fetch", "fuse"])
-    ap.add_argument("--place", required=True)
+    ap.add_argument("--place", required=True, help="launch: several, comma separated, share the jobs")
     ap.add_argument("--round", type=int, default=1)
     ap.add_argument("--scene", help="the scene folder under walk/ (default: the last round's, else TS_scene, "
                     "else BL_scene)")
-    ap.add_argument("--mode", choices=["perimeter", "targeted"], help="default: perimeter in round 1")
+    ap.add_argument("--mode", choices=["perimeter", "targeted", "mixed"],
+                    help="default: perimeter in round 1, targeted later")
     ap.add_argument("--budget", type=int, help=f"clips in the round (default: one per perimeter sector, "
                     f"{CLIPS_PER_ROUND} for a targeted round)")
     ap.add_argument("--jobs", type=int, default=2)
@@ -638,7 +725,7 @@ def main():
     elif a.step == "plan":
         do_plan(a.place, a.round, a.scene, a.mode, a.budget)
     elif a.step == "launch":
-        do_launch(a.place, a.round, a.jobs, a.max_hours, a.gpu, a.confirm, a.max_usd)
+        do_launch(a.place.split(","), a.round, a.jobs, a.max_hours, a.gpu, a.confirm, a.max_usd)
     elif a.step == "fetch":
         do_fetch(a.place, a.round)
     else:
