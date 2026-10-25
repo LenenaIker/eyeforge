@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
 
+# Qwen, not Cosmos: on 2026-10-15 Cosmos left most street bands without a species (photo68 lost its 21 plants)
+# and picked hibiscus and oleander for basque_street's hedges. Back until a local pick is measured as good.
 MODEL = 'Qwen/Qwen3.8-27B'
 # Phrases of the observation that are vegetation (hedges stay with SAM 3D: a trimmed hedge is a green box, and
 # SAM 3D makes it well, 2026-10-06).

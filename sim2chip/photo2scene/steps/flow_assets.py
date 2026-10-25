@@ -30,9 +30,9 @@ from scene_split import fit_floor, measure
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
+from sim2chip.llm import LOCAL_VLM, Client, ask_json, image_part, map_within  # noqa: E402
 
-MODEL = 'Qwen/Qwen3.8-27B'
+MODEL = LOCAL_VLM  # Cosmos Reason 2 on this machine's GPU (user, 2026-10-15)
 PROMPT = """The LEFT picture is a crop of a photo, the RIGHT one the same crop after an object was erased from it. \
 Is a physical object present on the left and gone on the right (not just a change of light, texture or a \
 stain)? Answer with ONE JSON object: {"gone": <true|false>, "name": "<1-3 words naming the object, empty if \

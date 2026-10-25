@@ -242,16 +242,22 @@ SKY = 1000.0
 SKY_LEVELS = (1.0, 3.0)
 
 
+def light_scale():
+    """flow_light.py's intensity: every light times it, so the place is as bright as the photo without an exposure
+    gain past EXPOSE_MAX_GAIN (home_office came out 57 times too dark, 2026-10-15). 1 while sweeping."""
+    return 1.0 if args.sweep else float((scene.get("light") or {}).get("intensity", 1.0))
+
+
 def set_light(e, a, sun_on=True, sky=1.0):
     """Sun at elevation e and azimuth a (radians, a about the scene's up from a fixed side), the dome turned by a.
     sun_on: True or a strength (a share of SUN); False or 0: the sky alone (overcast). sky: the dome's strength,
     a share of SKY."""
-    dome.CreateIntensityAttr().Set(SKY * float(sky))
+    dome.CreateIntensityAttr().Set(SKY * float(sky) * light_scale())
     side = np.cross(up, [1.0, 0, 0]) if abs(up[0]) < 0.9 else np.cross(up, [0, 0, 1.0])
     side /= np.linalg.norm(side)
     other = np.cross(up, side)
     sun_op.Set(frame(-(math.cos(e) * (math.cos(a) * side + math.sin(a) * other) + math.sin(e) * up)))
-    sun.CreateIntensityAttr().Set(0 if scene["indoor"] or not sun_on else SUN * float(sun_on))
+    sun.CreateIntensityAttr().Set(0 if scene["indoor"] or not sun_on else SUN * float(sun_on) * light_scale())
     # The dome's latlong pole is its local +Z in RTX (the product renders with a Z-up stage): align it with the
     # scene's up, then turn it about that axis. With +Y the sky lay on its side (street HDRIs, 2026-10-06).
     z = up / np.linalg.norm(up)
@@ -264,10 +270,11 @@ def set_light(e, a, sun_on=True, sky=1.0):
 
 def set_indoor(panel_k, window_k, lamp_k=1.0):
     """Indoors: the ceiling panel, the windows' daylight and the lamp as multiples of their base intensities."""
-    panel.CreateIntensityAttr().Set(PANEL * panel_k)
-    lamp.CreateIntensityAttr().Set(LAMP * lamp_k)
+    k = light_scale()
+    panel.CreateIntensityAttr().Set(PANEL * panel_k * k)
+    lamp.CreateIntensityAttr().Set(LAMP * lamp_k * k)
     for wl in window_lights:
-        wl.CreateIntensityAttr().Set(WINDOW * window_k)
+        wl.CreateIntensityAttr().Set(WINDOW * window_k * k)
 
 
 def randomize_light():
@@ -355,6 +362,7 @@ if args.sweep:
     for i, t in view["objects"]:
         objs[i][1].Set(Gf.Matrix4d(np.asarray(t).T.tolist()))
     place_lights(view)
+    gains = []
     for k, L in enumerate(lights):
         if scene["indoor"]:
             set_indoor(L["panel"], L["window"], L["lamp"])
@@ -363,8 +371,10 @@ if args.sweep:
         rep.orchestrator.step(rt_subframes=16)
         Image.fromarray(expose(rgb.get_data()[..., :3].astype(np.float32))).save(
             os.path.join(src, "sweep", f"sweep_{k:02d}.png"))
-    json.dump(lights if scene["indoor"] else
-              [{"elevation": el, "azimuth": az, "sun": on, "sky": sky} for el, az, on, sky in lights],
+        gains.append(expose.last)  # how far the exposure lifted it: flow_light.py sets the lights' intensity
+    json.dump([{**L, "gain": g} for L, g in zip(lights, gains)] if scene["indoor"] else
+              [{"elevation": el, "azimuth": az, "sun": on, "sky": sky, "gain": g}
+               for (el, az, on, sky), g in zip(lights, gains)],
               open(os.path.join(src, "sweep", "lights.json"), "w"))
     app.close()
     raise SystemExit(0)

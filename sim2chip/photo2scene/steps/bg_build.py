@@ -148,6 +148,32 @@ def load_object(path, solid=False, cap=True):
     return m
 
 
+def to_linear(c):
+    c = np.asarray(c, float)
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def to_srgb(c):
+    c = np.clip(np.asarray(c, float), 0, 1)
+    return np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)
+
+
+def photo_gain(src, index, mesh_path, lo=0.5, hi=3.0):
+    """Brightness gain that brings a thing's SAM 3D colours to its own photo's pixels (median linear luminance in
+    its mask over the mesh's vertices): SAM 3D comes out darker, and bg_isaac.py fixes that only on the things of
+    the photo it renders. 1 when the source has no mask for it."""
+    path = os.path.join(src, 'assets.npz')
+    if not os.path.exists(path):
+        return 1.0
+    masks = np.load(path)['masks']
+    if index >= len(masks) or not masks[index].any():
+        return 1.0
+    lum = np.array([0.2126, 0.7152, 0.0722])
+    photo = to_linear(np.asarray(Image.open(os.path.join(src, 'photo.png')).convert('RGB'))[masks[index]] / 255) @ lum
+    verts = to_linear(trimesh.load(mesh_path, force='mesh').visual.vertex_colors[:, :3] / 255) @ lum
+    return float(np.clip(np.median(photo) / max(np.median(verts), 1e-4), lo, hi))
+
+
 def place(mesh, base, n, height, width, yaw):
     """4x4 pose: mesh y axis along the plane normal n (pointing up, away from the plane), base on the plane,
     scaled to the measured height and width (SAM 3D meshes come out too wide for their height)."""
@@ -453,6 +479,8 @@ def main():
                     help='JSON file {thing name: group}: each new view shows the things of one group only (things in '
                          'no group always), for one label per image when classifying')
     ap.add_argument('--empty', type=float, default=0.0, help='with --groups: share of views with no group at all')
+    ap.add_argument('--pool', default=None, help="JSON list of things from the job's other photos "
+                    '(photo2scene.pool_of): shuffled into the new views like this photo\'s own things')
     args = ap.parse_args()
     d = args.dir
     rng = np.random.default_rng(args.seed)
@@ -598,6 +626,20 @@ def main():
         print(f'{len(anchored)} fixed objects kept in place', flush=True)
     if args.layout == 'shuffle':
         print(f'{len(lib)} of {len(replica)} objects shuffled in new views', flush=True)
+    # Things from the job's other photos (--pool): one photo shows one or two instances of a class, and its views
+    # repeated them; the student needs more of them (roads 2026-10-14: "cars, not street, are what is missing").
+    # Isaac objects after the replica's, in no view of the photo camera.
+    pooled = []
+    if args.pool and args.layout == 'shuffle':
+        for e in json.load(open(args.pool)):
+            obj = load_object(e['mesh'], e['name'] in solid)
+            vc = obj.visual.vertex_colors.copy()
+            g = photo_gain(e['dir'], e['index'], e['mesh'])
+            vc[:, :3] = np.clip(to_srgb(to_linear(vc[:, :3] / 255) * g) * 255, 0, 255).astype(np.uint8)
+            obj.visual.vertex_colors = vc
+            lib.append((len(replica) + len(pooled), obj, e['height_m'], e['width_m']))
+            pooled.append((obj, e))
+        print(f"{len(pooled)} things from the job's other photos", flush=True)
     # One group per view (--groups): each replica object's group by its name in flow_assets.py's catalogue.
     group_of = {}
     if args.groups:
@@ -606,6 +648,7 @@ def main():
         rows = json.load(open(cat))['assets'] if os.path.exists(cat) else []
         group_of = {r: groups.get(rows[j]['name'] if j < len(rows) else str(phrases[j]))
                     for r, (j, _, _) in enumerate(replica)}
+        group_of.update({len(replica) + k: groups.get(e['name']) for k, (_, e) in enumerate(pooled)})
         shown = sorted({group_of[e[0]] for e in lib + anchored} - {None})
         print(f'one group per view among {shown}, {args.empty:.0%} with none', flush=True)
     # For Isaac (bg_isaac.py): view 0 is the replica from the photo camera, then every accepted new view.
@@ -664,7 +707,12 @@ def main():
                 placed.append([mi['base'], mi['width_m'], mi['height_m'], False, False])
                 objs.append((obj, tf))
                 ids.append(r)
-        for i in rng.permutation(len(lib)) if args.layout == 'shuffle' else []:
+        order = rng.permutation(len(lib)) if args.layout == 'shuffle' else []
+        if pooled:  # as many things as the photo shows, give or take one, drawn from its own and the pool's: all
+            # of them at once covered the table with 20 things (2026-10-16), and the student counts
+            own = len(lib) - len(pooled)
+            order = order[:rng.integers(max(1, own - 1), own + 2)]
+        for i in order:
             r, obj, hh, ww = lib[i]
             if not keep(r):
                 continue
@@ -720,9 +768,12 @@ def main():
         rows = json.load(open(cat))['assets']
         roles = [{'name': rows[j]['name'], 'role': rows[j]['role']} if j < len(rows) else
                  {'name': str(phrases[j]), 'role': 'distractor'} for j, _, _ in replica]
-    export_isaac(os.path.join(d, 'isaac'), bg_mesh, background, [o for _, o, _ in replica], isaac_views,
-                 (w, h, fx, fy, cx, cy), n, [masks[j] & agree & f for (j, _, _), f in zip(replica, front)], sun,
-                 roles)
+        roles += [{'name': e['name'], 'role': e['role']} for _, e in pooled]
+    # A pooled thing has no pixels in this photo: bg_isaac.py fits no colour on it (its gain came from its own photo).
+    export_isaac(os.path.join(d, 'isaac'), bg_mesh, background, [o for _, o, _ in replica] + [o for o, _ in pooled],
+                 isaac_views, (w, h, fx, fy, cx, cy), n,
+                 [masks[j] & agree & f for (j, _, _), f in zip(replica, front)] + [np.zeros((h, w), bool)] * len(pooled),
+                 sun, roles)
 
     scene = trimesh.Scene()
     scene.add_geometry(bg_mesh, node_name='background')

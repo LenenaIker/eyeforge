@@ -125,3 +125,25 @@ def test_map_within_keeps_what_answered_in_time():
     release.set()
     assert out == [0, None, None, 30] and time.time() - t0 < 2
     assert seen[-1] == (3, 4)  # the failed one counts as looked at, the late one does not
+
+
+def test_local_models_go_to_the_local_server(server, monkeypatch):
+    monkeypatch.setenv("SIM2CHIP_LOCAL_VLM_URL", server)
+    c = Client(base_url="http://127.0.0.1:9/v1", key="k", retries=0)  # Token Factory unreachable on purpose
+    c.chat([{"role": "user", "content": "hi"}], "local/nvidia/Cosmos-Reason2-8B", purpose="x")
+    auth, body = Fake.calls[0]
+    assert auth is None and body["model"] == "local/nvidia/Cosmos-Reason2-8B"
+
+
+def test_daily_cap_stops_token_factory_not_local(server, monkeypatch, tmp_path):
+    import sim2chip.llm as llm
+    monkeypatch.setattr(llm, "SPEND_DIR", tmp_path / "spend")
+    monkeypatch.setattr(llm, "_price", lambda m: {"input": 0.01, "output": 0.01})
+    monkeypatch.setenv("SIM2CHIP_LLM_DAILY_USD", "0.1")
+    monkeypatch.setenv("SIM2CHIP_LOCAL_VLM_URL", server)
+    c = Client(base_url=server, key="k", retries=0)
+    c.chat([{"role": "user", "content": "hi"}], "m", purpose="x")  # 16 tokens x 0.01 = 0.16 USD, over the cap
+    with pytest.raises(LLMError, match="daily Token Factory cap"):
+        c.chat([{"role": "user", "content": "hi"}], "m", purpose="x")
+    c.chat([{"role": "user", "content": "hi"}], "local/m", purpose="x")
+    assert len(Fake.calls) == 2

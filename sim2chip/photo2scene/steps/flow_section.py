@@ -38,6 +38,7 @@ KINDS = {'road': None, 'sidewalk': ['sidewalk', 'pavement'], 'building': ['house
          'wall': ['wall', 'fence'], 'tree': ['tree'], 'hedge': ['hedge'], 'shrub': ['bush'],
          'grass': ['grass', 'lawn']}
 VEG = {'tree': 'tree', 'hedge': 'shrub', 'shrub': 'shrub'}  # band kind -> catalog group
+DEFAULT_PICK = {'tree': 'Red_Maple', 'hedge': 'Privet', 'shrub': 'Boxwood'}  # when the VLM gives none
 COLOURS = {'road': (90, 90, 90), 'sidewalk': (200, 200, 200), 'building': (230, 120, 60), 'wall': (180, 150, 110),
            'tree': (30, 140, 40), 'hedge': (120, 200, 60), 'shrub': (200, 230, 80), 'grass': (150, 255, 150)}
 MAX_M = 60  # MoGe's points farther than this are too noisy to measure a band
@@ -188,6 +189,12 @@ def main():
             ranked = [k for k, _ in votes.most_common()]
             band['pick'] = items[ranked[0] - 1]['name']
             band['picks'] = [items[k - 1]['name'] for k in ranked[:2]]  # two species mixed in a zone
+        else:  # no answer in time: a common species of its kind, never an empty band (photo68, 2026-10-15)
+            band['pick'] = DEFAULT_PICK[band['kind']]
+            band['picks'] = [band['pick']]
+            band['pick_default'] = True
+            print(f"{band['kind']} {'left' if side < 0 else 'right'}: no species from the VLM, "
+                  f"{band['pick']} by default", flush=True)
 
     out = {'road': {'centre': c.tolist(), 'along': a.tolist(), 'across': b.tolist(), 'half': half,
                     'visible': visible, 'colour': np.median(photo[road], 0).round().astype(int).tolist()},

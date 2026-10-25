@@ -20,9 +20,9 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
+from sim2chip.llm import LOCAL_VLM, Client, ask_json, image_part, map_within  # noqa: E402
 
-MODEL = 'Qwen/Qwen3.8-27B'
+MODEL = LOCAL_VLM  # Cosmos Reason 2 on this machine's GPU (user, 2026-10-15)
 QUESTIONS = {
     'street_view': ('Does this look like a street or lane seen by a person standing or driving on it?', 'yes'),
     # Upright, not "the sky at the top": under a closed canopy the top is leaves and a tree-lined lane failed

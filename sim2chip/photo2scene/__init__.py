@@ -48,7 +48,7 @@ MIN_SUPPORT = 0.03  # share of the photo the support must cover
 LONG_SIDE = 1344    # the photo's long side in the scene (bg_prepare.py's default)
 # What compose() writes into a scene folder: one job's layout, not part of the scene the library keeps.
 COMPOSED = ("isaac", "report.json", "sheet.jpg", "scene.glb", "sheet_isaac.jpg", "review.jpg", "review.json",
-            "groups.json")
+            "groups.json", "pool.json")
 
 
 class Stop(Exception):
@@ -109,7 +109,8 @@ class Flow:
     def run(self, step: str, python: str, script: str, args: list, outputs: list[str] = (), ok=(0,),
             must: bool = True) -> int:
         """One step script, unless all its outputs exist. Returns its exit code; raises when it is not in ok, unless
-        the step is a best effort (must=False: a retry that fills what a first run left out)."""
+        the step is a best effort (must=False: a retry that fills what a first run left out). script is a file in
+        steps/ or an absolute path (another route's steps, as sphere/steps/)."""
         if outputs and all((self.d / o).exists() for o in outputs):
             return 0
         from . import cloud
@@ -120,6 +121,9 @@ class Flow:
             env["SIM2CHIP_LLM_USAGE"] = str(self.usage_log)
         if "SSL_CERT_FILE" not in env and (ca := ca_file()):
             env["SSL_CERT_FILE"] = ca
+        if python != "sam3":  # the local vision model (llm.LOCAL_VLM, the sam3 steps') gives the GPU back first
+            from ..llm import unload_local_vlm
+            unload_local_vlm()
         t0 = time.time()
         logf = self.d / "logs" / f"{step}.log"
         turn = gpu_turn(self.log, step) if script in HEAVY else contextlib.nullcontext()
@@ -186,11 +190,28 @@ def build(flow: Flow, photo: Path, targets: list[str], sunny: bool = False) -> d
             "objects": made}
 
 
-def compose(flow: Flow, views: int, seed: int, groups: dict[str, str] | None = None, empty: float = 0.0) -> list[dict]:
+def pool_of(dirs) -> list[dict]:
+    """The things of several built support scenes, for compose(pool=...): each one's SAM 3D mesh, name, role and
+    metric size (flow_assets.py) and the scene it came from (bg_build.py fits its colour on that photo)."""
+    out = []
+    for d in map(Path, dirs):
+        cat = d / "assets.json"
+        if not cat.exists():
+            continue
+        for a in json.loads(cat.read_text())["assets"]:
+            if (d / a["mesh"]).exists() and a.get("height_m") and a.get("width_m"):
+                out.append({"dir": str(d), "index": a["index"], "mesh": str(d / a["mesh"]), "name": a["name"],
+                            "role": a["role"], "height_m": a["height_m"], "width_m": a["width_m"]})
+    return out
+
+
+def compose(flow: Flow, views: int, seed: int, groups: dict[str, str] | None = None, empty: float = 0.0,
+            pool: list[dict] | None = None) -> list[dict]:
     """New views of a built scene: its things placed again at random (seed), rendered by Isaac on the photo and
     labelled. groups ({thing's name: group}): each view shows the things of one group only (things in no group
-    always), or of none in a share `empty` of the views. Returns [{"file": isaac/render_NN.png, "boxes": [{"box",
-    "name", "role"}]}], the photo's own layout (view 0) left out; empty when the VLM review rejects the views."""
+    always), or of none in a share `empty` of the views. pool (pool_of): things of other photos, placed too (this
+    scene's own are left out of it). Returns [{"file": isaac/render_NN.png, "boxes": [{"box", "name", "role"}]}],
+    the photo's own layout (view 0) left out; empty when the VLM review rejects the views."""
     d = flow.d
     plan = flow.json("plan.json")
     import shutil
@@ -205,6 +226,10 @@ def compose(flow: Flow, views: int, seed: int, groups: dict[str, str] | None = N
     if groups is not None:
         (d / "groups.json").write_text(json.dumps(groups))
         one = ["--groups", d / "groups.json", "--empty", empty]
+    others = [e for e in pool or [] if Path(e["dir"]).resolve() != d.resolve()]
+    if others:
+        (d / "pool.json").write_text(json.dumps(others))
+        one += ["--pool", d / "pool.json"]
     flow.run("S.5_build", "mesh", "bg_build.py", ["--dir", d, "--meshes", d / "assets", "--views", views, "--seed", seed,
                                                   "--solid", ",".join(plan.get("solid") or []),
                                                   "--fixed", ",".join(plan.get("fixed") or []), "--stack", "0.2", *one])

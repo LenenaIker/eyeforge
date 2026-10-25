@@ -27,9 +27,9 @@ from bg_prepare import segment
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from sim2chip.llm import Client, ask_json, image_part  # noqa: E402
+from sim2chip.llm import LOCAL_VLM, Client, ask_json, image_part  # noqa: E402
 
-MODEL = 'Qwen/Qwen3.8-27B'
+MODEL = LOCAL_VLM  # Cosmos Reason 2 on this machine's GPU (user, 2026-10-15)
 PROMPT = """List every distinct physical thing in this photo, each as a whole object (a desk with its legs is one \
 desk, not its top; a bed with its drawers is one bed; a radiator is one radiator, not its fins). Include furniture, \
 fixtures, appliances and small items; leave out the floor, the walls and the ceiling.{targets} Answer with ONE \

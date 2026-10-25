@@ -1,6 +1,7 @@
 """The scene photo is the cleanest of the typical ones, as the vision model rates them (roadmap B.3); surfaces
 make no scene, and classifying views show one class each (B.4)."""
 import json
+from pathlib import Path
 
 from PIL import Image
 
@@ -101,7 +102,7 @@ def test_classifying_views_show_one_class(tmp_path, monkeypatch):
     from sim2chip import photo2scene
     asked = {}
 
-    def compose(flow, views, seed, groups=None, empty=0.0):
+    def compose(flow, views, seed, groups=None, empty=0.0, pool=None):
         asked.update(groups=groups, empty=empty)
         box = lambda name: {"box": [1, 1, 9, 9], "name": name, "role": "target"}  # noqa: E731
         return [{"file": "isaac/render_01.png", "boxes": [box("sun cream bottle")]},
@@ -128,10 +129,43 @@ def test_a_class_tries_its_next_photo_when_one_makes_no_scene():
     built = []
     picks = [[(1, "a"), (2, "b"), (3, "c")], [(4, "d"), (5, "e")]]
     tried = []
-    for pid, _ in SceneFromPhoto._tries(picks, built):
+    for _, (pid, _) in SceneFromPhoto._tries(picks, built):
         tried.append(pid)
         built.append({"photo_id": pid, "status": "failed" if pid in (1, 2) else "ready"})
     assert tried == [1, 2, 4]  # the first class gives up after BUILD_TRIES photos; the second is ready at once
+
+
+def test_more_scenes_or_every_photo_for_the_pool():
+    """want=2 builds until two photos of a group made a scene (one more try than that at most); want=None builds
+    from every photo, to pool all their things."""
+    def run(picks, want, failing=()):
+        built, tried = [], []
+        for gi, (pid, _) in SceneFromPhoto._tries(picks, built, want):
+            tried.append((gi, pid))
+            built.append({"photo_id": pid, "status": "failed" if pid in failing else "ready"})
+        return tried
+    picks = [[(1, "a"), (2, "b"), (3, "c"), (4, "d")]]
+    assert run(picks, 2) == [(0, 1), (0, 2)]
+    assert run(picks, 2, failing=(1,)) == [(0, 1), (0, 2), (0, 3)]
+    assert run(picks, 2, failing=(1, 2)) == [(0, 1), (0, 2), (0, 3)]  # gives up: BUILD_TRIES - 1 extra tries
+    assert run(picks, None, failing=(2,)) == [(0, 1), (0, 2), (0, 3), (0, 4)]
+    assert run(picks, 0) == []
+
+
+def test_the_pool_takes_every_scene_thing_with_a_mesh_and_a_size(tmp_path):
+    from sim2chip import photo2scene
+    for name, rows in (("a", [{"index": 0, "name": "bottle", "role": "target", "height_m": 0.2, "width_m": 0.08,
+                               "mesh": "assets/sam3d/000_canon.glb"},
+                              {"index": 1, "name": "mug", "role": "distractor", "height_m": 0.1, "width_m": 0.1,
+                               "mesh": "assets/sam3d/001_canon.glb"}]),
+                       ("b", [{"index": 0, "name": "bottle", "role": "target", "height_m": None, "width_m": 0.08,
+                               "mesh": "assets/sam3d/000_canon.glb"}])):
+        (tmp_path / name / "assets/sam3d").mkdir(parents=True)
+        (tmp_path / name / "assets.json").write_text(json.dumps({"assets": rows}))
+        (tmp_path / name / "assets/sam3d/000_canon.glb").write_text("x")
+    pool = photo2scene.pool_of([tmp_path / "a", tmp_path / "b", tmp_path / "missing"])
+    # a's mug has no mesh file; b's bottle no height.
+    assert [(p["name"], p["index"], Path(p["dir"]).name) for p in pool] == [("bottle", 0, "a")]
 
 
 def test_classifying_surfaces_reframes_the_photos(tmp_path, monkeypatch):

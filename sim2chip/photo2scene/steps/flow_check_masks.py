@@ -14,7 +14,7 @@ Run in the `teacher-sam3` env (the repair needs SAM 3):
 Reads <dir>/env_candidates.npz and <dir>/background.png; writes <dir>/env_masks.json ({"candidates": [{"index",
 "phrase", "answers", "keep", "why", "repaired", "second"}], "model"}), <dir>/env_masks.npz (the final masks of
 the kept ones) and <dir>/env_check/cand_NN[_fix].jpg.
-Model: --model, else SIM2CHIP_REVIEW_MODEL, else Qwen3.8-27B; --second (Kimi-K2.6, K3 stopped taking images on 2026-10-11).
+Model: --model, else SIM2CHIP_REVIEW_MODEL, else Cosmos Reason 2 on this machine (llm.LOCAL_VLM); --second the same (Qwen and Kimi-K2.6 before 2026-10-15).
 """
 import argparse
 import json
@@ -28,12 +28,12 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
+from sim2chip.llm import LOCAL_VLM, Client, ask_json, image_part, map_within  # noqa: E402
 from flow_segment import picture  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 
-MODEL = 'Qwen/Qwen3.8-27B'
-SECOND = 'moonshotai/Kimi-K2.6'
+MODEL = LOCAL_VLM  # Cosmos Reason 2 on this machine's GPU (user, 2026-10-15)
+SECOND = LOCAL_VLM
 QUESTIONS = {
     'one_thing': ('Does the highlighted region cover one single {p} (a row of attached {p}s that form one block '
                   'also counts)?', 'yes'),

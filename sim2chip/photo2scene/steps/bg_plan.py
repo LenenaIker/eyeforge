@@ -8,7 +8,7 @@ furniture that stays in place (bg_build --fixed). Any env:
 
 Writes <dir>/plan.json: {"one_flat_support", "support", "objects": [phrase, ...], "solid": [...], "fixed": [...], "reason",
 "model"}. Exit code 3 when the scene does not fit (the driver skips it), 1 when the model gave no usable plan.
-Model: --model, else SIM2CHIP_PLAN_MODEL, else Kimi-K2.6 (K3 had the best phrases in experiments/vlm_bench but no longer takes images).
+Model: --model, else SIM2CHIP_PLAN_MODEL, else Cosmos Reason 2 on this machine (llm.LOCAL_VLM; Kimi-K2.6 before 2026-10-15).
 """
 import argparse
 import json
@@ -18,9 +18,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from sim2chip.llm import Client, image_part, parse_json  # noqa: E402
+from sim2chip.llm import LOCAL_VLM, Client, image_part, parse_json  # noqa: E402
 
-MODEL = 'moonshotai/Kimi-K2.6'  # K3 stopped taking images on Token Factory (2026-10-11)
+MODEL = LOCAL_VLM  # Cosmos Reason 2 on this machine's GPU (user, 2026-10-15)
 PROMPT = """We rebuild a scene from this single photo to render new training images for a small object detector: \
 the movable objects are cut out with an open-vocabulary segmenter, and copies of them are placed again on ONE flat \
 support plane (a table top, a floor, one shelf board).

@@ -1,13 +1,16 @@
 """Step 1.4 of the scene flow, the gate after depth: the ground plane on MoGe-2's points of the erased photo
 (bg_depth.py) gives the camera's height, pitch and roll and where the horizon crosses the image. They are checked
 against the route (a pedestrian camera stands 0.5 to 4 m up, level within a few degrees of roll) and against the
-VLM's own horizon guess from the observation (when its samples agree): a far miss means MoGe or the ground mask
-went wrong, and the scene would be built tilted or sunk. Any env with numpy:
+VLM's horizon guess, until 2026-10-15: Cosmos Reason 2 put it 0.4 to 0.5 image heights off on most streets. The
+horizon the photo's own straight verticals give (lean.vertical, when they are clear) is written beside, not
+checked: church_corner's and terrace's streets slope 5 degrees, their ground's horizon 0.2 image heights under the
+verticals', and piece_build.py now stands the scene on those verticals with the floor keeping its slope.
+Env with numpy, scipy and PIL (the mesh one):
 
     python sim2chip/photo2scene/steps/flow_camera.py --dir data/street_test/flow/basque_street
 
 Writes <dir>/camera.json: {"ok", "height_m", "pitch_deg", "roll_deg", "horizon_y", "horizon_y_vlm",
-"horizon_vlm_spread", "ground_inliers", "checks", "why"}. Exit code 3 when a check fails.
+"horizon_vlm_spread", "horizon_y_edges", "ground_inliers", "checks", "why"}. Exit code 3 when a check fails.
 """
 import argparse
 import json
@@ -19,15 +22,15 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
 from bg_build import fit_plane
+import lean
 
-VLM_MAX_SPREAD = 0.1  # the VLM's horizon samples must agree this closely to judge ours
+VLM_MAX_SPREAD = 0.1  # the VLM's horizon samples must agree this closely to be written down
 HEIGHT = {'ground': (0.05, 1.0), 'pedestrian': (0.5, 4.0), 'raised': (2.0, 15.0)}
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dir', required=True)
-    ap.add_argument('--horizon-tol', type=float, default=0.15, help='largest miss against the VLM, image heights')
     args = ap.parse_args()
     observed = json.load(open(os.path.join(args.dir, 'observe.json')))
     obs = observed['final']
@@ -61,18 +64,24 @@ def main():
     # spread 0.15 around 0.55 while the parked cars' roofs, at the camera's height, sat on our 0.70.
     if spread > VLM_MAX_SPREAD:
         vlm = None
+    # The photo's verticals: the true horizon where enough straight edges agree on one vertical (lean.USE_*).
+    fx, cx = k[0, 0] * w, k[0, 2] * w
+    edges_up = lean.photo_vertical(args.dir, n, (fx, fy, cx, cy), (w, h))
+    u = edges_up['up']
+    horizon_edges = (cy - fy * u[2] / u[1]) / h if edges_up['used'] and abs(u[1]) > 1e-6 else None
     lo, hi = HEIGHT.get(obs['camera_height'], (0.05, 50))
     checks = {
         'ground found': inl > 0.25,
         'height fits the route': lo <= dd <= hi,
         'level camera (roll under 8 deg)': abs(roll) < 8,
-        'horizon matches the VLM': vlm is None or abs(horizon - vlm) < args.horizon_tol,
     }
     checks = {k2: bool(v) for k2, v in checks.items()}
     why = [k2 for k2, v in checks.items() if not v]
     out = {'ok': not why, 'height_m': round(float(dd), 3), 'pitch_deg': round(pitch, 2), 'roll_deg': round(roll, 2),
            'horizon_y': round(float(horizon), 3), 'horizon_y_vlm': vlm,
-           'horizon_vlm_spread': round(spread, 3), 'ground_inliers': round(inl, 3),
+           'horizon_vlm_spread': round(spread, 3),
+           'horizon_y_edges': None if horizon_edges is None else round(float(horizon_edges), 3),
+           'edges': {k2: v for k2, v in edges_up.items() if k2 != 'up'}, 'ground_inliers': round(inl, 3),
            'tolerance_m': round(tol, 3), 'checks': checks, 'why': why}
     with open(os.path.join(args.dir, 'camera.json'), 'w') as f:
         json.dump(out, f, indent=1)

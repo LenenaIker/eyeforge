@@ -315,6 +315,10 @@ def extend(flow: Flow, r: dict):
     """Phase 3: the route's template extends the imitated place; its views are checked by the VLM."""
     d = flow.d
     t = r["template"]
+    if t == "crossroads" and not json.loads((d / "pieces.json").read_text()).get("walls"):
+        # The corner grid stands on the photo's facade; a road without one (photo 29) is extended as a street.
+        print("  no facade for the corner template: extended as a straight street")
+        t = "straight_street"
     args = ["--scene", d / "place", "--out", d / "extended", "--views", EXTEND_VIEWS]
     if t == "crossroads":
         args += ["--photo-scene", d, "--no-objects", "--veg-dir", vegetation_dir(d)]

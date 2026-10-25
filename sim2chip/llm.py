@@ -12,6 +12,9 @@ Configuration (environment, or the repo's .env file for the key):
     SIM2CHIP_SCENE_MODEL     model that looks at the user's photos during the interview (scene_profile)
     SIM2CHIP_COMPARE_MODEL   vision model that compares renders with the user's photos (match.py)
     SIM2CHIP_REASON_MODEL    reasoning model that turns those differences into spec changes (match.py)
+    SIM2CHIP_LLM_DAILY_USD   spend cap per day on this machine (unset: none); a call over it raises LLMError
+    SIM2CHIP_LOCAL_VLM_URL   where models named "local/<id>" answer (sim2chip.local_vlm, started on demand); default
+                             http://127.0.0.1:8765/v1
 """
 from __future__ import annotations
 
@@ -28,6 +31,10 @@ from pathlib import Path
 
 
 DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
+LOCAL = "local/"  # model prefix: answered by this machine's GPU (sim2chip.local_vlm), free
+# The vision model of every check that runs where the GPU is (photo2scene's steps): NVIDIA's Cosmos Reason 2 on
+# this machine, free. User 2026-10-15: local wherever it can be (Token Factory's Qwen cost 47 $ in a fortnight).
+LOCAL_VLM = "local/nvidia/Cosmos-Reason2-8B"
 # Preferred model families per role, matched against the live /models list (ids change over time).
 PREFERENCES = {
     "text": [r"nemotron-3-super", r"nemotron-3.*nano-30b", r"nemotron"],
@@ -53,6 +60,31 @@ PREFERENCES = {
     "compare": [r"nemotron.*omni", r"Kimi-K2\.6", r"Kimi-K3", r"GLM-5\.3-Flash"],
     "reason": [r"nemotron-3-ultra", r"nemotron-3-super"],
 }
+
+
+# A day's spend on this machine, every process's calls (for the daily cap): one line per call in a file per day.
+SPEND_DIR = Path(__file__).resolve().parents[1] / "data" / "cache" / "llm_spend"
+PRICES_FILE = Path(__file__).resolve().parents[1] / "data" / "cache" / "token_prices.json"
+
+
+def daily_cap() -> float | None:
+    from .config import env
+    v = env("SIM2CHIP_LLM_DAILY_USD", "")
+    return float(v) if v else None
+
+
+def spent_today() -> float:
+    f = SPEND_DIR / f"{time.strftime('%Y-%m-%d')}.jsonl"
+    if not f.exists():
+        return 0.0
+    return sum(json.loads(line)["usd"] for line in f.read_text().splitlines() if line.strip())
+
+
+def _price(model: str) -> dict:
+    try:
+        return json.loads(PRICES_FILE.read_text())["prices"].get(model, {})
+    except (OSError, ValueError, KeyError):
+        return {}
 
 
 # Model calls in flight at once per stage (photos to label, assets to judge): Token Factory rate limits.
@@ -147,6 +179,63 @@ def parse_json(text: str):
         return json.JSONDecoder().raw_decode(text[start:])[0]
 
 
+def local_vlm_url() -> str:
+    from .config import env
+    return env("SIM2CHIP_LOCAL_VLM_URL", "http://127.0.0.1:8765/v1").rstrip("/")
+
+
+def _answers(base: str) -> bool:
+    try:
+        with urllib.request.urlopen(base + "/models", timeout=3) as r:
+            return r.status == 200
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+
+
+def unload_local_vlm() -> None:
+    """Frees the GPU memory of the local vision model, if its server is up (best effort, never starts it)."""
+    base = local_vlm_url()
+    if not _answers(base):
+        return
+    try:
+        urllib.request.urlopen(urllib.request.Request(base + "/unload", data=b"{}", method="POST"), timeout=120)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        pass
+
+
+_START = __import__("threading").Lock()  # threads of one process start the local server once
+
+
+def ensure_local_vlm(base: str, wait: float = 60.0) -> None:
+    """Starts sim2chip.local_vlm in the teachers' Python (SIM2CHIP_SAM3_PYTHON) when nothing answers at a local
+    address, so a job on a fresh GPU machine needs no extra step. A remote address is left alone."""
+    with _START:
+        _ensure_local_vlm(base, wait)
+
+
+def _ensure_local_vlm(base: str, wait: float) -> None:
+    import subprocess
+    import urllib.parse
+    if _answers(base):
+        return
+    u = urllib.parse.urlparse(base)
+    from .config import env
+    py = env("SIM2CHIP_SAM3_PYTHON", "")
+    if u.hostname not in ("127.0.0.1", "localhost") or not py or not Path(py).exists():
+        return  # the request then fails with the usual connection error
+    root = Path(__file__).resolve().parents[1]
+    log = root / "data" / "cache" / "local_vlm" / "server.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    try:  # two processes starting it at once: the second one's bind fails, and it waits for the first
+        subprocess.Popen([py, "-m", "sim2chip.local_vlm", "--port", str(u.port or 80)], cwd=root,
+                         stdout=open(log, "a"), stderr=subprocess.STDOUT, start_new_session=True)
+    except OSError:
+        return
+    t0 = time.time()
+    while time.time() - t0 < wait and not _answers(base):
+        time.sleep(1)
+
+
 @dataclass
 class Client:
     base_url: str = field(default_factory=lambda: os.environ.get("SIM2CHIP_LLM_BASE_URL", DEFAULT_BASE_URL))
@@ -158,9 +247,16 @@ class Client:
 
     def _request(self, method: str, path: str, body: dict | None = None, timeout: float | None = None,
                  retries: int | None = None) -> dict:
-        url = self.base_url.rstrip("/") + path
+        local = bool(body) and str(body.get("model", "")).startswith(LOCAL)
+        if local:
+            base = local_vlm_url()
+            ensure_local_vlm(base)
+            url = base + path
+            headers = {"Content-Type": "application/json"}
+        else:
+            url = self.base_url.rstrip("/") + path
+            headers = {"Authorization": f"Bearer {self.key or api_key()}", "Content-Type": "application/json"}
         data = json.dumps(body).encode() if body is not None else None
-        headers = {"Authorization": f"Bearer {self.key or api_key()}", "Content-Type": "application/json"}
         retries = self.retries if retries is None else retries
         for attempt in range(retries + 1):
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -217,6 +313,9 @@ class Client:
             body["chat_template_kwargs"] = {"enable_thinking": thinking}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        cap = None if model.startswith(LOCAL) else daily_cap()
+        if cap is not None and (done := spent_today()) >= cap:
+            raise LLMError(f"daily Token Factory cap reached: {done:.2f} of {cap:.2f} USD (SIM2CHIP_LLM_DAILY_USD)")
         t0 = time.time()
         resp = self._request("POST", "/chat/completions", body, timeout=timeout, retries=retries)
         latency = time.time() - t0
@@ -228,6 +327,12 @@ class Client:
         return text
 
     def _log(self, model: str, purpose: str, usage: dict, latency: float) -> None:
+        if daily_cap() is not None and not model.startswith(LOCAL):
+            p = _price(model)
+            usd = (usage.get("prompt_tokens") or 0) * p.get("input", 0) + (usage.get("completion_tokens") or 0) * p.get("output", 0)
+            SPEND_DIR.mkdir(parents=True, exist_ok=True)
+            with open(SPEND_DIR / f"{time.strftime('%Y-%m-%d')}.jsonl", "a") as f:
+                f.write(json.dumps({"t": round(time.time(), 3), "model": model, "purpose": purpose, "usd": round(usd, 6)}) + "\n")
         if self.usage_log is None:
             return
         self.usage_log.parent.mkdir(parents=True, exist_ok=True)

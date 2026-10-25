@@ -8,7 +8,7 @@ Any env with Pillow:
 
 Reads <dir>/photo.png and <dir>/isaac/{render_NN.png,labels.json}; writes <dir>/review.jpg (the sheet) and
 <dir>/review.json ({"score", "worst", "keep", "model"}). Exit code 3 when the scene is rejected.
-Model: --model, else SIM2CHIP_REVIEW_MODEL, else Qwen3.8-27B.
+Model: --model, else SIM2CHIP_REVIEW_MODEL, else Cosmos Reason 2 on this machine (llm.LOCAL_VLM; Qwen3.8-27B before 2026-10-15).
 """
 import argparse
 import json
@@ -20,9 +20,9 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from sim2chip.llm import Client, image_part, parse_json  # noqa: E402
+from sim2chip.llm import LOCAL_VLM, Client, image_part, parse_json  # noqa: E402
 
-MODEL = 'Qwen/Qwen3.8-27B'
+MODEL = LOCAL_VLM  # Cosmos Reason 2 on this machine's GPU (user, 2026-10-15)
 PROMPT = """We generate synthetic training images for a small object detector from one real photo. The sheet shows \
 the real photo (top left) and 5 generated images (the others). Red boxes are the labels the detector will learn \
 from.

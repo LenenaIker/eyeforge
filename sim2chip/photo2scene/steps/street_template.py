@@ -26,7 +26,9 @@ import trimesh
 from scipy.spatial import cKDTree
 
 import section_fill
+import standing
 from crossroad import (ASPHALT, BRICKS, ROAD_WORDS, _axis_rotation, affine, lifts, look, photo_keys, quad, rebrick,
+                       tinted,
                        usd_keys, usd_of)
 
 SEE_CONE, SEE_M, SEE_SHARE = 30.0, 40.0, 0.02  # a view must have this much of the scene ahead (sees_enough)
@@ -111,11 +113,11 @@ def main():
         half = float(np.clip(gap - 1.5, 2.0, 7.0))
         width = 2 * half
         rot = np.asarray(_axis_rotation(up, math.pi))
-        # The turned side is a copy: rebricked, without the photo's texture.
+        # The turned side is a copy: rebricked, with the photo's texture tinted (crossroad.tinted).
         turn = affine(rot, centre - rot @ centre)
-        sides[-s0] = [((p - centre) @ rot.T + centre, f, col, n, {},
+        sides[-s0] = [((p - centre) @ rot.T + centre, f, col, n, photo,
                        usd and {'url': usd['url'], 'pose': turn @ usd['pose']})
-                      for p, f, col, n, _, usd in sides[s0]]
+                      for p, f, col, n, photo, usd in sides[s0]]
         facades[-s0] = [{**fp, 'points': ((np.asarray(fp['points']) - centre) @ rot.T + centre).tolist()}
                         for fp in facades[s0]]
 
@@ -139,9 +141,11 @@ def main():
         return float(np.linalg.norm(p, axis=1).min()) > 2.0  # the photo's camera is the origin
 
     for s, block in sides.items():
-        allp = np.concatenate([p for p, *_ in block] + [np.asarray(fp['points']) for fp in facades[s]])
-        along = (allp - centre) @ a
-        a0, a1 = np.percentile(along, [1, 99])
+        # The block's length over its objects, each by its own extent: over all their vertices at once, a hedge's
+        # 34k vertices outweighed a parametric house's few hundred and the copies stood on the camera (2026-10-16).
+        spans = [np.percentile((np.asarray(p) - centre) @ a, [1, 99])
+                 for p in [p for p, *_ in block] + [fp['points'] for fp in facades[s]]]
+        a0, a1 = min(x[0] for x in spans), max(x[1] for x in spans)
         L = float(max(a1 - a0, 8.0))
         lengths[s] = L
         for k in range(-args.repeats, args.repeats + 1):
@@ -156,16 +160,19 @@ def main():
             for p, f, col, n, photo, usd in block:
                 if (k or s not in originals) and not clear_of_road(p + shift):
                     continue
-                if any(w in n for w in ('house', 'wall', 'building')):
+                col0 = col
+                if standing.is_building(n) or 'wall' in n:
                     col = rebrick(col, brick)
                 out_arr[f'obj{objects}_points'] = (p + shift).astype(np.float32)
                 out_arr[f'obj{objects}_faces'] = f
                 out_arr[f'obj{objects}_colors'] = np.asarray(col, np.float32)
                 out_arr.update(usd_keys(objects, usd, affine(move=shift)))
-                # The block where the photo has it keeps the photo's texture; copies are rebricked. A tiled
-                # texture (a lot's wall, env_add.wall_tile) fits anywhere.
-                if k == 0 or 'tile' in photo:
-                    out_arr.update({f'obj{objects}_{key}': v for key, v in photo.items()})
+                # The block where the photo has it keeps the photo's texture; copies keep it too, tinted as they
+                # were rebricked (the turned side is not where the photo has it). A tiled texture (a lot's wall,
+                # env_add.wall_tile) fits anywhere.
+                own = k == 0 and s in originals
+                kept = photo if own or 'tile' in photo else tinted(photo, col0, col)
+                out_arr.update({f'obj{objects}_{key}': v for key, v in kept.items()})
                 objects += 1
 
     # Ground: the road along the street, a sidewalk with the photo's material on each side, curb faces.

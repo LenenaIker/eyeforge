@@ -281,7 +281,6 @@ def add_asset(scene, arr, url, place, proxy):
     return i
 
 
-BUILDING_WORDS = ('house', 'building', 'apartment', 'block', 'tower', 'facade')
 LOT_MIN, LOT_MAX = 0.6, 6.0  # a building's base this far over the street stands on a lot raised to it
 # Where a building's base is: its lowest 5 % of points, not 0.5 % (a stray vertex below it left the building
 # floating a metre over its lot, photo 27).
@@ -292,27 +291,33 @@ def raised(name, pts, up, floor):
     """How far a building's base stands over the floor, when it stands on a raised lot (LOT_MIN to LOT_MAX), else
     None: the photo's terraces behind a retaining wall (the pots' photo 27, 2026-10-13), which a skirt drew as a
     dark pedestal."""
-    if not any(w in name for w in BUILDING_WORDS):
+    if not standing.is_building(name):
         return None
     gap = float(np.percentile(pts @ up - floor(pts), LOT_BASE_PCT))
     return gap if LOT_MIN < gap < LOT_MAX else None
 
 
-def stand(name, pts, faces, up, floor, masks, depth_pts):
-    """A building straightened along up (standing.straighten) and, where the photo sees its base, set at the
-    height over the floor the photo's depth gives there: on the floor, or on a lot as high as the photo shows."""
+def stand(name, pts, faces, up, floor, masks, depth_pts, ground=None):
+    """A building straightened along up (standing.straighten) and set at the height over the floor the photo's
+    depth gives where the photo sees its base over the ground: on the floor, or on a lot as high as the photo
+    shows. A base the photo does not see (behind a hedge, a garden wall, a car) is not moved: the building stays
+    on its photo pixels and its walls go down to the floor behind what hides them (skirt), no lot guessed under it.
+    So on 2026-10-08 basque_street's houses stood whole; a lot under them made 2 to 4 m pedestals (2026-10-15) and
+    moving them to the floor put them 3.5 m off their pixels, dropped by the gates (2026-10-16).
+    Returns (points, whether the photo saw the base)."""
     pts, deg = standing.straighten(pts, np.asarray(faces), up)
     gap = None
     if masks is not None and name[:3].isdigit() and int(name[:3]) < len(masks) \
             and masks[int(name[:3])].shape == depth_pts.shape[:2]:
-        gap = standing.photo_gap(masks[int(name[:3])], depth_pts, up, floor)
+        g = ground if ground is not None and ground.shape == depth_pts.shape[:2] else None
+        gap = standing.photo_gap(masks[int(name[:3])], depth_pts, up, floor, ground=g)
     was = float(np.percentile(pts @ up - floor(pts), LOT_BASE_PCT))
     if gap is not None:
         want = gap if LOT_MIN < gap < LOT_MAX else 0.0
         pts = pts + (want - was) * up
     print(f"{name}: straightened {deg:.1f} deg, base {was:.2f} m over the floor, the photo's "
           f"{'unseen' if gap is None else f'{gap:.2f} m'}", flush=True)
-    return pts
+    return pts, gap is not None or masks is None
 
 
 TILE_ODD = 0.05  # a wall's crop with more of its pixels this far from its median shade has something before it
@@ -518,7 +523,7 @@ def bands(args, scene, arr, up, floor, rounds=6, tolerance=0.15):
         if all(abs(x - 1) <= tolerance for x in off.values()):
             break
         if 'tree' in off:
-            look['back'] = float(np.clip(look['back'] * np.clip(off['tree'] ** -0.5, 0.85, 1.25), 1.0, 2.2))
+            look['back'] = float(np.clip(look['back'] * np.clip(max(off['tree'], 1e-3) ** -0.5, 0.85, 1.25), 1.0, 2.2))
         if 'tree_top' in off and abs(off['tree_top'] - 1) > tolerance:
             look['tilt'] = float(np.clip(look['tilt'] + (3.0 if off['tree_top'] < 1 else -3.0), 0.0, 12.0))
         if 'shrub' in off:
@@ -596,17 +601,19 @@ def main():
 
         def floor(X):
             return np.full(len(np.atleast_2d(X)), level)
-    tex = photo_texture(meshes, args.scene) if args.photo_texture and meshes else {}
-    if tex:
-        tex_path = os.path.abspath(os.path.join(args.out, 'isaac', 'tex_photo.png'))
-        shutil.copy(os.path.join(args.scene, 'background.png'), tex_path)
-    high = {}  # buildings standing over the street: env name -> object index
     # The photo's own view of each building's base (standing.photo_gap): its masks and the erased photo's depth.
     mpath = os.path.join(args.scene, 'env_masks.npz')
     dpath = next((x for x in (os.path.join(args.scene, f'depth_{k}.npz') for k in ('background', 'photo'))
                   if os.path.exists(x)), None)
     env_masks = np.load(mpath)['masks'] if os.path.exists(mpath) and dpath else None
     depth_pts = np.load(dpath)['points'] if env_masks is not None else None
+    gpath = os.path.join(args.scene, 'ground.npz')
+    ground_px = np.load(gpath)['masks'].any(0) if os.path.exists(gpath) and env_masks is not None else None
+    tex = photo_texture(meshes, args.scene) if args.photo_texture and meshes else {}
+    if tex:
+        tex_path = os.path.abspath(os.path.join(args.out, 'isaac', 'tex_photo.png'))
+        shutil.copy(os.path.join(args.scene, 'background.png'), tex_path)
+    high = {}  # buildings standing over the street: env name -> object index
     for k, (name, m) in enumerate(meshes.items()):
         i = first + k
         pts = trimesh.transform_points(m.vertices, GL2CV) * s
@@ -616,9 +623,10 @@ def main():
             m, uv, photo_faces, cols = tex[name]
             pts = trimesh.transform_points(m.vertices, GL2CV) * s
             faces = m.faces
-        if any(w in name for w in BUILDING_WORDS):
-            pts = stand(name, pts, faces, up, floor, env_masks, depth_pts)
-        if raised(name, pts, up, floor) is not None:  # on a lot (lots()): neither moved down nor skirted
+        seen = True
+        if standing.is_building(name):
+            pts, seen = stand(name, pts, faces, up, floor, env_masks, depth_pts, ground_px)
+        if seen and raised(name, pts, up, floor) is not None:  # on a lot (lots()): neither moved down nor skirted
             high[name] = i
         elif args.snap_ground:  # catalog entry 1: a base hidden in the photo comes out floating or sunk
             pts = pts - np.percentile(pts @ up - floor(pts), 0.5) * up

@@ -9,7 +9,7 @@ Any env:
 
 Writes <dir>/observe.json: {"final": {...}, "votes": {...}, "samples": [...], "unsure": [...], "model"}.
 Exit code 1 when fewer than two samples gave a usable answer.
-Model: --model, else SIM2CHIP_OBSERVE_MODEL, else Qwen3.8-27B. K3 stopped taking images on Token Factory
+Model: --model, else SIM2CHIP_OBSERVE_MODEL, else Cosmos Reason 2 on this machine (llm.LOCAL_VLM), Qwen3.8-27B before 2026-10-15. K3 stopped taking images on Token Factory
 (2026-10-11); on the 9 street bench photos and home_office Kimi-K2.6 put the horizon 0.19 image heights off
 MoGe's on average (6 of 7 misses beyond the camera check's 0.15), Qwen 0.06 (1 of 7, 2026-10-12).
 """
@@ -23,9 +23,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT))
-from sim2chip.llm import Client, ask_json, image_part, map_within  # noqa: E402
+from sim2chip.llm import LOCAL_VLM, Client, ask_json, image_part, map_within  # noqa: E402
 
-MODEL = 'Qwen/Qwen3.8-27B'
+MODEL = LOCAL_VLM  # Cosmos Reason 2 on this machine's GPU (user, 2026-10-15)
 ENUMS = {
     'outdoor': [True, False],
     'time_of_day': ['day', 'dusk_or_dawn', 'night'],
@@ -137,7 +137,9 @@ def main():
     msg = [{'role': 'user', 'content': [{'type': 'text', 'text': text}, image_part(args.image)]}]
 
     def one(_):
-        return ask_json(client, msg, args.model, purpose='scene_observe', check=valid,
+        # Cosmos Reason 2 breaks the format more often than Qwen did (roads photo 3: one usable answer of three,
+        # 2026-10-15): a third try each.
+        return ask_json(client, msg, args.model, purpose='scene_observe', check=valid, tries=3,
                         temperature=args.temperature, max_tokens=16384)
     samples = [s for s in map_within(one, list(range(args.samples)), seconds=900) if s]
     if len(samples) < 2:

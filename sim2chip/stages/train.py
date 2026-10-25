@@ -50,7 +50,9 @@ class Train(Stage):
 
     def run(self, ctx: Context) -> dict:
         from .. import detector
+        from ..llm import unload_local_vlm
 
+        unload_local_vlm()  # the scene checks' local vision model can still hold most of the GPU (2026-10-16 OOM)
         task = task_of(ctx.spec)
         count = task.points
         out = ctx.job.stage_dir(self.name)

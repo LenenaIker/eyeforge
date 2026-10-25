@@ -5,7 +5,23 @@ sidewalk at the near end; env_add.py read that as a raised lot and crossroad.py,
 on its level ground, made a 2.6 m pedestal of it (2026-10-14). Pure numpy: env_add.py, crossroad.py and
 street_template.py use it.
 """
+import re
+
 import numpy as np
+
+# Names (the observation's phrases) of what stands like a building: straightened, seated on the photo's base,
+# rebricked in the copies. "church" was missing and church_corner's church kept its lean (2026-10-15).
+BUILDING_WORDS = ('house', 'building', 'apartment', 'block', 'tower', 'facade', 'church', 'chapel', 'cathedral',
+                  'barn', 'shed', 'garage', 'warehouse', 'shop', 'store', 'school', 'hall', 'hotel', 'cottage',
+                  'villa', 'castle', 'temple', 'mosque', 'cabin', 'hut', 'factory')
+
+
+_BUILDING = re.compile(r'(' + '|'.join(BUILDING_WORDS) + r')(e?s)?\b')  # "townhouses", not "shutter"
+
+
+def is_building(name: str) -> bool:
+    return bool(_BUILDING.search(name.lower()))
+
 
 MAX_TILT = 12.0  # degrees: a building tilted more than this is another failure, left alone
 WALL_COS = 0.5  # a face whose normal is this close to horizontal (|n . up| under it) is a wall
@@ -55,14 +71,27 @@ def straighten(pts, faces, up):
     return (pts - c) @ rotation(v, up).T + c, deg
 
 
-def photo_gap(mask, points, up, floor, min_cols=20):
+def photo_gap(mask, points, up, floor, min_cols=20, ground=None, below=(2, 12), ground_share=0.6):
     """How far the building's base stands over the floor where the photo sees it: the photo's own depth at the
     lowest pixel of each column of its mask, median over the columns; None when too few columns show it. A lot is
-    what the photo shows (pots' photo 27: its houses behind a retaining wall, 1 to 3 m up), not the mesh."""
+    what the photo shows (pots' photo 27: its houses behind a retaining wall, 1 to 3 m up), not the mesh.
+    ground: the photo's ground masks (any of them): a column counts only where the pixels just below the
+    building's lowest one are ground, so a base hidden behind a hedge, a garden wall or a car is unseen, not a lot
+    as high as the hedge (basque_street's houses on 2 to 4 m pedestals, 2026-10-15)."""
     cols = np.flatnonzero(mask.any(0))
     if len(cols) < min_cols:
         return None
     rows = mask.shape[0] - 1 - np.argmax(mask[::-1, cols], axis=0)
+    if ground is not None:
+        h = mask.shape[0]
+        seen = []
+        for r, c in zip(rows, cols):
+            r0, r1 = r + below[0], min(h, r + below[1])
+            seen.append(r1 > r0 and ground[r0:r1, c].mean() >= ground_share)
+        seen = np.asarray(seen, bool)
+        rows, cols = rows[seen], cols[seen]
+        if len(cols) < min_cols:
+            return None
     p = points[rows, cols]
     p = p[np.isfinite(p).all(1)]
     if len(p) < min_cols:

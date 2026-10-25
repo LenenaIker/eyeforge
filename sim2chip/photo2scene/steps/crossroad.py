@@ -45,6 +45,18 @@ def photo_keys(arr, i):
     return {key: arr[f'obj{i}_{key}'] for key in PHOTO_KEYS if f'obj{i}_{key}' in arr}
 
 
+def tinted(photo, before, after):
+    """An object's photo texture for a copy of it: the same texture, its gain moved as the copy's vertex colours
+    were (rebrick), so a copied house keeps the photo's facade instead of SAM 3D's flat colours (user, 2026-10-15:
+    "always some surface asset on the filler houses"); without a photo texture, nothing."""
+    if 'texture' not in photo:
+        return {}
+    b, a = np.asarray(before, float).mean(0), np.asarray(after, float).mean(0)
+    tint = np.clip(a / np.maximum(b, 1e-3), 0.3, 3.0)
+    gain = np.asarray(photo.get('gain', [1.0, 1.0, 1.0]), float)
+    return {**photo, 'gain': (gain * tint).astype(np.float32)}
+
+
 def affine(rot=None, move=None):
     """4x4 of x -> rot x + move."""
     m = np.eye(4)
@@ -262,7 +274,8 @@ def main():
         for fp in facades:
             boxes.append({**fp, 'points': (np.asarray(fp['points']) @ rot[:3, :3].T + rot[:3, 3]).tolist()})
         for j, (p, f, c, name, far, photo, usd) in enumerate(block):
-            if any(w in name for w in ('house', 'wall')):
+            c0 = c
+            if standing.is_building(name) or 'wall' in name:
                 c = rebrick(c, brick)
             if far:
                 for corners, tex in impostor(p, f, c, (a, b, up), texdir, f'c{k}_m{j}', args.far_px):
@@ -272,10 +285,10 @@ def main():
             out_arr[f'obj{objects}_faces'] = f
             out_arr[f'obj{objects}_colors'] = np.asarray(c, np.float32)
             out_arr.update(usd_keys(objects, usd, rot))
-            # The corner as the photo shows it keeps the photo's texture; turned copies are rebricked. A tiled
-            # texture (a lot's wall, env_add.wall_tile) fits anywhere.
-            if k == 0 or 'tile' in photo:
-                out_arr.update({f'obj{objects}_{key}': v for key, v in photo.items()})
+            # The corner as the photo shows it keeps the photo's texture; turned copies keep it too, tinted as
+            # they were rebricked. A tiled texture (a lot's wall, env_add.wall_tile) fits anywhere.
+            kept = photo if k == 0 or 'tile' in photo else tinted(photo, c0, c)
+            out_arr.update({f'obj{objects}_{key}': v for key, v in kept.items()})
             objects += 1
 
     if section:

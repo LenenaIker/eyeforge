@@ -29,10 +29,15 @@ from pathlib import Path
 from ..workspace import cache_key, content_key
 from .base import Context, Stage
 
-VIEWS = int(os.environ.get("SIM2CHIP_SCENE_VIEWS", 20))  # new views per scene and job (the variable: to measure doses, D.1)
-BUILD_TRIES = 2      # one scene per job (classifying, per class), from up to this many photos: the next one when a
-                     # photo makes none. The vision model rated 9/10 a photo the teacher called sun cream that showed
-                     # only a figurine (2026-10-11)
+VIEWS = int(os.environ.get("SIM2CHIP_SCENE_VIEWS", 20))  # new views per job (classifying, per class), shared by its
+                     # scenes (the variable: to measure doses, D.1)
+SCENES_PER_JOB = int(os.environ.get("SIM2CHIP_SCENES", 1))  # scenes composed per job (classifying, per class)
+# The things of every training photo shuffled into every scene, not only the scene photo's own (one photo shows one
+# or two bottles; roads 2026-10-14: "cars, not street, are what is missing"). Builds a scene from every training
+# photo to take its things. Support route only. Off until measured (2026-10-16): SIM2CHIP_SCENE_POOL=1.
+POOL = os.environ.get("SIM2CHIP_SCENE_POOL") == "1"
+BUILD_TRIES = 2      # a scene from up to this many photos: the next one when a photo makes none. The vision model rated
+                     # 9/10 a photo the teacher called sun cream that showed only a figurine (2026-10-11)
 PICK_AMONG = 6       # typical photos the vision model rates for the scene; the cleanest is built (roadmap B.3)
 PICK_S = 120         # the rating's deadline: photos without an answer by then keep their place after the rated
 PICK_PROMPT = """We will rebuild the place in this photo in 3D and move the {targets} around in it to make training
@@ -140,20 +145,24 @@ class SceneFromPhoto(Stage):
         targets = [ps[0] for ps in phrases.values() if ps]
         usage = ctx.job.logs / "llm_usage.jsonl"
         built, frames = [], []
+        # (scene id, flow, group): every ready scene of this job; the first SCENES_PER_JOB of a group are composed.
+        # Counting, one group; classifying, a library scene is its class's own.
+        ready = []
+        points = task_of(ctx.spec).points
         for s in given.get("ready", []):
             d = out / s["id"]
             shutil.rmtree(d, ignore_errors=True)
             shutil.copytree(ctx.job.input / s["dir"], d, copy_function=_link)
             ctx.log(f"scene {s['id']} (photo {s['photo_id']}) from the library")
-            frames += self._compose(ctx, p2s.Flow(d, usage, ctx.log), s["id"], phrases)
-        if not given.get("ready"):
-            tried = set(given.get("failed_photos", []))
+            ready.append((s["id"], p2s.Flow(d, usage, ctx.log), 0 if points else ("library", s["id"])))
+        if not ready or points and (POOL or len(ready) < SCENES_PER_JOB):
+            tried = set(given.get("failed_photos", [])) | {s.get("photo_id") for s in given.get("ready", [])}
             picks, votes = [], []
             for cls, group in self._candidates(ctx, tried):
                 # Classifying, a class's photos are rated for that class: asked about every class, the model gave
                 # 10/10 to a sun cream photo (by the teacher) with only a figurine in it (2026-10-11).
                 ranked, things = self._pick(ctx, group, phrases[cls][:1] if cls in phrases else targets)
-                picks.append(ranked[:BUILD_TRIES])
+                picks.append(ranked)
                 votes += things
             if votes and sum(votes) * 2 < len(votes):
                 ctx.log(f"the vision model sees surfaces, not things, in {len(votes) - sum(votes)} of {len(votes)} "
@@ -166,7 +175,8 @@ class SceneFromPhoto(Stage):
                     frames += views
                     built.append({"photo_id": None, "route": "surface", "status": "ready" if views else "failed",
                                   **({} if views else {"why": NO_SURFACE_VIEWS})})
-            for pid, photo in self._tries(picks, built):
+            want = None if POOL else SCENES_PER_JOB - (len(ready) if points else 0)
+            for gi, (pid, photo) in self._tries(picks, built, want):
                 # Built in the cache (by photo and classes): a run that fails later, or is tried again, does not
                 # pay the erase and the meshes twice.
                 work = ctx.cache.root / "scenes" / f"{content_key(photo)}-{cache_key(targets)}"
@@ -197,7 +207,18 @@ class SceneFromPhoto(Stage):
                               "name": f"{where.capitalize()} from photo {pid}", "thumb": f"{d.name}/photo.png",
                               "info": {"plan": summary["plan"]} if route == "support" else
                               {k: summary[k] for k in ("template", "hdri_group")}, "objects": objects})
-                frames += self._compose(ctx, flow, d.name, phrases)
+                ready.append((d.name, flow, gi))
+        pool = p2s.pool_of([f.d for _, f, _ in ready]) if POOL else None
+        taken: dict = {}
+        for sid, flow, group in ready:
+            taken.setdefault(group, [])
+            if len(taken[group]) < SCENES_PER_JOB:
+                taken[group].append((sid, flow))
+        for scenes in taken.values():
+            for k, (sid, flow) in enumerate(scenes):  # the group's views shared by its scenes
+                views = VIEWS // len(scenes) + (k < VIEWS % len(scenes))
+                if views:
+                    frames += self._compose(ctx, flow, sid, phrases, views, pool)
         (out / SCENES).write_text(json.dumps(built, indent=1))
         (out / "frames.json").write_text(json.dumps(frames, indent=1))
         boxes = sum(len(f["boxes"]) for f in frames)
@@ -237,20 +258,26 @@ class SceneFromPhoto(Stage):
         return [{"file": f"surface/{v['file']}", "scene": "surface", "boxes": [], "class": v["class"]} for v in views]
 
     @staticmethod
-    def _tries(picks: list[list[tuple[int, Path]]], built: list[dict]):
-        """The photos to build from, group by group: the next of a group only while its last one made no scene
-        (each try is recorded in built, failed ones too, so the library does not try them again)."""
-        for group in picks:
-            for item in group[:BUILD_TRIES]:
-                n = len(built)
-                yield item
-                if len(built) > n and built[-1]["status"] == "ready":
+    def _tries(picks: list[list[tuple[int, Path]]], built: list[dict], want: int | None = 1):
+        """The photos to build from, group by group, with the group's index: until `want` of a group's photos made
+        a scene (all of them when None), trying at most BUILD_TRIES - 1 more photos than that (each try is recorded
+        in built, failed ones too, so the library does not try them again)."""
+        for gi, group in enumerate(picks):
+            made = 0
+            for item in group[:len(group) if want is None else max(want + BUILD_TRIES - 1, 0)]:
+                if want is not None and made >= want:
                     break
+                n = len(built)
+                yield gi, item
+                if len(built) > n and built[-1]["status"] == "ready":
+                    made += 1
 
-    def _compose(self, ctx: Context, flow, scene: str, phrases) -> list[dict]:
+    def _compose(self, ctx: Context, flow, scene: str, phrases, views: int = VIEWS,
+                 pool: list[dict] | None = None) -> list[dict]:
         """This job's views of one scene, with the boxes of the user's classes only. Classifying, each view shows
         one class (its things of other classes left out), or none in a share of views when there is a background
-        class; a view whose one class is out of sight is left out."""
+        class; a view whose one class is out of sight is left out. pool: things of the job's other photos
+        (photo2scene.pool_of), on the support route."""
         from ..photo2scene import compose, place
         from ..tasks import task_of
         groups, empty = None, 0.0
@@ -261,9 +288,9 @@ class SceneFromPhoto(Stage):
             empty = ctx.spec.generation.empty_ratio if ctx.spec.background_class else 0.0
         out = []
         seed = ctx.spec.generation.seed
-        views = (place.compose(flow, seed, groups, empty) if (flow.d / "extended").is_dir()  # a street or a room
-                 else compose(flow, VIEWS, seed, groups, empty))
-        for v in views:
+        got = (place.compose(flow, seed, groups, empty) if (flow.d / "extended").is_dir()  # a street or a room
+               else compose(flow, views, seed, groups, empty, pool))
+        for v in got:
             boxes = [[cls, *b["box"]] for b in v["boxes"] if b.get("role") == "target"
                      and (cls := self._class_of(b["name"], phrases))]
             frame = {"file": f"{scene}/{v['file']}", "scene": scene, "boxes": boxes}
@@ -319,7 +346,7 @@ class SceneFromPhoto(Stage):
         typical count alone picked photos with cut or stacked bottles (2026-10-11). Also the model's word on each
         rated photo: are the classes things (True) or surfaces? Ratings are kept in the cache by photo and
         classes."""
-        from ..llm import PHOTO_CALL, REASONING_TOKENS, Client, LLMError, ask_json, image_part, map_within
+        from ..llm import LOCAL_VLM, PHOTO_CALL, REASONING_TOKENS, Client, LLMError, ask_json, image_part, map_within
         from PIL import Image, ImageOps
 
         head = candidates[:PICK_AMONG]
@@ -345,7 +372,7 @@ class SceneFromPhoto(Stage):
             msg = [{"role": "user", "content": [{"type": "text", "text": PICK_PROMPT.format(targets=what)},
                                                 image_part(small)]}]
             try:
-                v = ask_json(client, msg, client.model_for("scene"), "scene_pick",
+                v = ask_json(client, msg, LOCAL_VLM, "scene_pick",  # on this GPU, free (Kimi-K2.6 before 2026-10-15)
                              lambda v: isinstance(v.get("score"), (int, float)), tries=1, temperature=0.0,
                              max_tokens=REASONING_TOKENS, **PHOTO_CALL)
             except LLMError:
