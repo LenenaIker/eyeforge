@@ -374,4 +374,39 @@ nbv.py fuse  --place <sitio> --round 1      # N01_scene + auditoría: comparar c
 
 Con 132135947 serían 7 clips, ~4,28 $ en 1 trabajo, que pide `--max-hours 3`.
 
+**Suelo de la extracción exento y lanzamiento (2026-10-20).** La exención de paralaje ya no es solo el suelo plano (z < 5 cm): cubre todo lo que la extracción marca como suelo (`proxy.npz`, máscara panorámica de 512x256 por mayoría de vértices). Las pendientes de los parques inflaban los huecos. Ronda 1 vuelta a planificar (`--mode mixed`):
+
+| Sitio | Hueco antes | Hueco ahora | Clips | Hueco esperado | Decisión |
+|---|---|---|---|---|---|
+| 130625084 | 1,10 % | 1,04 % | 1 | 0,13 % | no lanzar |
+| 131415152 | 1,30 % | 1,26 % | 2 | 0,61 % | no lanzar |
+| 132135947 | 7,00 % | 6,49 % | 2 | 3,67 % | no lanzar: sigue empezando con el soporte de cubos estirado |
+| 132424956 | 6,09 % | 4,96 % | 1 (`--budget 1`) | 2,19 % | **lanzado** |
+| 134318253 | 11,47 % | 10,78 % | 3 (`--budget 3`) | 1,48 % | **lanzado** |
+| 135805749 | 11,18 % | 1,49 % | 1 | 1,15 % | no lanzar: el hueco era la pendiente del parque |
+
+Primeros fotogramas: `data/sphere_test/nbv_N01b_firsts.jpg`. Lanzado el 2026-10-20: 4 clips en 1 trabajo L40S (`aijob-e00aw1d40t8ss1aph0`, estimado ~2,63 $ y 1,46 h, tope 2,5 h).
+
+**Resultado** (trabajo de 09:43 a 11:23, ~1,5 h corriendo): 132424956 pasa del 4,96 % al **1,48 %** (esperado 2,19 %) y 134318253 del 10,78 % al **2,12 %** (esperado 1,48 %). Las caras de detrás del iglú y de los contenedores, antes pintadas por LaMa, salen ahora de GEN3C y son coherentes. Quedan huecos en la parte trasera del iglú vista de cerca (x=-2, y=3) y en la pared de 134318253 vista de lado. Hoja: `data/sphere_test/nbv_N01_before_after.jpg` (previsualización por trazado de rayos, no render de Isaac).
+
 Fuentes añadidas: [ViewCrafter (2409.02048), planificación NBV](https://arxiv.org/html/2409.02048v1); [Taming, detalles de trayectoria](https://arxiv.org/pdf/2503.05082); [NBV como maximización submodular (2007.02084)](https://arxiv.org/pdf/2007.02084); [GEN3C, suplemento](https://research.nvidia.com/labs/toronto-ai/GEN3C/supplment.pdf).
+
+#### La panorámica manda en el punto de captura (2026-10-20, tarde)
+
+**Qué falló.** El usuario abrió `N01_scene/scene.usd` en Isaac y se veía mal incluso desde el punto de captura. Al renderizar en Isaac cada capa por separado:
+- La capa de detrás de LaMa (`farback`), empujada a ~100 m, asomaba con cielo emborronado por los huecos de la capa de la panorámica, alrededor de árboles y casas. Salían bloques de cielo en escalera.
+- La capa de colores por vértice de GEN3C tapaba superficies que la panorámica sí vio, como el cartel de Zelaia, cuando su profundidad no cuadraba (escala de 1,02 a 1,24).
+- La auditoría no veía ninguna de las dos cosas: contaba lo fusionado como visto y no contaba la capa de LaMa a más de 20 m. La hoja de trazado de rayos tampoco reproduce el render de Isaac.
+
+**Cambios.**
+- `tsdf_gen3c.py`: la capa `front` de B_layers se queda tal cual, con la textura de la panorámica. De GEN3C solo quedan las caras que el punto de captura no ve (todas sus esquinas más lejos de lo que midió la panorámica, `BEHIND_TOL`); en la capa `gen3c`. La capa `back` de LaMa se coloca detrás de lo más lejano que mostró GEN3C en esa dirección. Se acabaron `far`, `farback` y el empuje.
+- `nbv.py`: la capa de LaMa es hueco a cualquier distancia, y `fuse` pasa un control obligatorio (`gate`): Isaac renderiza las 8 vistas del centro y su PSNR frente a la foto no puede bajar más de 0,5 dB respecto a B_layers.
+
+**Resultado** (la misma ronda 1, sin gastar más):
+
+| Sitio | PSNR centro B_layers | PSNR centro N01 | Hueco B_layers (regla nueva) | Hueco N01 | Vacío Isaac a 5 m, antes y después |
+|---|---|---|---|---|---|
+| 132424956 | 33,14 | 33,25 | 11,4 % | 8,8 % | 1,9 y 1,5 % |
+| 134318253 | 31,65 | 31,82 | 14,0 % | 12,2 % | 1,5 y 1,1 % |
+
+Las cifras de antes (1,48 % y 2,12 %) estaban mal. Lo que aporta GEN3C de verdad es modesto: rellena parte de lo que había detrás de los obstáculos, con calidad irregular. Hoja de Isaac: `data/sphere_test/nbv_N01_isaac_before_after.jpg`.

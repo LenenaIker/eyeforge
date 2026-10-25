@@ -1,15 +1,15 @@
 """GEN3C's geometry, not only its colour, into the site's scene: every frame of the batch (gen3c_batch.py) with
 MoGe's depth, scaled to our proxy, fused with the panorama's own cuts in one TSDF volume (Open3D). Behind the columns
 GEN3C shows what is there at its own depth, where our back layer (B_layers) guessed one flat distance and stepped.
-The panorama's cuts go in with our own depth and more weight, so what the sphere saw keeps its real
-colour and place. B_layers' scene stays behind
-it as a backstop (BACKSTOP), seen only where the fusion has nothing. Run in the SIM2CHIP_SCENE_PYTHON env
+The panorama's cuts go in with our own depth and more weight, so the fusion lines up with what the sphere saw.
+Only the fused faces the capture point cannot see are kept, in front of B_layers' scene: the panorama wins at the
+capture point. Run in the SIM2CHIP_SCENE_PYTHON env
 (torch, MoGe, Open3D) after gen3c_batch.py fetch:
 
     python experiments/sphere_walk/tsdf_gen3c.py --dir data/sphere_test/<place>
 
-Writes <dir>/walk/TS_scene/ (scene.npz with a vertex-coloured "fused" layer and the far proxy, layers.json,
-info.json) for render_walk.py --scene."""
+Writes <dir>/walk/TS_scene/ (scene.npz with B_layers' front, GEN3C's hidden faces and B_layers' back behind
+them, layers.json, info.json) for render_walk.py --scene."""
 import argparse
 import json
 import os
@@ -22,6 +22,7 @@ import open3d as o3d
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from scipy import ndimage
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1]))
@@ -32,14 +33,16 @@ from fuse_gen3c import MOGE, frames  # noqa: E402
 from moge.model.v2 import MoGeModel  # noqa: E402
 from sim2chip.photo2scene.sphere import capture, render_plan  # noqa: E402
 
-BACKSTOP = 1.08   # our proxy behind the fused mesh, this much further from the capture point
 VOXEL_M = 0.04
 TRUNC_M = 0.2
 MAX_DEPTH_M = 25.0
 REAL_WEIGHT = 4   # the panorama's cuts are integrated this many times
 SCALE = 2         # frames and cuts integrated at half resolution
 HEADINGS = tuple(range(0, 360, 30))
-SEEN_TOL = 0.04   # a fused corner this near (share of the distance) to where the panorama measured it: seen
+BEHIND_TOL = 0.04  # a fused corner further than the panorama measured (share of the distance): hidden from it
+COVER_GRID = (1024, 512)  # GEN3C's hidden faces per panorama direction, for the back layer
+COVER_DILATE = 5
+BACK_MARGIN = 1.05  # the back layer goes this much behind GEN3C's furthest hidden face in its direction
 PITCHES = (0.0, 40.0, 75.0)  # the panorama's cuts: the horizon and down to the feet (GEN3C's frames are level)
 # The fused ground ripples by millimetres at the voxel's size; seen from 2 m higher than the capture point its tilted
 # faces showed their backs as dark arcs (2026-10-19). Corners this near the ground plane go onto it, and the
@@ -153,41 +156,48 @@ def main():
     flat = (V[Fc, 2] == 0).all(1)
     nz = np.cross(V[Fc[:, 1]] - V[Fc[:, 0]], V[Fc[:, 2]] - V[Fc[:, 0]])[:, 2]
     Fc = Fc[~flat | (nz > 0)]
-    # What the sphere saw keeps the panorama's full resolution: a fused face whose corners lie where the panorama
-    # measured them (SEEN_TOL of our distance, from the capture point) takes the texture by UVs, the rest keeps
-    # its vertex colours (GEN3C's paint).
+    # The panorama wins: from the capture point the scene must look like the photo (2026-10-20: GEN3C's blurred
+    # copies of seen walls and B_layers' LaMa back layer, pushed behind, showed through at the capture point). So
+    # B_layers' front proxy stays as it is, with the panorama's texture, and GEN3C keeps only the fused faces the
+    # capture point cannot see: all corners further than the panorama measured along their ray (BEHIND_TOL). Faces
+    # in front of a seen surface, on it, or against the sky are dropped.
     eye = np.array([0.0, 0.0, h], np.float32)
-    lvl = np.stack([V[:, 0], h - V[:, 2], V[:, 1]], -1)  # Isaac's world back to the levelled frame
-    rng = np.linalg.norm(lvl, axis=1)
-    dirs_p = render_plan.pano_rays(lvl / np.maximum(rng[:, None], 1e-6), R)
-    px, py = capture.to_pixel(dirs_p, pdist.shape[1], pdist.shape[0])
-    measured = pdist[np.clip(np.round(py).astype(int), 0, pdist.shape[0] - 1), np.round(px).astype(int) % pdist.shape[1]]
-    vseen = (measured > 0) & (np.abs(rng - measured) < SEEN_TOL * measured)
-    tw, th = Image.open(w / "BL_scene" / "tex_front.png").size
-    tx, ty = capture.to_pixel(dirs_p, tw, th)
-    uv = np.stack([(tx + 0.5) / tw, 1 - (ty + 0.5) / th], -1).astype(np.float32)
-    fseen = vseen[Fc].all(1)
-    from prep import face_uvs
-    seen_f, paint_f = Fc[fseen], Fc[~fseen]
 
-    # Behind it, our whole front proxy pushed BACKSTOP further from the capture point: it shows only where the
-    # fused mesh has nothing (far away, sky edges), never in front of it.
-    # Both of B_layers' layers: the proxy is torn at depth steps and its back layer fills the tears.
+    def to_pano(P, size):
+        lvl = np.stack([P[:, 0], h - P[:, 2], P[:, 1]], -1)  # Isaac's world back to the levelled frame
+        rng = np.linalg.norm(lvl, axis=1)
+        x, y = capture.to_pixel(render_plan.pano_rays(lvl / np.maximum(rng[:, None], 1e-6), R), *size)
+        return rng, np.clip(np.round(y).astype(int), 0, size[1] - 1), np.round(x).astype(int) % size[0]
+
+    rng, py, px = to_pano(V, (pdist.shape[1], pdist.shape[0]))
+    measured = pdist[py, px]
+    behind = (measured > 0) & (rng > measured * (1 + BEHIND_TOL))
+    hidden_f = Fc[behind[Fc].all(1)]
+
+    # B_layers' back layer (LaMa's paint behind the occluders) goes behind what GEN3C showed in the same
+    # direction, so GEN3C wins when the camera moves; where GEN3C showed nothing it fills the tears as before.
     bl = np.load(w / "BL_scene" / "scene.npz")
-    push = lambda p: eye + (p - eye) * BACKSTOP  # noqa: E731
-    np.savez(out / "scene.npz", fused_pts=V, fused_faces=paint_f, fused_col=C,
-             seen_pts=V, seen_faces=seen_f, seen_uv=face_uvs(uv, seen_f),
-             far_pts=push(bl["front_pts"]), far_faces=bl["front_faces"], far_uv=bl["front_uv"],
-             farback_pts=push(bl["back_pts"]), farback_faces=bl["back_faces"], farback_uv=bl["back_uv"])
-    (out / "layers.json").write_text(json.dumps([{"name": "seen", "tex": "../BL_scene/tex_front.png", "winding": "own"},
-                                                 {"name": "fused", "color": "vertex"},
-                                                 {"name": "far", "tex": "../BL_scene/tex_front.png"},
-                                                 {"name": "farback", "tex": "../BL_scene/tex_back.png"}]))
+    used = np.unique(hidden_f)
+    grng, gy, gx = to_pano(V[used], COVER_GRID)
+    gmax = np.zeros(COVER_GRID[::-1], np.float32)
+    np.maximum.at(gmax, (gy, gx), grng)
+    gmax = ndimage.maximum_filter(gmax, size=COVER_DILATE, mode="wrap")
+    back = bl["back_pts"].astype(np.float32)
+    brng, by, bx = to_pano(back, COVER_GRID)
+    want = np.maximum(brng, gmax[by, bx] * BACK_MARGIN)
+    back = eye + (back - eye) * (want / np.maximum(brng, 1e-6))[:, None]
+    np.savez(out / "scene.npz", front_pts=bl["front_pts"], front_faces=bl["front_faces"], front_uv=bl["front_uv"],
+             gen3c_pts=V, gen3c_faces=hidden_f, gen3c_col=C,
+             back_pts=back.astype(np.float32), back_faces=bl["back_faces"], back_uv=bl["back_uv"])
+    (out / "layers.json").write_text(json.dumps([{"name": "front", "tex": "../BL_scene/tex_front.png"},
+                                                 {"name": "gen3c", "color": "vertex"},
+                                                 {"name": "back", "tex": "../BL_scene/tex_back.png"}]))
     # The sky for a look around in Isaac's GUI (render_walk.py --save): the erased panorama, levelled.
     from matrix3d_walk import levelled
     sky = levelled(np.asarray(Image.open(d / "background.jpg").convert("RGB")), R, (2048, 1024))
     Image.fromarray(np.clip(sky + 0.5, 0, 255).astype(np.uint8)).save(out / "sky.png")
-    info = {"images": n + real, "gen3c_frames": n, "fused_faces": int(len(Fc)), "seen_share": round(float(fseen.mean()), 3),
+    info = {"images": n + real, "gen3c_frames": n, "fused_faces": int(len(Fc)), "hidden_faces": int(len(hidden_f)),
+            "back_moved": round(float((want > brng * 1.001).mean()), 3),
             "depth_scale": [round(float(q), 2) for q in np.percentile(scales[real:], [10, 50, 90])],
             "seconds": round(time.time() - t0, 1)}
     (out / "info.json").write_text(json.dumps(info, indent=1))

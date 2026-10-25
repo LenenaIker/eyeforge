@@ -32,6 +32,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -60,20 +61,23 @@ STUDENT_PITCH_DEG = 15.0
 STUDENT_FOV_DEG = 68.0
 STUDENT_SIZE = (128, 96)
 
-# What is a hole, the same rule for every scene kind (B_layers' front/back, tsdf_gen3c's seen/fused/far/farback):
+# What is a hole, the same rule for every scene kind (B_layers' front/back, tsdf_gen3c's front/gen3c/back):
 # a ray that ends on
-# - a layer behind the occluders (BACK_LAYERS: never seen by anyone, LaMa's paint) nearer than NEAR_M;
+# - a layer behind the occluders (BACK_LAYERS: never seen by anyone, LaMa's paint), at any distance (2026-10-20: a
+#   cut at 20 m hid the smeared sky that tsdf_gen3c.py's pushed back layer showed);
 # - the panorama's own surface (PANO_LAYERS) where the panorama never saw it (the texels LaMa painted), or seen
 #   from a direction more than PARALLAX_MAX_DEG away from the capture point's (a 2.5D surface holds near the
-#   direction it was measured from: steps, smears and stretched texels grow with that angle). The flat ground
-#   (GROUND_Z_M) holds from anywhere (2026-10-18: ground good to 4 m);
+#   direction it was measured from: steps, smears and stretched texels grow with that angle). The ground holds
+#   from anywhere (2026-10-18: ground good to 4 m): the flat ground (GROUND_Z_M) and whatever the extraction
+#   marks as ground (proxy.npz's ground, slopes in parks included);
 # - nothing, below the horizon.
-# What GEN3C's frames fused (seen, fused) is known: someone observed it from near there.
+# What GEN3C's frames showed (gen3c: only faces the capture point cannot see) is known: GEN3C observed it from
+# near there.
 BACK_LAYERS = ("farback", "back")
 PANO_LAYERS = ("far", "front")
-NEAR_M = 20.0
 PARALLAX_MAX_DEG = 20.0  # a guess; 5 m sideways is 14 deg at 20 m, 27 deg at 10 m
 GROUND_Z_M = 0.05
+GROUND_GRID = (512, 256)  # the extraction's ground as a panorama mask, at this size
 VOXEL_M = 0.25        # hole spots matched between the student's rays and a clip's rays
 CLUSTER_M = 0.5       # hole voxels this near (from above) are one cluster: what one occluder hides
 
@@ -90,6 +94,9 @@ AREA_M = 8.0          # a clip's camera stays this near the capture point
 CLIPS_PER_ROUND = 4
 MIN_GAIN = 0.001      # a clip must clear this share of the student's pixels
 STOP_HOLE = 0.01      # the site is complete under this share of holes
+GATE_DB = 0.5         # a fused scene's centre views may lose this much PSNR against B_layers'
+ISAAC = "/opt/isaacsim/isaac-sim-5.1.0-20260318-clean/python.sh"
+EDGE_PY = os.path.expanduser("~/miniforge3/envs/edge-sdg/bin/python")  # post.py, metrics.py
 # The perimeter walk: arcs of SEGMENT_M on the movement area's edge (smaller circles where something stands there),
 # the camera looking sideways, in or out.
 PERIMETER_RADII_M = (STUDENT_RADIUS_M, 4.0, 3.0)
@@ -99,6 +106,18 @@ TOP_CLUSTERS = 6
 STANDOFFS_M = (3.0, 5.0, 8.0)
 AZIMUTH_STEP_DEG = 30
 SPAN_M = 3.0
+
+# The cover mode (user, 2026-10-20: the student walks a 10 m circle, walls spared; GEN3C may invent, the views must
+# hold together): straight lines out of the capture point, every LINE_STEP_DEG, as far as STUDENT_RADIUS_M, cut
+# short before CLEARANCE_M of a wall or the first frame over --max-hole, the camera looking to either side, ahead,
+# back or sweeping from one side to the other. Scored by the student's predicted quality: each student view's
+# coverage is exp(-delta / delta0) of its nearest frame (cover_report.py's pose distance and its kernel, fitted
+# per site in walk/cover_fit.json), the panorama's cuts and earlier rounds' frames included.
+LINE_STEP_DEG = 15
+LINE_MIN_M = 1.0      # shorter lines teach too little to pay a clip
+LINE_FACINGS = {"left": -90.0, "right": 90.0, "ahead": 0.0, "back": 180.0}
+COVER_MIN_GAIN = 0.002  # a clip must raise the student's mean coverage this much
+PANO_CUTS = (tuple(range(0, 360, 30)), (-35.0, 0.0, 40.0, 75.0))  # gs_train.py's cuts: what the splat starts from
 
 # GEN3C's cache: renders of the current scene at these frames of the clip's own path, plus the first frame turned
 # by KEY_TURNS_DEG (what lies beside the path). The first key is GEN3C's input image.
@@ -140,6 +159,26 @@ def unpack(code: np.ndarray) -> np.ndarray:
     return np.stack([code >> 42, (code >> 21) & m, code & m], -1) - (1 << 20)
 
 
+def ground_mask(d: Path) -> np.ndarray:
+    """The extraction's ground (proxy.npz) as a GROUND_GRID panorama mask: each cell takes its vertices' majority,
+    empty cells their nearest filled one."""
+    geo = json.loads((d / "geometry.json").read_text())
+    proxy = np.load(d / "proxy.npz")
+    V = proxy["vertices"].astype(np.float64)
+    gw, gh = GROUND_GRID
+    x, y = capture.to_pixel(render_plan.pano_rays(V / np.maximum(np.linalg.norm(V, axis=1, keepdims=True), 1e-9),
+                                                  np.array(geo["levelling"])), gw, gh)
+    cell = np.clip(np.round(y).astype(int), 0, gh - 1) * gw + np.round(x).astype(int) % gw
+    n = np.bincount(cell, minlength=gw * gh)
+    votes = np.bincount(cell, proxy["ground"].astype(float), minlength=gw * gh)
+    empty = (n == 0).reshape(gh, gw)
+    mask = (votes > n / 2).reshape(gh, gw)
+    if empty.any():
+        idx = ndimage.distance_transform_edt(empty, return_distances=False, return_indices=True)
+        mask = mask[idx[0], idx[1]]
+    return mask
+
+
 class Scene:
     """A walk scene (render_walk.py's scene.npz and layers.json) for ray casting: what each ray hits, how far, and,
     for the GEN3C cache, its colour."""
@@ -171,12 +210,13 @@ class Scene:
         self.R, self.h = np.array(geo["levelling"]), geo["camera_height_m"]
         tex = np.asarray(Image.open(d / "walk" / "tex_proxy.png").convert("RGB"))
         self.unseen = (tex[..., 0] > 200) & (tex[..., 1] < 90) & (tex[..., 2] > 200)
+        self.ground = ground_mask(d)
         sky = d / "walk" / "BL_scene" / "tex_front.png"  # the never-seen ground painted
         self.sky = sky if sky.exists() else d / "walk" / "tex_proxy.png"
 
     def guessed(self, pts: np.ndarray, d: np.ndarray) -> np.ndarray:
         """Points on the panorama's surface that are a guess seen along rays d: never seen by the panorama, or
-        off the flat ground and seen more than PARALLAX_MAX_DEG away from the capture point's direction."""
+        off the ground and seen more than PARALLAX_MAX_DEG away from the capture point's direction."""
         lvl = np.stack([pts[:, 0], self.h - pts[:, 2], pts[:, 1]], -1)  # Isaac's world to the levelled frame
         u = lvl / np.maximum(np.linalg.norm(lvl, axis=1, keepdims=True), 1e-6)
         H, W = self.unseen.shape
@@ -184,7 +224,9 @@ class Scene:
         never = self.unseen[np.clip(np.round(py).astype(int), 0, H - 1), np.round(px).astype(int) % W]
         u_world = np.stack([u[:, 0], u[:, 2], -u[:, 1]], -1)
         cos = (u_world * d).sum(1) / np.linalg.norm(d, axis=1)
-        steep = (cos < math.cos(math.radians(PARALLAX_MAX_DEG))) & (pts[:, 2] > GROUND_Z_M)
+        gw, gh = GROUND_GRID
+        ground = self.ground[np.clip((py * gh / H).astype(int), 0, gh - 1), (px * gw / W).astype(int) % gw]
+        steep = (cos < math.cos(math.radians(PARALLAX_MAX_DEG))) & (pts[:, 2] > GROUND_Z_M) & ~ground
         return never | steep
 
     def cast(self, poses: list, size: tuple[int, int], fov: float) -> dict:
@@ -201,7 +243,7 @@ class Scene:
         gid = ans["geometry_ids"].numpy().reshape(n, h, w)
         miss = ~np.isfinite(t)
         pts = o.reshape(n, h, w, 3) + np.where(miss, 0, t)[..., None] * d.reshape(n, h, w, 3)
-        hole = (np.isin(gid, self.back_ids) & (t < NEAR_M)) | (miss & (d[..., 2].reshape(n, h, w) < 0))
+        hole = np.isin(gid, self.back_ids) | (miss & (d[..., 2].reshape(n, h, w) < 0))
         pano = np.isin(gid, self.pano_ids) & ~miss
         if pano.any():
             hole[pano] |= self.guessed(pts[pano], d.reshape(n, h, w, 3)[pano])
@@ -277,10 +319,12 @@ def audit(d: Path, scene: Scene) -> dict:
     """The student's holes: their share of all pixels and, per hole voxel, the share of all pixels that see it."""
     h = json.loads((d / "geometry.json").read_text())["camera_height_m"]
     poses, where = student_poses(d, h)
-    codes, shares = [], []
+    codes, shares, depth = [], [], []
     for k in range(0, len(poses), 64):
         hit = scene.cast(poses[k:k + 64], STUDENT_SIZE, STUDENT_FOV_DEG)
         shares += list(hit["hole"].mean((1, 2)))
+        z = np.where(hit["miss"], np.nan, hit["t"] * hit["cam_z"])
+        depth += list(np.nan_to_num(np.nanmedian(z.reshape(len(z), -1), 1), nan=float(np.nanmax(z))))
         codes.append(scene.hole_voxels(hit))
     codes = np.concatenate(codes)
     total = len(poses) * STUDENT_SIZE[0] * STUDENT_SIZE[1]
@@ -289,6 +333,7 @@ def audit(d: Path, scene: Scene) -> dict:
     for (x, y, _), s in zip(where, shares):
         per_point[(x, y)] = max(per_point.get((x, y), 0.0), float(s))
     return {"views": len(poses), "hole": float(np.mean(shares)), "voxels": vox, "weight": count / total,
+            "poses": np.asarray(poses), "where": where, "depth": np.asarray(depth),
             "worst": [{"x": x, "y": y, "hole": round(s, 4)} for (x, y), s in per_point.items()]}
 
 
@@ -381,7 +426,7 @@ def feasible(c: dict, tree: cKDTree, obs: np.ndarray) -> bool:
 
 def poses_of(c: dict, h: float, frames=None) -> list:
     idx = range(g.FRAMES) if frames is None else frames
-    return [render_plan.camera_pose({"yaw_deg": float(c["yaw"][k]), "pitch_deg": CLIP_PITCH_DEG}, h,
+    return [render_plan.camera_pose({"yaw_deg": float(c["yaw"][k]), "pitch_deg": c.get("pitch", CLIP_PITCH_DEG)}, h,
                                     (*c["xy"][k], 0.0)) for k in idx]
 
 
@@ -428,6 +473,121 @@ def greedy(cands: list[dict], weight: np.ndarray, budget: int) -> list[dict]:
     return picked
 
 
+# --- cover mode ----------------------------------------------------------------------------------------------
+
+
+def cover_fit(d: Path, pooled: bool = False) -> dict:
+    """This site's kernel (cover_report.py), else (or pooled) the median of every site's: measured, never set by
+    hand."""
+    own = d / "walk" / "cover_fit.json"
+    if own.exists() and not pooled:
+        return {**json.loads(own.read_text()), "source": "site"}
+    fits = [json.loads(f.read_text()) for f in d.parent.glob("*/walk/cover_fit.json") if pooled or f != own]
+    if not fits:
+        raise SystemExit("no cover_fit.json on any site: run gs_train.py --cover --hold ... and cover_report.py")
+    return {k: float(np.median([f[k] for f in fits])) for k in ("floor_db", "top_db", "delta0_deg")} | {
+        "source": f"median of {len(fits)} sites"}
+
+
+def coverage(student: dict, P: np.ndarray, delta0: float, chunk: int = 2048) -> np.ndarray:
+    """exp(-delta / delta0) of each student view's nearest camera among P (N, 4, 4 camera-to-world): delta is the
+    axis angle plus the move over the student view's median depth, over cameras within half the view's field."""
+    S = student["poses"]
+    best = np.zeros(len(S))
+    if not len(P):
+        return best
+    ax_s, c_s = S[:, :3, 2], S[:, :3, 3]
+    half = math.radians(STUDENT_FOV_DEG / 2)
+    for k in range(0, len(P), chunk):
+        Q = P[k:k + chunk]
+        ang = np.arccos(np.clip(ax_s @ Q[:, :3, 2].T, -1, 1))
+        move = np.linalg.norm(c_s[:, None] - Q[None, :, :3, 3], axis=-1) / student["depth"][:, None]
+        delta = np.degrees(np.where(ang <= half, ang + move, np.inf))
+        best = np.maximum(best, np.exp(-delta / delta0).max(1))
+    return best
+
+
+def known_cameras(d: Path, k: int, h: float) -> np.ndarray:
+    """What the splat already trains on: the panorama's cuts and every earlier round's fetched frames."""
+    P = [render_plan.camera_pose({"yaw_deg": float(y), "pitch_deg": p}, h) for y in PANO_CUTS[0] for p in PANO_CUTS[1]]
+    for j in range(1, k):
+        f = round_dir(d.name, j) / "paths.json"
+        if f.exists():
+            P += [q for c in json.loads(f.read_text())["paths"] if (f.parent / f"{c['name']}.mp4").exists()
+                  for q in c["poses"]]
+    return np.asarray(P, np.float64)
+
+
+def line_candidates(tree, obs: np.ndarray) -> list[dict]:
+    """Straight out of the capture point every LINE_STEP_DEG, as far as STUDENT_RADIUS_M or CLEARANCE_M before
+    whatever stands (score() may cut it shorter at too much unknown), each facing of LINE_FACINGS plus a sweep from
+    one side through ahead to the other; at the student's pitch (the coverage counts the axis angle)."""
+    out = []
+    probe = np.linspace(0, STUDENT_RADIUS_M, int(STUDENT_RADIUS_M / 0.1) + 1)
+    for az in range(0, 360, LINE_STEP_DEG):
+        u = np.array([math.sin(math.radians(az)), math.cos(math.radians(az))])  # heading az, as heading()
+        clear = probe if tree is None else probe[: int(np.argmax(np.r_[tree.query(probe[:, None] * u)[0]
+                                                                      < CLEARANCE_M, True]))]
+        length = float(clear[-1]) if len(clear) else 0.0
+        if length < LINE_MIN_M:
+            continue
+        for face, turn in [*LINE_FACINGS.items(), ("sweep", None)]:
+            c = clip(f"line_az{az:03d}_{face}", "line", np.zeros((g.FRAMES, 2)), np.zeros(g.FRAMES), slot=None,
+                     azimuth=az, facing=face, length_m=length, pitch=STUDENT_PITCH_DEG)
+            set_line(c, length)
+            out.append(c)
+    return out
+
+
+def set_line(c: dict, length: float):
+    t = smooth(np.linspace(0, 1, g.FRAMES))
+    u = np.array([math.sin(math.radians(c["azimuth"])), math.cos(math.radians(c["azimuth"]))])
+    c["xy"] = t[:, None] * length * u
+    turn = np.linspace(-90.0, 90.0, g.FRAMES) if c["facing"] == "sweep" else LINE_FACINGS[c["facing"]]
+    c["yaw"] = (c["azimuth"] + turn + np.zeros(g.FRAMES)) % 360
+    c["length_m"] = round(length, 2)
+
+
+def score_line(c: dict, scene: Scene, h: float, max_hole: float) -> bool:
+    """Like score(), but a line is cut back to its last frame under max_hole instead of dropped (GEN3C may invent
+    up to there); False if it ends shorter than LINE_MIN_M. No START_MAX_HOLE: a line starts at the capture point,
+    where the panorama is the best view there is (what it never saw, under the photographer, stays unknown)."""
+    frames = list(range(0, g.FRAMES, SCORE_EVERY)) + ([g.FRAMES - 1] if (g.FRAMES - 1) % SCORE_EVERY else [])
+    hit = scene.cast(poses_of(c, h, frames), SCORE_SIZE, g.HFOV)
+    share = hit["hole"].mean((1, 2))
+    c["start_hole"] = float(share[0])
+    bad = np.nonzero(share > max_hole)[0]
+    if len(bad):
+        along = np.linalg.norm(c["xy"][frames[bad[0] - 1]])
+        if along < LINE_MIN_M:
+            return False
+        set_line(c, float(along))
+        share = scene.cast(poses_of(c, h, frames), SCORE_SIZE, g.HFOV)["hole"].mean((1, 2))
+    c["max_hole"] = float(share.max())
+    return True
+
+
+def cover_greedy(cands: list[dict], student: dict, base: np.ndarray, delta0: float, budget: int) -> list[dict]:
+    """Highest rise of the student's mean coverage first, over what the known cameras and earlier picks give
+    (a max over cameras: what is already near a camera gains nothing again)."""
+    for c in cands:
+        c["cov"] = coverage(student, np.asarray(poses_of(c, student["h"])), delta0)
+    cur = base.copy()
+    picked = []
+    while len(picked) < budget:
+        gains = [float(np.maximum(c["cov"], cur).mean() - cur.mean()) if not any(c is q for q in picked) else -1
+                 for c in cands]
+        i = int(np.argmax(gains)) if gains else -1
+        if i < 0 or gains[i] < COVER_MIN_GAIN:
+            break
+        c = cands[i]
+        c["gain"] = gains[i]
+        cur = np.maximum(cur, c["cov"])
+        c["cover_after"] = float(cur.mean())
+        picked.append(c)
+    return picked
+
+
 # --- GEN3C inputs ---------------------------------------------------------------------------------------------
 
 
@@ -446,7 +606,8 @@ def cache_npz(c: dict, scene: Scene, h: float, out: Path) -> dict:
     path = poses_of(c, h)
     keys = [path[k] for k in KEY_FRAMES]
     y0 = float(c["yaw"][0])
-    keys += [render_plan.camera_pose({"yaw_deg": y0 + dt, "pitch_deg": CLIP_PITCH_DEG}, h, (*c["xy"][0], 0.0))
+    pitch = c.get("pitch", CLIP_PITCH_DEG)
+    keys += [render_plan.camera_pose({"yaw_deg": y0 + dt, "pitch_deg": pitch}, h, (*c["xy"][0], 0.0))
              for dt in KEY_TURNS_DEG]
     imgs, deps = [], []
     for pose in keys:
@@ -463,7 +624,7 @@ def cache_npz(c: dict, scene: Scene, h: float, out: Path) -> dict:
              w2cs_all=np.stack([level_w2c(p, h) for p in path]), Ks_all=np.repeat(K[None], len(path), 0))
     Image.fromarray(imgs[0]).save(out / f"{c['name']}_first.jpg", quality=90)
     return {"name": c["name"], "cache": c["name"], "steps": STEPS, "poses": path,
-            "view": {"yaw_deg": y0, "pitch_deg": CLIP_PITCH_DEG, "fov_deg": g.HFOV, "size": [g.W, g.H]}}
+            "view": {"yaw_deg": y0, "pitch_deg": pitch, "fov_deg": g.HFOV, "size": [g.W, g.H]}}
 
 
 # --- steps ---------------------------------------------------------------------------------------------------
@@ -552,6 +713,62 @@ def do_plan(place: str, k: int, scene_name: str | None, mode: str | None, budget
     print(f"expected holes after the round: {100 * plan['expected_hole']:.2f} % (map {out / 'plan.png'})")
 
 
+def do_plan_cover(place: str, k: int, scene_name: str | None, budget: int | None, max_hole: float, pooled: bool):
+    """The cover mode: lines picked by the student's predicted quality until a clip adds under COVER_MIN_GAIN (or
+    budget clips); plan.json lists the predicted quality after each pick, so the user sees what each clip buys."""
+    d = place_dir(place)
+    out = round_dir(place, k)
+    out.mkdir(parents=True, exist_ok=True)
+    if any(out.glob("*.mp4")):
+        raise SystemExit(f"{out} has fetched clips: plan the next round instead")
+    for f in [*out.glob(f"{place}_N{k:02d}_*.npz"), *out.glob(f"{place}_N{k:02d}_*_first.jpg")]:
+        f.unlink()
+    scene_name = scene_name or default_scene(place, k)
+    h = json.loads((d / "geometry.json").read_text())["camera_height_m"]
+    fit = cover_fit(d, pooled)
+    t0 = time.time()
+    scene = Scene(d / "walk" / scene_name)
+    a = audit(d, scene)
+    student = {"poses": a["poses"], "depth": a["depth"], "h": h}
+    base = coverage(student, known_cameras(d, k, h), fit["delta0_deg"])
+    db = lambda cov: fit["floor_db"] + (fit["top_db"] - fit["floor_db"]) * cov  # noqa: E731
+    obs = obstacles(d)
+    tree = cKDTree(obs) if len(obs) else None
+    cands = line_candidates(tree, obs)
+    scored = [c for c in cands if score_line(c, scene, h, max_hole)]
+    print(f"{len(cands)} lines, {len(scored)} start known; kernel {fit} ({time.time() - t0:.0f} s)", flush=True)
+    picked = cover_greedy(scored, student, base, fit["delta0_deg"], budget or 10 ** 6)
+    clips = []
+    for i, c in enumerate(picked):
+        c["name"] = f"{place}_N{k:02d}_{i}_{c['name']}"
+        clips.append(cache_npz(c, scene, h, out))
+        print(f"{c['name']}: {c['length_m']} m, coverage {c['cover_after']:.3f} ({db(c['cover_after']):.2f} dB), "
+              f"start {100 * c['start_hole']:.1f} %, max {100 * c['max_hole']:.1f} %", flush=True)
+    (out / "paths.json").write_text(json.dumps({"place": place, "paths": clips}))
+    cur = base.copy()
+    for c in picked:
+        cur = np.maximum(cur, c["cov"])
+    per_point = {}
+    for (x, y, _), v in zip(a["where"], cur):
+        per_point.setdefault((x, y), []).append(float(v))
+    points = [{"x": x, "y": y, "bad": 1 - float(np.mean(v)), "label": f"{db(np.mean(v)):.0f}"}
+              for (x, y), v in per_point.items()]
+    plan = {"place": place, "round": k, "scene": scene_name, "mode": "cover", "max_hole": max_hole, "kernel": fit,
+            "audit": summary(a), "candidates": len(cands), "scored": len(scored),
+            "predicted_db": {"before": round(float(db(base).mean()), 2), "after": round(float(db(cur).mean()), 2)},
+            "clips": [{"name": c["name"], "facing": c["facing"], "azimuth": c["azimuth"], "length_m": c["length_m"],
+                       "gain": round(c["gain"], 4), "predicted_db_after": round(float(db(c["cover_after"])), 2),
+                       "start_hole": round(c["start_hole"], 4), "max_hole": round(c["max_hole"], 4)} for c in picked],
+            "estimate": {n: estimate(n, max(1, math.ceil(n / 4))) for n in sorted({4, 8, len(picked)}) if n <= len(picked)},
+            "seconds": round(time.time() - t0)}
+    (out / "plan.json").write_text(json.dumps(plan, indent=1))
+    draw(a, [], picked, obs, out / "plan.png", points,
+         f"student points: predicted PSNR after the round, mean of 8 headings (kernel {fit['delta0_deg']:.1f} deg, "
+         f"{fit['floor_db']:.0f}-{fit['top_db']:.0f} dB, {fit['source']}); grey: what stands")
+    print(f"predicted student PSNR {plan['predicted_db']['before']} -> {plan['predicted_db']['after']} dB with "
+          f"{len(picked)} clips (map {out / 'plan.png'})")
+
+
 def estimate(clips: int, jobs: int) -> dict:
     per_job = [len(range(j, clips, jobs)) for j in range(jobs)]
     secs = [JOB_SETUP_S + JOB_LOAD_S + n * CLIP_S for n in per_job if n]
@@ -559,13 +776,13 @@ def estimate(clips: int, jobs: int) -> dict:
             "usd": round(sum(secs) / 3600 * USD_PER_HOUR, 2)}
 
 
-def draw(a: dict, cl: list[dict], picked: list[dict], obs: np.ndarray, path: Path):
+def draw(a: dict, cl: list[dict], picked: list[dict], obs: np.ndarray, path: Path, points=None, legend=None):
     """From above, north up, 1 m grid: what stands (grey), the hole voxels (pink, bigger where more student pixels
     see them), each student point coloured and labelled by its worst heading's hole share (green 0 %, red 30 %
-    and over), and each picked clip's path from its start (dot) with where it looks every 30 frames."""
+    and over; or points: [{x, y, bad 0-1, label}] with legend, the cover mode's), and each picked clip's path from its start (dot) with where it looks every 30 frames."""
     s, r = 40, AREA_M + 4
     size = int(2 * r * s)
-    img = Image.new("RGB", (size, size + 110), (255, 255, 255))
+    img = Image.new("RGB", (size, size + 50 + 14 * max(4, len(picked))), (255, 255, 255))
     dr = ImageDraw.Draw(img)
     px = lambda x, y: (size / 2 + x * s, size / 2 - y * s)  # noqa: E731
     for m in range(-int(r), int(r) + 1):
@@ -588,11 +805,14 @@ def draw(a: dict, cl: list[dict], picked: list[dict], obs: np.ndarray, path: Pat
     for x, y in obs[:: max(1, len(obs) // 20000)]:
         if abs(x) < r and abs(y) < r:
             dr.point(px(x, y), fill=(90, 90, 90))
-    for q in a["worst"]:
+    if points is None:
+        points = [{"x": q["x"], "y": q["y"], "bad": min(1.0, q["hole"] / 0.3), "label": f"{100 * q['hole']:.0f}"}
+                  for q in a["worst"]]
+    for q in points:
         X, Y = px(q["x"], q["y"])
-        v = min(1.0, q["hole"] / 0.3)
+        v = q["bad"]
         dr.ellipse([X - 11, Y - 11, X + 11, Y + 11], fill=(int(40 + 200 * v), int(170 * (1 - v) + 30), 60))
-        dr.text((X - 8, Y - 5), f"{100 * q['hole']:.0f}", fill=(255, 255, 255))
+        dr.text((X - 8, Y - 5), q["label"], fill=(255, 255, 255))
     X0, Y0 = px(0, 0)
     dr.ellipse([X0 - 14, Y0 - 14, X0 + 14, Y0 + 14], outline=(0, 0, 0), width=3)
     cols = [(30, 90, 220), (20, 150, 90), (200, 120, 0), (150, 40, 180), (0, 160, 190), (120, 80, 30)]
@@ -610,8 +830,8 @@ def draw(a: dict, cl: list[dict], picked: list[dict], obs: np.ndarray, path: Pat
     dr.text((10, y0), f"holes {100 * a['hole']:.2f} % of the student's pixels (1 m grid within {STUDENT_RADIUS_M:g} m, "
             f"8 headings); circles: {STUDENT_RADIUS_M:g} m student area, {AREA_M:g} m clip area; north up, 1 m grid",
             fill=(0, 0, 0))
-    dr.text((10, y0 + 16), "student points: worst heading's hole %, green 0 to red 30+; pink: hole spots (size: "
-            "how many student pixels see them); grey: what stands", fill=(0, 0, 0))
+    dr.text((10, y0 + 16), legend or "student points: worst heading's hole %, green 0 to red 30+; pink: hole spots "
+            "(size: how many student pixels see them); grey: what stands", fill=(0, 0, 0))
     for i, c in enumerate(picked):
         dr.text((10, y0 + 36 + 14 * i), f"{i}: {c['name'].split('_N', 1)[-1]}  gain {100 * c['gain']:.2f} %, "
                 f"start hole {100 * c['start_hole']:.1f} %, max {100 * c['max_hole']:.1f} % (dot: start, ticks: "
@@ -682,6 +902,34 @@ def do_fetch(place: str, k: int):
         print(dst)
 
 
+def gate(place: str, scene: str):
+    """The capture point must still look like the photo: Isaac renders the scene's eight centre views (post.py,
+    metrics.py) and their PSNR against the panorama's cuts may not drop more than GATE_DB under B_layers'. The
+    audit cannot see this: a ray cast colours every layer right, Isaac does not (2026-10-20)."""
+    d = place_dir(place)
+    w = d / "walk"
+    arm = f"C_{scene}"
+    views = json.loads((w / "views.json").read_text())["views"]
+    only = ",".join(v["name"] for v in views if v["move"] == "0")
+    subprocess.run([ISAAC, str(HERE / "render_walk.py"), "--dir", str(d), "--scene", str(w / scene),
+                    "--raw", str(w / f"{arm}_raw"), "--only", only], check=True, capture_output=True)
+    subprocess.run([EDGE_PY, str(HERE / "post.py"), "--dir", str(d), "--arm", arm], check=True)
+    shutil.rmtree(w / f"{arm}_raw")
+    (w / f"metrics_{arm}.json").unlink(missing_ok=True)
+    # metrics.py writes its json before the per-distance summary, which has nothing to sum over centre views only
+    subprocess.run([EDGE_PY, str(HERE / "metrics.py"), "--dir", str(d), "--arm", arm], capture_output=True)
+    psnr = lambda a: float(np.mean([r["psnr_centre"] for r in json.loads((w / f"metrics_{a}.json").read_text())  # noqa: E731
+                                    ["views"] if "psnr_centre" in r]))
+    now, base = psnr(arm), psnr("B_layers")
+    info = w / scene / "info.json"
+    info.write_text(json.dumps({**json.loads(info.read_text()), "psnr_centre": round(now, 2),
+                                "psnr_centre_bl": round(base, 2)}, indent=1))
+    print(f"gate: centre PSNR {now:.2f} dB vs B_layers {base:.2f} dB (Isaac, views in {w / arm})")
+    if now < base - GATE_DB:
+        raise SystemExit(f"gate failed: the capture point no longer looks like the photo ({now:.2f} < "
+                         f"{base:.2f} - {GATE_DB} dB)")
+
+
 def do_fuse(place: str, k: int, extra: list[str]):
     """tsdf_gen3c.py over G_gen3c's straight paths (if any), every round up to k and `extra` clips, into
     N<k>_scene, then its audit."""
@@ -697,6 +945,7 @@ def do_fuse(place: str, k: int, extra: list[str]):
     print(" ".join(cmd), flush=True)
     subprocess.run(cmd, check=True)
     s = do_audit(place, f"N{k:02d}_scene")
+    gate(place, f"N{k:02d}_scene")
     plan = json.loads((round_dir(place, k) / "plan.json").read_text())
     print(f"holes: {100 * plan['audit']['hole']:.2f} % before, {100 * plan.get('expected_hole', 0):.2f} % expected, "
           f"{100 * s['hole']:.2f} % now")
@@ -709,10 +958,13 @@ def main():
     ap.add_argument("--round", type=int, default=1)
     ap.add_argument("--scene", help="the scene folder under walk/ (default: the last round's, else TS_scene, "
                     "else BL_scene)")
-    ap.add_argument("--mode", choices=["perimeter", "targeted", "mixed"],
+    ap.add_argument("--mode", choices=["perimeter", "targeted", "mixed", "cover"],
                     help="default: perimeter in round 1, targeted later")
     ap.add_argument("--budget", type=int, help=f"clips in the round (default: one per perimeter sector, "
                     f"{CLIPS_PER_ROUND} for a targeted round)")
+    ap.add_argument("--max-hole", type=float, default=FRAME_MAX_HOLE, help="cover mode: a line stops before its "
+                    "first frame over this share of unknown (what GEN3C must invent)")
+    ap.add_argument("--pooled", action="store_true", help="cover mode: every site's kernel, not this site's own")
     ap.add_argument("--jobs", type=int, default=2)
     ap.add_argument("--max-hours", type=float, default=2.5)
     ap.add_argument("--max-usd", type=float, default=5.0)
@@ -722,6 +974,8 @@ def main():
     a = ap.parse_args()
     if a.step == "audit":
         do_audit(a.place, a.scene or default_scene(a.place, a.round))
+    elif a.step == "plan" and a.mode == "cover":
+        do_plan_cover(a.place, a.round, a.scene, a.budget, a.max_hole, a.pooled)
     elif a.step == "plan":
         do_plan(a.place, a.round, a.scene, a.mode, a.budget)
     elif a.step == "launch":

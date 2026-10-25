@@ -17,10 +17,15 @@ from isaacsim import SimulationApp
 ap = argparse.ArgumentParser()
 ap.add_argument("--dir", required=True)
 ap.add_argument("--scene", help="a folder with scene.npz (<layer>_pts, _faces, _uv) and layers.json "
-                "([{name, tex}]); default arm A's proxy in <dir>/walk")
+                "([{name, tex}], {name, color: vertex} or {name, usdz}: a Gaussian splat as NuRec USDZ); default "
+                "arm A's proxy in <dir>/walk")
 ap.add_argument("--raw", help="output folder (default <dir>/walk/raw)")
+ap.add_argument("--views", help="a views file like <dir>/walk/views.json (default that one), e.g. gs_train.py's "
+                "holdout.json")
 ap.add_argument("--only", default="", help="comma-separated view names (default all)")
 ap.add_argument("--warmup", type=int, default=200)
+ap.add_argument("--set", action="append", default=[], help="a carb setting for the renderer, path=value (bool, int, "
+                "float or string), e.g. /rtx/post/aa/op=0")
 ap.add_argument("--save", help="write the stage to this .usd for a look around in Isaac's GUI (the scene's sky.png as "
                 "a dome, a camera at the capture point) and render no views")
 args = ap.parse_args()
@@ -37,6 +42,7 @@ SENSOR_WIDTH_MM = 20.955
 DOME_INTENSITY = 1140.0  # a white dome of intensity 1 comes back as 0.00088 in HdrColor (2026-10-19): this matches the emissive scene
 
 
+SPLAT = False  # the scene has a NuRec splat
 CHUNK = 50_000  # faces per USD mesh: one mesh of WorldGen's ~2M faces rendered near black (2026-10-18)
 
 
@@ -132,20 +138,33 @@ def main():
     src = os.path.join(args.dir, "walk")
     out = args.raw or os.path.join(src, "raw")
     os.makedirs(out, exist_ok=True)
-    plan = json.load(open(os.path.join(src, "views.json")))
+    plan = json.load(open(args.views or os.path.join(src, "views.json")))
     data = np.load(os.path.join(src, "walk.npz"))
     s = carb.settings.get_settings()
     s.set("/rtx-transient/resourcemanager/texturestreaming/async", False)
     s.set("/omni/replicator/asyncRendering", False)
+    for kv in args.set:
+        k, v = kv.split("=", 1)
+        s.set(k, {"true": True, "false": False}.get(v.lower(), int(v) if v.lstrip("-").isdigit() else
+                                                      float(v) if v.replace(".", "", 1).isdigit() else v))
     omni.usd.get_context().new_stage()
     stage = omni.usd.get_context().get_stage()
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
 
     if args.scene:
-        data = np.load(os.path.join(args.scene, "scene.npz"))
-        layers = [(l["name"], os.path.join(args.scene, l["tex"]) if "tex" in l else None, l.get("winding") == "own")
-                  for l in json.load(open(os.path.join(args.scene, "layers.json")))]
+        if os.path.exists(os.path.join(args.scene, "scene.npz")):
+            data = np.load(os.path.join(args.scene, "scene.npz"))
+        layers = []
+        for l in json.load(open(os.path.join(args.scene, "layers.json"))):
+            if "usdz" in l:  # a splat: NuRec renders its colour only, its depth comes from gs_train.py
+                global SPLAT
+                SPLAT = True
+                stage.DefinePrim(f"/World/{l['name']}").GetReferences().AddReference(
+                    os.path.abspath(os.path.join(args.scene, l["usdz"])))
+                continue
+            layers.append((l["name"], os.path.join(args.scene, l["tex"]) if "tex" in l else None,
+                           l.get("winding") == "own"))
     else:
         layers = [("proxy", os.path.join(src, "tex_proxy.png"), False)]
     for name, tex, own in layers:
@@ -172,6 +191,11 @@ def main():
             dome.CreateIntensityAttr(DOME_INTENSITY)
         v = next(v for v in plan["views"] if v["move"] == "0" and v["heading"] == 0)
         op.Set(Gf.Matrix4d((np.asarray(v["pose"]) @ CV2GL).T.tolist()))
+        if SPLAT:  # NuRec's own viewer settings (3DGRUT's serializer): its colours come out as trained
+            stage.SetMetadataByDictKey("customLayerData", "renderSettings", {
+                "rtx:post:histogram:enabled": False, "rtx:post:tonemap:op": 2,
+                "rtx:post:registeredCompositing:invertToneMap": True,
+                "rtx:post:registeredCompositing:invertColorCorrection": True})
         stage.GetRootLayer().Export(args.save)
         print("saved", args.save, flush=True)
         return
@@ -192,7 +216,10 @@ def main():
         cam.CreateFocalLengthAttr(SENSOR_WIDTH_MM / 2 / math.tan(math.radians(v["fov_deg"]) / 2))
         op.Set(Gf.Matrix4d((np.asarray(v["pose"]) @ CV2GL).T.tolist()))
         rep.orchestrator.step(rt_subframes=8)
-        lin = np.asarray(hdr.get_data())[..., :3].astype(np.float16)
+        lin = np.asarray(hdr.get_data())[..., :3].astype(np.float32)
+        if SPLAT:  # NuRec un-tonemaps its colours (Reinhard) into HdrColor: back to linear light (2026-10-20)
+            lin = lin / (1 + lin)
+        lin = lin.astype(np.float16)
         dep = np.nan_to_num(np.asarray(dist.get_data()), posinf=0.0).astype(np.float16)
         np.save(os.path.join(out, f"lin_{v['name']}.npy"), lin)
         np.save(os.path.join(out, f"depth_{v['name']}.npy"), dep)
