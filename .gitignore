@@ -18,3 +18,8 @@ firmware/*/sdkconfig.*
 !firmware/*/sdkconfig.defaults.*
 firmware/*/test_frame/
 firmware/*/tools/node_modules/
+
+# run logs of experiment scripts
+experiments/**/logs/
+experiments/**/*.log
+experiments/**/*.err
