@@ -35,6 +35,7 @@ MNT = "/mnt/w"
 REGISTRY = os.environ.get("SIM2CHIP_NEBIUS_REGISTRY", "")
 CLI = os.environ.get("SIM2CHIP_NEBIUS_CLI") or str(Path.home() / ".nebius/bin/nebius")
 LOG = ws_test.DATA / "vm_times.jsonl"
+MAX_HOURS = 1.0  # the job's timeout inside the VM (a caller with longer legs raises it)
 ws_test.PREFIX = "worldstereo_vm"
 
 # Same downloads as ws_test.JOB, so its snapshot_download finds everything in the cache.
@@ -187,7 +188,7 @@ def cmd_stop():
 def cmd_run(case: str, resume: str = ""):
     """Start the GPU VM, run ws_test.JOB in the image with the cached weights, fetch, always stop."""
     vm = get("instance", GPU_VM) or sys.exit(f"no {GPU_VM}: run `gpu` first")
-    max_hours = 1.0
+    max_hours = MAX_HOURS
     ws_test.launch(case, "rtx6000", max_hours, dry=True, resume=resume == "resume")  # scene up, job.sh, no job
     from sim2chip.cloud_sync import S3Store
     log_url = S3Store().s3.generate_presigned_url(
