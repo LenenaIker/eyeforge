@@ -135,3 +135,5 @@ A la vista (`conflict/sheet_compare_G2_base_G2_F3c.jpg`): G2 quita casi todas la
 | SSIM / LPIPS held-out | 0,725 / 0,247 | 0,708 / 0,290 |
 | Nitidez en vistas nuevas | 292 | 240 |
 | A la vista | sin astillas; quedan manchas blancas hacia la arboleda | lo más limpio; suelo liso, más suave |
+
+Decisión del usuario (2026-10-25): F3c, "el resultado es mucho mejor". Receta de referencia: tramos dirigidos a todo el área + F3 en 3 rondas.
