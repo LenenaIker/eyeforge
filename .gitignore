@@ -15,4 +15,6 @@ firmware/*/.pio/
 firmware/*/managed_components/
 firmware/*/sdkconfig.*
 !firmware/*/sdkconfig.defaults
+!firmware/*/sdkconfig.defaults.*
+firmware/*/test_frame/
 firmware/*/tools/node_modules/

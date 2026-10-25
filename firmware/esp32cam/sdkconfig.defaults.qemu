@@ -1,0 +1,4 @@
+# Emulator builds (env qemu_*, tools/qemu_test.sh): the console on UART0, which QEMU shows on stdio.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+# QEMU's ESP32-S3 has no octal PSRAM (the XIAO's): quad there, which the test does not care about.
+CONFIG_SPIRAM_MODE_QUAD=y

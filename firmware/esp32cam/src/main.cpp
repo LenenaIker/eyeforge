@@ -1,10 +1,13 @@
-// EyeForge runner for the AI-Thinker ESP32-CAM: reads the model from the "model" partition
+// EyeForge runner for the AI-Thinker ESP32-CAM and the Seeed XIAO ESP32S3 Sense: reads the model from the "model" partition
 // (model.bin from sim2chip's export stage), runs it on each whole camera frame stretched to the
 // model's square input (as the training photos are, sim2chip/stages/ingest.py)
 // and prints one JSON line per frame on the serial port: the label of a classification model,
 // or the count per class of a count model (with where each object is), plus the picture the
-// model saw as a small JPEG. The ROM and bootloader talk at 115200 baud; this program switches
-// to APP_BAUD first thing, so frames and photos fit through the cable.
+// model saw as a small JPEG. On the ESP32-CAM the ROM and bootloader talk at 115200 baud through
+// its USB to serial chip; this program switches to APP_BAUD first thing, so frames and photos fit
+// through the cable. The S3 talks over its own USB (USB Serial/JTAG), where the baud rate means nothing.
+// Built with EYEFORGE_TEST_FRAME (env qemu_*, tools/qemu_test.sh), it runs in Espressif's QEMU: no
+// camera, every frame is the fixed one of test_frame/test_frame.h.
 //
 // Lines it prints (the web app reads them, web/src/flash/board.ts):
 //   {"event":"ready","firmware":"1.2.0","crc":"1a2b3c4d","task":"classify","input":96,"frame":[320,240],...,"labels":[...]}
@@ -30,8 +33,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include "sdkconfig.h"
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
+#else
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
+#endif
 #include "esp_camera.h"
 #include "esp_heap_caps.h"
 #include "esp_partition.h"
@@ -44,6 +53,9 @@
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 #include "camera_pins.h"
+#ifdef EYEFORGE_TEST_FRAME
+#include "test_frame.h"  // TEST_FRAME_W, TEST_FRAME_H, test_frame[]: RGB565, big endian as the camera's
+#endif
 
 #define FIRMWARE_VERSION "1.2.0"  // tools/copy_web.sh copies it into the web's manifest.json
 
@@ -75,6 +87,20 @@ static uint32_t u32(const uint8_t* p) { return p[0] | p[1] << 8 | p[2] << 16 | (
 static uint16_t u16(const uint8_t* p) { return p[0] | p[1] << 8; }
 static unsigned msSince(int64_t t0) { return (unsigned)((esp_timer_get_time() - t0) / 1000); }
 
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+// The chip's own USB through the driver, so commands can be read. With no computer listening, a line
+// that cannot go out is dropped after a short wait (the driver's), so the board runs on its own too.
+static void initSerial() {
+    fflush(stdout);
+    usb_serial_jtag_driver_config_t c = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    c.tx_buffer_size = 4096;
+    c.rx_buffer_size = 1024;
+    if (usb_serial_jtag_driver_install(&c) != ESP_OK) return;
+    usb_serial_jtag_vfs_use_driver();
+}
+static bool readByte(uint8_t* c, TickType_t wait) { return usb_serial_jtag_read_bytes(c, 1, wait) == 1; }
+static void waitSent(int ms) { usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(ms)); }
+#else
 // The console UART through the driver (so commands can be read) at APP_BAUD.
 static void initSerial() {
     fflush(stdout);
@@ -83,6 +109,9 @@ static void initSerial() {
     uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(100));
     uart_set_baudrate(UART_NUM_0, APP_BAUD);
 }
+static bool readByte(uint8_t* c, TickType_t wait) { return uart_read_bytes(UART_NUM_0, c, 1, wait) == 1; }
+static void waitSent(int ms) { uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(ms)); }
+#endif
 
 static Model loadModel() {
     const esp_partition_t* part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x40, "model");
@@ -113,6 +142,27 @@ static Model loadModel() {
 
 // Inference: QVGA RGB565 (320x240, stretched whole to the model's side). A photo: JPEG from the sensor
 // itself at the size asked for, the same field of view.
+#ifdef EYEFORGE_TEST_FRAME
+// The emulator has no camera: every frame is the fixed one, and photos are refused.
+static esp_err_t initCamera(pixformat_t format = PIXFORMAT_RGB565, framesize_t size = FRAMESIZE_QVGA) {
+    return format == PIXFORMAT_RGB565 ? ESP_OK : ESP_ERR_NOT_SUPPORTED;
+}
+static camera_fb_t* grabFrame() {
+    static camera_fb_t fb = {};
+    fb.buf = (uint8_t*)test_frame;
+    fb.len = sizeof test_frame;
+    fb.width = TEST_FRAME_W;
+    fb.height = TEST_FRAME_H;
+    fb.format = PIXFORMAT_RGB565;
+    return &fb;
+}
+static void releaseFrame(camera_fb_t*) {}
+static void stopCamera() {}
+#else
+static camera_fb_t* grabFrame() { return esp_camera_fb_get(); }
+static void releaseFrame(camera_fb_t* fb) { esp_camera_fb_return(fb); }
+static void stopCamera() { esp_camera_deinit(); }
+
 static esp_err_t initCamera(pixformat_t format = PIXFORMAT_RGB565, framesize_t size = FRAMESIZE_QVGA) {
     camera_config_t c = {};
     c.ledc_channel = LEDC_CHANNEL_0;
@@ -131,6 +181,7 @@ static esp_err_t initCamera(pixformat_t format = PIXFORMAT_RGB565, framesize_t s
     c.grab_mode = format == PIXFORMAT_JPEG ? CAMERA_GRAB_WHEN_EMPTY : CAMERA_GRAB_LATEST;
     return esp_camera_init(&c);
 }
+#endif
 
 // Streams bytes as base64 to stdout, in pieces (a photo is too big to encode in one buffer).
 static void writeBase64(const uint8_t* d, size_t n) {
@@ -301,12 +352,12 @@ static int decodePoints(const float* probs, int g, int n, float threshold, Point
 // One photo of the whole frame at a bigger size, as JPEG, then back to inference.
 static void sendPhoto(framesize_t size) {
     const int64_t t0 = esp_timer_get_time();
-    esp_camera_deinit();
+    stopCamera();
     if (initCamera(PIXFORMAT_JPEG, size) == ESP_OK) {
         camera_fb_t* fb = nullptr;
         for (int i = 0; i < 4; i++) {  // the first frames after a restart are dark: let exposure settle
-            if (fb) esp_camera_fb_return(fb);
-            fb = esp_camera_fb_get();
+            if (fb) releaseFrame(fb);
+            fb = grabFrame();
         }
         if (fb) {
             const unsigned captureMs = msSince(t0);
@@ -316,21 +367,21 @@ static void sendPhoto(framesize_t size) {
             writeBase64(fb->buf, fb->len);
             printf("\"}\n");
             fflush(stdout);
-            uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(10000));
+            waitSent(10000);
             printf("{\"event\":\"photo_sent\",\"bytes\":%u,\"send_ms\":%u}\n", (unsigned)fb->len, msSince(t1));
-            esp_camera_fb_return(fb);
+            releaseFrame(fb);
         } else {
             printf("{\"event\":\"error\",\"message\":\"photo capture failed\"}\n");
         }
-        esp_camera_deinit();
+        stopCamera();
     } else {
         printf("{\"event\":\"error\",\"message\":\"camera does not take that photo size\"}\n");
     }
     fflush(stdout);
     if (initCamera() != ESP_OK) halt("camera init failed");
     for (int i = 0; i < 3; i++) {  // dark frames again after the restart: not worth a result
-        camera_fb_t* fb = esp_camera_fb_get();
-        if (fb) esp_camera_fb_return(fb);
+        camera_fb_t* fb = grabFrame();
+        if (fb) releaseFrame(fb);
     }
 }
 
@@ -342,7 +393,7 @@ static const char* readCommand(TickType_t wait) {
     while (true) {
         uint8_t c;
         const TickType_t now = xTaskGetTickCount();
-        if (uart_read_bytes(UART_NUM_0, &c, 1, now < end ? end - now : 0) != 1) return nullptr;
+        if (!readByte(&c, now < end ? end - now : 0)) return nullptr;
         if (c == '\n' || c == '\r') {
             if (!len) continue;
             line[len] = 0;
@@ -418,7 +469,7 @@ extern "C" void app_main() {
     fflush(stdout);
 
     while (true) {
-        camera_fb_t* fb = esp_camera_fb_get();
+        camera_fb_t* fb = grabFrame();
         if (!fb) {
             printf("{\"event\":\"error\",\"message\":\"capture failed\"}\n");
             fflush(stdout);
@@ -426,7 +477,7 @@ extern "C" void app_main() {
             continue;
         }
         toInput(fb, input, model.side, channels, view);
-        esp_camera_fb_return(fb);
+        releaseFrame(fb);
         const int64_t t0 = esp_timer_get_time();
         if (interpreter.Invoke() != kTfLiteOk) halt("inference failed");
         const unsigned ms = msSince(t0);
