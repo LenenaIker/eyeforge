@@ -119,3 +119,19 @@ Caso bueno de medida (photo27 se descarta como ejemplo). Objetivo: todas las cá
 | F3c (G2 + Fixer 3 rondas) | 0,23 % | 0,83 % | 16,8 % | 0,290 |
 
 A la vista (`conflict/sheet_compare_G2_base_G2_F3c.jpg`): G2 quita casi todas las agujas y astillas del asfalto y el muro que tenía G2_base; F3c además limpia las manchas blancas de las hojas y deja el suelo liso, a cambio de verse más suave. Mejor arma visual: F3c; mejor equilibrio por números: G2 (conflicto baja y LPIPS no sube). Hojas de 5 columnas: `conflict/<arma>/sheet_spots.jpg`; rejillas: `conflict/<arma>/sheet_grid.jpg`.
+
+#### G2 frente a F3c (photo21_np)
+
+| | G2 (+9 tramos) | F3c (G2 + Fixer 3 rondas) |
+|---|---|---|
+| Nube | 2 VM RTX PRO 6000, 23,7 min, ~0,67 $ (con una sola VM bastaría, ~0,37 $) | ninguna |
+| Local (3090) | planificar ~1,5 min, profundidad y consistencia ~3 min, entrenar 13,7 min | lo de G2 + 3 rondas de ~16 min (vistas falsas, Fixer, entrenar), 47 min |
+| Fotogramas de entrenamiento | 288 | 528 (240 vistas falsas, solo enseñan los píxeles objetivo) |
+| Gaussianas, tamaño | 4M, PLY 992 MB, USDZ 472 MB | igual |
+| Agujeros, área | 0,69 % | 0,23 % |
+| Sin datos, área | 1,17 % | 0,83 % |
+| Conflicto, área | 13,9 % | 16,8 % (no es solo calidad con vistas falsas) |
+| PSNR held-out visto / inventado | 22,89 / 20,10 dB | 22,64 / 19,96 dB |
+| SSIM / LPIPS held-out | 0,725 / 0,247 | 0,708 / 0,290 |
+| Nitidez en vistas nuevas | 292 | 240 |
+| A la vista | sin astillas; quedan manchas blancas hacia la arboleda | lo más limpio; suelo liso, más suave |
