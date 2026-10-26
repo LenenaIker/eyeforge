@@ -74,10 +74,11 @@ def seed(case: Case) -> tuple[float, float]:
     return (float(c[0]), float(c[1])) if c else (0.0, 0.0)
 
 
-def free_space(obs: np.ndarray, start=(0.0, 0.0), cell: float = 0.25, span: float = 12.0):
-    """Where a camera can stand: cells CLEARANCE_M clear of obstacle points and reachable from start (the nearest
-    clear cell to it) without crossing them (a hedge's far side is not the street). Returns a test function on
-    (x, y)."""
+def free_grid(obs: np.ndarray, start=(0.0, 0.0), cell: float = 0.25,
+              span: float = 12.0) -> tuple[np.ndarray, np.ndarray]:
+    """The occupied cells (an obstacle point inside) and the free ones (CLEARANCE_M clear of them and reachable from
+    start, the nearest clear cell to it, without crossing them: a hedge's far side is not the street). Cell [i, j]
+    covers x in [i cell - span, ...), y in [j cell - span, ...)."""
     n = int(2 * span / cell)
     occ = np.zeros((n, n), bool)
     ij = np.floor((obs + span) / cell).astype(int)
@@ -85,13 +86,19 @@ def free_space(obs: np.ndarray, start=(0.0, 0.0), cell: float = 0.25, span: floa
     occ[ij[:, 0], ij[:, 1]] = True
     r = int(math.ceil(CLEARANCE_M / cell))
     yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
-    occ = ndimage.binary_dilation(occ, structure=(xx ** 2 + yy ** 2) <= r * r)
-    lab, _ = ndimage.label(~occ)
+    near = ndimage.binary_dilation(occ, structure=(xx ** 2 + yy ** 2) <= r * r)
+    lab, _ = ndimage.label(~near)
     s = np.floor((np.asarray(start, float) + span) / cell).astype(int)
     if not lab[s[0], s[1]] and lab.any():
         clear = np.argwhere(lab > 0)
         s = clear[np.argmin(np.hypot(*(clear - s).T))]
-    free = lab == lab[s[0], s[1]] if lab[s[0], s[1]] else np.zeros_like(occ)
+    return occ, (lab == lab[s[0], s[1]] if lab[s[0], s[1]] else np.zeros_like(occ))
+
+
+def free_space(obs: np.ndarray, start=(0.0, 0.0), cell: float = 0.25, span: float = 12.0):
+    """Where a camera can stand (free_grid's free cells), as a test function on (x, y)."""
+    n = int(2 * span / cell)
+    free = free_grid(obs, start, cell, span)[1]
 
     def ok(xy) -> np.ndarray:
         q = np.floor((np.atleast_2d(xy) + span) / cell).astype(int)

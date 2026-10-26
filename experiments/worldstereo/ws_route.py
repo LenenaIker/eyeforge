@@ -7,7 +7,7 @@ Run the driver in the edge-sdg env (boto3 for the cloud steps); it calls each st
     python experiments/worldstereo/ws_route.py init --photo photo21 [--pano-seed 1] [--spots "9,-4;8,-4"]
     python experiments/worldstereo/ws_route.py status --case e2e_photo21
     python experiments/worldstereo/ws_route.py run --case e2e_photo21                    # up to the walks' sheet
-    python experiments/worldstereo/ws_route.py run --case e2e_photo21 --until usdz       # pays two VM runs
+    python experiments/worldstereo/ws_route.py run --case e2e_photo21 --until bundle     # pays two VM runs
 
 Every step can also run alone, in its interpreter: `<python> ws_route.py <step> --case <case> [...]`."""
 import argparse
@@ -24,7 +24,7 @@ def main():
         "init", "status", "run",
         "things", "masks", "split", "publish", "caption", "ingest", "pano", "walks", "result_sheet",
         "cloud", "vm", "depth", "views", "train", "audit", "plan", "stage", "grid", "sheet", "compare",
-        "pseudo", "fix", "fixer_views"])
+        "pseudo", "fix", "fixer_views", "bundle"])
     ap.add_argument("what", nargs="?", help="vm: disk, prep, gpu, stop or status; ingest: the source photo")
     ap.add_argument("--case")
     ap.add_argument("--photo", help="init, erase steps: the photo's name in data/panogen_test/in/")
@@ -118,6 +118,9 @@ def main():
     elif a.cmd == "fixer_views":
         from wsroute import fixer
         fixer.views(cfg.case, a.tag, cfg.fixer_timestep, a.base)
+    elif a.cmd == "bundle":
+        from wsroute import bundle
+        bundle.bundle(cfg.case, a.arm or cfg.final_arm, cfg.radius, cfg.photo)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ Este archivo se carga automáticamente al inicio de cada sesión de Claude Code 
 
 1. **Nunca añadir a Claude como coautor en commits.** Nada de líneas `Co-Authored-By: Claude` ni menciones a Claude/IA en commits ni PRs de este repo.
 2. **No usar em-dash (—) ni otros símbolos típicos de estilo IA** en código, commits, documentación ni respuestas dentro de este proyecto. Usar punto, coma o paréntesis en su lugar.
-3. **Congelación de lo experimental: 2026-10-25 a las 23:59 (hora de España)** (usuario, 2026-10-19). Hasta entonces se puede investigar y probar cosas nuevas (p. ej. photosphere con GEN3C y next-best-view). Desde el 2026-10-26 solo se permite mejorar, estabilizar o refactorizar lo que ya existe: nada de rutas, modelos ni funciones nuevas. Lo experimental que no esté listo ese día sale como opcional y marcado "experimental", y el vídeo no depende de ello. Si una petición choca con esta regla, avisar al usuario antes de empezar.
+3. **Congelación de lo experimental: 2026-10-25 a las 23:59 (hora de España)** (usuario, 2026-10-19). Hasta entonces se puede investigar y probar cosas nuevas (p. ej. photosphere con GEN3C y next-best-view). Desde el 2026-10-26 no se exploran tecnologías nuevas (modelos ni rutas alternativas), pero sí se integra lo ya probado en el producto (usuario, 2026-10-26: la ruta F3c entra en el pipeline sintético). Lo experimental que no esté listo sale como opcional y marcado "experimental", y el vídeo no depende de ello. Si una petición pide explorar algo nuevo, avisar al usuario antes de empezar.
 
 ## Qué es esto
 

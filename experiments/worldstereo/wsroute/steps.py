@@ -97,6 +97,7 @@ def recipe(cfg: RouteConfig) -> list[Step]:
         Step("usdz", "grut", [str(final)], exists(final.with_suffix(".usdz")), script=str(SPHERE_WALK / "gs_usd.py")),
         Step("grid_final", "gsplat", ["grid", *c, "--arm", cfg.final_arm],
              exists(case.conflict(cfg.final_arm) / "grid.json")),
+        Step("bundle", "gsplat", ["bundle", *c], exists(case.dir / "bundle" / "scene.json")),
     ]
     if cfg.spots:
         arms = ["G2_base", "G2", cfg.final_arm]
