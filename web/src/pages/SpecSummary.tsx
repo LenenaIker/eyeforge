@@ -10,16 +10,9 @@ export const DEVICES: Record<string, string> = {
   generic: "Phone or computer (no specific chip yet)",
 };
 const TASKS: Record<string, string> = { count: "Count", roi_classification: "Recognize", classify: "Recognize" };
-const PLACES: Record<string, string> = {
-  facade: "building fronts", balcony: "balconies", indoor: "indoors", road: "roads", ground: "open ground",
-};
 
 export function SpecSummary({ spec }: { spec: Spec }) {
-  const scene = spec.scene ?? {};
-  const places = (scene.contexts ?? []).map((c: any) => `${PLACES[c.kind] ?? c.kind} ${Math.round(c.share * 100)}%`);
-  const where = places.length ? places.join(", ") : scene.template === "road" ? "a road" : "outdoors";
-  const materials = [...(scene.wall_tags ?? []), ...(scene.ground_tags ?? [])];
-  const props = (spec.props ?? []).map((p: any) => p.id.replace(/_/g, " "));
+  const scenes: string[] = spec.generation?.scenes ?? [];
   const ud = spec.user_data ?? {};
   const cam = spec.camera ?? {};
   return (
@@ -34,8 +27,7 @@ export function SpecSummary({ spec }: { spec: Spec }) {
           ))}
         </Row>
         <Row icon={<Map />} label="Scenes">
-          {where}{materials.length > 0 && <span className="text-muted">; {materials.slice(0, 5).join(", ")}</span>}
-          {props.length > 0 && <span className="block text-muted">with {props.join(", ")} around</span>}
+          {scenes.length ? `${scenes.length} from your library` : "none"}
         </Row>
         <Row icon={<Camera />} label="Camera">
           {cam.distance_m ? `${cam.distance_m[0]} to ${cam.distance_m[1]} m away` : "as in your photos"}
@@ -53,9 +45,10 @@ export function SpecSummary({ spec }: { spec: Spec }) {
   );
 }
 
-// Synthetic images are rebuilt from the user's photos whenever frames are asked for; frames 0 trains on the
-// user's photos alone and skips the rendering (spec.synthetic).
-export const usesSynthetic = (spec: Spec) => (spec.generation?.frames ?? 2000) > 0;
+// Synthetic images are made in the walk scenes the spec names, when frames are asked for; frames 0 or no scene
+// trains on the user's photos alone and skips the rendering (spec.synthetic).
+export const usesSynthetic = (spec: Spec) =>
+  (spec.generation?.frames ?? 2000) > 0 && (spec.generation?.scenes ?? []).length > 0;
 export const hasPhotos = (spec: Spec) => {
   const ud = spec.user_data ?? {};
   return Boolean(ud.raw || ud.test || (ud.labeled && Object.keys(ud.labeled).length));

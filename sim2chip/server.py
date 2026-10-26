@@ -81,8 +81,7 @@ def default_interviewer(home: Path, backend: str = "local", public: bool = False
         # Its own client, so its calls (the interview and the photo analysis) are logged apart: the job it
         # creates shows what its interview used (interview_start sets the log).
         client = replace(base)
-        return interview.Session(client, model, cats, scene_check=interview.check_scene,
-                                 photo_ranker=interview.photo_ranker(client, scene),
+        return interview.Session(client, model, cats, photo_ranker=interview.photo_ranker(client, scene),
                                  scene_profiler=interview.scene_profiler(client, scene),
                                  photo_models=backend != "nebius", uploads_only=public, researcher=researcher)
     return session

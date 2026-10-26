@@ -11,7 +11,6 @@
      "assets": {"source": "objaverse_lvis", "categories": ["horse"], "count": 12}}
   ],
   "camera": {"height_m": [1.5, 4], "hfov_deg": 60, "resolution": [320, 240]},
-  "scene": {"template": "road", "weather": ["clear", "cloudy"], "distractors": ["tree"]},
   "generation": {"frames": 1500, "empty_ratio": 0.25, "seed": 0},
   "training": {"seeds": [0], "epochs": 8}
 }

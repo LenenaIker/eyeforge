@@ -10,6 +10,5 @@
      "assets": {"source": "search", "queries": ["security camera", "cctv camera"], "count": 6,
                 "photos": "photos/security_camera", "generate": 4}}
   ],
-  "scene": {"template": "generic", "sky_tags": ["indoor"], "ground_tags": ["concrete"]},
   "qa": {"mode": "auto"}
 }

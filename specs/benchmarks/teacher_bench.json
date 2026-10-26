@@ -40,19 +40,6 @@
       240
     ]
   },
-  "scene": {
-    "template": "road",
-    "weather": [
-      "clear",
-      "cloudy",
-      "evening",
-      "storm"
-    ],
-    "distractors": [
-      "tree",
-      "person"
-    ]
-  },
   "user_data": {
     "raw": "raw",
     "test_per_class": 0,

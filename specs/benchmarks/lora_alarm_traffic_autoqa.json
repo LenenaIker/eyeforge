@@ -107,19 +107,6 @@
       240
     ]
   },
-  "scene": {
-    "template": "road",
-    "weather": [
-      "clear",
-      "cloudy",
-      "evening",
-      "storm"
-    ],
-    "distractors": [
-      "tree",
-      "person"
-    ]
-  },
   "user_data": {
     "labeled": "mio_tcd",
     "class_map": {

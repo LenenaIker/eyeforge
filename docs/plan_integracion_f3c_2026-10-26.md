@@ -139,4 +139,11 @@ Los documentos viejos (`plan_photo2scene.md`, `roadmap_photo2scene.md`, `roadmap
 Pendiente:
 - **Licencia:** `pano.py` usa FLUX.1-Fill-dev, que es no comercial. El código lo marca como "never goes in the product as is".
 - **Nube:** `scene_render` necesita en Nebius el Python de gsplat junto a Isaac. Hoy la imagen de Isaac no lo tiene (2d).
-- **Restos de la plantilla:** `match.py`, `ground_mix.py`, `describe-scene` y los campos `scene.*` del spec. No estaban en la lista 1e.
+- **Aspecto de cámara (`look.py`):** `crops` y `points` lo aplican si el spec trae `look`, pero ya nada lo mide. Propuesta: medirlo solo de las fotos de entrenamiento del usuario, sin comando aparte, y comparar con y sin él en la primera ejecución de punta a punta.
+
+Restos de la plantilla, retirados el 26 por la noche:
+- fuera `ground_mix.py`, `match.py` (con el comando `sim2chip match`), `polyhaven.py` y la sección `scene` del spec (plantilla, contextos, paredes, barandillas, cielos, suelo, tiempo y distractores). Los specs viejos cargan igual: `from_dict` descarta `scene`, y se quitó de `specs/`;
+- la entrevista usa solo el prompt corto. El largo de la plantilla, `check_scene` y los arreglos de Poly Haven salen. Antes, por un fallo, el servidor mandaba el prompt largo aunque la sesión se marcase como corta;
+- `scene_profile` deja de proponer campos de escena. Sigue describiendo cada foto (lo usan las propuestas de escena y la altura e inclinación de la cámara en la entrevista) y resume los sitios en `places`;
+- en la web, el resumen del spec enseña las escenas de la biblioteca, y la opción de sintético exige una escena elegida;
+- `experiments/interview_bench/bench.py` usaba `lean` y `check_scene`: queda como historia y ya no corre tal cual.

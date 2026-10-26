@@ -22,149 +22,10 @@ from typing import Callable
 
 from . import hardware, spec as spec_mod
 
-SYSTEM = """You are the setup assistant of EyeForge (eyeforge.app). EyeForge trains a small vision model
-(it classifies or counts) that runs on the user's own device, sized to it (from a $10 ESP32-CAM to a Jetson or a PC), from the
-user's own photos plus synthetic images rebuilt from them. Microcontroller users get a model ready
-to flash; users without a device just download it.
-Your job: interview the user and write the job spec. The users are not vision experts: they know their
-problem and their place, not datasets or models. Be brief and friendly, in the user's language.
-
-Ask the user only what nobody else can answer: what the camera must detect or count (and what counts as one),
-where their photos are (a folder or an upload), and their device if they did not say. Everything technical
-you decide yourself from their photos and your own knowledge, never by asking: sizes, size measure, scene,
-places and their shares, walls, weather, ground, props, distractors, camera height and distance, 3D model
-sources, test photos (part of their unsorted photos is kept aside for the test automatically).
-When the user gives photos, the system analyses 16 of them with a vision model and sends you a photo analysis
-(what each photo shows, the objects' size, what is around them, the places, light and floor): base the spec on it.
-Do not ask for confirmation along the way. When you know what to detect and have the photo analysis, send the
-spec directly, with one or two plain sentences in the user's language on what you
-saw in their photos and what the synthetic images will show: {{"say": "...", "spec": {{...}}}}. The user sees
-them above a summary and confirms once.
-
-Synthetic images are optional: if the user wants only their own photos, set "generation": {{"frames": 0}}, give
-no "assets" and no "props", and say it plainly; never ask about synthetic images again after they said it.
-Before any question, reread the user's messages: never ask what they already answered, even in other words.
-
-What the spec must settle (decide it; ask only as said above):
-- What the camera must recognize and what counts as "nothing". On a microcontroller 2 to 5 coarse classes
-  work best: suggest merging classes it cannot tell apart at low resolution. Bigger devices allow more
-  and finer classes. Class ids are short English snake_case words whatever language the user speaks
-  ("blue_bin", never "contenedor_azul"). Name a class by what the camera sees, a color or a shape, not by
-  what it means ("blue_bin", not "paper_bin"): what a color stands for changes from place to place and the
-  camera cannot know it. Never a catch-all class ("other_trash", "misc"): the teacher finds only things
-  with a name; name the things instead, or leave them out.
-- The task. "roi_classification" (default) says which class the picture shows, or none. "task": "count"
-  says how many objects of each class are in the picture and where: use it when the user wants to count, or
-  when several objects appear at once (a balcony with pots, a flock), even if they never say "count": to find,
-  spot or tell apart objects that share the picture with others (bins and litter on a street), one label per
-  picture names only one of them, so use count. Never tell objects apart by their size in the picture: the
-  distance changes it; use color, shape or what they are. For counting, photos always go in
-  user_data.raw: the teacher marks every object and the user fixes the marks in review. The teacher (SAM 3)
-  understands only English: give every counted class "names", 1 to 3 short English noun phrases, most common
-  first ("names": ["flower pot", "plant pot"]), whatever language the user speaks. Counting small or far
-  objects needs pixels: on a microcontroller (96 px) only objects that fill a good part of the picture can be
-  counted; say so if the user expects more. Crowds are hard too: past 30 objects per photo (a flock, a crowd)
-  the count is often off by a third to a half; suggest a narrower view if they expect crowds.
-- Which mistake hurts more ("errors"): "find_more" when missing an object is worse than a false alarm
-  (a pest, a defect, an animal they study), "fewer_false" when a false alarm is worse (an alert that wakes
-  someone, a robot that stops), "balanced" otherwise. Decide it from their goal; when the goal does not tell,
-  this is worth one short question.
-- Where the camera is: environment, mounting height, typical distance, lighting and weather.
-- Whether turning or mirroring a photo keeps its answer ("training": {{"orientation": ...}}); training shows
-  the model turned and mirrored copies of every photo, so this must match what the camera will really see.
-  "upright" (default, may be omitted) when the view has an up: sky or horizon, walls, standing people, animals
-  or vehicles, a camera looking forward or at an angle. "any" when up does not exist: a camera looking
-  straight down (ground from a drone or a ceiling, a conveyor belt, a table from above), a microscope, loose
-  objects in any position. "fixed" when left and right also matter: text, digits, signs, arrows, a part that
-  is only correct one way round. Decide it from the goal and the photo analysis, never ask.
-- Target hardware, one of these profiles:
-{hardware}
-  If the user has no device, has not decided, or only wants to test on a phone or PC, use "generic".
-- Whether they have photos and the folder path. "labeled" ONLY when the folder has one subfolder per class
-  (class_map maps each class to its subfolder names). Unsorted photos, even if every photo shows the object,
-  are "raw": the teacher model labels them and also finds the ones without the object (background class).
-  You are told each folder's layout (subfolders and photo counts) as soon as the user names it: never ask the
-  user how their photos are organised. Folder layouts are checked again when you send the spec.
-  Photos are required: the model learns from them and the synthetic images are rebuilt from them, so without
-  photos there is no model; say so if the user has none, and send no spec until they give some. For an honest score,
-  suggest a separate labeled test folder (user_data.test) with photos taken on another day or place.
-- Real-world size of each class: from the photo analysis, or typical sizes you know.
-
-3D models, two sources. Always use "search" first; it reports both:
-1. Curated Objaverse-LVIS categories ("assets": {{"source": "objaverse_lvis", "categories": [...]}}). Prefer
-   them when one really matches the object and has at least ~10 models. Only use names returned by search.
-2. Live search over ~800k Sketchfab models ("assets": {{"source": "search", "queries": ["wild boar", "boar"]}}),
-   for anything the curated list lacks. Give 1 to 3 English queries, most specific first; aim for 15+ models
-   in total, since quality control will discard some (skulls, cartoons, fragments).
-If an object still has too few models, or you would substitute it with something similar or merge it into
-another class, say so plainly and ask the user whether that matters for their goal (for some goals it is
-critical, for others irrelevant); this is one of the few things worth a question. Offer the options: merge classes, use a substitute, rely on their own
-real photos for that class, or build 3D models from their photos ("photos": "user_data", or a folder of
-photos of the object; add "source": "photos" when nothing else is found; "queries" must then hold the
-object's English name, which the detector uses to find it in the photos). Photo-made models work best for
-rigid, compact objects shot whole on a plain background. Never merge or substitute silently.
-Scene: template "road" is a hand-built road with verges (traffic). For anything else use "generic": a ground
-plane textured from Poly Haven by "ground_tags" and sky maps (which also give the background) chosen by
-"sky_tags" plus "weather". Tags must all match, so pick 1 or 2 specific ones: sky categories include
-{sky_tags}; ground categories include {ground_tags}; free tags also work, e.g. sky "forest", "farm", "city", "parking", "warehouse", ground
-"grass", "leaves", "dirt", "gravel", "mud", "asphalt", "tiles". Indoors, put "indoor" in sky_tags (weather is
-then ignored). Tags are checked when you send the spec.
-Weather options: {weather}. Distractors: "tree", "person" (nothing else); keep them only if they appear
-where the camera is, else set "distractors": [].
-ground_tags describe the floor under the objects (asphalt, tiles, grass...), never walls or roofs.
-Places: by default synthetic scenes stand the objects on open ground, seen from camera.height_m. The generic
-template can also build "scene.contexts": building fronts seen from the street ("facade": objects on balcony
-floors, railings, window sills and the pavement), balconies seen from close ("balcony"), rooms ("indoor":
-floor, furniture, window sill) and open ground ("ground"), each with a share of the images, plus "wall_tags"
-(brick, plaster, stone, concrete, wood) and "railings" (bars, solid). Exact format: "contexts": [{{"kind":
-"facade", "share": 0.7, "distance_m": [3, 20], "supports": ["railing", "balcony_floor"]}}, {{"kind": "balcony",
-"share": 0.3}}] (distance_m and supports are optional; supports by kind: {supports}). As soon as you have a folder of the
-user's photos, describe them: {{"describe_scene": {{"folder": "<folder>", "classes": "<what to find, in
-English>"}}}} (done by itself when the user gives photos). You get back what the photos show and the
-proposed fields: use them. Objects on walls or ceilings are not simulated: say so if that is what they need.
-Props: scenes with only the target look empty and the model then learns "anything in the picture is a target".
-Always propose 2 to 5 background props typical of the place ("props": a building site gets traffic cones,
-pallets, barriers, dirt piles; a forest gets rocks, logs, bushes), each with live search queries and a
-real size. They are found live like a class and never labeled. They must not look like any class (no cars as
-props for a vehicle camera). Take them from the things the photo analysis saw around the objects.
-
-Spec format (JSON, defaults shown; omit a field to keep its default):
-{schema}
-Notes: size_m.measure is "length" (long side from above), "width" (short side from above) or "height";
-choose the one that varies least across the class. assets.count is the number of models per class.
-classes lists only the objects to find: the background class ("empty", no object) is added by itself, never
-list it as a class or ask the user about it. When every photo is one of the classes (surfaces, scenes or
-states that cover the whole view, like lawn / border / no grass, or day / night), set "background_class": null
-so no extra class is added: the model must always pick one of the user's classes.
-repaint (0-1) is how often a model is painted a random solid color: set it (e.g. 0.35) only when real
-instances of the class come in many colors (cars), with metallic [0.2, 0.8] for shiny paint; omit both otherwise.
-user_data.labeled / user_data.raw / user_data.test are folder paths (raw may list several, merged); class_map maps each class id to the subfolder names of
-the labeled folder. Keep qa.mode "auto".
-
-How to talk: at most one short question per turn, only the ones allowed above, and skip what the user
-already told you. Two moments need photos, and you ask for them right then with the "photos" action (the
-user gets an upload box in the chat; they may also decline in words):
-- After a search, when a class has few usable models (under ~10), the matches are not really the object,
-  or it is the user's own specific object: ask whether some of their photos show it clearly, to build 3D
-  models from them. Say what makes a good one: the whole object, big in the frame, on a background that
-  does not distract (plain wall or floor), ideally from 2 or 3 angles; 1 to 5 photos are enough.
-  {{"photos": {{"for": "3d", "class": "<class id>", "say": "<your question>"}}}}
-- Early, if the user has not given photos yet: photos from the real camera or place, unsorted, to train and
-  test (they also let you see the place). {{"photos": {{"for": "training", "say": "<your question>"}}}}
-Before asking for 3D photos, check the photos the user already gave (uploaded or a folder path they wrote):
-some may already be good. {{"pick_photos": {{"class": "<class id>", "query": "<English name>", "folder":
-"<that folder>", "say": "<short intro>"}}}} ranks them with a vision model and shows the user the best ones
-to confirm; you are told if none fit, and then you ask for new photos.
-When photos arrive or are chosen you are told their folder: use it in the spec ("3d": that class's
-assets.photos plus an English "queries" name; "training": user_data.raw).
-
-Reply ONLY with one JSON object per turn: {{"say": "..."}}, {{"search": ["..."]}}, {{"photos": {{...}}}},
-{{"pick_photos": {{...}}}}, {{"describe_scene": {{...}}}} or {{"say": "...", "spec": {{...}}}}."""
-
-# The same job without the scene template's parts (3D model search, props, Poly Haven tags, places, weather,
-# photos for 3D models): the template is gone (2026-10-26) and those fields feed nothing. Measured against
-# SYSTEM in experiments/interview_bench (arm L).
-SYSTEM_LEAN = """You are the setup assistant of EyeForge. EyeForge trains a small vision model that classifies
+# The short prompt, without the scene template's parts (3D model search, props, Poly Haven tags, places, weather,
+# photos for 3D models): the template is gone (2026-10-26). Measured against the long one in
+# experiments/interview_bench (arm L, SYSTEM_LEAN then).
+SYSTEM = """You are the setup assistant of EyeForge. EyeForge trains a small vision model that classifies
 or counts, runs on the user's own device and is sized to it, from the user's own photos plus, when they ask,
 synthetic images made in a 3D scene of a place. Your job: talk with the user and write the job spec. Users are not vision experts:
 they know their problem and their place, not datasets or models. Be brief and friendly, in the user's language.
@@ -214,12 +75,12 @@ Example: {example}
 
 Reply ONLY with one JSON object per turn: {{"say": "..."}}, {{"photos": {{...}}}} or {{"say": "...", "spec": {{...}}}}."""
 
-LEAN_EXAMPLE = {"name": "pot_counter", "task": "count", "hardware": "generic", "errors": "balanced",
+EXAMPLE = {"name": "pot_counter", "task": "count", "hardware": "generic", "errors": "balanced",
                 "classes": [{"id": "flower_pot", "description": "flower pots on balconies and window sills",
                              "names": ["flower pot", "plant pot"]}],
                 "camera": {"height_m": [3.0, 9.0]}, "user_data": {"raw": "<folder>"}}
 
-LIBRARY_LEAN = """
+LIBRARY = """
 The user's library: things they already have, kept from earlier models or uploaded. A kit is a named list of
 them. When the user names a kit or a dataset listed below, use it; never ask for photos again for a dataset they
 named. Before proposing a spec that uses a dataset, look at it: {{"dataset": "<id>"}}. You get its labelings (each
@@ -240,41 +101,10 @@ When a class is a surface or an area, not a thing (grass, a road), say that scen
 {items}
 """
 
-EXAMPLE = {"name": "example", "classes": [{"id": "cow", "description": "cows seen from the side or front",
-                                           "size_m": {"measure": "length", "range": [2.0, 2.5]},
-                                           "assets": {"source": "objaverse_lvis", "categories": ["cow"],
-                                                      "count": 20}}],
-           "props": [{"id": "hay_bale", "queries": ["hay bale"], "size_m": {"measure": "length", "range": [1.2, 2.4]},
-                      "count": 4, "max_per_frame": 4}],
-           "qa": {"mode": "auto"}}
-
-
-FALLBACK_TAGS = {"hdris": ["outdoor", "nature", "urban", "indoor", "night", "sunrise-sunset", "overcast",
-                            "partly cloudy", "clear"],
-                 "textures": ["floor", "terrain", "natural", "rock", "concrete", "sand", "road", "asphalt",
-                              "cobblestone", "wood", "brick"]}
-
-
-def scene_tags(kind: str) -> list[str]:
-    """Poly Haven categories, live when the API answers."""
-    from . import polyhaven
-    try:
-        return polyhaven.categories(kind)[:25]
-    except OSError:
-        return FALLBACK_TAGS[kind]
-
-
-def system_prompt(lean: bool = False) -> str:
-    if lean:  # no Jetson: the devices offered now go from an ESP32-CAM to a phone (user, 2026-10-13)
-        profiles = "\n".join(f"  - {h.name}: {h.description}" for h in hardware.PROFILES.values()
-                             if h.name != "jetson_nano")
-        return SYSTEM_LEAN.format(hardware=profiles, example=json.dumps(LEAN_EXAMPLE))
-    schema = json.dumps(spec_mod.to_dict(spec_mod.from_dict(EXAMPLE)), indent=1)
-    profiles = "\n".join(f"  - {h.name}: {h.description}" for h in hardware.PROFILES.values())
-    return SYSTEM.format(hardware=profiles, weather=", ".join(spec_mod.WEATHER),
-                         sky_tags=", ".join(scene_tags("hdris")), ground_tags=", ".join(scene_tags("textures")),
-                         schema=schema, supports="; ".join(f"{k}: {', '.join(v)}"
-                                                           for k, v in spec_mod.CONTEXTS.items()))
+def system_prompt() -> str:
+    # No Jetson: the devices offered now go from an ESP32-CAM to a phone (user, 2026-10-13).
+    profiles = "\n".join(f"  - {h.name}: {h.description}" for h in hardware.PROFILES.values() if h.name != "jetson_nano")
+    return SYSTEM.format(hardware=profiles, example=json.dumps(EXAMPLE))
 
 
 class CategoryIndex:
@@ -312,27 +142,6 @@ class CategoryIndex:
                 if any(v in name or (len(base) >= 4 and base in v) for v in variants):
                     hits[name] = n
         return dict(sorted(hits.items(), key=lambda kv: -kv[1])[:limit])
-
-
-NOT_GROUND = {"wall", "walls", "roof", "roofs", "ceiling", "facade", "window", "windows"}
-
-
-def check_scene(scene) -> str | None:
-    """Do the scene's Poly Haven tags find skies and ground textures? Checked live when a spec is proposed."""
-    from . import polyhaven
-    wrong = [t for t in scene.ground_tags if t.lower() in NOT_GROUND]
-    if wrong:
-        return f"ground_tags {wrong} are not a floor: the ground texture goes under the objects"
-    if scene.template == "road" and not scene.sky_tags:
-        return None
-    try:
-        if not polyhaven.pick_skies(polyhaven.catalog("hdris"), scene.sky_tags, scene.weather, 1, 0):
-            return f"no Poly Haven sky matches sky_tags {scene.sky_tags} with weather {scene.weather}; use fewer tags"
-        if scene.ground_tags and not polyhaven.pick_textures(polyhaven.catalog("textures"), scene.ground_tags, 1, 0):
-            return f"no Poly Haven ground texture matches ground_tags {scene.ground_tags}; use fewer or other tags"
-    except OSError:
-        return None  # offline: the render stage will report it
-    return None
 
 
 PICK_PROMPT = """Could this photo be used to build a 3D model of "{query}"? A good photo shows one {query}
@@ -544,30 +353,6 @@ On this server 3D models cannot be made from the user's photos yet: never set as
 "source": "photos" or pick_photos; find models with "search" (English queries). The user's photos still
 train and test the model (user_data)."""
 
-LIBRARY = """
-The user's library: things they already have, kept from earlier models or uploaded. A kit is a named list of
-them. When the user names a kit (or a dataset or object listed below), use those instead of searching for 3D
-models or asking for new photos; never ask for photos again for a dataset they named.
-Before proposing a spec that uses a dataset, look at it: {{"dataset": "<id>"}}. You get its labelings (each one a
-named list of classes, with their keys and English names, how many photos the user reviewed and the models trained
-with it) and what its photos show (the photo analysis). Then:
-- the dataset's photos go in user_data "raw": "library:<id>" (one dataset per model); photos the user attaches
-  in this chat join it: "raw": ["library:<id>", "<attached folder>"];
-- user_data "labeling": the id of the labeling to use when the user wants what it has, or it with classes added or
-  left out (its classes keep their marks; new ones the teacher labels and the user checks); null for a new
-  labeling. For the classes a labeling has, use its keys as class ids and its English names as "names";
-- put in the spec only the classes the user wants now;
-- 3D models kept for a class are found again by the same search queries: reuse them with "assets": {{"source":
-  "search", "queries": [those queries]}} (models_kept 0 means no usable model: try other queries). A dataset id
-  is never a 3D model;
-- objects as 3D models of a class: "assets": {{"source": "library", "models": ["library:<id>", ...]}} (with
-  source "search" and queries instead if more models should be searched too, keeping "models"); objects that
-  are not one of the classes go into props ({{"id", "queries": [], "models": ["library:<id>"], "size_m"}}).
-Decide for each object whether it is a class or a prop from what the user wants now. Every class or prop with 3D
-models still needs size_m. Use only the ids listed here.
-{items}
-"""
-
 IN_THEIR_LANGUAGE = "(Anything you write to the user goes in the language of their own messages.)"
 
 RELABEL = """[Labelings of dataset {ds}] The dataset already has these labelings ({task}): {old}. The proposed spec
@@ -652,15 +437,12 @@ def _fix_slips(spec: dict, categories: set[str] | None = None) -> None:
     each; in the interview bench of 2026-10-10 most rejected specs were these): the photo orientation put under
     scene; an Objaverse-LVIS category that does not exist or none at all (searched for by name instead, as the
     error told the model to do); a 3D model search without queries (the class's English names, else its id); a
-    model count under 1; distractors that do not exist; a camera pitch that is not a [min, max] range."""
-    from .spec import DISTRACTORS
+    model count under 1; a camera pitch that is not a [min, max] range."""
     sc = spec.get("scene")
     if isinstance(sc, dict) and "orientation" in sc:
         tr = spec.setdefault("training", {})
         if isinstance(tr, dict):
             tr.setdefault("orientation", sc.pop("orientation"))
-    if isinstance(sc, dict) and isinstance(sc.get("distractors"), list):
-        sc["distractors"] = [d for d in sc["distractors"] if d in DISTRACTORS]
     for c in spec.get("classes") or []:
         a = c.get("assets") if isinstance(c, dict) else None
         if not isinstance(a, dict):
@@ -746,10 +528,6 @@ def _walk_scenes_problem(session, s: spec_mod.Spec) -> str | None:
     return f"these scenes are not in the user's library: {unknown}; use only the listed ones" if unknown else None
 
 
-def _scene_problem(session, s: spec_mod.Spec) -> str | None:
-    return session.scene_check(s.scene) if session.scene_check else None
-
-
 def _no_photos_problem(session, s: spec_mod.Spec) -> str | None:
     if spec_mod.no_photos(s):
         return ("the spec has no photos of the user's: EyeForge trains only with them (synthetic images alone do not "
@@ -766,7 +544,7 @@ def _photo_models_problem(session, s: spec_mod.Spec) -> str | None:
 
 # What a proposed spec must pass beyond spec.validate, in order: the first problem goes back to the model.
 SPEC_CHECKS = (_no_photos_problem, _unknown_categories, _foreign_folders, _library_refs, _dataset_as_model,
-               _walk_scenes_problem, _scene_problem, lambda _, s: check_photos(s),
+               _walk_scenes_problem, lambda _, s: check_photos(s),
                lambda _, s: sam3_names_problem(s), lambda _, s: catch_all_problem(s), _photo_models_problem,
                lambda session, s: session.sizes_problem(s))
 
@@ -784,30 +562,25 @@ class Turn:
 class Session:
     """One interview, driven one user message at a time (terminal, web or any other front end)."""
 
-    def __init__(self, client, model: str, categories: CategoryIndex, max_turns: int = 60, scene_check=None,
+    def __init__(self, client, model: str, categories: CategoryIndex, max_turns: int = 60,
                  photo_ranker=None, uploads: Path | None = None, scene_profiler=None, photo_models: bool = True,
-                 uploads_only: bool = False, researcher=None, chat_model: str | None = None,
-                 lean: bool | None = None):
+                 uploads_only: bool = False, researcher=None, chat_model: str | None = None):
         self.client, self.model, self.categories, self.max_turns = client, model, categories, max_turns
         self.chat_model = chat_model if chat_model != model else None  # holds the conversation (SPLIT_NOTE)
         # Off: 3D models made from photos (TRELLIS) fed the old scene template only, and the Nebius backend has
         # no TRELLIS runtime; the template's skies and ground textures are gone with it (2026-10-26).
         self.photo_models = False
-        scene_check = None
         # True on a public server: only photos uploaded in this chat, never a folder of the server's disk.
         self.uploads_only = uploads_only
         self.researcher = researcher  # question -> {"answer", "sources"} (research.searcher), or None
         self.researched = 0
-        self.scene_check = scene_check  # scene -> error message or None (live Poly Haven check)
         self.photo_ranker = photo_ranker  # (folder, query) -> [{"file", "score", "reason"}], best first
         self.uploads = uploads            # where chosen photos are gathered
-        self.scene_profiler = scene_profiler  # (folder, classes) -> (scene fields, summary)
+        self.scene_profiler = scene_profiler  # (folder, classes) -> (photo analysis, summary)
         self.candidates: list[dict] = []  # the last photos proposed to the user
-        # SYSTEM_LEAN, without the scene template's parts: the default while the template is off (benched 2026-10-13:
-        # right specs 14/18 against 12/18, 0.11 rejected specs per interview against 0.94, 12 s against 27 s).
-        self.lean = True if lean is None else lean
-        self.messages = [{"role": "system", "content": system_prompt(lean)
-                          + ("" if photo_models or lean else NO_PHOTO_MODELS) + (UPLOADS_ONLY if uploads_only else "")
+        # The short prompt (benched 2026-10-13 against the template's long one: right specs 14/18 against 12/18,
+        # 0.11 rejected specs per interview against 0.94, 12 s against 27 s).
+        self.messages = [{"role": "system", "content": system_prompt() + (UPLOADS_ONLY if uploads_only else "")
                           + (RESEARCH.format(n=MAX_RESEARCH) if researcher else "")}]
         self.proposed: spec_mod.Spec | None = None
         self.transcript: Path | None = None  # set by the server: logs/interviews/<session>.json
@@ -828,7 +601,7 @@ class Session:
         self.dataset_card = None  # library dataset id -> library.dataset_card (see use_library)
         self.replies = 0  # the user's messages so far
         self.relabel_asked: dict[str, int] = {}  # dataset id -> self.replies when the user was to be asked
-        self.measured: dict | None = None  # the last photo analysis's scene fields (_apply_measured)
+        self.measured: dict | None = None  # the last photo analysis without its suggestions (_apply_measured)
 
     def use_library(self, items: str, ids: set[str], kit: str | None = None, notes=None, open_dataset=None,
                     datasets: set[str] | None = None, dataset_card=None) -> None:
@@ -842,7 +615,7 @@ class Session:
         self.dataset_card = dataset_card
         self.dataset_ids = set(datasets or ())
         self.photo_notes, self.open_dataset = notes, open_dataset
-        self.messages[0]["content"] += (LIBRARY_LEAN if self.lean else LIBRARY).format(items=items)
+        self.messages[0]["content"] += LIBRARY.format(items=items)
         if kit:
             self._note(f"The user starts this model from their kit \"{kit}\": use its datasets and objects.")
 
@@ -1104,31 +877,22 @@ class Session:
                                               str(req.get("classes") or "the objects"))
             except (OSError, ValueError, RuntimeError) as e:
                 self._end(step, "failed", str(e))
-                self._note(f"describe_scene failed ({e}); keep the default open ground scene.")
+                self._note(f"describe_scene failed ({e}); go on without the photo analysis.")
                 return
-            if not fields.get("contexts"):
+            if not fields.get("places"):
                 self._end(step, "failed", "no photo could be described")
-                self._note("describe_scene: no photo could be described; keep the default open ground scene.")
+                self._note("describe_scene: no photo could be described; go on without the photo analysis.")
                 return
             self._end(step)
             self.measured = {k: v for k, v in fields.items() if k != "suggest"}
             sug = fields.pop("suggest", {})
             photos = "\n".join(sug.pop("photos", []))
-            if self.lean:  # the scene fields, sizes and props fed the scene template only
-                self._note(f"[Photo analysis of the user's photos in {folder}] {text}\nWhat each photo shows:\n"
-                           f"{photos}\nCamera height measured (camera.height_m): "
-                           f"{json.dumps(sug.get('camera_height_m'))}"
-                           + (f"; it looks down at {fields['camera']['pitch_deg']} degrees" if fields.get("camera")
-                              else "") + ". Use this in the spec without asking the "
-                           "user about it; tell them in one plain sentence what you saw.")
-                return
-            self._note(f"[Photo analysis of the user's photos in {folder}] {text}\nWhat each photo shows:\n{photos}\n"
-                       f"Scene fields to use (template generic): {json.dumps(fields)}\nAlso measured: "
-                       f"{json.dumps(sug)} (size_m for the class; seen: every kind of thing that stood out, with its share "
-                       "of photos, count and size: a class takes a seen thing's size only when it is that class, and "
-                       "surfaces or areas (grass, road, floor) have no size; camera_height_m for camera.height_m, "
-                       "props: things around the objects, to search as props when they cannot be mistaken for the class). Use all "
-                       "this in the spec without asking the user about it; tell them in one plain sentence what you saw.")
+            self._note(f"[Photo analysis of the user's photos in {folder}] {text}\nWhat each photo shows:\n"
+                       f"{photos}\nCamera height measured (camera.height_m): "
+                       f"{json.dumps(sug.get('camera_height_m'))}"
+                       + (f"; it looks down at {fields['camera']['pitch_deg']} degrees" if fields.get("camera")
+                          else "") + ". Use this in the spec without asking the "
+                       "user about it; tell them in one plain sentence what you saw.")
 
     # The model's actions, in the order they are looked for in its answer, and the method that handles each. A
     # handler returns the Turn that ends the user's wait, or None to ask the model again. Text sent with a spec
@@ -1274,7 +1038,6 @@ class Session:
             self._english_queries(action["spec"])
             _drop_background_class(action["spec"])
             self._reuse_label_names(action["spec"])
-            self._fix_scene(action["spec"])
             self._apply_measured(action["spec"])
             _fix_slips(action["spec"], set(self.categories.counts))
         step = self._step("Checking the proposed setup")
@@ -1426,60 +1189,14 @@ class Session:
 
     def _apply_measured(self, spec: dict) -> None:
         """What the photo analysis measured goes into the spec in code, not through the chat, which left it out
-        (2026-10-11: the camera of top-down table photos and the walls behind street litter): photos looking down
-        at a surface become that surface seen from above, and open ground gets the walls seen right behind the
-        objects."""
-        m = self.measured
-        if not m or not isinstance(spec.get("scene", {}), dict):
-            return
-        sc = spec.setdefault("scene", {})
-        cam = m.get("camera")
-        if cam:
-            c = spec.setdefault("camera", {})
-            if isinstance(c, dict):
-                c["pitch_deg"] = cam["pitch_deg"]
-                if cam.get("height_m"):
-                    c["height_m"] = cam["height_m"]
-            sc["template"] = "generic"
-            sc["contexts"] = [dict(x) for x in m["contexts"]]
-            if m.get("ground_tags"):
-                sc["ground_tags"] = m["ground_tags"]
-            return
-        backdrop = next((x.get("backdrop") for x in m.get("contexts", []) if x["kind"] == "ground"), None)
-        for x in sc.get("contexts") or []:
-            if isinstance(x, dict) and x.get("kind") == "ground" and backdrop and x.get("backdrop") is None:
-                x["backdrop"] = backdrop
-
-    def _fix_scene(self, spec: dict) -> None:
-        """Scene fields the code can settle without another turn: weather left empty or unknown (indoors it is
-        ignored), and Poly Haven tags no sky or texture has together, cut down to those that still find one. Seen
-        in most chats of the library bench (2026-10-10): one rejected spec and one more model turn each."""
-        sc = spec.get("scene")
-        if not isinstance(sc, dict):
-            return
-        weather = [w for w in sc.get("weather") or [] if w in spec_mod.WEATHER]
-        if not weather:
-            sc["weather"] = ["clear"]
-        elif weather != sc.get("weather"):
-            sc["weather"] = weather
-        try:
-            from . import polyhaven
-            ground = [t for t in sc.get("ground_tags") or [] if isinstance(t, str)]
-            if ground and not polyhaven.pick_textures(polyhaven.catalog("textures"), ground, 1, 0):
-                kept = []
-                for t in ground:
-                    if polyhaven.pick_textures(polyhaven.catalog("textures"), kept + [t], 1, 0):
-                        kept.append(t)
-                sc["ground_tags"] = kept
-            sky = [t for t in sc.get("sky_tags") or [] if isinstance(t, str)]
-            if sky and not polyhaven.pick_skies(polyhaven.catalog("hdris"), sky, sc["weather"], 1, 0):
-                kept = []
-                for t in sky:
-                    if polyhaven.pick_skies(polyhaven.catalog("hdris"), kept + [t], sc["weather"], 1, 0):
-                        kept.append(t)
-                sc["sky_tags"] = kept
-        except (OSError, ValueError, TypeError):
-            return  # offline or odd tags: check_scene reports them as before
+        (2026-10-11: the camera of top-down table photos): the pitch and height of photos looking down at a
+        surface."""
+        cam = (self.measured or {}).get("camera")
+        c = spec.setdefault("camera", {}) if cam else None
+        if isinstance(c, dict):
+            c["pitch_deg"] = cam["pitch_deg"]
+            if cam.get("height_m"):
+                c["height_m"] = cam["height_m"]
 
     def _english_queries(self, spec: dict) -> None:
         """Put an English name first in every search query list. The prompt asks for English, but the model
@@ -1595,10 +1312,10 @@ class Session:
 
 
 def run(client, model: str, categories: CategoryIndex, ask: Callable[[str], str], tell: Callable[[str], None],
-        max_turns: int = 60, scene_check=None, photo_ranker=None, uploads: Path | None = None,
+        max_turns: int = 60, photo_ranker=None, uploads: Path | None = None,
         scene_profiler=None) -> spec_mod.Spec | None:
     """Terminal front end: ask() gets the user's answer to a prompt, tell() shows text."""
-    session = Session(client, model, categories, max_turns, scene_check, photo_ranker, uploads, scene_profiler)
+    session = Session(client, model, categories, max_turns, photo_ranker, uploads, scene_profiler)
     turn = session.reply(ask(FIRST_QUESTION + "\n> "))
     while True:
         if turn.kind == "say":
@@ -1633,7 +1350,7 @@ def run(client, model: str, categories: CategoryIndex, ask: Callable[[str], str]
 
 
 def scene_profiler(client, model: str):
-    """(folder, classes) -> (proposed scene fields, summary) with a vision model."""
+    """(folder, classes) -> (photo analysis, summary) with a vision model."""
     from . import scene_profile
 
     def profile(folder: str, classes: str, progress=None, notes=None):

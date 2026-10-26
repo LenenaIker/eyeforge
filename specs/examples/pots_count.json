@@ -99,22 +99,6 @@
       30
     ]
   },
-  "scene": {
-    "template": "generic",
-    "weather": [
-      "clear"
-    ],
-    "distractors": [],
-    "sky_tags": [
-      "outdoor",
-      "clear",
-      "natural light"
-    ],
-    "ground_tags": [
-      "tiles",
-      "concrete"
-    ]
-  },
   "user_data": {
     "labeled": null,
     "raw": "maceta",

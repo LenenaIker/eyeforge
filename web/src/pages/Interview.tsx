@@ -538,7 +538,8 @@ function SpecOptions({ spec, proposal, onEdit, realPhotos }: {
 }) {
   const synthetic = usesSynthetic(spec);
   const photos = hasPhotos(spec);
-  const canSynth = photos;  // synthetic images are rebuilt from the user's photos
+  // Synthetic images need the user's photos and a walk scene from the library (chosen in the chat).
+  const canSynth = photos && (spec.generation?.scenes ?? []).length > 0;
   const proposed = proposal.generation?.frames ?? 2000;
   const setSynthetic = (on: boolean) =>
     onEdit({ ...spec, generation: { ...spec.generation, frames: on ? (proposed > 0 ? proposed : 2000) : 0 } });
@@ -556,7 +557,7 @@ function SpecOptions({ spec, proposal, onEdit, realPhotos }: {
                 disabled={{ photos: !photos, synthetic: !canSynth }} />
         <p className="mt-1.5 text-xs text-muted">
           {!photos ? "Add some of your photos in the chat to train on them alone." :
-           synthetic ? "Synthetic images rebuilt from your photos cover cases they miss, but rendering them on a GPU makes the run longer and more expensive." :
+           synthetic ? "Synthetic images made in your chosen scenes cover cases your photos miss, but rendering them on a GPU makes the run longer and more expensive." :
            "Faster and cheaper: no rendering. It needs photos of every case the camera will see."}
         </p>
         {synthetic && (

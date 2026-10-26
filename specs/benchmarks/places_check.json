@@ -99,52 +99,6 @@
       30
     ]
   },
-  "scene": {
-    "template": "generic",
-    "weather": [
-      "clear"
-    ],
-    "distractors": [],
-    "sky_tags": [
-      "outdoor",
-      "clear",
-      "natural light"
-    ],
-    "ground_tags": [
-      "tiles",
-      "concrete"
-    ],
-    "contexts": [
-      {
-        "kind": "facade",
-        "share": 0.45,
-        "distance_m": [
-          6,
-          25
-        ]
-      },
-      {
-        "kind": "balcony",
-        "share": 0.25
-      },
-      {
-        "kind": "indoor",
-        "share": 0.15
-      },
-      {
-        "kind": "ground",
-        "share": 0.15
-      }
-    ],
-    "wall_tags": [
-      "brick",
-      "plaster"
-    ],
-    "railings": [
-      "bars",
-      "solid"
-    ]
-  },
   "user_data": {
     "labeled": null,
     "raw": "maceta",

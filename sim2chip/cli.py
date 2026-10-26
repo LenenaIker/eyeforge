@@ -6,7 +6,6 @@
     sim2chip stages specs/examples/lora_alarm_traffic.json
     sim2chip interview
     sim2chip describe-scene data/real/maceta --classes "flower pots"
-    sim2chip match specs/examples/pots_count.json --job maceta_counter_11
     sim2chip serve --backend nebius
 """
 from __future__ import annotations
@@ -93,7 +92,7 @@ def cmd_interview(args) -> int:
     cats = interview.CategoryIndex(cache_dir=objaverse_dir, live=interview.live_searcher(objaverse_dir))
     import uuid
     ranker = interview.photo_ranker(client, client.model_for("scene"))
-    spec = interview.run(client, model, cats, ask=input, tell=print, scene_check=interview.check_scene,
+    spec = interview.run(client, model, cats, ask=input, tell=print,
                          photo_ranker=ranker, uploads=home / "uploads" / f"cli-{uuid.uuid4().hex[:8]}",
                          scene_profiler=interview.scene_profiler(client, client.model_for("scene")))
     if spec is None:
@@ -114,22 +113,6 @@ def cmd_describe_scene(args) -> int:
     prof, text = scene_profile.profile_folder(Path(args.folder), args.classes, client, client.model_for("scene"))
     print(text)
     print(json.dumps(prof, indent=2))
-    return 0
-
-
-def cmd_match(args) -> int:
-    from . import match
-    from .llm import Client
-
-    pipe = _pipeline(args, create=False)
-    if not pipe.job.root.exists():
-        raise SystemExit(f"no job at {pipe.job.root}: run the pipeline up to the render first")
-    # The vision model reasons before answering: a comparison takes minutes, not seconds.
-    client = Client(usage_log=pipe.job.logs / "llm_usage.jsonl", timeout=match.LLM_TIMEOUT)
-    backend = backends.get("local", verbose=args.verbose)
-    match.run(pipe.spec, pipe.job, pipe.cache, backend, client, rounds=args.rounds, frames=args.frames,
-              locked=tuple(args.lock))
-    print(f"proposed spec: {pipe.job.root / 'match' / 'spec.json'}")
     return 0
 
 
@@ -254,20 +237,10 @@ def main(argv: list[str] | None = None) -> int:
     iv.add_argument("--overwrite", action="store_true")
     iv.set_defaults(func=cmd_interview)
 
-    ds = sub.add_parser("describe-scene", help="propose scene.contexts, wall_tags and railings from photos")
+    ds = sub.add_parser("describe-scene", help="what a vision model sees in a sample of the photos (the photo analysis)")
     ds.add_argument("folder")
     ds.add_argument("--classes", required=True, help="what the camera looks for, e.g. \"flower pots\"")
     ds.set_defaults(func=cmd_describe_scene)
-
-    mt = sub.add_parser("match", help="bring the synthetic scenes closer to the user's photos (trial renders)")
-    mt.add_argument("spec")
-    mt.add_argument("--job", help="job with the assets ready (default: the spec name)")
-    mt.add_argument("--rounds", type=int, default=3)
-    mt.add_argument("--frames", type=int, default=48, help="frames per trial render")
-    mt.add_argument("--lock", action="append", default=[], metavar="LEVER",
-                    help="a lever the user gave as a fact, never changed (e.g. camera.height_m)")
-    mt.add_argument("-v", "--verbose", action="store_true")
-    mt.set_defaults(func=cmd_match)
 
     sv = sub.add_parser("serve", help="web UI and API: interview, photos, run, progress, download")
     sv.add_argument("--backend", default="local", choices=["local", "nebius"])

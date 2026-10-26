@@ -17,12 +17,6 @@
     "target_fill": [0.03, 0.12],
     "distance_m": [0.1, 2.0]
   },
-  "scene": {
-    "template": "generic",
-    "weather": ["cloudy", "clear"],
-    "distractors": [],
-    "ground_tags": ["grass"]
-  },
   "user_data": {"raw": "grass"},
   "qa": {"mode": "auto"},
   "generation": {"frames": 2000, "empty_ratio": 0.2, "seed": 0, "max_targets": 8}

@@ -1,9 +1,9 @@
-"""Scene profile: what the user's photos show, turned into the synthetic scene settings.
+"""Scene profile: what the user's photos show (the photo analysis).
 
 A vision model (Token Factory) describes a sample of the photos one by one: which kind of place (building
-front from the street, balcony, room, open ground), how far the camera is, where the objects stand, the wall
-material and the railing style. The answers are counted into spec fields (scene.contexts with their shares,
-wall_tags, railings) that the user confirms or corrects in the interview, before anything is rendered.
+front from the street, balcony, room, open ground), the objects and their size, the light and where the camera
+stands. The answers are counted into what the interview tells the chat model (camera height and pitch, sizes)
+and the dataset's profile; the walk scene proposals read the descriptions themselves (scene_pick.py).
 
     sim2chip describe-scene data/real/maceta --classes "flower pots"
 """
@@ -16,19 +16,13 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
-from .spec import CONTEXTS, RAILINGS, WALLS
-
 SAMPLE = 16         # photos looked at, drawn at random
 DEADLINE_S = 90     # the user waits: describe what answered by then and go on with it
-MIN_SHARE = 0.1     # contexts seen in fewer photos than this are left out
+MIN_SHARE = 0.1     # places seen in fewer photos than this are left out
 
-# What each context of spec.CONTEXTS looks like in a photo (a new context needs its words here).
-CONTEXT_WORDS = {"facade": "a building front seen from the street", "balcony": "on a balcony or terrace, seen from close",
+# The kinds of place a photo is taken in ("context" of a description) and how each looks.
+PLACES = {"facade": "a building front seen from the street", "balcony": "on a balcony or terrace, seen from close",
                  "indoor": "inside a room", "ground": "outdoors on open ground: street, garden, yard, field"}
-
-
-def _quoted(items) -> str:
-    return ", ".join(f'"{i}"' for i in items)
 
 
 PROMPT = """This photo comes from a user who wants a small camera model for: {classes}.
@@ -44,19 +38,14 @@ Answer only with JSON:
  "height_m": <their typical height in meters; null for surfaces or areas>,
  "camera_height_m": <height of the camera above the floor it stands on, meters>,
  "camera_pitch_deg": <how far down the camera looks, degrees: 0 straight ahead, 90 straight down at the surface>,
- "wall_behind": <true when a wall, fence or building stands right behind the objects, within about 2 m>,
  "others": [up to 6 other movable things standing near them on the same surfaces, English nouns: "chair",
   "watering can", "bicycle"; not parts of the building (shutters, awnings, lamps, windows) and not vehicles],
  "objects": [every kind of object that stands out in the photo, those above included, up to 8:
   {{"name": "<English noun, singular>", "count": <how many>, "size_m": <typical longest side, meters>}}],
  "background": "<what is under and behind the objects, a few English words: dark wooden table, white wall>",
- "floor": "<what those objects stand on, one or two English words: tiles, concrete, grass, wood, asphalt>",
  "light": "sun" | "overcast" | "evening" | "night" | "indoor",
- "context": """ + " | ".join(f'"{k}" ({CONTEXT_WORDS[k]})' for k in CONTEXTS) + """,
- "distance_m": <typical camera distance to the objects, meters>,
- "supports": [where the objects stand, from """ + _quoted(dict.fromkeys(s for v in CONTEXTS.values() for s in v)) + """],
- "wall": """ + " | ".join(f'"{w}"' for w in (*WALLS, "none")) + """ (the main wall material in view),
- "railing": """ + " | ".join(f'"{r}"' for r in (*RAILINGS, "none")) + """}}"""
+ "context": """ + " | ".join(f'"{k}" ({w})' for k, w in PLACES.items()) + """,
+ "distance_m": <typical camera distance to the objects, meters>}}"""
 
 LIGHT_WEATHER = {"sun": "clear", "overcast": "cloudy", "evening": "evening", "night": "night"}
 MIN_OTHER = 0.15  # things seen near the objects in fewer photos than this are not proposed as props
@@ -90,7 +79,7 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
             im.save(small, quality=88)
         msg = [{"role": "user", "content": [{"type": "text", "text": PROMPT.format(classes=classes)},
                                             image_part(small)]}]
-        v = ask_json(client, msg, model, "scene_profile", lambda v: v.get("context") in CONTEXTS,
+        v = ask_json(client, msg, model, "scene_profile", lambda v: v.get("context") in PLACES,
                      tries=1, temperature=0.0, max_tokens=REASONING_TOKENS, **PHOTO_CALL)
         return {**v, "photo": f.name} if v else None
 
@@ -102,53 +91,18 @@ def describe(photos: list[Path], classes: str, client, model: str, seed: int = 0
 
 
 def aggregate(descriptions: list[dict], general: bool = False) -> dict:
-    """Scene fields from the descriptions: contexts with their share of photos (rare ones dropped), camera
-    distances per context, supports seen, the wall materials and railing styles seen. general: descriptions made
-    before anyone chose the classes (GENERAL), whose count and size are of whatever stood out."""
+    """What the descriptions say together: the places with their share of photos (rare ones dropped), the camera
+    of photos looking down, the objects and the light. general: descriptions made before anyone chose the classes
+    (GENERAL), whose count and size are of whatever stood out."""
     n = len(descriptions)
     if not n:
         return {}
     kinds = Counter(d["context"] for d in descriptions)
-    contexts = []
-    for kind, k in kinds.most_common():
-        if k / n < MIN_SHARE:
-            continue
-        mine = [d for d in descriptions if d["context"] == kind]
-        dist = sorted(float(d["distance_m"]) for d in mine if _number(d.get("distance_m")))
-        sup = Counter(s for d in mine for s in d.get("supports") or [] if s in CONTEXTS[kind])
-        c = {"kind": kind, "share": round(k / n, 2)}
-        if dist:
-            c["distance_m"] = [round(max(0.5, dist[0] * 0.7), 1), round(max(1.0, dist[-1] * 1.3), 1)]
-        if sup:
-            c["supports"] = [s for s, _ in sup.most_common()]
-        contexts.append(c)
+    out = {"places": [{"kind": kind, "share": round(k / n, 2)} for kind, k in kinds.most_common() if k / n >= MIN_SHARE]}
     camera = _camera(descriptions)
-    if camera.get("top_down"):
-        # Photos that look down at a surface (a table, a lawn, a conveyor) are that surface seen from above,
-        # whatever room or street it is in: open ground with the surface's own texture, the camera looking down
-        # from the measured distance (water_container_counter, 2026-10-11: rendered as side views of a room).
-        dist = [float(d["distance_m"]) for d in descriptions if _number(d.get("distance_m"))]
-        contexts = [{"kind": "ground", "share": 1.0, "supports": ["ground"],
-                     **({"distance_m": _spread(dist, 0.2, camera["steady"])} if dist else {})}]
-    else:
-        behind = [d for d in descriptions if d["context"] == "ground"]
-        for c in contexts:
-            if c["kind"] == "ground" and behind:
-                share = sum(d.get("wall_behind") is True for d in behind) / len(behind)
-                if share >= MIN_SHARE:
-                    c["backdrop"] = round(share, 2)
-    walls = [w for w, _ in Counter(d.get("wall") for d in descriptions).most_common() if w in WALLS][:3]
-    rails = Counter({"glass": "bars"}.get(d.get("railing"), d.get("railing")) for d in descriptions)
-    out = {"contexts": contexts}
     if camera.get("pitch_deg"):
         out["camera"] = {k: v for k, v in camera.items() if k not in ("top_down", "steady")}
-    out |= _objects_and_light(descriptions, general)
-    if walls:
-        out["wall_tags"] = walls
-    railings = [r for r, _ in rails.most_common() if r in RAILINGS]
-    if railings:
-        out["railings"] = railings
-    return out
+    return out | _objects_and_light(descriptions, general)
 
 
 TOP_DOWN_DEG = 45  # photos looking down more steeply than this, most of them: a surface seen from above
@@ -206,7 +160,7 @@ def _camera(descriptions: list[dict]) -> dict:
 
 
 def _objects_and_light(descriptions: list[dict], general: bool = False) -> dict:
-    """Scene fields for the floor and the weather, and under "suggest" what belongs elsewhere in the spec:
+    """The light seen ("weather"), and under "suggest" what belongs elsewhere in the spec:
     the objects' size (the class), the camera height, props, objects per photo and the photo descriptions.
     general: no size or count for the class, only per thing seen (a lawn's most numerous thing is its leaves:
     35 per photo of 0.08-0.75 m were proposed for the class grass, 2026-10-11)."""
@@ -219,9 +173,6 @@ def _objects_and_light(descriptions: list[dict], general: bool = False) -> dict:
         a, b = v[int(0.1 * (len(v) - 1))], v[int(round(0.9 * (len(v) - 1)))]
         return [round(a * lo, 2), round(b * hi, 2)]
 
-    floors = Counter(str(d.get("floor", "")).strip().lower() for d in descriptions if d.get("floor"))
-    if ground := [f for f, k in floors.most_common(2) if k / n >= MIN_OTHER]:
-        out["ground_tags"] = ground
     light = Counter(d.get("light") for d in descriptions)
     if weather := [LIGHT_WEATHER[w] for w, k in light.most_common() if w in LIGHT_WEATHER and k / n >= MIN_SHARE]:
         out["weather"] = weather
@@ -258,18 +209,10 @@ def summary(profile: dict, n_photos: int) -> str:
     """One paragraph a user can check."""
     names = {"facade": "building fronts from the street", "balcony": "balconies seen from close",
              "indoor": "rooms", "ground": "open ground"}
-    parts = [f"{round(c['share'] * 100)}% {names[c['kind']]}" +
-             (f" ({c['distance_m'][0]}-{c['distance_m'][1]} m)" if c.get("distance_m") else "") +
-             (f", on {', '.join(s.replace('_', ' ') for s in c['supports'])}" if c.get("supports") else "") +
-             (f", {round(c['backdrop'] * 100)}% with a wall right behind" if c.get("backdrop") else "")
-             for c in profile.get("contexts", [])]
+    parts = [f"{round(c['share'] * 100)}% {names[c['kind']]}" for c in profile.get("places", [])]
     text = f"In {n_photos} of your photos I see: " + "; ".join(parts) + "."
     if cam := profile.get("camera"):
         text += f" The camera looks down at {cam['pitch_deg'][0]}-{cam['pitch_deg'][1]} degrees."
-    if profile.get("wall_tags"):
-        text += f" Walls: {', '.join(profile['wall_tags'])}."
-    if profile.get("railings"):
-        text += f" Railings: {', '.join(profile['railings'])}."
     sug = profile.get("suggest", {})
     if sug.get("size_m"):
         lo, hi = sug["size_m"]["range"]
@@ -291,10 +234,9 @@ def dataset_summary(profile: dict, n_photos: int) -> str:
     if sug.get("backgrounds"):
         parts.append("Backgrounds: " + "; ".join(sug["backgrounds"]) + ".")
     names = {"facade": "building fronts", "balcony": "balconies", "indoor": "indoors", "ground": "open ground"}
-    if profile.get("contexts"):
+    if profile.get("places"):
         parts.append("Places: " + ", ".join(f"{names[c['kind']]} {round(c['share'] * 100)}%"
-                                            + (f" at {c['distance_m'][0]}-{c['distance_m'][1]} m" if c.get("distance_m")
-                                               else "") for c in profile["contexts"]) + ".")
+                                            for c in profile["places"]) + ".")
     if profile.get("weather"):
         parts.append(f"Light: {', '.join(profile['weather'])}.")
     if sug.get("camera_height_m"):

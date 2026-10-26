@@ -76,9 +76,9 @@ def test_chat_model_converses_and_nemotron_writes_the_spec():
     assert interview.SPLIT_NOTE not in json.dumps(s.messages)  # the note is not kept in the conversation
 
 
-def test_system_prompt_mentions_schema():
+def test_system_prompt_lists_the_devices():
     p = interview.system_prompt()
-    assert '"target_fill"' in p and "esp32cam" in p and "road" in p
+    assert "esp32cam" in p and "jetson_nano" not in p and '"pot_counter"' in p
 
 
 def test_is_yes():
@@ -107,12 +107,6 @@ def test_photo_folders_are_checked(tmp_path):
     assert "does not exist" in interview.check_photos(missing)
     with pytest.raises(SpecError, match="subfolder names"):
         from_dict({"name": "t", "classes": cls, "user_data": {"labeled": "x", "class_map": {"pot": [""]}}})
-
-
-def test_walls_are_not_ground():
-    from sim2chip.spec import from_dict
-    s = from_dict({"name": "t", "classes": [{"id": "pot"}], "scene": {"template": "generic", "ground_tags": ["wall"]}})
-    assert "not a floor" in interview.check_scene(s.scene)
 
 
 def test_turn_steps_show_what_the_interview_is_doing():
@@ -215,7 +209,6 @@ def test_no_photo_models_on_a_server_without_them():
     assert t.kind == "confirm" and t.spec.classes[0].assets.photos is None
     assert "cannot be made from the user's photos" in client.seen[1]  # pick_photos refused
     assert "cannot be made from the user's photos" in client.seen[2]  # photo-made spec refused
-    assert "cannot be made from the user's photos" in s.messages[0]["content"]
 
 
 def test_spec_sent_with_text_is_proposed():
@@ -418,16 +411,6 @@ def test_a_class_of_the_labeling_takes_its_english_names():
     assert [c.get("names") for c in spec["classes"]] == [["blue bin"], ["litter bin"]]
 
 
-def test_scene_tags_and_weather_the_code_can_settle(monkeypatch):
-    from sim2chip import polyhaven
-    monkeypatch.setattr(polyhaven, "catalog", lambda kind: kind)
-    monkeypatch.setattr(polyhaven, "pick_textures", lambda cat, tags, n, seed: ["t"] if set(tags) <= {"asphalt"} else [])
-    monkeypatch.setattr(polyhaven, "pick_skies", lambda cat, tags, weather, n, seed: ["s"])
-    spec = {"scene": {"weather": [], "ground_tags": ["asphalt", "pavement"], "sky_tags": ["urban"]}}
-    interview.Session(Scripted([]), "m", interview.CategoryIndex(counts={}))._fix_scene(spec)
-    assert spec["scene"] == {"weather": ["clear"], "ground_tags": ["asphalt"], "sky_tags": ["urban"]}
-
-
 def test_the_dataset_action_shows_the_dataset_as_it_is_now():
     ds = "a7d9ef2d4b43c27b"
     client = Scripted([{"dataset": f"library:{ds}"}, {"dataset": "0123456789abcdef"}, {"say": "Which bins?"}])
@@ -449,12 +432,12 @@ def test_plain_slips_are_fixed_without_another_turn():
 
 
 def test_more_plain_slips_are_fixed():
-    spec = {"scene": {"distractors": ["tree", "fence"]}, "camera": {"pitch_deg": 30}, "classes": [
+    spec = {"camera": {"pitch_deg": 30}, "classes": [
         {"id": "car", "assets": {"source": "objaverse_lvis", "categories": ["car"], "count": 0}},
         {"id": "cow", "assets": {"categories": ["cow"]}},
         {"id": "edge", "names": ["lawn edge"], "assets": {"source": "objaverse_lvis"}}]}
     interview._fix_slips(spec, {"cow", "car_(automobile)"})
-    assert spec["scene"]["distractors"] == ["tree"] and spec["camera"]["pitch_deg"] == [20, 40]
+    assert spec["camera"]["pitch_deg"] == [20, 40]
     assert spec["classes"][0]["assets"] == {"source": "search", "queries": ["car"]}
     assert spec["classes"][1]["assets"] == {"categories": ["cow"]}
     assert spec["classes"][2]["assets"] == {"source": "search", "queries": ["lawn edge"]}
@@ -558,24 +541,21 @@ def test_sizes_that_do_not_fit_the_thing_go_back():
 
 
 def test_the_photo_analysis_goes_into_the_spec_in_code():
-    """Top-down photos become their surface seen from above; walls right behind objects on open ground stay."""
+    """Photos looking down at a surface give the camera's pitch and height; photos looking ahead give none."""
     from sim2chip import scene_profile
-    table = [{"context": "indoor", "camera_pitch_deg": 75, "distance_m": 0.5, "supports": ["furniture"],
-              "floor": "wood", "light": "indoor", "photo": f"{i}.jpg"} for i in range(4)]
+    table = [{"context": "indoor", "camera_pitch_deg": 75, "distance_m": 0.5, "light": "indoor", "photo": f"{i}.jpg"}
+             for i in range(4)]
     prof = scene_profile.aggregate(table)
-    assert prof["contexts"] == [{"kind": "ground", "share": 1.0, "supports": ["ground"], "distance_m": [0.45, 0.55]}]
+    assert prof["places"] == [{"kind": "indoor", "share": 1.0}]
     assert prof["camera"]["pitch_deg"] == [70, 80] and prof["camera"]["height_m"][0] < 0.5
-    street = [{"context": "ground", "camera_pitch_deg": 10, "distance_m": 4, "wall_behind": i < 3, "photo": f"{i}.jpg"}
-              for i in range(4)]
-    prof = scene_profile.aggregate(street)
-    assert "camera" not in prof and prof["contexts"][0]["backdrop"] == 0.75
+    street = [{"context": "ground", "camera_pitch_deg": 10, "distance_m": 4, "photo": f"{i}.jpg"} for i in range(4)]
+    assert "camera" not in scene_profile.aggregate(street)
     s = interview.Session(Scripted([]), "m", interview.CategoryIndex(counts={}))
     s.measured = scene_profile.aggregate(table)
-    spec = {"scene": {"contexts": [{"kind": "indoor", "share": 1}]}, "camera": {}}
+    spec = {"camera": {}}
     s._apply_measured(spec)
-    assert spec["scene"]["contexts"][0]["kind"] == "ground" and spec["camera"]["pitch_deg"] == [70, 80]
-    assert spec["scene"]["ground_tags"] == ["wood"]
+    assert spec["camera"]["pitch_deg"] == [70, 80] and spec["camera"]["height_m"][0] < 0.5
     s.measured = {k: v for k, v in scene_profile.aggregate(street).items() if k != "suggest"}
-    spec = {"scene": {"contexts": [{"kind": "ground", "share": 0.8}, {"kind": "facade", "share": 0.2}]}}
+    spec = {}
     s._apply_measured(spec)
-    assert spec["scene"]["contexts"][0]["backdrop"] == 0.75 and "backdrop" not in spec["scene"]["contexts"][1]
+    assert spec == {}

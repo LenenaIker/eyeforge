@@ -15,8 +15,6 @@
     {"id": "container", "queries": ["shipping container"], "size_m": {"measure": "length", "range": [6.0, 12.2]},
      "count": 2, "max_per_frame": 2}
   ],
-  "scene": {"template": "generic", "weather": ["clear", "cloudy"], "distractors": ["person"],
-            "sky_tags": ["outdoor"], "ground_tags": ["dirt"]},
   "qa": {"mode": "auto"},
   "generation": {"frames": 80}
 }

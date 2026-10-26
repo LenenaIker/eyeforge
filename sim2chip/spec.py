@@ -22,16 +22,6 @@ ERRORS = ("find_more", "balanced", "fewer_false")  # which mistake hurts the use
 # (sky, horizon, standing objects); "any" when up does not exist (a camera looking straight down, a microscope,
 # loose objects on a table); "fixed" when also left and right matter (text, arrows, one-sided parts).
 ORIENTATIONS = ("upright", "any", "fixed")
-DISTRACTORS = ("tree", "person")  # what the scene templates can place
-WEATHER = ("clear", "cloudy", "evening", "storm", "night")
-# Places the generic scene can build (scene.contexts): open ground, a building front seen from the street, a
-# balcony seen from inside, a room. Where objects can stand in them (ContextSpec.supports):
-CONTEXTS = {"ground": ("ground",),
-            "facade": ("balcony_floor", "railing", "window_sill", "ground"),
-            "balcony": ("balcony_floor", "railing"),
-            "indoor": ("floor", "furniture", "window_sill")}
-WALLS = ("brick", "plaster", "stone", "concrete", "wood")  # wall materials, as Poly Haven texture tags
-RAILINGS = ("bars", "solid")
 MEASURES = ("length", "width", "height")  # length and width: long and short side seen from above
 
 
@@ -129,50 +119,6 @@ class CameraSpec:
 
 
 @dataclass
-class ContextSpec:
-    """One kind of place in the synthetic scenes and its share of the frames. `distance_m` is the camera
-    distance to the objects there (facade only, default 6-25 m); `height_m` the camera height above the
-    floor it stands on (default a person holding a phone, 1.3-1.8 m; higher for a wall-mounted camera);
-    `supports` where the objects stand (default: every support of the kind); `backdrop` (open ground only) the
-    share of frames with a wall right behind the objects, as in photos of things left against a building."""
-    kind: str
-    share: float = 1.0
-    distance_m: tuple[float, float] | None = None
-    supports: list[str] = field(default_factory=list)
-    height_m: tuple[float, float] | None = None
-    backdrop: float | None = None
-
-    @property
-    def eye_height(self) -> tuple[float, float]:
-        return self.height_m or (1.3, 1.8)
-
-
-@dataclass
-class SceneSpec:
-    """Where the targets are shown. "road" is a hand-built template; "generic" is built from data: a ground
-    texture chosen by `ground_tags` and sky maps chosen by `sky_tags` (both Poly Haven tags, CC0) plus
-    `weather`. Setting sky_tags also makes "road" draw its skies from Poly Haven."""
-    template: str = "road"
-    weather: list[str] = field(default_factory=lambda: ["clear", "cloudy", "evening", "storm"])
-    distractors: list[str] = field(default_factory=lambda: ["tree", "person"])
-    sky_tags: list[str] = field(default_factory=list)
-    ground_tags: list[str] = field(default_factory=list)
-    # Generic template only. Empty contexts: objects on open ground, as always. Usually proposed from the
-    # user's photos (scene_profile.py). wall_tags and railings style the buildings of facade/balcony/indoor.
-    contexts: list[ContextSpec] = field(default_factory=list)
-    wall_tags: list[str] = field(default_factory=list)
-    railings: list[str] = field(default_factory=list)
-    # Mixed ground (ground_mix.py), generic template: patches of other materials on the ground_tags base (bare
-    # spots, fallen leaves; one Poly Haven tag per material), the share of ground they cover and their size, and
-    # a hard-edged strip (a path, a pavement; edge_tags) in edge_share of the layouts. Defaults in ground_mix.
-    ground_patches: list[str] = field(default_factory=list)
-    patch_cover: tuple[float, float] | None = None
-    patch_size_m: tuple[float, float] | None = None
-    edge_tags: list[str] = field(default_factory=list)
-    edge_share: float | None = None
-
-
-@dataclass
 class UserData:
     """Photos from the user. `labeled` is a folder with one subfolder per source class and `class_map`
     maps each spec class to the source subfolders that belong to it. `raw` is a folder of unlabeled
@@ -226,8 +172,8 @@ class GenerationSpec:
 @dataclass
 class LookSpec:
     """How the user's camera sees: color (Lab mean and spread), edge sharpness and noise of their photos at
-    the model's input size (look.py), measured by `sim2chip match`. Synthetic images are moved towards it
-    before training (points, crops)."""
+    the model's input size (look.py). Synthetic images are moved towards it before training (points, crops).
+    Nothing measures it since `sim2chip match` left with the scene template (2026-10-26): set by hand for now."""
     lab_mean: list[float]
     lab_std: list[float]
     sharpness: float
@@ -260,7 +206,6 @@ class Spec:
     # photo is one of the classes (surfaces, scenes, states: lawn, border, no grass), so no extra class is invented.
     background_class: str | None = "empty"
     camera: CameraSpec = field(default_factory=CameraSpec)
-    scene: SceneSpec = field(default_factory=SceneSpec)
     user_data: UserData = field(default_factory=UserData)
     qa: QASpec = field(default_factory=QASpec)
     generation: GenerationSpec = field(default_factory=GenerationSpec)
@@ -409,11 +354,10 @@ def _from_dict(data: dict) -> Spec:
             raise SpecError(f"{where}.size_m: required")
         props.append(_build(PropSpec, {**p, "size_m": _build(SizeSpec, p["size_m"], f"{where}.size_m")}, where))
     data["props"] = props
-    if isinstance(data.get("scene"), dict) and data["scene"].get("contexts"):
-        sc = dict(data["scene"])
-        sc["contexts"] = [_build(ContextSpec, c, f"scene.contexts[{i}]") for i, c in enumerate(sc["contexts"])]
-        data["scene"] = sc
-    sections = {"camera": CameraSpec, "scene": SceneSpec, "user_data": UserData, "qa": QASpec,
+    # The scene template's section (places, skies, ground, weather) left with the template (2026-10-26); dropped
+    # so older specs still load.
+    data.pop("scene", None)
+    sections = {"camera": CameraSpec, "user_data": UserData, "qa": QASpec,
                 "generation": GenerationSpec, "training": TrainingSpec, "look": LookSpec}
     if data.get("look") is None:
         data.pop("look", None)
@@ -428,7 +372,7 @@ def _from_dict(data: dict) -> Spec:
 def validate(spec: Spec) -> None:
     """Every rule a spec must pass, section by section; the first broken one is the SpecError."""
     for check in (_validate_labels, _validate_classes, _validate_props, _validate_scene, _validate_user_data,
-                  _validate_places, _validate_task, _validate_rest):
+                  _validate_task, _validate_rest):
         check(spec)
 
 
@@ -502,9 +446,6 @@ def _validate_props(spec: Spec) -> None:
 
 
 def _validate_scene(spec: Spec) -> None:
-    bad = [w for w in spec.scene.weather if w not in WEATHER]
-    if bad or not spec.scene.weather:
-        raise SpecError(f"scene.weather must be a non-empty subset of {WEATHER}")
     if spec.synthetic:
         missing = [c.id for c in spec.classes if c.size_m is None or c.assets is None]
         if missing:
@@ -539,15 +480,6 @@ def _validate_user_data(spec: Spec) -> None:
             raise SpecError(f"user_data.class_map: '{k}' needs subfolder names; unsorted photos go in user_data.raw")
 
 
-def _validate_places(spec: Spec) -> None:
-    """Contexts, mixed ground and distractors of the scene."""
-    _validate_contexts(spec.scene)
-    _validate_ground_mix(spec.scene)
-    bad = [d for d in spec.scene.distractors if d not in DISTRACTORS]
-    if bad:
-        raise SpecError(f"scene.distractors {bad} are not available, only {list(DISTRACTORS)}")
-
-
 def _validate_task(spec: Spec) -> None:
     if spec.errors is not None and spec.errors not in ERRORS:
         raise SpecError(f"errors must be one of {ERRORS}")
@@ -580,42 +512,6 @@ def _validate_rest(spec: Spec) -> None:
         raise SpecError("look: lab_mean and lab_std need 3 values (L, a, b)")
     if not spec.training.seeds:
         raise SpecError("training.seeds cannot be empty")
-
-
-def _validate_ground_mix(sc: SceneSpec) -> None:
-    if not (sc.ground_patches or sc.edge_tags):
-        return
-    if sc.template != "generic" or not sc.ground_tags:
-        raise SpecError("scene.ground_patches and edge_tags need the generic template and ground_tags (the base)")
-    if sc.patch_cover and not 0 <= sc.patch_cover[0] <= sc.patch_cover[1] <= 0.9:
-        raise SpecError("scene.patch_cover must be [min, max] within 0..0.9")
-    if sc.patch_size_m and not 0 < sc.patch_size_m[0] <= sc.patch_size_m[1]:
-        raise SpecError("scene.patch_size_m must be 0 < min <= max")
-    if sc.edge_share is not None and not 0 <= sc.edge_share <= 1:
-        raise SpecError("scene.edge_share must be within 0..1")
-
-
-def _validate_contexts(sc: SceneSpec) -> None:
-    if sc.contexts and sc.template != "generic":
-        raise SpecError("scene.contexts need scene.template \"generic\"")
-    kinds = [c.kind for c in sc.contexts]
-    if len(set(kinds)) != len(kinds):
-        raise SpecError("scene.contexts: each kind at most once")
-    for c in sc.contexts:
-        if c.kind not in CONTEXTS:
-            raise SpecError(f"scene.contexts: kind must be one of {list(CONTEXTS)}")
-        if c.share <= 0:
-            raise SpecError(f"scene.contexts {c.kind}: share must be positive")
-        if c.backdrop is not None and (c.kind != "ground" or not 0 <= c.backdrop <= 1):
-            raise SpecError(f"scene.contexts {c.kind}: backdrop is a share (0 to 1) of open ground frames only")
-        if c.distance_m and not 0 < c.distance_m[0] <= c.distance_m[1]:
-            raise SpecError(f"scene.contexts {c.kind}: distance_m must be 0 < min <= max")
-        bad = [x for x in c.supports if x not in CONTEXTS[c.kind]]
-        if bad:
-            raise SpecError(f"scene.contexts {c.kind}: supports {bad} not possible there, only {list(CONTEXTS[c.kind])}")
-    bad = [w for w in sc.wall_tags if w not in WALLS] + [r for r in sc.railings if r not in RAILINGS]
-    if bad:
-        raise SpecError(f"scene: unknown {bad}; wall_tags from {WALLS}, railings from {RAILINGS}")
 
 
 def load(path: str | Path) -> Spec:
