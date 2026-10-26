@@ -37,6 +37,7 @@ class Model:
     size_m: float
     radius_m: float     # half the diagonal seen from above, at that size
     long_m: float       # the longest side, at that size
+    height_m: float
 
 
 def models(assets: list[dict], spec, cache_root: Path) -> dict[str, list[Model]]:
@@ -56,7 +57,7 @@ def models(assets: list[dict], spec, cache_root: Path) -> dict[str, list[Model]]
         s = size / a["dims"][k]
         out.setdefault(a["class"], []).append(Model(
             a["uid"], str(Path(cache_root) / a["usd"]), a["class"], k, size,
-            math.hypot(a["dims"][0], a["dims"][1]) * s / 2, max(a["dims"]) * s))
+            math.hypot(a["dims"][0], a["dims"][1]) * s / 2, max(a["dims"]) * s, a["dims"][2] * s))
     return out
 
 
@@ -69,11 +70,14 @@ def footprint_free(scene: Scene, xy, radius: float) -> bool:
     return bool(scene.is_free(disc + np.asarray(xy)).all())
 
 
-def place(scene: Scene, cam_xy, yaw: float, models_: list[Model], spec, rng: random.Random,
-          aim: float) -> list[dict] | None:
-    """Positions for the models in front of the camera, or None when they do not all fit."""
+def place(scene: Scene, cam_xyz, yaw: float, pitch: float, models_: list[Model], spec, rng: random.Random,
+          aim: float, aspect: float) -> list[dict] | None:
+    """Positions for the models in front of the camera (at cam_xyz, the scene's z), whole in the frame, or None
+    when they do not all fit."""
     cam = spec.camera
     half = cam.hfov_deg / 2
+    vhalf = math.degrees(math.atan(math.tan(math.radians(half)) * aspect))
+    cam_xy, above = np.asarray(cam_xyz[:2]), cam_xyz[2] + scene.camera_height  # eye height over the ground
     taken: list[tuple[np.ndarray, float]] = []
     out = []
     for m in models_:
@@ -83,8 +87,13 @@ def place(scene: Scene, cam_xy, yaw: float, models_: list[Model], spec, rng: ran
             off = rng.uniform(-aim, aim) * half
             if d < m.radius_m + 1.0 or abs(off) + math.degrees(math.atan2(m.radius_m, d)) > half * EDGE:
                 continue  # the whole object in the frame, not cut by its sides
+            near = d - m.radius_m  # its base's nearest edge and its top, against the frame's bottom and top
+            low = math.degrees(math.atan2(-above, max(near, 0.1))) - pitch
+            high = math.degrees(math.atan2(m.height_m - above, d)) - pitch
+            if low < -vhalf * EDGE or high > vhalf * EDGE:
+                continue
             b = math.radians(yaw + off)
-            xy = np.asarray(cam_xy) + d * np.array([math.cos(b), math.sin(b)])
+            xy = cam_xy + d * np.array([math.cos(b), math.sin(b)])
             if any(np.hypot(*(xy - p)) < r + m.radius_m + GAP_M for p, r in taken):
                 continue
             if footprint_free(scene, xy, m.radius_m):
@@ -136,15 +145,15 @@ def plan(scenes: dict[str, Scene], assets: list[dict], spec, cache_root: Path, n
             continue
         aim = AIM_JITTER if spec.task == "roi_classification" else SPREAD
         for _ in range(TRIES):
-            cam_xy = stands[sid][rng.randrange(len(stands[sid]))]
-            yaw = rng.uniform(0, 360)
-            objs = place(sc, cam_xy, yaw, [rng.choice(by_class[c]) for c in want], spec, rng, aim)
+            cam = [*stands[sid][rng.randrange(len(stands[sid]))], rng.uniform(*eye) - sc.camera_height]
+            yaw, pitch = rng.uniform(0, 360), rng.uniform(*PITCH_DEG)
+            objs = place(sc, cam, yaw, pitch, [rng.choice(by_class[c]) for c in want], spec, rng, aim,
+                         size[1] / size[0])
             if objs is not None:
                 break
         else:
             missed += 1
             continue
-        z = rng.uniform(*eye) - sc.camera_height
         views.append({"name": f"{len(views):04d}", "scene": sid, "class": cls, "objects": objs,
-                      "w2c": w2c([*cam_xy, z], yaw, rng.uniform(*PITCH_DEG)).round(6).tolist()})
+                      "w2c": w2c(cam, yaw, pitch).round(6).tolist()})
     return {"size": list(size), "fov_deg": spec.camera.hfov_deg, "views": views, "missed": missed}

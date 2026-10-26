@@ -96,3 +96,16 @@ def test_hidden_objects_lose_their_box_and_a_hidden_class_its_frame():
 def test_w2c_looks_along_x():
     m = w2c([0, 0, 0], 0, 0)
     assert np.allclose(m[:3, :3] @ [1, 0, 0], [0, 0, 1])  # +x is straight ahead
+
+
+def test_objects_are_whole_in_the_frame_top_to_bottom(tmp_path):
+    from sim2chip.walkscene import intrinsic
+    p = plan({"s": bundle(tmp_path)}, ASSETS, spec("count"), tmp_path, 30, (640, 480))
+    K = intrinsic(640, 480, 60)
+    heights = {"c1": 150 * 1.8 / 180, "b1": 1.05}
+    for v in p["views"]:
+        m = np.asarray(v["w2c"])
+        for o in v["objects"]:
+            for z in (-1.6, -1.6 + heights[o["key"]] * 0.95):  # base centre and (about) top
+                c = m[:3, :3] @ np.array([*o["xy"], z]) + m[:3, 3]
+                assert 0 <= (K @ c)[1] / c[2] <= 480
