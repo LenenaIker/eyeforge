@@ -12,7 +12,7 @@ from .paths import Case
 class RouteConfig:
     case: str
     photo: str = ""                 # the input photo (data/panogen_test/in/<photo>.png); empty: the case starts at pano
-    pano_seed: int = 0              # WorldGen's seed; the walks read pano_s<seed>_paste.jpg
+    pano_seed: int = 0              # the panorama's seed; the walks read pano_s<seed>_paste.jpg
     skip_legs: list[str] = field(default_factory=list)  # leg folders left out of the fit (another test's legs)
     radius: float = 10.0            # metres: the student's area around the photo's spot
     spots: list[list[float]] = field(default_factory=list)  # grid spots the sheets show (measure only, never targets)

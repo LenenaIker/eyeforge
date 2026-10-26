@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import math
-import sys
 import time
 
 import numpy as np
@@ -27,7 +26,7 @@ from . import camera
 from .camera import F, H, W
 from .config import arm_views
 from .panorama import Panorama
-from .paths import SPHERE_WALK, Case, add_moge, moge_ckpt
+from .paths import Case, add_moge, moge_ckpt
 
 PANO_WEIGHT = 4.0
 SEEN_WEIGHT = 0.3      # a generated pixel the panorama already covered: it must not compete with the photo
@@ -199,14 +198,27 @@ def init_points(case: Case, img, code, depth, w2c, gen) -> tuple[np.ndarray, np.
     return np.concatenate(pts).astype(np.float32), np.concatenate(cols).astype(np.float32)
 
 
+def ssim_map(a, b):
+    """SSIM per pixel of two (3, H, W) images, 11-pixel Gaussian window (was sphere_walk/gs_train.py's, whose
+    module needs the retired photo2scene package)."""
+    import torch
+    import torch.nn.functional as tF
+    g = torch.exp(-((torch.arange(11, device=a.device) - 5) ** 2) / (2 * 1.5 ** 2))
+    win = (g[:, None] * g[None]) / g.sum() ** 2
+    win = win.expand(3, 1, 11, 11)
+    f = lambda x: tF.conv2d(x[None], win, padding=5, groups=3)[0]  # noqa: E731
+    ma, mb = f(a), f(b)
+    va, vb, cab = f(a * a) - ma ** 2, f(b * b) - mb ** 2, f(a * b) - ma * mb
+    c1, c2 = 0.01 ** 2, 0.03 ** 2
+    return ((2 * ma * mb + c1) * (2 * cab + c2)) / ((ma ** 2 + mb ** 2 + c1) * (va + vb + c2))
+
+
 def train(case_name: str, arm: str, steps: int = STEPS):
     import torch
     import torch.nn.functional as tF
     from gsplat import rasterization
     from gsplat.strategy import MCMCStrategy
     from scipy.spatial import cKDTree
-    sys.path.insert(0, str(SPHERE_WALK))
-    from gs_train import ssim_map
     case = Case(case_name)
     t0 = time.time()
     dev = torch.device("cuda")

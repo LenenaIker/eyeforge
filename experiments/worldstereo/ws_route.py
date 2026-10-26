@@ -22,7 +22,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=[
         "init", "status", "run",
-        "things", "masks", "split", "publish", "caption", "ingest", "pano", "walks", "result_sheet",
+        "things", "masks", "split", "publish", "caption", "ingest", "pano", "pano_paste", "walks", "result_sheet",
         "cloud", "vm", "depth", "views", "train", "audit", "plan", "stage", "grid", "sheet", "compare",
         "pseudo", "fix", "fixer_views", "bundle"])
     ap.add_argument("what", nargs="?", help="vm: disk, prep, gpu, stop or status; ingest: the source photo")
@@ -70,6 +70,9 @@ def main():
     elif a.cmd == "pano":
         from wsroute import pano
         pano.pano(cfg.case, cfg.pano_seed)
+    elif a.cmd == "pano_paste":
+        from wsroute import pano
+        pano.pano_paste(cfg.case, cfg.pano_seed)
     elif a.cmd == "walks":
         from wsroute import walks
         walks.prep(cfg.case, cfg.pano)

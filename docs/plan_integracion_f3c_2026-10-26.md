@@ -37,7 +37,7 @@ La biblioteca ya tiene `scenes` (ruta, estado) y `objects` ligados a su escena, 
   - `library.add_scene(owner, photo_id, folder)`, sin trabajo de entrenamiento. Ruta `walk`; estado `building`, `ready` o `failed`.
   - `sim2chip scene <foto>` desde la CLI; en la web, las 6 fotos propuestas y el botón "Extraer" en la página del dataset.
   - Progreso en el sitio (barra y paso en curso); al acabar, la escena en Assets.
-- **2d. Para la entrega:** todo el trabajo en la VM RTX PRO 6000. Hay que instalar en su disco los entornos de WorldGen, SAM 3, Qwen, MapAnything, gsplat, Fixer y 3DGRUT. El servidor de Hetzner lanza la VM y recoge el resultado. Estimación: 1 a 1.5 días.
+- **2d. Para la entrega:** todo el trabajo en la VM RTX PRO 6000. Hay que instalar en su disco los entornos de SAM 3, Qwen (borrador y panorámica, más el LoRA 360 de 282 MB), MapAnything, gsplat, Fixer y 3DGRUT. El servidor de Hetzner lanza la VM y recoge el resultado. Estimación: 1 a 1.5 días.
 
 ## Punto 1: el entrenamiento usa la escena
 
@@ -135,9 +135,13 @@ Los documentos viejos (`plan_photo2scene.md`, `roadmap_photo2scene.md`, `roadmap
   - tarjeta "Scenes from these photos" en el dataset, con Extract, barra y paso en curso;
   - Assets > Scenes con las escenas en curso y las públicas.
 - **Biblioteca local** (`runs/web_local`): photo21, photo47 y photo66 importadas como públicas, con enlaces duros.
+  - Llevan panorámica de FLUX y se quedan así (usuario, 2026-10-27).
+- **Panorámica sin FLUX (27):**
+  - `pano.py` usa Qwen 360 en el entorno del borrado y añade el paso `pano_paste` en el entorno `scene`. Detalle en `plan_sustituir_flux_2026-10-26.md`.
+  - `scene.json` apunta con qué modelo se hizo la panorámica (`pano_model`).
+  - Fuera `SIM2CHIP_PANOGEN_PYTHON`.
 
 Pendiente:
-- **Licencia:** `pano.py` usa FLUX.1-Fill-dev, que es no comercial. El código lo marca como "never goes in the product as is".
 - **Nube:** `scene_render` necesita en Nebius el Python de gsplat junto a Isaac. Hoy la imagen de Isaac no lo tiene (2d).
 - **Aspecto de cámara (`look.py`):** `crops` y `points` lo aplican si el spec trae `look`, pero ya nada lo mide. Propuesta: medirlo solo de las fotos de entrenamiento del usuario, sin comando aparte, y comparar con y sin él en la primera ejecución de punta a punta.
 

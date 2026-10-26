@@ -66,7 +66,8 @@ def recipe(cfg: RouteConfig) -> list[Step]:
                  script=str(HERE / "erase_qwen.py")),
             Step("publish", "here", ["publish", *p], exists(PHOTOS / f"{cfg.case}.png")),
             Step("caption", "sam3", ["caption", *p], exists(PHOTOS / f"{cfg.case}.txt")),
-            Step("pano", "pano", ["pano", *c], exists(PANOS / cfg.case / cfg.pano)),
+            Step("pano", "erase", ["pano", *c], exists(PANOS / cfg.case / f"pano_s{cfg.pano_seed}.jpg")),
+            Step("pano_paste", "scene", ["pano_paste", *c], exists(PANOS / cfg.case / cfg.pano)),
         ]
     steps += [
         Step("walks", "scene", ["walks", *c], exists(case.prep_json)),

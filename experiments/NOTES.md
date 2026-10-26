@@ -844,3 +844,12 @@ Pregunta del usuario: ¿no sería mejor entrenar primero con el sintético y aju
 - No gana en ninguno: en contenedores queda igual que la mezcla, dentro del ruido; en HOPE, por debajo de la mezcla y al nivel de solo fotos.
 - En estos dos casos el sintético no ahoga a las reales (45 frente a 16, 133 frente a 40), así que lo que falla en las esferas es el aspecto y la forma de las vistas, no la proporción. El caso en que la mezcla sí ahogaba (HOPE B, 2000 vistas del producto, 0,776) ya no se puede repetir: esas vistas no están en disco.
 - La opción se queda apagada por defecto.
+
+## Panorámica de la ruta F3c: Qwen 360 en vez de FLUX (2026-10-26)
+
+- **Por qué:** FLUX.1-Fill-dev tiene licencia no comercial.
+- **Qué entra:** el LoRA QWEN-EDIT_360 (MIT) sobre Qwen-Image-Edit-2511 nf4, con Lightning. Usa la foto colocada por EXIF como entrada (brazo A) y una pasada de costura.
+- **Tiempo:** ~60 s por panorámica en la 3090.
+- **Gotcha:** Qwen vuelve a dibujar la foto con otro campo de visión (fx ×1,4-1,5), así que la pegada por EXIF sale mal. Hay que ajustar dónde la dibujó y pegarla ahí (`pano_paste`).
+- **Ruta entera** (`q360_photo21`): menos huecos y más suelo libre que con FLUX, con unos 9 puntos más de conflicto.
+- Detalle y tablas en `docs/plan_sustituir_flux_2026-10-26.md`.

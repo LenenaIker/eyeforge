@@ -2,11 +2,10 @@
 
 Everything machine-specific comes from the environment, falling back to the repo's .env (sim2chip.config.env):
 
-    SIM2CHIP_TOOLS             folder with the upstream repos and checkpoints (WorldStereo, MoGe, WorldGen, hf_cache)
+    SIM2CHIP_TOOLS             folder with the upstream repos and checkpoints (WorldStereo, MoGe, hf_cache)
     SIM2CHIP_SAM3_PYTHON       SAM 3 and the local VLM (transformers)
     SIM2CHIP_SCENE_PYTHON      MoGe-2 and pytorch3d (prep, views, the photo's distances)
-    SIM2CHIP_ERASE_PYTHON      the Qwen eraser
-    SIM2CHIP_PANOGEN_PYTHON    WorldGen and nunchaku
+    SIM2CHIP_ERASE_PYTHON      Qwen-Image-Edit: the eraser and the panorama
     SIM2CHIP_MAPANYTHING_PYTHON  MapAnything
     SIM2CHIP_GSPLAT_PYTHON     gsplat (splat fit, conflict, next-best-view, Fixer's pseudo views)
     SIM2CHIP_GRUT_DIR          3DGRUT's checkout with its .venv (the USDZ export)"""
@@ -30,7 +29,7 @@ SPHERE_WALK = ROOT / "experiments" / "sphere_walk"
 MODEL = "worldstereo-memory-dmd"   # WorldStereo's checkpoint: a generated leg is <leg>/<MODEL>_result.mp4
 
 ENVS = {"sam3": "SIM2CHIP_SAM3_PYTHON", "scene": "SIM2CHIP_SCENE_PYTHON", "erase": "SIM2CHIP_ERASE_PYTHON",
-        "pano": "SIM2CHIP_PANOGEN_PYTHON", "mapanything": "SIM2CHIP_MAPANYTHING_PYTHON",
+        "mapanything": "SIM2CHIP_MAPANYTHING_PYTHON",
         "gsplat": "SIM2CHIP_GSPLAT_PYTHON"}
 
 

@@ -7,7 +7,8 @@ render them over it, and nothing about any class (a scene is only the scene, use
     free.npz     ground grid: occupied cells (an obstacle point inside) and free ones (a camera may stand there)
     card.jpg     the photo's direction from the walks' centre, for the library's card
     scene.json   conventions (metres, z up, the photo's camera at the origin looking along x, the ground at
-                 -camera_height), the centre, the radius, the grid's layout and the coverage scores
+                 -camera_height), the centre, the radius, the grid's layout, the coverage scores and the model
+                 that made the panorama
 (SIM2CHIP_GSPLAT_PYTHON)"""
 from __future__ import annotations
 
@@ -27,6 +28,13 @@ FORMAT = 1
 CARD_SIZE = (640, 400)
 CARD_PITCH_DEG = -5.0
 GRID_CELL_M, GRID_SPAN_M = 0.25, 12.0
+OLD_PANO_MODEL = "WorldGen img2scene LoRA on FLUX.1-Fill-dev (non-commercial)"  # every pano before pano.py's record
+
+
+def pano_model(case: Case, pano_name: str) -> str:
+    """The model that made the case's panorama, from pano.py's record next to it (pano_s<seed>.json)."""
+    f = PANOS / case.name / pano_name.replace("_paste.jpg", ".json")
+    return json.loads(f.read_text()).get("model", OLD_PANO_MODEL) if f.exists() else OLD_PANO_MODEL
 
 
 def link(src, dst):
@@ -78,6 +86,7 @@ def bundle(case_name: str, arm: str, radius: float, photo: str):
         grid=dict(file="free.npz", cell_m=GRID_CELL_M, span_m=GRID_SPAN_M, clearance_m=student.CLEARANCE_M,
                   index="cell [i, j] covers x from i*cell - span, y from j*cell - span"),
         free_m2=round(float(free.sum()) * GRID_CELL_M ** 2, 1), scores=scores,
+        pano_model=pano_model(case, prep["pano"]),
         files=sorted(p.name for p in out.iterdir() if p.name != "scene.json"))
     (out / "scene.json").write_text(json.dumps(meta, indent=1))
     print(f"[{case.name}] bundle: {out} ({meta['free_m2']} m2 free)", flush=True)

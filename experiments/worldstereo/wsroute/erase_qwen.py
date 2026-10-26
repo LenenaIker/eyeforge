@@ -77,10 +77,9 @@ def local(repo):
         return repo
 
 
-def load(bits, lightning=False, encoder_bits=None, gpu=False, save=None):
-    """bits: the transformer's, encoder_bits the text encoder's (default the same). gpu: the whole pipeline stays on
-    the GPU instead of moving each model there in turn from the CPU (an L40S holds both in 4 bits). save: a folder
-    to write the quantized pipeline to, before its LoRAs, instead."""
+def base_pipe(bits, encoder_bits=None):
+    """Qwen-Image-Edit-2511 without LoRAs, on the CPU. bits: the transformer's, encoder_bits the text encoder's
+    (default the same). The panorama step (pano.py) loads it too, with its own LoRAs."""
     encoder_bits = encoder_bits or bits
     base = local(BASE)
     nf4 = dict(load_in_4bit=True, bnb_4bit_quant_type='nf4', bnb_4bit_compute_dtype=torch.bfloat16)
@@ -102,6 +101,14 @@ def load(bits, lightning=False, encoder_bits=None, gpu=False, save=None):
             **({} if encoder_bits == 16 else {'quantization_config': TransformersBnb(**nf4)}))
         pipe = QwenImageEditPlusPipeline.from_pretrained(base, transformer=transformer, text_encoder=encoder,
                                                          torch_dtype=torch.bfloat16)
+    return pipe
+
+
+def load(bits, lightning=False, encoder_bits=None, gpu=False, save=None):
+    """bits: the transformer's, encoder_bits the text encoder's (default the same). gpu: the whole pipeline stays on
+    the GPU instead of moving each model there in turn from the CPU (an L40S holds both in 4 bits). save: a folder
+    to write the quantized pipeline to, before its LoRAs, instead."""
+    pipe = base_pipe(bits, encoder_bits)
     if save:
         lightning = False
     else:

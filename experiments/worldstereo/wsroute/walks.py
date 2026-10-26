@@ -1,8 +1,8 @@
 """WorldStereo 2.0 (github.com/FuchengSu/WorldStereo, code Apache 2.0, weights MIT, base Wan2.1-I2V-14B Apache 2.0)
-on a WorldGen panorama: several walks out of the photosphere along the walkable directions, each one remembering the
-frames the earlier walks generated (the model's spatial-stereo memory). Upstream has not released its panorama
-preprocessing (HY-World 2.0's WorldNav does it, under a licence that excludes the EU), so prep builds the scene
-folder run_multi_traj.py reads:
+on the route's panorama (pano.py): several walks out of the photosphere along the walkable directions, each one
+remembering the frames the earlier walks generated (the model's spatial-stereo memory). Upstream has not released
+its panorama preprocessing (HY-World 2.0's WorldNav does it, under a licence that excludes the EU), so prep builds
+the scene folder run_multi_traj.py reads:
 
     pano_bank/images/0000.png + cameras.json   27 perspective crops of the panorama (the initial memory)
     reconstruct_<k>/start_frame.png            the panorama seen from the walk's first camera
