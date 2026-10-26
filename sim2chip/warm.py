@@ -43,24 +43,24 @@ PREFIX = "warm"
 # Stop right after the work (user, 2026-10-10): on 7 GPUs of eyeforge.app no task ever came during the 2 to 5 min
 # kept after the last one (a quarter of the GPU time); the check's rounds need no GPU once SAM 3's answers are
 # prefetched. IDLE_S only bridges tasks sent back to back (a round, then its prefetch: 6 to 12 s apart).
-IDLE_S = float(config.env("SIM2CHIP_WARM_IDLE_S", "20"))    # without tasks, past the keep-alive: stop
-KEEP_S = float(config.env("SIM2CHIP_WARM_KEEP_S", "300"))   # an upload or a new job waits this long for a first task
-HOURS = int(config.env("SIM2CHIP_WARM_HOURS", "2"))         # the job's timeout, a cap on any forgotten GPU
+IDLE_S = config.env_float("SIM2CHIP_WARM_IDLE_S", 20)    # without tasks, past the keep-alive: stop
+KEEP_S = config.env_float("SIM2CHIP_WARM_KEEP_S", 300)   # an upload or a new job waits this long for a first task
+HOURS = config.env_int("SIM2CHIP_WARM_HOURS", 2)         # the job's timeout, a cap on any forgotten GPU
 PARALLEL = 2      # tasks at once (two users) on the light GPU; more queue
 KINDS = ("light", "isaac")
 # The memory one run that builds a scene needs at its peak: 27.2 GB of 32 at Nebius (2026-10-14, one street scene).
 # The scene GPU takes as many runs at once as its machine holds.
-RUN_RAM_GB = float(config.env("SIM2CHIP_RUN_RAM_GB", "30"))
+RUN_RAM_GB = config.env_float("SIM2CHIP_RUN_RAM_GB", 30)
 POLL_S = 3        # how often the GPU and a waiting run look at the bucket
 STALE_S = 120     # a heartbeat older than this: the GPU is gone or stuck, runs go elsewhere
 # Silent this long, its job still running: stuck (two scene builds in 32 GB of RAM, 2026-10-14, its tasks lost and
 # the job billing on towards its timeout). It is cancelled.
-SILENT_S = float(config.env("SIM2CHIP_WARM_SILENT_S", "300"))
+SILENT_S = config.env_float("SIM2CHIP_WARM_SILENT_S", 300)
 PICK_S = 180      # a task the GPU has not started by then, while it says ready, goes elsewhere
 # A GPU with no heartbeat this long after it was asked for never came up (2026-10-13: Nebius kept the job in
 # PROVISIONING, its instance FAILED, for over 12 min): it is given up, and its tasks go elsewhere. A start-up
 # takes about 92 s with the light image, 4 min at worst seen.
-SETUP_S = float(config.env("SIM2CHIP_WARM_SETUP_S", "420"))
+SETUP_S = config.env_float("SIM2CHIP_WARM_SETUP_S", 420)
 LATE_READY = "/tmp/s2c/late.ready"  # written when the kits fetched after start-up (PicoDet's) are unpacked
 
 
@@ -96,8 +96,8 @@ def parallel_for(kind: str, preset: str) -> int:
     ("1gpu-16vcpu-96gb": 3), SIM2CHIP_SCENE_PARALLEL to set it."""
     if kind == "light":
         return PARALLEL
-    if (n := config.env("SIM2CHIP_SCENE_PARALLEL")):
-        return max(1, int(n))
+    if (n := config.env_int("SIM2CHIP_SCENE_PARALLEL", None)):
+        return max(1, n)
     try:
         gb = float(preset.rsplit("-", 1)[-1].removesuffix("gb"))
     except ValueError:
@@ -232,7 +232,7 @@ def usage_file(home: Path) -> Path:
 def spent(home: Path, since: float) -> float:
     """Dollars of warm GPUs that ended since `since`, plus the one up now at its elapsed time and a full idle
     period more (what it costs at least before it can stop)."""
-    from .backends.nebius import USD_PER_HOUR, usd_per_hour
+    from .backends.nebius import usd_per_hour
     total = 0.0
     try:
         for line in usage_file(home).read_text().splitlines():
@@ -336,8 +336,8 @@ class WarmGPU:
             gpu = read(self.backend.store, self._bucket(), key(w["wid"], "gpu.json"))
             if gpu:
                 rec["gpu"] = gpu
-        except Exception:
-            pass
+        except Exception as e:  # the record goes without it
+            self.log(f"warm GPU {w['wid']}: no GPU use ({type(e).__name__}: {e})")
         usage_file(self.home).parent.mkdir(parents=True, exist_ok=True)
         with open(usage_file(self.home), "a") as f:
             f.write(json.dumps(rec) + "\n")

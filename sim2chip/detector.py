@@ -73,13 +73,14 @@ def train(train_items: list[dict], val_items: list[dict], labels: list[str], siz
           log=print, tune: list[dict] | None = None) -> Path:
     """Fine-tunes PicoDet-S in its own Python; items: {"path", "boxes"} (boxes_of). With `tune`, those items
     fine-tune the result again, shortly and at a lower rate. Returns the ONNX file."""
+    from .config import env_int
     found = setup()
     if found is None:
         raise DetectorError("counting with PicoDet needs SIM2CHIP_PICODET_PYTHON (PaddlePaddle) and "
                             "SIM2CHIP_PADDLEDET (a PaddleDetection checkout)")
     py, det = found
     req = {"paddledet": det, "out": str(out), "size": size, "classes": labels[1:],
-           "steps": int(os.environ.get("SIM2CHIP_PICODET_STEPS") or STEPS),
+           "steps": env_int("SIM2CHIP_PICODET_STEPS", None) or STEPS,
            "train": train_items, "val": val_items}
     if tune:
         req["tune"] = {"train": tune, "steps": TUNE_STEPS, "lr_scale": TUNE_LR}

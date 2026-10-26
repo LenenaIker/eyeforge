@@ -116,10 +116,23 @@ def cmd_describe_scene(args) -> int:
     return 0
 
 
+def cmd_config(args) -> int:
+    """What is wrong with the settings (environment and .env), without printing any value."""
+    from .config import check
+    problems = check()
+    for problem in problems:
+        print(f"config: {problem}")
+    if not problems:
+        print("config: every SIM2CHIP_ setting is one EyeForge reads, numbers are numbers, paths are there")
+    return 1 if problems else 0
+
+
 def cmd_serve(args) -> int:
-    from .config import env
+    from .config import check, env
     from .server import serve
     from .auth import Auth
+    for problem in check():  # a typo leaves a default in use without a word: say so before serving
+        print(f"config: {problem}")
     auth = Auth.from_env() if args.public else None
     key = env("SIM2CHIP_WEB_KEY") if args.public and auth is None else None
     if args.public and auth is None and not key:
@@ -263,6 +276,9 @@ def main(argv: list[str] | None = None) -> int:
     cr.add_argument("amount", type=float, help="dollars (things are charged by use, about 1 $ a run)")
     cr.add_argument("--note", default=None)
     cr.set_defaults(func=cmd_credits)
+
+    cf = sub.add_parser("config", help="check the settings: unknown names (typos), numbers, interpreters and folders")
+    cf.set_defaults(func=cmd_config)
 
     sc = sub.add_parser("scene", help="walk scenes: make one from a library photo, add a bundle, make one public")
     sc.add_argument("action", choices=["list", "make", "add", "public", "private"])

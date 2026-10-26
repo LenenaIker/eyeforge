@@ -24,11 +24,11 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .config import env
+from .config import env, env_float, env_int
 
 DEFAULT_MODEL = "nvidia/Cosmos-Reason2-8B"
-IDLE_S = float(env("SIM2CHIP_LOCAL_VLM_IDLE", "60"))
-MAX_TOKENS = int(env("SIM2CHIP_LOCAL_VLM_MAX_TOKENS", "2048"))  # observe.json's answers run past 1024
+IDLE_S = env_float("SIM2CHIP_LOCAL_VLM_IDLE", 60)
+MAX_TOKENS = env_int("SIM2CHIP_LOCAL_VLM_MAX_TOKENS", 2048)  # observe.json's answers run past 1024
 
 
 class Model:

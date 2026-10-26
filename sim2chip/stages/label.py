@@ -28,6 +28,7 @@ import tempfile
 from pathlib import Path
 
 from .. import counting, review, teacher
+from ..config import env_int
 from ..tasks import task_of
 from ..workspace import IMAGE_EXT, cache_key, content_key, copy_names
 from .base import Context, Stage
@@ -250,7 +251,7 @@ class Label(Stage):
         return files, {f: str(f.relative_to(src)) for f in files}
 
     def _sample(self) -> int | None:
-        return self.sample or int(os.environ.get("SIM2CHIP_LABEL_SAMPLE", "0")) or None
+        return self.sample or env_int("SIM2CHIP_LABEL_SAMPLE", 0) or None
 
     @staticmethod
     def _previous(ctx) -> dict:

@@ -21,13 +21,14 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
-import os
 import re
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .config import env, env_float, env_int
 
 
 DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
@@ -68,9 +69,7 @@ PRICES_FILE = Path(__file__).resolve().parents[1] / "data" / "cache" / "token_pr
 
 
 def daily_cap() -> float | None:
-    from .config import env
-    v = env("SIM2CHIP_LLM_DAILY_USD", "")
-    return float(v) if v else None
+    return env_float("SIM2CHIP_LLM_DAILY_USD", None)
 
 
 def spent_today() -> float:
@@ -88,7 +87,7 @@ def _price(model: str) -> dict:
 
 
 # Model calls in flight at once per stage (photos to label, assets to judge): Token Factory rate limits.
-WORKERS = int(os.environ.get("SIM2CHIP_LLM_WORKERS", "8"))
+WORKERS = env_int("SIM2CHIP_LLM_WORKERS", 8)
 
 
 # One photo looked at while the user waits in the interview: a slow answer is dropped, not retried for minutes.
@@ -104,7 +103,8 @@ REASONING_TOKENS = 16384
 def map_within(fn, items: list, seconds: float, workers: int | None = None, progress=None) -> list:
     """fn over items in threads, for at most `seconds`: results in the order of items, None for an item that
     failed or had not finished in time (its thread is left to end on its own, nothing waits for it).
-    progress(done, total) is called as items finish, in any order."""
+    progress(done, total) is called as items finish, in any order. The failures are counted in the log with the
+    first one's error: when every item fails (a wrong key, the service down) the reason is not lost."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from concurrent.futures import TimeoutError as Late
 
@@ -113,20 +113,23 @@ def map_within(fn, items: list, seconds: float, workers: int | None = None, prog
         return out
     pool = ThreadPoolExecutor(max_workers=workers or WORKERS)
     futures = {pool.submit(fn, item): i for i, item in enumerate(items)}
-    done = 0
+    done, failed = 0, []
     try:
         for f in as_completed(futures, timeout=seconds):
             done += 1
             try:
                 out[futures[f]] = f.result()
-            except Exception:  # one photo failing must not lose the others
-                pass
+            except Exception as e:  # one photo failing must not lose the others
+                failed.append(e)
             if progress:
                 progress(done, len(items))
     except Late:
         pass
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+    if failed or done < len(items):
+        print(f"{len(failed)} of {len(items)} failed, {len(items) - done} not done in {seconds:.0f} s"
+              + (f"; first: {type(failed[0]).__name__}: {failed[0]}" if failed else ""), flush=True)
     return out
 
 
@@ -238,7 +241,7 @@ def _ensure_local_vlm(base: str, wait: float) -> None:
 
 @dataclass
 class Client:
-    base_url: str = field(default_factory=lambda: os.environ.get("SIM2CHIP_LLM_BASE_URL", DEFAULT_BASE_URL))
+    base_url: str = field(default_factory=lambda: env("SIM2CHIP_LLM_BASE_URL", DEFAULT_BASE_URL))
     key: str | None = None
     usage_log: Path | None = None
     timeout: float = 120.0
@@ -293,9 +296,8 @@ class Client:
         return out
 
     def model_for(self, role: str) -> str:
-        env = os.environ.get(f"SIM2CHIP_{role.upper()}_MODEL")
-        if env:
-            return env
+        if chosen := env(f"SIM2CHIP_{role.upper()}_MODEL"):
+            return chosen
         ids = self.models()
         for pattern in PREFERENCES[role]:
             hits = [m for m in ids if re.search(pattern, m, flags=re.I)]

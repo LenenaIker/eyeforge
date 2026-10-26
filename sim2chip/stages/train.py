@@ -20,19 +20,19 @@ Output: train/seed_<n>/{model_int8.tflite, model_float_io.tflite, history.json},
 from __future__ import annotations
 
 import json
-import os
 import pickle
 import shutil
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import get_context
 from pathlib import Path
 
+from ..config import env_int
 from ..tasks import task_of
 from .base import Context, Stage
 from .crops import Crops
 from .points import Points
 
-PARALLEL_SEEDS = int(os.environ.get("SIM2CHIP_PARALLEL_SEEDS", "3"))
+PARALLEL_SEEDS = env_int("SIM2CHIP_PARALLEL_SEEDS", 3)
 # Real photos per class under which only the last layer learns (with no synthetic images). Fine-tuning the
 # whole network needs more than a few dozen: on 35 lawn photos it scored 56% against 80% for the last layer.
 HEAD_ONLY_BELOW = 100

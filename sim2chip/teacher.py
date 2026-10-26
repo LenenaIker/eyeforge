@@ -237,7 +237,8 @@ def prompts(spec, client=None) -> dict[str, str]:
         out = parse_json(client.chat([{"role": "user", "content": PROMPT_ASK + json.dumps(meaning, ensure_ascii=False)}],
                                      client.model_for("text"), purpose="teacher_prompts", temperature=0.0,
                                      max_tokens=1024))
-    except Exception:  # no key or no answer: the words as they are still work, a little worse
+    except Exception as e:  # no key or no answer: the words as they are still work, a little worse
+        print(f"teacher prompts as the classes are written: {type(e).__name__}: {e}", flush=True)
         return plain
     return {k: out[k] if isinstance(out, dict) and isinstance(out.get(k), str) and out[k].strip() else plain[k]
             for k in meaning}

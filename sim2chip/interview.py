@@ -1106,7 +1106,7 @@ class Session:
         want = [c.id for c in s.classes] if s.task == "count" else list(s.labels)
         if chosen is not None and sorted(c["key"] for c in chosen["classes"]) == sorted(want):
             return None
-        for ds, card in self._cards(s.user_data.raw):
+        for ds, _card in self._cards(s.user_data.raw):
             asked = self.relabel_asked.get(ds)
             if asked is not None and self.replies > asked:
                 continue
@@ -1160,7 +1160,8 @@ class Session:
                 got = parse_json(self.client.chat([{"role": "user", "content": SIZES_PROMPT + json.dumps(ask)}],
                                                   self.model, purpose="typical_sizes", temperature=0.0,
                                                   max_tokens=1024, thinking=False))
-            except Exception:  # a size check is a help, never in the way
+            except Exception as e:  # a size check is a help, never in the way
+                print(f"typical sizes not checked: {type(e).__name__}: {e}", flush=True)
                 got = {}
             for thing in ask:
                 v = got.get(thing) if isinstance(got, dict) else None

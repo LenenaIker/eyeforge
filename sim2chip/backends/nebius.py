@@ -46,7 +46,7 @@ from ..workspace import DONE, LOG_PREFIX as PREFIX, REPO, Cache, Job
 # no L40S left). Isaac Sim needs a GPU with RT cores (L40S yes, H100/H200 no).
 PLATFORM = config.env("SIM2CHIP_NEBIUS_PLATFORM", "gpu-l40s-a")
 PRESET = config.env("SIM2CHIP_NEBIUS_PRESET", "1gpu-8vcpu-32gb")
-USD_PER_HOUR = float(config.env("SIM2CHIP_USD_PER_HOUR", "1.55"))  # on-demand L40S (Intel), nebius.com/prices, 2026-09
+USD_PER_HOUR = config.env_float("SIM2CHIP_USD_PER_HOUR", 1.55)  # on-demand L40S (Intel), nebius.com/prices, 2026-09
 # Where to ask when PLATFORM has no free machine (2026-10-13: none for over 20 min): the same L40S on AMD hosts,
 # whose smallest preset is bigger. "" turns it off.
 FALLBACK = config.env("SIM2CHIP_NEBIUS_FALLBACK", "gpu-l40s-d/1gpu-16vcpu-96gb")
@@ -57,7 +57,7 @@ PRICES = {"gpu-l40s-a": USD_PER_HOUR, "gpu-l40s-d": 1.82}
 
 def usd_per_hour(platform: str | None) -> float:
     return PRICES.get(platform or PLATFORM, USD_PER_HOUR)
-WORKER_HOURS = int(config.env("SIM2CHIP_WORKER_HOURS", "3"))  # timeout of a whole run in one job
+WORKER_HOURS = config.env_int("SIM2CHIP_WORKER_HOURS", 3)  # timeout of a whole run in one job
 UV_URL = "https://github.com/astral-sh/uv/releases/download/0.8.22/uv-x86_64-unknown-linux-gnu.tar.gz"
 WORKER_DEPS = ["tensorflow[and-cuda]==2.18.1", "numpy<2.1", "pillow", "objaverse", "boto3", "usd-core==26.8",
                "trimesh==5.1.0",  # these two convert models (glb2usd)
@@ -122,7 +122,7 @@ KIT_TIMES = "/tmp/s2c/kit_times.txt"  # per streamed kit: index, start and end (
 # A job Nebius cannot give a machine to this long is cancelled and asked for on the next platform (2026-10-13:
 # PROVISIONING, its instance FAILED, retried for over 12 min); waiting longer only keeps the user staring at a run
 # that never starts.
-PROVISION_S = float(config.env("SIM2CHIP_NEBIUS_PROVISION_S", "300"))
+PROVISION_S = config.env_float("SIM2CHIP_NEBIUS_PROVISION_S", 300)
 
 
 class NoGPU(RuntimeError):
@@ -548,7 +548,7 @@ class NebiusBackend:
     def __init__(self, verbose: bool = False, dry_run: bool = False, max_usd: float | None = None,
                  cli: NebiusCLI | None = None, store=None, poll_s: float = 20.0):
         self.verbose, self.dry_run, self.poll_s = verbose, dry_run, poll_s
-        self.max_usd = max_usd if max_usd is not None else float(_env("SIM2CHIP_MAX_USD", "5"))
+        self.max_usd = max_usd if max_usd is not None else config.env_float("SIM2CHIP_MAX_USD", 5)
         self.cli = cli or NebiusCLI(dry_run=dry_run)
         self._store = store
         self.prefix = _env("SIM2CHIP_BUCKET_PREFIX", "sim2chip")

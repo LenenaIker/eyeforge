@@ -13,7 +13,6 @@ bucket to a local folder with the same layout (cloud_worker.py), so stage code d
 from __future__ import annotations
 
 import json
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,7 +37,8 @@ def cache_key(value, sort_keys: bool = True) -> str:
 
 
 def default_home() -> Path:
-    return Path(os.environ.get("SIM2CHIP_HOME", REPO / "data"))
+    from .config import env
+    return Path(env("SIM2CHIP_HOME") or REPO / "data")
 
 
 @dataclass(frozen=True)
