@@ -141,6 +141,14 @@ Los documentos viejos (`plan_photo2scene.md`, `roadmap_photo2scene.md`, `roadmap
   - `scene.json` apunta con qué modelo se hizo la panorámica (`pano_model`).
   - Fuera `SIM2CHIP_PANOGEN_PYTHON`.
 
+Audit antes de la primera ejecución (26 por la noche, sin ejecutar):
+- la ruta comprueba la salida de cada paso, no paga la VM con un plan vacío y da por hechos los pasos de pago solo con todos los tramos;
+- preflight de intérpretes, variables de la nube y boto3 antes del primer paso; `SIM2CHIP_ROUTE_PYTHON` fija el Python del driver;
+- candados entre procesos (`sim2chip/locks.py`): la GPU local (pasos de la ruta y etapas GPU del backend local) y la VM de WorldStereo;
+- el servidor pone en `failed` las escenas `building` sin proceso vivo al arrancar, y Extract da 503 si faltan los entornos;
+- `isaac.py` crea un prim por objeto (contar con un solo modelo ya pone varias copias);
+- la inclinación sale del spec, recortada a lo que aguanta el splat.
+
 Pendiente:
 - **Nube:** `scene_render` necesita en Nebius el Python de gsplat junto a Isaac. Hoy la imagen de Isaac no lo tiene (2d).
 - **Aspecto de cámara (`look.py`):** `crops` y `points` lo aplican si el spec trae `look`, pero ya nada lo mide. Propuesta: medirlo solo de las fotos de entrenamiento del usuario, sin comando aparte, y comparar con y sin él en la primera ejecución de punta a punta.

@@ -3,10 +3,13 @@ run after a failure picks up where it stopped. The two WorldStereo runs on the N
 the driver never starts one unless --until names it or a later step (the user's budget approval)."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -15,10 +18,13 @@ import numpy as np
 
 from . import erase
 from .config import RouteConfig, arm_views
-from .paths import ERASE, HERE, PANOS, PHOTOS, ROOT, SPHERE_WALK, Case, python_for, required
+from .paths import ENVS, ERASE, HERE, PANOS, PHOTOS, ROOT, SPHERE_WALK, Case, env, python_for, required
+from sim2chip.locks import GPU, hold  # noqa: E402 (paths puts the repo on sys.path)
 
 ENTRY = Path(__file__).resolve().parents[1] / "ws_route.py"
 PAID = ("walk_legs", "planned_legs")
+LOCAL = ("here", "cloud")  # the steps that leave this machine's GPU alone (cloud's GPU is the VM's)
+CLOUD_VARS = ("SIM2CHIP_WS_PROJECT", "SIM2CHIP_WS_SUBNET", "SIM2CHIP_NEBIUS_REGISTRY")
 
 
 @dataclass
@@ -42,6 +48,21 @@ def depth_done(case: Case) -> Callable[[], bool]:
             return False
         return set(case.legs()) <= set(json.loads(f.read_text()))
     return done
+
+
+def legs_done(case: Case, prefix: str, planned: bool) -> Callable[[], bool]:
+    """Every leg in WorldStereo's scene folder has its generated video: the walks' legs, or the planned ones (their
+    folders start with prefix). A job cut short leaves some (job.sh ships what it has every 5 min)."""
+    def done():
+        legs = [t for t in case.scene.glob("*/traj*") if t.is_dir() and t.parent.name.startswith(prefix) == planned]
+        return bool(legs) and all(case.leg_video(f"{t.parent.name}/{t.name}").exists() for t in legs)
+    return done
+
+
+def nothing_planned(case: Case, prefix: str) -> bool:
+    """The next-best-view plan found no leg worth generating: stage and the paid run have nothing to do."""
+    f = case.nbv("G2_base") / "plan.json"
+    return f.exists() and not json.loads(f.read_text())["legs"] and not any(case.scene.glob(f"{prefix}*"))
 
 
 def fixed_done(case: Case, tag: str, timestep: int) -> Callable[[], bool]:
@@ -71,14 +92,16 @@ def recipe(cfg: RouteConfig) -> list[Step]:
         ]
     steps += [
         Step("walks", "scene", ["walks", *c], exists(case.prep_json)),
-        Step("walk_legs", "cloud", ["cloud", *c], exists(case.leg_video("reconstruct_0/traj0"))),
+        Step("walk_legs", "cloud", ["cloud", *c], legs_done(case, cfg.nbv_prefix, planned=False)),
         Step("depth_walks", "mapanything", ["depth", *c], depth_done(case)),
         Step("views_walks", "scene", ["views", *c, "--arm", "G2_base", *skip], exists(case.splat / "views_base.npz")),
         Step("train_walks", "gsplat", ["train", *c, "--arm", "G2_base"], exists(case.splat_ply("G2_base"))),
         Step("audit", "gsplat", ["audit", *c, "--arm", "G2_base"], exists(case.nbv("G2_base") / "audit.json")),
         Step("plan", "gsplat", ["plan", *c, "--arm", "G2_base"], exists(case.nbv("G2_base") / "plan.json")),
-        Step("stage", "gsplat", ["stage", *c, "--arm", "G2_base"], exists(case.scene / f"{cfg.nbv_prefix}00")),
-        Step("planned_legs", "cloud", ["cloud", *c, "--resume"], exists(case.leg_video(f"{cfg.nbv_prefix}00/traj0"))),
+        Step("stage", "gsplat", ["stage", *c, "--arm", "G2_base"],
+             lambda: (case.scene / f"{cfg.nbv_prefix}00").exists() or nothing_planned(case, cfg.nbv_prefix)),
+        Step("planned_legs", "cloud", ["cloud", *c, "--resume"],
+             lambda: legs_done(case, cfg.nbv_prefix, planned=True)() or nothing_planned(case, cfg.nbv_prefix)),
         Step("depth_planned", "mapanything", ["depth", *c], depth_done(case)),
         Step("views", "scene", ["views", *c, "--arm", "G2", *skip], exists(case.splat / "views.npz")),
         Step("train", "gsplat", ["train", *c, "--arm", "G2"], exists(case.splat_ply("G2"))),
@@ -113,12 +136,38 @@ def command(step: Step) -> list[str]:
     script = step.script or str(ENTRY)
     if step.env == "grut":
         grut = required("SIM2CHIP_GRUT_DIR")
-        return ["bash", "-c", f"cd {grut} && source .venv/bin/activate && python {script} {' '.join(step.args)}"]
+        return ["bash", "-c", f"cd {shlex.quote(grut)} && source .venv/bin/activate && "
+                              f"python {shlex.join([script, *step.args])}"]
     if step.env == "cloud":
         # the VM runner reads the Nebius and Object Storage settings from .env (never traced: rule 5)
-        run = f"exec {sys.executable} {script} {' '.join(step.args)}"
-        return ["bash", "-c", f"set -a; . {ROOT / '.env'}; set +a; {run}"]
+        run = f"exec {shlex.join([sys.executable, script, *step.args])}"
+        return ["bash", "-c", f"set -a; . {shlex.quote(str(ROOT / '.env'))}; set +a; {run}"]
     return [python_for(step.env), script, *step.args]
+
+
+def preflight(todo: list[Step]):
+    """Free checks before the first step that is left to run: every interpreter, the cloud steps' settings and
+    boto3 in this one (the VM runner's). A missing one would otherwise stop the route hours in, after paid steps."""
+    missing = []
+    for step in todo:
+        if step.env in ENVS:
+            exe = env(ENVS[step.env])
+            if not exe or not Path(exe).exists():
+                missing.append(f"{ENVS[step.env]} ({step.name})")
+        elif step.env == "grut":
+            grut = env("SIM2CHIP_GRUT_DIR")
+            if not grut or not (Path(grut) / ".venv/bin/activate").exists():
+                missing.append(f"SIM2CHIP_GRUT_DIR with its .venv ({step.name})")
+        elif step.env == "cloud":
+            missing += [f"{v} ({step.name})" for v in CLOUD_VARS if not env(v)]
+            if not (ROOT / ".env").exists():
+                missing.append(f".env ({step.name})")
+            if importlib.util.find_spec("boto3") is None:
+                missing.append(f"boto3 in {sys.executable} ({step.name}: run the driver in edge-sdg)")
+        if step.script and not Path(step.script).exists():
+            missing.append(step.script)
+    if missing:
+        sys.exit("the route cannot run: " + "; ".join(dict.fromkeys(missing)))
 
 
 def run(cfg: RouteConfig, until: str):
@@ -128,7 +177,8 @@ def run(cfg: RouteConfig, until: str):
     if until not in names:
         sys.exit(f"--until must be one of: {', '.join(names)}")
     last = names.index(until)
-    env = dict(os.environ, SIM2CHIP_REVIEW_MODEL=os.environ.get("SIM2CHIP_REVIEW_MODEL", erase.VLM))
+    preflight([s for s in steps[:last + 1] if not s.done()])
+    child_env = dict(os.environ, SIM2CHIP_REVIEW_MODEL=os.environ.get("SIM2CHIP_REVIEW_MODEL", erase.VLM))
     for k, step in enumerate(steps):
         if k > last:
             print(f"[{cfg.case}] stop before {step.name} (--until {until})")
@@ -145,7 +195,13 @@ def run(cfg: RouteConfig, until: str):
             if cache.exists() and made.exists() and cache.stat().st_mtime < made.stat().st_mtime:
                 cache.unlink()
         print(f"[{cfg.case}] {step.name} ...", flush=True)
-        subprocess.run(command(step), check=True, cwd=ROOT, env=env)
+        # The local GPU is one: a training stage on it waits, and this step waits for one (sim2chip.locks).
+        with nullcontext() if step.env in LOCAL else hold(GPU, f"scene route {cfg.case}: {step.name}"):
+            subprocess.run(command(step), check=True, cwd=ROOT, env=child_env)
+        # A step can end well without its output (a VM job that failed, a fetch with nothing in the bucket): the
+        # next one would fail far from the cause, or pay for nothing.
+        if not step.done():
+            sys.exit(f"[{cfg.case}] {step.name} ended without its output")
     print(f"[{cfg.case}] done through {until}")
 
 

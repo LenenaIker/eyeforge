@@ -10,9 +10,11 @@ from __future__ import annotations
 import os
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 from .. import config
+from ..locks import GPU, hold
 from ..stages import Stage
 from ..subproc import python_env, run_module
 from ..workspace import LOG_PREFIX as PREFIX, REPO, Cache, Job
@@ -43,7 +45,7 @@ class LocalBackend:
             if not exe or not Path(exe).exists():
                 raise FileNotFoundError(f"image-to-3D python not found at {exe}, set SIM2CHIP_TRELLIS_PYTHON")
             return [exe]
-        return [os.environ.get("SIM2CHIP_PYTHON", sys.executable)]
+        return [config.env("SIM2CHIP_PYTHON", sys.executable)]
 
     def prepare(self, pipe):
         return pipe
@@ -80,9 +82,14 @@ class LocalBackend:
             if self.verbose or line.startswith(PREFIX):
                 print("  " + line.removeprefix(PREFIX).strip(), flush=True)
 
-        code, tail = run_module(self.interpreter(stage.runtime), "sim2chip.run_stage",
-                                [stage.name, "--job", str(job.root), "--cache", str(cache.root), "--fingerprint", fp],
-                                on_line=show, log_file=log_path, env=python_env(extra), tail=40, cwd=REPO)
+        # A GPU stage waits while another process (a scene route step, another run) has this machine's GPU.
+        gpu = nullcontext()
+        if stage.gpu and self.name == "local":
+            gpu = hold(GPU, f"{stage.name} of {job.root.name}", log=lambda m: print("  " + m, flush=True))
+        with gpu:
+            code, tail = run_module(self.interpreter(stage.runtime), "sim2chip.run_stage",
+                                    [stage.name, "--job", str(job.root), "--cache", str(cache.root), "--fingerprint",
+                                     fp], on_line=show, log_file=log_path, env=python_env(extra), tail=40, cwd=REPO)
         if job.done(stage.name) is None or job.done(stage.name).get("fingerprint") != fp:
             print(f"  {stage.name} failed (exit {code}), last lines of {log_path}:", flush=True)
             for line in tail:

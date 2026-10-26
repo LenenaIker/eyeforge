@@ -74,6 +74,19 @@ def test_eye_height_stays_near_the_walks(tmp_path):
         assert -0.3 - 1e-4 <= z <= 0.3 + 1e-4
 
 
+def test_the_spec_pitch_is_kept_within_what_the_walks_hold(tmp_path):
+    s = spec()
+    s.camera.height_m = (1.5, 1.7)
+    s.camera.pitch_deg = (5.0, 60.0)  # degrees down; past 20 the splat shows what no walk filmed
+    p = plan({"s": bundle(tmp_path)}, ASSETS, s, tmp_path, 10, (640, 480))
+    for v in p["views"]:
+        fwd = np.asarray(v["w2c"])[2, :3]
+        assert -20 - 1e-3 <= math.degrees(math.asin(fwd[2])) <= -5 + 1e-3
+    assert "pitch 5-60 deg down kept to 5-20" in p["camera_note"]
+    s.camera.pitch_deg = None
+    assert plan({"s": bundle(tmp_path)}, ASSETS, s, tmp_path, 4, (640, 480))["camera_note"] is None
+
+
 def test_no_models_no_views(tmp_path):
     p = plan({"s": bundle(tmp_path)}, [], spec(), tmp_path, 10, (640, 480))
     assert p["views"] == [] and p["why"]
@@ -113,7 +126,7 @@ def test_objects_are_whole_in_the_frame_top_to_bottom(tmp_path):
 
 def test_scene_proposals_prefer_open_level_daylight_places(tmp_path, monkeypatch):
     from sim2chip import scene_job, scene_pick
-    monkeypatch.setattr(scene_job, "has_focal", lambda f: f.name != "nofocal.jpg")
+    monkeypatch.setattr(scene_job, "no_focal", lambda f: "no focal length" if f.name == "nofocal.jpg" else None)
     open_road = {"context": "ground", "light": "overcast", "camera_pitch_deg": 5, "camera_height_m": 1.6,
                  "objects": [{"name": "bench", "count": 1, "size_m": 1.2}]}
     parked = {**open_road, "objects": [{"name": "car", "count": 3, "size_m": 4.5}]}

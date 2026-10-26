@@ -123,6 +123,26 @@ def contents(spec, classes: list[str], n: int, rng: random.Random) -> list[tuple
     return out
 
 
+def clip(r, lo: float, hi: float) -> tuple[float, float]:
+    return min(max(r[0], lo), hi), min(max(r[1], lo), hi)
+
+
+def camera_ranges(spec) -> tuple[tuple[float, float], tuple[float, float], str | None]:
+    """Eye height and pitch (+ up) of the frames: the spec's camera kept within what a walk scene holds (the splat
+    only holds up near the walks' eye height, looking about level), and a note for the log when that changed it."""
+    eye = clip(spec.camera.height_m, *EYE_HEIGHT)
+    below = spec.camera.pitch_deg  # degrees below the horizon, None: the walks' own range
+    pitch = PITCH_DEG if below is None else tuple(sorted(clip((-below[0], -below[1]), *PITCH_DEG)))
+    changed = []
+    if tuple(spec.camera.height_m) != eye:
+        changed.append(f"camera height {spec.camera.height_m[0]:g}-{spec.camera.height_m[1]:g} m kept to "
+                       f"{eye[0]:g}-{eye[1]:g} m")
+    if below is not None and tuple(sorted((-below[0], -below[1]))) != pitch:
+        changed.append(f"pitch {below[0]:g}-{below[1]:g} deg down kept to {-pitch[1]:g}-{-pitch[0]:g}")
+    note = "walk scenes: " + ", ".join(changed) + " (the splat only holds up near eye height)" if changed else None
+    return eye, pitch, note
+
+
 def plan(scenes: dict[str, Scene], assets: list[dict], spec, cache_root: Path, n: int,
          size: tuple[int, int]) -> dict:
     """Every frame's scene, camera and objects (plan.json): frames whose objects find no room are tried again with
@@ -132,8 +152,7 @@ def plan(scenes: dict[str, Scene], assets: list[dict], spec, cache_root: Path, n
     classes = sorted(by_class)
     if not classes:
         return {"size": list(size), "fov_deg": spec.camera.hfov_deg, "views": [], "why": "no 3D model of any class"}
-    lo, hi = spec.camera.height_m
-    eye = (min(max(lo, EYE_HEIGHT[0]), EYE_HEIGHT[1]), min(max(hi, EYE_HEIGHT[0]), EYE_HEIGHT[1]))
+    eye, pitches, note = camera_ranges(spec)
     ids = sorted(scenes)
     stands = {s: scenes[s].free_points(within=scenes[s].meta["radius"]) for s in ids}
     views, missed = [], 0
@@ -146,7 +165,7 @@ def plan(scenes: dict[str, Scene], assets: list[dict], spec, cache_root: Path, n
         aim = AIM_JITTER if spec.task == "roi_classification" else SPREAD
         for _ in range(TRIES):
             cam = [*stands[sid][rng.randrange(len(stands[sid]))], rng.uniform(*eye) - sc.camera_height]
-            yaw, pitch = rng.uniform(0, 360), rng.uniform(*PITCH_DEG)
+            yaw, pitch = rng.uniform(0, 360), rng.uniform(*pitches)
             objs = place(sc, cam, yaw, pitch, [rng.choice(by_class[c]) for c in want], spec, rng, aim,
                          size[1] / size[0])
             if objs is not None:
@@ -156,4 +175,5 @@ def plan(scenes: dict[str, Scene], assets: list[dict], spec, cache_root: Path, n
             continue
         views.append({"name": f"{len(views):04d}", "scene": sid, "class": cls, "objects": objs,
                       "w2c": w2c(cam, yaw, pitch).round(6).tolist()})
-    return {"size": list(size), "fov_deg": spec.camera.hfov_deg, "views": views, "missed": missed}
+    return {"size": list(size), "fov_deg": spec.camera.hfov_deg, "views": views, "missed": missed,
+            "camera_note": note}

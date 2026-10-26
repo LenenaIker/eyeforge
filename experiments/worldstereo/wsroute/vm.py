@@ -183,14 +183,32 @@ def stop():
     print(f"{GPU_VM} stopped")
 
 
+def wait_stopped(name: str) -> dict:
+    """The VM once it is no longer stopping (a job that just ended stops it): start fails on a stopping VM."""
+    t0 = time.time()
+    while True:
+        vm = get("instance", name) or sys.exit(f"no {name}: run `vm gpu` first")
+        if vm["status"].get("state") not in ("STOPPING", "STARTING") or time.time() - t0 > 600:
+            return vm
+        time.sleep(10)
+
+
 def run(case_name: str, hours: float, resume: bool = False):
-    """Start the GPU VM, run the job in the image with the cached weights, always stop, fetch."""
+    """Start the GPU VM, run the job in the image with the cached weights, always stop, fetch. One job at a time
+    on the one VM, across processes (the server, the CLI): another one waits for it, or its stop would cut this."""
+    from sim2chip.locks import WS_VM, hold
+    with hold(WS_VM, f"WorldStereo of {case_name}"):
+        _run(case_name, hours, resume)
+
+
+def _run(case_name: str, hours: float, resume: bool):
     case = Case(case_name)
-    vm = get("instance", GPU_VM) or sys.exit(f"no {GPU_VM}: run `vm gpu` first")
+    get("instance", GPU_VM) or sys.exit(f"no {GPU_VM}: run `vm gpu` first")
     img = cloud.image()
     cloud.preflight(case, img)
     script, log_url = cloud.upload(case, hours, resume)
     t0 = time.time()
+    vm = wait_stopped(GPU_VM)
     if vm["status"].get("state") != "RUNNING":
         neb("compute", "instance", "start", "--id", vm["metadata"]["id"])
     try:

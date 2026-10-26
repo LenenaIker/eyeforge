@@ -41,8 +41,12 @@ def scene_folders(ctx: Context) -> dict[str, Path]:
 def resolve_asset(usd: str, out_dir: Path) -> str:
     """The asset as Isaac can open it: the converted wrapper itself when its reference resolves, else a copy in
     out_dir whose reference points at the same file name in the wrapper's own raw/ folder (wrappers converted before
-    the folder rename of 2026-10-01 carry absolute paths to a folder that no longer exists)."""
-    from pxr import Sdf
+    the folder rename of 2026-10-01 carry absolute paths to a folder that no longer exists). Without the USD
+    library in this Python the wrapper goes as it is: only those old wrappers need the copy."""
+    try:
+        from pxr import Sdf
+    except ImportError:
+        return usd
     layer = Sdf.Layer.FindOrOpen(usd)
     spec = layer.GetPrimAtPath("/Asset/Geo") if layer else None
     refs = (list(spec.referenceList.prependedItems) or list(spec.referenceList.explicitItems)) if spec else []
@@ -125,6 +129,8 @@ class SceneRender(Stage):
         (out / "plan.json").write_text(json.dumps(p, indent=1))
         (out / "scenes.json").write_text(json.dumps({s: str(f) for s, f in scenes.items()}, indent=1))
         ctx.log(f"{len(p['views'])} frames planned in {len(scenes)} scenes ({p.get('missed', 0)} found no room)")
+        if p.get("camera_note"):
+            ctx.log(p["camera_note"])
 
         from ..backends.local import ISAAC_PYTHON
         ctx.job.logs.mkdir(parents=True, exist_ok=True)
@@ -146,5 +152,7 @@ class SceneRender(Stage):
         report = json.loads((out / "render.json").read_text())["views"]
         frames = frames_of(p["views"], report, ctx.spec)
         (out / "frames.json").write_text(json.dumps(frames, indent=1))
+        for f in [*out.glob("bg_*.png"), *out.glob("depth_*.npy")]:  # the composites hold them: ~2 MB a view
+            f.unlink()
         ctx.log(f"{len(frames)} frames in the walk scenes")
         return {"frames": len(frames), "planned": len(p["views"]), "scenes": sorted(scenes)}

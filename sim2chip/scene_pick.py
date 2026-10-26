@@ -35,8 +35,8 @@ def score(d: dict) -> float | None:
 def propose(photos: list[dict], cache_root: Path, log=print) -> list[dict]:
     """photos: [{"id", "file" (Path), "description" (profile dict)}] -> the PROPOSALS best, apart from each other:
     [{"photo_id", "score"}]."""
-    from .scene_job import has_focal
-    ranked = sorted(((s, p) for p in photos if (s := score(p["description"])) is not None and has_focal(p["file"])),
+    from .scene_job import no_focal
+    ranked = sorted(((s, p) for p in photos if (s := score(p["description"])) is not None and not no_focal(p["file"])),
                     key=lambda sp: -sp[0])
     emb = {}
     if len(ranked) > PROPOSALS:

@@ -757,6 +757,10 @@ class Library:
             self.db.execute("UPDATE scenes SET status = 'ready', why = NULL, dir = ?, thumb = ?, info = ? WHERE id = ?",
                             (folder, thumb, json.dumps(info), sid))
 
+    def building_scenes(self) -> list[str]:
+        """Every scene still being made, of any owner (the server checks them at start: scene_job.stale)."""
+        return [sid for (sid,) in self.db.execute("SELECT id FROM scenes WHERE status = 'building'")]
+
     def fail_scene(self, sid: str, why: str) -> None:
         with self.lock:
             self.db.execute("UPDATE scenes SET status = 'failed', why = ? WHERE id = ?", (why, sid))
