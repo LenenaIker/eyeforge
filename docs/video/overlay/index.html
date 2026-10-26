@@ -1,0 +1,381 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EyeForge Model Overlay</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+/* Layout: a 16:9 video frame (street + phone) with a FIFO column of model cards on the right; controls and the cue list below. Single dark look on purpose: it is a video overlay. */
+:root {
+  color-scheme: dark;
+  --bg: #0d0f12;
+  --panel: #171a1f;
+  --line: #2a2f37;
+  --fg: #eef1f4;
+  --muted: #9aa3ad;
+  --lime: #e0ff4f;          /* Nebius lime */
+  --on-lime: #0d0f12;
+  --device: #e7eaee;
+  --card: rgba(13, 15, 18, .78);
+  --nv: #76b900;            /* NVIDIA green */
+  --ease: cubic-bezier(.22, 1, .36, 1);
+  --display: "Onest", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--display); }
+.wrap { max-width: 1100px; margin: 0 auto; padding-block: 24px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 20px; }
+h1 { font-size: 1.35rem; font-weight: 700; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); margin: 4px 0 0; max-width: 70ch; line-height: 1.5; }
+
+/* video frame */
+.frame { position: relative; aspect-ratio: 16 / 9; max-width: 100%; border-radius: 10px; overflow: hidden;
+  background:
+    radial-gradient(120% 80% at 20% 110%, #3a3226 0%, transparent 60%),
+    linear-gradient(180deg, #8fa3b4 0%, #c7cfd3 38%, #6c6a63 39%, #4a4741 70%, #2f2d2a 100%);
+  container-type: inline-size; }
+.street::before, .street::after { content: ""; position: absolute; bottom: 30%; width: 22%; height: 55%;
+  background: linear-gradient(180deg, #a48b70, #7c6754); filter: blur(6px); opacity: .8; }
+.street::before { left: 2%; } .street::after { left: 62%; width: 14%; height: 48%; background: linear-gradient(180deg, #8f9aa0, #626a6f); }
+.street { position: absolute; inset: 0; filter: blur(2px); }
+.phone { position: absolute; left: 30%; top: 8%; height: 92%; aspect-ratio: 9 / 19; border-radius: 6cqw 6cqw 0 0;
+  background: #111; border: .6cqw solid #222; border-bottom: none; padding: 1.2cqw; box-shadow: 0 2cqw 6cqw rgba(0,0,0,.5); }
+.screen { height: 100%; border-radius: 4.6cqw 4.6cqw 0 0; background: #f6f7f9; color: #1a1d22; padding: 3cqw 2cqw;
+  display: grid; align-content: start; gap: 1.4cqw; font-size: 1.5cqw; }
+.screen b { font-size: 1.9cqw; }
+.screen .bubble { background: #e6e9ee; border-radius: 1.4cqw; padding: 1.2cqw 1.6cqw; line-height: 1.35; }
+.screen .bubble.me { background: #1a1d22; color: #fff; justify-self: end; }
+.screen .bar { height: .8cqw; border-radius: 99px; background: #d5d9df; overflow: hidden; }
+.screen .bar i { display: block; height: 100%; width: 62%; background: #1a1d22; }
+.caption { position: absolute; left: 5%; right: 40%; bottom: 5%; text-align: center; font-size: 2.1cqw; line-height: 1.35;
+  color: #fff; text-shadow: 0 .2cqw .6cqw rgba(0,0,0,.9); font-weight: 500; text-wrap: balance; }
+
+/* the pipeline scheme: phases on a vertical line, the active one opens and holds its model cards (FIFO) */
+/* the panel sizes to its content: centred vertically, it grows up and down as a phase opens, and widens for long names */
+.fifo { position: absolute; right: 5%; top: 50%; transform: translateY(-50%); max-width: 33%;
+  max-height: 90%; display: flex; flex-direction: column; background: rgba(13, 15, 18, .55); backdrop-filter: blur(8px); border-radius: 1.15cqw;
+  padding: 1.15cqw 1.31cqw; }
+.phase { position: relative; padding-left: 2.46cqw; padding-block: 0.45cqw; }
+.phase::before { content: ""; position: absolute; left: 0.7cqw; top: 0; bottom: 0; width: 0.16cqw; background: rgba(255,255,255,.18); transition: background 1.1s var(--ease); }
+/* line ends are anchored to the dot's centre (1.19cqw from the phase top), never to a % of a phase whose height animates */
+.phase:first-child::before { top: 1.19cqw; } .phase:last-child::before { bottom: auto; height: 1.19cqw; }
+.phase.active::before, .phase.done::before { background: var(--lime); }
+.phase.active + .phase::before { background: linear-gradient(var(--lime), rgba(255,255,255,.18) 50%); }
+/* the loop phase hangs from a dashed line: it is optional and repeats. The phase before it is solid only down to its dot,
+   then dashed to the loop's dot; nothing runs below the loop. */
+.phase:has(+ .phase.dashed)::before { bottom: auto; height: 1.19cqw; }
+.phase:has(+ .phase.dashed)::after { content: ""; position: absolute; left: 0.7cqw; top: 1.19cqw; bottom: 0; width: 0.16cqw;
+  background: repeating-linear-gradient(to bottom, rgba(255,255,255,.4) 0 0.45cqw, transparent 0.45cqw 0.9cqw); }
+.phase.dashed::before { top: 0 !important; bottom: auto !important; height: 1.19cqw; }
+.phase:has(+ .phase.dashed.active)::after { background: repeating-linear-gradient(to bottom, var(--lime) 0 0.45cqw, transparent 0.45cqw 0.9cqw); }
+.phase.dashed::before { background: repeating-linear-gradient(to bottom, rgba(255,255,255,.4) 0 0.45cqw, transparent 0.45cqw 0.9cqw) !important; }
+.phase.dashed.active::before, .phase.dashed.done::before { background: repeating-linear-gradient(to bottom, var(--lime) 0 0.45cqw, transparent 0.45cqw 0.9cqw) !important; }
+.phase.dashed .dot { background: transparent; box-shadow: inset 0 0 0 0.16cqw rgba(255,255,255,.4); outline: 0.12cqw dashed rgba(255,255,255,.4); outline-offset: 0.16cqw; }
+.phase.dashed.active .dot { background: var(--lime); outline-color: var(--lime); }
+.dot { position: absolute; left: 0.2cqw; top: 0.61cqw; width: 1.15cqw; height: 1.15cqw; border-radius: 50%;
+  background: #1c2026; box-shadow: inset 0 0 0 0.16cqw rgba(255,255,255,.35); transition: background 1s var(--ease), box-shadow 1s var(--ease); }
+.phase.done .dot { background: var(--lime); box-shadow: none; }
+.phase.active .dot { background: var(--lime); box-shadow: 0 0 0 0.41cqw rgba(224,255,79,.25); }
+.pname { display: flex; align-items: baseline; gap: 0.66cqw; font-size: 1.39cqw; font-weight: 700; color: rgba(255,255,255,.4);
+  transform-origin: left center; transition: color 1.1s ease-in-out, transform 1.1s cubic-bezier(.65, 0, .35, 1);
+  padding-right: 3.28cqw; } /* room for the 1.2x scale of the active name, which does not take layout space */
+.pname small { font-family: var(--mono); font-size: 0.82cqw; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; }
+.phase.done .pname { color: rgba(255,255,255,.7); }
+.phase.active .pname { color: #fff; transform: scale(1.2); }
+.phase.active .pname small { color: var(--lime); }
+.loop { font-family: var(--mono); font-size: 0.82cqw; color: var(--lime); max-height: 0; opacity: 0; overflow: hidden;
+  transition: max-height 1s cubic-bezier(.65, 0, .35, 1), opacity .8s ease-in-out, margin 1s cubic-bezier(.65, 0, .35, 1); }
+.phase.active .loop { max-height: 2.46cqw; opacity: 1; margin-top: 0.49cqw; transition-delay: .6s; }
+.slot { display: flex; flex-direction: column; }
+.card { background: var(--card); border: 1px solid rgba(255,255,255,.1);
+  border-radius: 0.9cqw; padding: 0.82cqw 1.07cqw; display: grid; gap: 0.41cqw; overflow: hidden;
+  margin-top: 0.66cqw; }
+/* card wrapper: height opens with the grid-rows trick, so neighbours slide instead of jumping */
+.cw { display: grid; grid-template-rows: 0fr; opacity: 0; transform: translateX(2.05cqw);
+  transition: grid-template-rows .9s cubic-bezier(.65, 0, .35, 1), opacity .8s ease-in-out .2s, transform 1s var(--ease) .2s; }
+.cw.in { grid-template-rows: 1fr; opacity: 1; transform: none; }
+.cw.out { grid-template-rows: 0fr; opacity: 0; transform: translateY(-0.66cqw);
+  transition: grid-template-rows 1.1s cubic-bezier(.65, 0, .35, 1) .45s, opacity .9s ease-in-out, transform 1.2s var(--ease); }
+.cw > .inner { min-height: 0; overflow: hidden; }
+.pills { display: flex; flex-wrap: wrap; gap: 0.41cqw; }
+.step { font-family: var(--mono); font-size: 0.86cqw; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.model { font-size: 1.64cqw; font-weight: 700; line-height: 1.1; }
+.badge { justify-self: start; font-family: var(--mono); font-weight: 700; font-size: 0.86cqw; letter-spacing: .04em;
+  padding: 0.29cqw 0.74cqw; border-radius: 99px; background: var(--lime); color: var(--on-lime); }
+.badge.device { background: transparent; color: var(--device); box-shadow: inset 0 0 0 1px var(--device); }
+.badge.nv, .mini.nv { background: var(--nv); color: #0b0f05; }
+.card.pending .model::after { content: " *"; color: var(--lime); }
+
+/* the presenter's place (a stand-in for the real footage) */
+.me { position: absolute; left: 8%; bottom: 0; width: 17%; height: 78%; filter: blur(1.5px); opacity: .85; }
+.me::before { content: ""; position: absolute; left: 32%; top: 0; width: 36%; aspect-ratio: 1; border-radius: 50%; background: #3b3530; }
+.me::after { content: ""; position: absolute; left: 6%; right: 6%; top: 24%; bottom: 0; border-radius: 40% 40% 0 0; background: #2c2a2f; }
+.me span { position: absolute; left: 0; right: 0; top: 50%; text-align: center; font: 500 1.1cqw var(--mono); color: rgba(255,255,255,.5); z-index: 1; }
+.phone { transition: opacity .8s ease-in-out, transform 1.2s cubic-bezier(.65, 0, .35, 1); transform-origin: 50% 50%; }
+
+/* synthetic part: the portrait phone turns on its side and grows into a landscape phone that covers the presenter.
+   The side panel never moves. Before the turn the landscape phone sits where the portrait one is, rotated and small. */
+.lphone { position: absolute; left: 3%; top: 50%; width: 57%; aspect-ratio: 19.5 / 9; z-index: 2;
+  background: #111; border: .6cqw solid #222; border-radius: 3.2cqw; padding: 1cqw 1.4cqw;
+  box-shadow: 0 2cqw 6cqw rgba(0,0,0,.6); opacity: 0; pointer-events: none;
+  /* starts centred on the portrait phone and turned the other way, so both phones rotate in the same direction */
+  transform: translate(19%, -41.4%) rotate(90deg) scale(.91);
+  transition: transform 1.3s cubic-bezier(.65, 0, .35, 1), opacity .7s ease-in-out; }
+.lphone .lscreen { position: relative; width: 100%; height: 100%; border-radius: 2cqw; overflow: hidden; background: #0d0f12; }
+.lphone img, .lphone video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .9s ease-in-out; }
+.lphone img.on, .lphone video.on { opacity: 1; }
+.lphone .tag { position: absolute; left: 50%; top: 4%; transform: translateX(-50%); white-space: nowrap; font: 700 1.05cqw var(--mono);
+  letter-spacing: .06em; padding: .35cqw .9cqw; border-radius: 99px; background: rgba(13,15,18,.8); color: var(--lime); z-index: 1; }
+.frame.p2s .lphone { opacity: 1; transform: translate(0, -50%); }
+.frame.p2s .phone { opacity: 0; transform: translate(-44%, -4.3%) rotate(-90deg) scale(1.1); }
+.frame.p2s .me { opacity: .25; transition: opacity 1s; }
+/* "covering everything": same phone, plus a dark veil over the street footage */
+.backdrop { position: absolute; inset: 0; background: rgba(13,15,18,.82); backdrop-filter: blur(10px); opacity: 0;
+  transition: opacity 1s ease-in-out; z-index: 1; }
+.frame[data-layout="full"].p2s .backdrop { opacity: 1; }
+.fifo { z-index: 3; } .caption { z-index: 3; }
+.caption { border-radius: .8cqw; transition: background 1s ease-in-out, font-size 1s var(--ease), right 1s var(--ease); }
+/* over pictures the voice line becomes a boxed subtitle, so it reads on any image */
+.frame.p2s .caption { font-size: 1.7cqw; background: rgba(13,15,18,.72); padding: .6cqw 1.2cqw; bottom: 3%; right: 42%; }
+
+/* controls */
+.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+button, select { font: 500 .95rem var(--display); color: var(--fg); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+button.primary { background: var(--lime); color: var(--on-lime); border-color: var(--lime); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+label { display: inline-flex; gap: 8px; align-items: center; color: var(--muted); font-size: .92rem; }
+
+/* cue list */
+.cues { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .92rem; min-width: 640px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-family: var(--mono); font-size: .75rem; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+tr.now td { background: rgba(224, 255, 79, .08); }
+td.voice { color: var(--muted); font-style: italic; max-width: 32ch; }
+.mini { font-family: var(--mono); font-size: .72rem; font-weight: 700; padding: 2px 8px; border-radius: 99px; background: var(--lime); color: var(--on-lime); white-space: nowrap; }
+.mini.device { background: transparent; color: var(--device); box-shadow: inset 0 0 0 1px var(--device); }
+.note { color: var(--muted); font-size: .88rem; line-height: 1.5; max-width: 80ch; margin: 0; }
+.mini + .mini { margin-left: 6px; }
+@media (prefers-reduced-motion: reduce) { .cw, .pname, .phase, .loop, .dot, .phase::before, .phone, .lphone { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Model overlay for the street demo</h1>
+    <p class="sub">Mock of the 0:45-2:15 block, street case. The pipeline phases sit on a line at the side; the active phase opens and its model cards come in one by one (three at most, the oldest fades out). For the synthetic part the phone turns on its side and covers the presenter, showing what each model does to the photo, while the side panel stays as it is.</p>
+  </header>
+
+  <div class="frame" id="frame" data-layout="phone">
+    <div class="street"></div>
+    <div class="me"><span>you</span></div>
+    <div class="phone"><div class="screen" id="screen"></div></div>
+    <div class="backdrop"></div>
+    <div class="lphone" id="shots"><div class="lscreen"><div id="imgs"></div><div class="tag" id="shotTag"></div></div></div>
+    <div class="caption" id="caption"></div>
+    <div class="fifo" id="fifo"></div>
+  </div>
+
+  <div class="controls">
+    <button class="primary" id="play" type="button">Pause</button>
+    <button id="restart" type="button">Restart</button>
+    <label for="layout">Pictures
+      <select id="layout"><option value="phone">Landscape phone over me</option><option value="full">Landscape phone, street dimmed</option><option value="off">None</option></select>
+    </label>
+    <label for="speed">Seconds per card
+      <select id="speed"><option value="1.5">1.5</option><option value="2.2" selected>2.2</option><option value="3">3</option></select>
+    </label>
+  </div>
+
+  <div class="cues"><table>
+    <thead><tr><th>#</th><th>Step</th><th>Model</th><th>Where</th><th>Voice line it sits under</th></tr></thead>
+    <tbody id="cueRows"></tbody>
+  </table></div>
+  <p class="note">Pictures: photo21 from the F3c run of 2026-10-26. A card marked * has no real picture yet: the render with vehicles in the street comes from scene_render (planned for Oct 27). Colours: Nebius #E0FF4F, NVIDIA #76B900. The dashed last phase is the loop: what the board gets wrong goes back as corrections and the model is retrained.</p>
+</div>
+
+<script>
+const VOICE = [
+  "Everything happens on my phone. I tell EyeForge what I need. Nemotron, running on Nebius Token Factory, looks at my photos and turns my answers into a plan.",
+  "I take a few photos, right here. I don't label them: big foundation models do it for me. They are the teachers.",
+  "From one photo of this street, Nebius builds the whole street in 3D, once, and keeps it.",
+  "Isaac Sim fills it with vehicles I never photographed, and a tiny student model learns from both.",
+  "Now I test it on my phone. This one is wrong. Tap. Make it better. Next round, it's right.",
+  "And I flash it to the ESP32-CAM, from the phone, right here in the street."
+];
+const SCREENS = [
+  '<b>EyeForge</b><div class="bubble">What should your camera see?</div><div class="bubble">Classes: car, motorbike, bike</div><div class="bubble">Board: ESP32-CAM</div>',
+  '<b>Photos</b><div class="bubble">20 photos uploaded</div><div class="bubble">Labeling with the teacher...</div>',
+  '<b>Street scene</b><div class="bubble">Extracting the scene</div><div class="bar"><i></i></div><div class="bubble">Walking the street</div>',
+  '<b>Training</b><div class="bubble">Scene ready: your street</div><div class="bubble">Placing vehicles, rendering</div><div class="bubble">Training the student, round 1</div>',
+  '<b>Test</b><div class="bubble">Car, 91%</div><div class="bubble">Corrected: motorbike</div><div class="bubble">Round 2: motorbike</div>',
+  '<b>Flash</b><div class="bubble">Connect the ESP32-CAM by USB</div><div class="bubble">Flashing... 100%</div>'
+];
+const TF = "tf", AC = "ac", DEV = "dev";
+const PHASES = [
+  { id: "plan", name: "Interview", tag: "spec" },
+  { id: "label", name: "Labeling", tag: "teachers" },
+  { id: "scene", name: "Scene", tag: "once per place" },
+  { id: "train", name: "Training", tag: "synthetic + real" },
+  { id: "test", name: "Testing", tag: "your phone", loop: "↺ corrections go back to the teachers" },
+  { id: "flash", name: "Flashing", tag: "your board" },
+  { id: "retrain", name: "Retraining", tag: "fix mistakes", dashed: true }
+];
+const SLOT_MAX = 3;
+// pic: the landscape phone stays up for this card (it may keep the previous picture when it brings none)
+function cues() {
+  return [
+    { v: 0, p: "plan", step: "Chat · see the photos · write the plan", model: "Nemotron 3.5 Super VL", where: TF, nv: true },
+    { v: 1, p: "label", step: "Label every photo", model: "SigLIP 2", where: AC },
+    { v: 2, p: "scene", step: "Find what is in the way", model: "SAM 3", where: AC, pic: true,
+      shots: [["photo", "Your photo"], ["masks", "SAM 3 · cars and obstacles"]] },
+    { v: 2, p: "scene", step: "Erase it", model: "Qwen Image Edit", where: AC, pic: true,
+      shots: [["erased", "Qwen · the street, empty"]] },
+    { v: 2, p: "scene", step: "Imagine all around", model: "WorldGen + MoGe-2", where: AC, pic: true,
+      shots: [["placed", "WorldGen · your photo on the sphere"], ["pano", "WorldGen · 360° from one photo"]] },
+    { v: 2, p: "scene", step: "Walk the street", model: "WorldStereo", where: AC, pic: true,
+      shots: [["walk_fwd", "WorldStereo · walking forward", 3.5], ["walk_turn", "WorldStereo · turning around, walking back", 5.25]] },
+    { v: 2, p: "scene", step: "Build it in 3D · repair", model: "gsplat + Fixer", where: AC, nv: true, pic: true,
+      shots: [["fix_in", "3D splat · blurry where nobody walked"], ["fix_out", "Fixer · repaired"]] },
+    { v: 2, p: "scene", step: "Scene for Isaac Sim", model: "3DGRUT → NuRec USDZ", where: AC, nv: true, pic: true },
+    { v: 3, p: "train", step: "Place vehicles · render", model: "Isaac Sim Replicator", where: AC, nv: true, pic: true, pending: true,
+      shots: [["render_todo", "Isaac Sim · vehicles in your street"]] },
+    { v: 3, p: "train", step: "Real + synthetic photos", model: "MobileNetV2, int8", where: AC },
+    { v: 4, p: "test", step: "Runs in the browser", model: "LiteRT", where: DEV },
+    { v: 5, p: "flash", step: "From the phone, WebUSB", model: "TFLite Micro on ESP32-CAM", where: DEV },
+    { v: 5, p: "retrain", step: "Your corrections, new round", model: "SigLIP 2 → student", where: AC }
+  ];
+}
+function buildScheme() {
+  $("fifo").innerHTML = PHASES.map(p =>
+    `<div class="phase${p.dashed ? " dashed" : ""}" data-p="${p.id}"><span class="dot"></span>` +
+    `<div class="pname">${p.name}<small>${p.tag}</small></div>` +
+    (p.loop ? `<div class="loop">${p.loop}</div>` : "") + `<div class="slot"></div></div>`).join("");
+}
+let current = null;
+function setPhase(id) {
+  const changed = current !== null && current !== id;
+  current = id;
+  let seen = false;
+  for (const el of $("fifo").querySelectorAll(".phase")) {
+    const here = el.dataset.p === id;
+    if (here) seen = true;
+    el.classList.toggle("active", here);
+    el.classList.toggle("done", !seen);
+    if (!here) for (const c of el.querySelectorAll(".cw:not(.out)")) { c.classList.add("out"); setTimeout(() => c.remove(), 1700); }
+  }
+  return changed;
+}
+const BADGE = { tf: "Nebius Token Factory", ac: "Nebius AI Cloud", dev: "From the web" };
+const $ = id => document.getElementById(id);
+let list = cues(), i = 0, timer = null, playing = true;
+
+function badgeHtml(c, cls) {
+  const t = BADGE[c.where];
+  return `<span class="${cls}${c.where === DEV ? " device" : ""}">${t}</span>` + (c.nv ? `<span class="${cls} nv">NVIDIA</span>` : "");
+}
+function renderRows() {
+  $("cueRows").innerHTML = list.map((c, k) =>
+    `<tr class="${k === i - 1 ? "now" : ""}"><td>${k + 1}</td><td><b>${PHASES.find(p => p.id === c.p).name}</b> · ${c.step}</td><td>${c.model}${c.pending ? " *" : ""}</td>` +
+    `<td>${badgeHtml(c, "mini")}</td><td class="voice">${k === 0 || list[k - 1].v !== c.v ? VOICE[c.v] : "〃"}</td></tr>`).join("");
+}
+function push(c, animate = true) {
+  const el = document.createElement("div");
+  el.className = "cw" + (animate ? "" : " in");
+  el.innerHTML = `<div class="inner"><div class="card${c.pending ? " pending" : ""}"><div class="step">${c.step}</div>` +
+    `<div class="model">${c.model}</div><div class="pills">${badgeHtml(c, "badge")}</div></div></div>`;
+  const jumped = setPhase(c.p);
+  const slot = $("fifo").querySelector(`.phase[data-p="${c.p}"] .slot`);
+  slot.appendChild(el);
+  // wait for the previous phase to start closing, then open the card
+  // on a phase jump the old cards fade first, then the new phase opens
+  if (animate) setTimeout(() => el.classList.add("in"), jumped ? 900 : 40);
+  const live = [...slot.querySelectorAll(".cw:not(.out)")];
+  if (live.length > SLOT_MAX) {
+    const old = live[0];
+    old.classList.add("out");
+    setTimeout(() => old.remove(), 1700);
+  }
+  showShots(c);
+  $("caption").textContent = VOICE[c.v];
+  $("screen").innerHTML = SCREENS[c.v];
+}
+// Pictures of one real street photo going through the scene job, split over the card's time on screen
+const SHOT_NAMES = ["photo", "masks", "erased", "placed", "pano", "fix_in", "fix_out", "render_todo"];
+// clips play once from the start and hold the card for their own length (seconds, the third item of a shot)
+const CLIP_NAMES = ["walk_fwd", "walk_turn"];
+let shotTimers = [];
+function buildShots() {
+  $("imgs").innerHTML = SHOT_NAMES.map(n => `<img src="shots/${n}.jpg" alt="" data-n="${n}">`).join("") +
+    CLIP_NAMES.map(n => `<video src="shots/${n}.mp4" muted playsinline preload="auto" data-n="${n}"></video>`).join("");
+}
+function showShot(n, tag) {
+  for (const im of $("imgs").children) {
+    const here = im.dataset.n === n;
+    im.classList.toggle("on", here);
+    if (im.tagName === "VIDEO" && here) { im.currentTime = 0; im.play().catch(() => {}); }
+  }
+  $("shotTag").textContent = tag;
+}
+const shotMs = s => s[2] ? s[2] * 1000 : +$("speed").value * 1000;
+function showShots(c) {
+  shotTimers.forEach(clearTimeout); shotTimers = [];
+  const on = !!c.pic && $("frame").dataset.layout !== "off";
+  $("frame").classList.toggle("p2s", on);
+  if (!on || !c.shots) return;
+  // the first picture waits for the phone to finish turning
+  let t = $("shotTag").textContent ? 0 : 700;
+  for (const s of c.shots) { shotTimers.push(setTimeout(() => showShot(s[0], s[1]), t)); t += shotMs(s); }
+}
+function tick() {
+  if (i >= list.length) { setTimeout(restart, 1500); return stop(); }
+  push(list[i++]);
+  renderRows();
+}
+// a card with pictures stays one beat per picture (or a clip's length), so each picture gets the normal card time
+const cardMs = c => c && c.shots && $("frame").dataset.layout !== "off" ? c.shots.reduce((t, s) => t + shotMs(s), 0) : +$("speed").value * 1000;
+function loop() { const c = list[i - 1]; timer = setTimeout(() => { tick(); if (timer) loop(); }, cardMs(c)); }
+function start() { stop(); playing = true; $("play").textContent = "Pause"; loop(); }
+function stop() { clearTimeout(timer); timer = null; }
+// Width is fixed per run to fit the widest card of the whole sequence. Sizing to the live content made the
+// right-anchored panel jump left when a long card came in and back when it was removed.
+function fitWidth() {
+  const f = $("fifo");
+  f.style.width = "max-content";
+  const probes = list.map(c => {
+    const el = document.createElement("div");
+    el.className = "cw in";
+    el.style.cssText = "visibility:hidden;transition:none";
+    el.innerHTML = `<div class="inner"><div class="card"><div class="step">${c.step}</div>` +
+      `<div class="model">${c.model}</div><div class="pills">${badgeHtml(c, "badge")}</div></div></div>`;
+    f.querySelector(`.phase[data-p="${c.p}"] .slot`).appendChild(el);
+    return el;
+  });
+  const w = f.getBoundingClientRect().width / $("frame").clientWidth * 100;
+  probes.forEach(el => el.remove());
+  f.style.width = `${w.toFixed(2)}cqw`;
+}
+function restart() {
+  buildScheme(); i = 0; current = null;
+  $("frame").classList.remove("p2s"); $("shotTag").textContent = "";
+  for (const im of $("imgs").children) im.classList.remove("on");
+  fitWidth();
+  // resting frame: the interview already open with its card
+  push(list[i++], false);
+  renderRows();
+  if (playing) start();
+}
+$("play").onclick = () => {
+  if (timer) { stop(); playing = false; $("play").textContent = "Play"; } else start();
+};
+$("restart").onclick = () => { playing = true; restart(); };
+$("speed").onchange = () => { if (timer) start(); };
+$("layout").onchange = e => { $("frame").dataset.layout = e.target.value; restart(); };
+buildShots();
+document.fonts?.ready.then(fitWidth);
+
+if (matchMedia("(prefers-reduced-motion: reduce)").matches) playing = false;
+restart();
+if (!playing) $("play").textContent = "Play";
+</script>
