@@ -44,7 +44,7 @@ def test_defaults_and_labels():
     ({"background_class": None, "task": "count"}, "counting needs one"),
     # Specs come from an LLM: wrong types and names must be SpecErrors, not crashes later on.
     ({"hardware": "esp8266"}, "hardware"),
-    ({"scene": {"weather": ["night"]}}, "sky_tags"),
+    ({"generation": {"scenes": ["s1"]}, "classes": [{"id": "cow"}]}, "size_m and assets"),
     ({"generation": {"frames": "many"}}, "generation.frames"),
     ({"training": {"orientation": "sideways"}}, "training.orientation"),
     ({"classes": ["cow"]}, "classes"),
@@ -114,11 +114,11 @@ def test_props_parse_and_size_of():
             from_dict({**base, "props": [bad]})
 
 
-def test_empty_props_keep_fingerprints(template_on):
+def test_empty_props_keep_fingerprints():
     from sim2chip.pipeline import Pipeline
     from sim2chip.workspace import Cache, Job
     base = {"name": "x", "classes": [{"id": "car", "size_m": {"measure": "length", "range": [3, 5]},
-                                      "assets": {"categories": ["car"]}}]}
+                                      "assets": {"categories": ["car"]}}], "generation": {"scenes": ["s1"]}}
     job, cache = Job(Path("/nonexistent/j")), Cache(Path("/nonexistent/c"))
     a = Pipeline(from_dict(base), job, cache).fingerprints()
     b = Pipeline(from_dict({**base, "props": []}), job, cache).fingerprints()

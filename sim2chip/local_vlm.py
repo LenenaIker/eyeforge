@@ -1,10 +1,10 @@
 """A local vision model behind the same chat API as Token Factory, so the scene checks run on this machine's GPU
 for free (user, 2026-10-15: Qwen3.8-27B on Token Factory cost 47 $, mostly reasoning tokens). The client sends
 every model named "local/<hf id>" here (llm.Client); SIM2CHIP_REVIEW_MODEL=local/nvidia/Cosmos-Reason2-8B moves
-the photo2scene checks over.
+the vision checks over.
 
 The model loads at the first call and is dropped after SIM2CHIP_LOCAL_VLM_IDLE seconds without calls (default
-60), or at once on POST /v1/unload (photo2scene runs it before each step that needs the GPU: Cosmos takes 18 of the
+60), or at once on POST /v1/unload (a caller runs it before a step that needs the GPU: Cosmos takes 18 of the
 3090's 24 GB), so Isaac and the other GPU steps get the memory back. One answer at a time (one GPU). Run in
 the `teacher-sam3` env (transformers with Qwen3-VL):
 

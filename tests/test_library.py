@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -168,41 +169,52 @@ def test_internet_models_stay_out_of_the_owners_objects(tmp_path):
     assert lib.kits("u")[0]["objects"] == [obj["id"]]
 
 
-def test_a_scene_built_by_a_job_goes_to_the_next_job_on_its_dataset(tmp_path):
+def bundle(folder: Path) -> Path:
+    """A scene job's bundle (wsroute/bundle.py), small."""
+    folder.mkdir(parents=True)
+    for name in ("splat.ply", "splat.usdz", "free.npz"):
+        (folder / name).write_bytes(b"x")
+    Image.new("RGB", (64, 40)).save(folder / "sky.jpg")
+    Image.new("RGB", (64, 40)).save(folder / "card.jpg")
+    (folder / "scene.json").write_text(json.dumps({"route": "walk", "radius": 10.0, "free_m2": 171.0}))
+    return folder
+
+
+def test_a_walk_scene_goes_from_building_to_ready_and_to_the_jobs_that_name_it(tmp_path):
     lib, ds, ids = dataset(tmp_path)
-    job = Job(tmp_path / "jobs" / "j")
-    stage = job.stage_dir("scene_from_photo")
-    (stage / "s0" / "assets" / "sam3d").mkdir(parents=True)
-    (stage / "s0" / "background.png").write_bytes(b"png")
-    (stage / "s0" / "assets" / "sam3d" / "000_canon.glb").write_bytes(b"glTF")
-    (stage / "s0" / "logs").mkdir()
-    (stage / "s0" / "logs" / "x.log").write_text("noise")
-    (stage / "scenes.json").write_text(json.dumps([
-        {"photo_id": ids[0], "route": "support", "status": "ready", "dir": "s0", "name": "Kitchen table",
-         "objects": [{"index": 0, "name": "water bottle", "concept": "bottle", "role": "target",
-                      "mesh": "assets/sam3d/000_canon.glb"}]},
-        {"photo_id": ids[1], "route": "street", "status": "failed", "why": "no ground"}]))
-    lib.sync("u", [job])
-    scene, failed = lib.scenes("u")
-    assert scene["name"] == "Kitchen table" and scene["dataset"] == ds and scene["jobs"] == ["j"]
-    assert scene["status"] == "ready" and scene["route"] == "support"
-    # A failed scene is shown too, with why, and no objects.
-    assert failed["status"] == "failed" and failed["why"] == "no ground" and failed["route"] == "street"
-    assert failed["objects"] == [] and not failed["thumb"]
-    # They outlive the library being opened again (a server restart).
-    assert [s["id"] for s in Library(tmp_path, tmp_path / "cache").scenes("u")] == [scene["id"], failed["id"]]
-    (obj,) = lib.objects("u")
-    assert obj["source"] == "scene" and obj["scene"] == scene["id"] and scene["objects"] == [obj["id"]]
-    nxt = tmp_path / "jobs" / "k" / "input"
-    lid = lib.create_labeling(ds, "Bottles", "count", [{"key": "bottle"}])
-    lib.export(lid, nxt)
-    given = json.loads((nxt / "scenes.json").read_text())
-    assert given["failed_photos"] == [ids[1]] and given["ready"][0]["objects"][0]["concept"] == "bottle"
-    assert (nxt / "scenes" / scene["id"] / "background.png").exists()
-    assert not (nxt / "scenes" / scene["id"] / "logs").exists()
-    # Deleting the scene keeps the objects taken out of it.
-    lib.delete("u", "scene", scene["id"])
-    assert [s["id"] for s in lib.scenes("u")] == [failed["id"]] and lib.objects("u")[0]["scene"] is None
+    sid = lib.start_scene("u", ids[0])
+    (scene,) = lib.scenes("u")
+    assert scene["id"] == sid and scene["status"] == "building" and scene["dataset"] == ds and scene["mine"]
+    assert lib.start_scene("u", ids[0]) == sid and len(lib.scenes("u")) == 1  # one scene per photo
+    lib.add_scene(sid, bundle(tmp_path / "b0"))
+    (scene,) = Library(tmp_path, tmp_path / "cache").scenes("u")  # it outlives a server restart
+    assert scene["status"] == "ready" and scene["thumb"] and scene["free_m2"] == 171.0 and not scene["public"]
+    # A training gets only the files it reads: no USDZ.
+    given = lib.export_scenes("u", [sid, "nope"], tmp_path / "jobs" / "k" / "input")
+    assert given == [sid]
+    files = {f.name for f in (tmp_path / "jobs" / "k" / "input" / "scenes" / sid).iterdir()}
+    assert files == {"scene.json", "splat.ply", "sky.jpg", "free.npz"}
+    # Another owner sees it only once it is public, and may use it then.
+    assert lib.scenes("v") == [] and lib.export_scenes("v", [sid], tmp_path / "jobs" / "m" / "input") == []
+    lib.set_public(sid, True)
+    (other,) = lib.scenes("v")
+    assert other["public"] and not other["mine"] and other["dataset"] is None
+    assert lib.export_scenes("v", [sid], tmp_path / "jobs" / "m" / "input") == [sid]
+    assert lib.card_file("v", "scene", sid) is not None
+    # A failed one says why; deleting is the owner's.
+    sid2 = lib.start_scene("u", ids[1])
+    lib.fail_scene(sid2, "no focal length")
+    assert lib.scene_status("u", sid2) == {"status": "failed", "why": "no focal length"}
+    lib.delete("u", "scene", sid)
+    assert [s["id"] for s in lib.scenes("u")] == [sid2] and lib.scenes("v") == []
+
+
+def test_a_bundle_made_apart_is_imported_as_a_ready_scene(tmp_path):
+    lib = Library(tmp_path, tmp_path / "cache")
+    sid = lib.import_scene("admin", bundle(tmp_path / "f3c_photo21" / "bundle"), "Road by the fence")
+    (scene,) = lib.scenes("admin")
+    assert scene["id"] == sid and scene["status"] == "ready" and scene["name"] == "Road by the fence"
+    assert lib.import_scene("admin", tmp_path / "f3c_photo21" / "bundle", "again") == sid
 
 
 def test_a_dataset_profile_is_made_once_and_read_by_the_chat(tmp_path):

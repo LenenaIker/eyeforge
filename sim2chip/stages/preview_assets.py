@@ -11,7 +11,6 @@ import math
 import random
 
 from ..spec import MEASURES
-from . import base
 from .base import Context, Stage
 
 VIEWS = [(35, 0.35), (145, 0.35), (270, 0.12), (215, 1.1)]  # (azimuth deg, relative elevation)
@@ -29,7 +28,7 @@ class PreviewAssets(Stage):
     skippable = "with photos"
 
     def enabled(self, spec) -> bool:
-        return spec.qa.mode == "auto" and spec.synthetic and base.TEMPLATE
+        return spec.qa.mode == "auto" and spec.synthetic
 
     def run(self, ctx: Context) -> dict:
         import shutil
@@ -40,8 +39,7 @@ class PreviewAssets(Stage):
         from omni.kit.app import get_app
         from pxr import Gf, UsdGeom, UsdLux
 
-        from ..scenes.common import Props, look_at, make_quad, set_visible
-        from ..scenes.skies import SKIES
+        from ..isaac_util import Props, look_at, make_quad, set_visible
 
         out = ctx.job.stage_dir(self.name)
         shutil.rmtree(out, ignore_errors=True)
@@ -58,9 +56,6 @@ class PreviewAssets(Stage):
         floor, _ = make_quad(stage, "/World/Ground", 400, 400, 0.0)
         floor.Set(Gf.Vec3f(0.32, 0.32, 0.30))
         dome = UsdLux.DomeLight.Define(stage, "/World/Sky")
-        sky = next((s for s in SKIES if s.weather == "clear" and (ctx.cache.hdri / s.file).exists()), None)
-        if sky:
-            dome.CreateTextureFileAttr().Set(str(ctx.cache.hdri / sky.file))
         dome.CreateIntensityAttr().Set(1000)
         sun = UsdLux.DistantLight.Define(stage, "/World/Sun")
         sun.CreateIntensityAttr().Set(1500)

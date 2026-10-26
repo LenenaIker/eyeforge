@@ -15,7 +15,7 @@ import numpy as np
 
 from . import erase
 from .config import RouteConfig, arm_views
-from .paths import ERASE, PANOS, PHOTOS, ROOT, SPHERE_WALK, Case, python_for, required
+from .paths import ERASE, HERE, PANOS, PHOTOS, ROOT, SPHERE_WALK, Case, python_for, required
 
 ENTRY = Path(__file__).resolve().parents[1] / "ws_route.py"
 PAID = ("walk_legs", "planned_legs")
@@ -63,7 +63,7 @@ def recipe(cfg: RouteConfig) -> list[Step]:
             Step("masks", "sam3", ["masks", *p], exists(d / "things.npz")),
             Step("split", "scene", ["split", *p], exists(d / "split.json")),
             Step("erase", "erase", ["--dir", str(d)], exists(d / "erase_qwen.json"),
-                 script=str(ROOT / "sim2chip/photo2scene/steps/erase_qwen.py")),
+                 script=str(HERE / "erase_qwen.py")),
             Step("publish", "here", ["publish", *p], exists(PHOTOS / f"{cfg.case}.png")),
             Step("caption", "sam3", ["caption", *p], exists(PHOTOS / f"{cfg.case}.txt")),
             Step("pano", "pano", ["pano", *c], exists(PANOS / cfg.case / cfg.pano)),

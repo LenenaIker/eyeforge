@@ -85,17 +85,17 @@ def backend(store, final="COMPLETED", max_usd=10.0):
     return NebiusBackend(dry_run=False, max_usd=max_usd, cli=FakeCLI(store, final), store=store, poll_s=0)
 
 
-def test_stage_runs_as_job_and_brings_back_small_results(job, tmp_path, template_on):
+def test_stage_runs_as_job_and_brings_back_small_results(job, tmp_path):
     store = FakeStore()
     b = backend(store)
     b.run_stage(BY_NAME["render"], job, Cache(job.root.parent / "cache"), "fp")
     j = b.cli.jobs[0]
-    assert j["image"].startswith("nvcr.io/nvidia/isaac-sim")
+    assert j["image"].startswith("tensorflow/tensorflow")  # render only collects and compares frames now
     assert store.buckets == {"sim2chip-j", "sim2chip-cache"}
     assert j["env"] == {"S2C_JOB_BUCKET": "sim2chip-j", "S2C_CACHE_BUCKET": "sim2chip-cache",
                         "S2C_CODE_URL": "https://signed/sim2chip-j/_code/sim2chip.tar.gz",
                         "SIM2CHIP_REGION": nebius.REGION}
-    assert j["timeout_h"] == 2 and all(s.startswith("AWS_") for s in j["secrets"])
+    assert j["timeout_h"] == 1 and all(s.startswith("AWS_") for s in j["secrets"])
     script = j["script"]
     assert script.index("cloud_sync pull render") < script.index("run_stage render") < script.index(
         "cloud_sync push render")
@@ -199,7 +199,7 @@ class ListingStore(FakeStore):
         return n
 
 
-def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch, template_on):
+def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch):
     from sim2chip.pipeline import Pipeline
     from sim2chip.spec import from_dict
 
@@ -207,7 +207,8 @@ def test_worker_runs_the_whole_pipeline_in_one_job(tmp_path, monkeypatch, templa
     monkeypatch.setenv("SIM2CHIP_LABEL_SAMPLE", "6")
     monkeypatch.setattr(nebius, "IMAGE_TAG", None)  # the stock image, whatever the local .env says
     spec = from_dict({"name": "j", "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
-                                                "assets": {"categories": ["cow"]}}], "user_data": {"raw": "photos"}})
+                                                "assets": {"categories": ["cow"]}}], "user_data": {"raw": "photos"},
+                      "generation": {"scenes": ["s1"]}})
     job = Job(tmp_path / "jobs" / "j")
     (job.input / "photos").mkdir(parents=True)
     (job.input / "photos" / "a.jpg").write_bytes(b"jpg")

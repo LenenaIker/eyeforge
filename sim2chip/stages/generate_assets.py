@@ -15,7 +15,6 @@ import json
 import shutil
 
 from ..workspace import IMAGE_EXT, content_key
-from . import base
 from .base import Context, Stage
 
 GEN_VERSION = 1  # bump when the generation changes: cached models get new uids
@@ -53,7 +52,7 @@ class GenerateAssets(Stage):
     results = ("*.json", "*/*.png")
 
     def enabled(self, spec) -> bool:
-        return spec.synthetic and base.TEMPLATE and any(c.assets and c.assets.photos for c in spec.classes)
+        return spec.synthetic and any(c.assets and c.assets.photos for c in spec.classes)
 
     def photos_of(self, ctx: Context, c) -> list:
         """The class's photos: its own folder, or the user's photos of that class."""

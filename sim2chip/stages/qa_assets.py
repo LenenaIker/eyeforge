@@ -17,7 +17,6 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 
 from ..asset_db import review_concept
-from . import base
 from .base import Context, Stage
 
 PROBLEMS = ["plinth_or_base", "diorama_or_scene", "multiple_objects", "part_only", "not_upright", "wrong_object",
@@ -98,7 +97,7 @@ class QAAssets(Stage):
     skippable = "with photos"
 
     def enabled(self, spec) -> bool:
-        return spec.synthetic and base.TEMPLATE  # its 3D models fed the scene template only
+        return spec.synthetic  # the 3D models placed in the walk scenes (scene_render)
 
     def calls_llm(self, spec) -> bool:
         return spec.qa.mode == "auto"

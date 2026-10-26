@@ -193,6 +193,34 @@ def cmd_credits(args) -> int:
     return 0
 
 
+def cmd_scene(args) -> int:
+    """Walk scenes in the library: make one from an owner's photo (the scene job, pays two VM runs), add a bundle
+    made with ws_route.py, make one public for every user (admin), or list them."""
+    from .library import Library
+    home = Path(args.home)
+    lib = Library(home, home / "cache")
+    if args.action == "list":
+        for s in lib.scenes(args.owner):
+            print(f"{s['id']}  {s['status']:8} {'public' if s['public'] else '      '}  {s['name']}"
+                  + (f"  ({s['why']})" if s.get("why") else ""))
+        return 0
+    if not args.what:
+        need = {"make": "a photo id", "add": "a bundle folder"}.get(args.action, "a scene id")
+        raise SystemExit(f"scene {args.action} needs {need}")
+    if args.action == "make":
+        from . import scene_job
+        print(scene_job.run(home, args.owner, int(args.what)))
+    elif args.action == "add":
+        sid = lib.import_scene(args.owner, Path(args.what), args.name or Path(args.what).resolve().parent.name)
+        if args.public:
+            lib.set_public(sid, True)
+        print(sid)
+    else:
+        lib.set_public(args.what, args.action == "public")
+        print(f"{args.what}: {args.action}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="sim2chip")
     p.add_argument("--home", default=str(default_home()), help="folder with jobs/ and cache/ (env SIM2CHIP_HOME)")
@@ -262,6 +290,14 @@ def main(argv: list[str] | None = None) -> int:
     cr.add_argument("amount", type=float, help="dollars (things are charged by use, about 1 $ a run)")
     cr.add_argument("--note", default=None)
     cr.set_defaults(func=cmd_credits)
+
+    sc = sub.add_parser("scene", help="walk scenes: make one from a library photo, add a bundle, make one public")
+    sc.add_argument("action", choices=["list", "make", "add", "public", "private"])
+    sc.add_argument("what", nargs="?", help="make: the photo id; add: the bundle folder; public/private: the scene id")
+    sc.add_argument("--owner", default="local", help="the library owner (an account id on the public server)")
+    sc.add_argument("--name", help="add: the scene's name (default: the route's case)")
+    sc.add_argument("--public", action="store_true", help="add: public for every user at once")
+    sc.set_defaults(func=cmd_scene)
 
     args = p.parse_args(argv)
     sys.stdout.reconfigure(line_buffering=True)  # progress shows up when piped to tee or a log file

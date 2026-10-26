@@ -1,8 +1,9 @@
-import { ArrowLeft, Copy, GraduationCap, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, Copy, GraduationCap, Mountain, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { copyLabeling, createLabeling, deleteLabeling, getDataset, libraryPhotoUrl, renameLabeling, reprofileDataset,
-         type DatasetPage, type DatasetProfile, type Labeling } from "../api";
+import { copyLabeling, createLabeling, deleteLabeling, extractScene, getDataset, getSceneProposals, libraryPhotoUrl,
+         renameLabeling, reprofileDataset, type DatasetPage, type DatasetProfile, type Labeling,
+         type SceneProposal } from "../api";
 import { ConfirmDialog, Dialog, MoreMenu, NameDialog, field, menuItem } from "../components/library";
 import { Badge, Button, Card, Notice, Spinner, cx } from "../components/ui";
 
@@ -60,6 +61,8 @@ export function Dataset() {
           {p.backgrounds.length > 0 && <p className="text-sm"><span className="text-muted">Backgrounds:</span> {p.backgrounds.join("; ")}</p>}
         </>}
       </Card>
+
+      <SceneProposals id={id} profiling={d.profiling} />
 
       <div className="flex gap-1 border-b border-line" role="tablist">
         {tabs.map(([k, label]) => (
@@ -196,5 +199,77 @@ function NewLabeling({ id, profile, onClose, onMade }:
         </div>
       </form>
     </Dialog>
+  );
+}
+
+
+// The route's steps (experiments/worldstereo/wsroute/steps.py) in the user's words, by name prefix.
+const SCENE_STEPS: [string, string][] = [
+  ["things", "Finding big objects to erase"], ["masks", "Finding big objects to erase"], ["split", "Finding big objects to erase"],
+  ["erase", "Erasing big objects"], ["publish", "Erasing big objects"], ["caption", "Imagining the place all around"],
+  ["pano", "Imagining the place all around"], ["walks", "Planning walks through the place"],
+  ["walk_legs", "Walking through the place (WorldStereo)"], ["planned_legs", "Walking where nothing was seen yet"],
+  ["depth", "Measuring depth"], ["views", "Building the 3D scene"], ["train", "Building the 3D scene"],
+  ["audit", "Looking for gaps"], ["plan", "Looking for gaps"], ["stage", "Looking for gaps"], ["grid", "Checking the scene"],
+  ["pseudo", "Cleaning the views (NVIDIA Fixer)"], ["fix", "Cleaning the views (NVIDIA Fixer)"],
+  ["usdz", "Packing the scene for Isaac Sim"], ["bundle", "Packing the scene"], ["starting", "Starting"],
+];
+const stepText = (step?: string) => SCENE_STEPS.find(([k]) => step?.startsWith(k))?.[1] ?? "Working";
+
+// The dataset's photos proposed for a scene (scene_pick.py): extract one, follow its job here, find it in Scenes.
+function SceneProposals({ id, profiling }: { id: string; profiling: boolean }) {
+  const [list, setList] = useState<SceneProposal[] | null>(null);
+  const [computing, setComputing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(() => {
+    getSceneProposals(id).then((r) => { setList(r.proposals); setComputing(r.computing); }).catch((e) => setError(e.message));
+  }, [id]);
+  useEffect(load, [load, profiling]);
+  const busy = computing || (list ?? []).some((p) => p.scene?.status === "building");
+  useEffect(() => {  // proposals being made or a scene being built: look again in a while
+    if (!busy) return;
+    const t = setTimeout(load, computing ? 5000 : 15000);
+    return () => clearTimeout(t);
+  }, [busy, computing, load, list]);
+  const extract = (pid: number) => extractScene(pid).then(load).catch((e) => setError(e.message));
+  return (
+    <Card className="space-y-3 p-5">
+      <div>
+        <div className="font-semibold">Scenes from these photos</div>
+        <p className="text-sm text-muted">A scene is the place in a photo rebuilt in 3D, big objects erased, to train with
+          synthetic images of any class. It takes about two hours; you can leave the page.</p>
+      </div>
+      {error && <Notice tone="bad">{error}</Notice>}
+      {list === null || (computing && list.length === 0)
+        ? <p className="text-sm text-muted">{profiling || computing ? <><Spinner className="h-4 w-4" /> Choosing photos...</> : "Loading..."}</p>
+        : list.length === 0
+          ? <p className="text-sm text-muted">No photo suits a scene: the place needs to be outdoors, taken by hand at eye
+              height looking ahead, by day, with the camera's focal length in the photo (straight from the phone).</p>
+          : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              {list.map((p) => {
+                const sc = p.scene;
+                const pct = sc?.total ? Math.round(100 * (sc.done ?? 0) / sc.total) : 0;
+                return (
+                  <div key={p.photo_id} className="overflow-hidden rounded-lg border border-line">
+                    <img src={libraryPhotoUrl(p.photo_id)} alt="" loading="lazy" className="aspect-[4/3] w-full bg-gray-100 object-cover" />
+                    <div className="space-y-2 p-2.5">
+                      {!sc || sc.status === "failed" ? <>
+                        {sc?.status === "failed" && <p className="text-xs text-red-700">No scene: {sc.why ?? "unknown"}.</p>}
+                        <Button size="sm" className="w-full" onClick={() => extract(p.photo_id)}>
+                          <Mountain className="h-4 w-4" /> {sc ? "Try again" : "Extract"}
+                        </Button>
+                      </> : sc.status === "building" ? <>
+                        <div className="h-2 overflow-hidden rounded-full bg-gray-100" role="progressbar" aria-valuenow={pct}>
+                          <div className="h-full rounded-full bg-brand-600 transition-all" style={{ width: `${Math.max(pct, 3)}%` }} />
+                        </div>
+                        <p className="truncate text-xs text-muted" title={sc.step}>{stepText(sc.step)} · {pct}%</p>
+                      </> : <Link to="/app/assets/scenes" className="block text-center text-sm font-medium text-brand-600 hover:underline">
+                        Ready: see it in Scenes</Link>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>}
+    </Card>
   );
 }

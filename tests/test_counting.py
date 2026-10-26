@@ -7,7 +7,6 @@ import pytest
 from PIL import Image
 
 from sim2chip import counting, review, teacher
-from sim2chip.scenes.scatter import cluster
 from sim2chip.spec import SpecError, from_dict
 from sim2chip.stages import Context
 from sim2chip.stages.ingest import Ingest
@@ -50,20 +49,6 @@ def test_match_and_score():
     assert counting.match([(0.5, 0.5, "pot")], [(0.5, 0.58, "pot")], radius=2 / 28) == (0, 1, 1)
 
 
-def test_cluster_never_overlaps():
-    rng = random.Random(0)
-    radii = [0.3] * 6
-    pos = cluster((1.0, 2.0, 0.0), radii, spread=3.0, rng=rng)
-    assert pos[0] == (1.0, 2.0, 0.0)
-    placed = [p for p in pos if p is not None]
-    assert len(placed) >= 5
-    for i, a in enumerate(placed):
-        assert np.hypot(a[0] - 1, a[1] - 2) <= 3.0 + 1e-9
-        for b in placed[i + 1:]:
-            assert np.hypot(a[0] - b[0], a[1] - b[1]) > 0.6
-    assert cluster((0, 0, 0), [1.0, 1.0], spread=0.5, rng=rng)[1] is None  # no room
-
-
 def test_count_spec_rules():
     s = from_dict(SPEC)
     assert s.task == "count" and s.generation.n_targets == 6 and s.section("task") == "count"
@@ -81,19 +66,12 @@ def test_points_from_renders(tmp_path):
     ctx = ctx_for(tmp_path)
     r = ctx.job.stage_dir("render")
     r.mkdir(parents=True)
-    dt = [("semanticId", "<u4"), ("x_min", "<i4"), ("y_min", "<i4"), ("x_max", "<i4"), ("y_max", "<i4"),
-          ("occlusionRatio", "<f4")]
-    rows = [(0, 10, 20, 50, 60, 0.1),    # pot
-            (0, 100, 100, 102, 140, 0.0),  # too thin to count
-            (1, 200, 100, 260, 200, 0.95),  # cat, almost hidden
-            (1, 280, 10, 300, 40, 0.2),    # cat
-            (2, 0, 0, 320, 240, 0.0)]      # a prop: not a class
     for f in range(2):
         Image.new("RGB", (320, 240)).save(r / f"rgb_{f:04d}.png")
-    np.save(r / "bounding_box_2d_tight_0000.npy", np.array(rows, dtype=dt))
-    (r / "bounding_box_2d_tight_labels_0000.json").write_text(json.dumps(
-        {"0": {"class": "pot"}, "1": {"class": "cat"}, "2": {"class": "bench"}}))
-    (r / "labels.json").write_text(json.dumps([{"frame": 0, "class": "pot"}, {"frame": 1, "class": "empty"}]))
+    boxes = [["pot", 10, 20, 50, 60], ["pot", 100, 100, 102, 140],  # the second too thin to count
+             ["cat", 280, 10, 300, 40], ["bench", 0, 0, 320, 240]]   # a bench is not a class
+    (r / "labels.json").write_text(json.dumps([{"frame": 0, "class": "pot", "boxes": boxes},
+                                               {"frame": 1, "class": "empty", "boxes": []}]))
     info = Points().run(ctx)
     pts = json.loads((ctx.job.stage_dir("points") / "points.json").read_text())
     assert info == {"frames": 2, "objects": 2} and pts["00001.png"] == []

@@ -176,17 +176,13 @@ def test_qa_manual(tmp_path):
 def test_crops_from_fake_render(tmp_path):
     ctx = ctx_for(tmp_path)
     rd = ctx.out("render")
-    dt = np.dtype([("semanticId", "<u4"), ("x_min", "<i4"), ("y_min", "<i4"), ("x_max", "<i4"), ("y_max", "<i4"),
-                   ("occlusionRatio", "<f4")])
     labels = []
     for f, cls in enumerate(["cow", "empty", "dog"]):
         img(rd / f"rgb_{f:04d}.png", size=(320, 240))
-        np.save(rd / f"bounding_box_2d_tight_{f:04d}.npy", np.array([(0, 100, 80, 180, 160, 0.0)], dtype=dt))
-        (rd / f"bounding_box_2d_tight_labels_{f:04d}.json").write_text(json.dumps({"0": {"class": cls}}))
-        labels.append({"frame": f, "class": cls})
+        labels.append({"frame": f, "class": cls, "boxes": [] if cls == "empty" else [[cls, 100, 80, 180, 160]]})
     (rd / "labels.json").write_text(json.dumps(labels))
     info = Crops().run(ctx)
-    assert info["crops"] == {"cow": 1, "empty": 2, "dog": 1}
+    assert info["crops"] == {"cow": 1, "empty": 1, "dog": 1}  # whole frames, one per frame
 
 
 def test_c_array():
@@ -335,11 +331,8 @@ def test_ingest_recovers_the_split_of_a_job_made_before_split_json(tmp_path):
 
 
 def test_classes_without_synthetic_images_shift_the_weight_to_real_photos(tmp_path):
-    from sim2chip.stages.render import synthetic_frames
     from sim2chip.stages.train import real_repeats
     ctx = ctx_for(tmp_path)  # cow and dog
     assert real_repeats(ctx, 10, 2000, {"cow", "dog"}) == 50  # 1/4 of the synthetic set
     assert real_repeats(ctx, 10, 2000, {"cow"}) == 100  # only cows rendered: the real photos weigh 1/2
     assert real_repeats(ctx, 10, 0, set()) == 1
-    assert synthetic_frames(2000, ["cow", "dog"], {"cow": []}) == 1000
-    assert synthetic_frames(2000, ["cow", "dog"], {"cow": [], "dog": []}) == 2000

@@ -26,7 +26,7 @@ counts the GPU once.
 
 Two kinds at once (KINDS): "light", in the light image, for the teachers' work and runs without synthetic images;
 "isaac", in Isaac Sim's image, the scene queue: every run that renders goes to it as a task, so the scene builds
-and renders of several jobs share one GPU (photo2scene's heavy steps take turns on it, photo2scene.gpu_turn). The
+and renders of several jobs share one GPU. The
 server asks for it when such a run starts (JobService.start). Each kind has its own worker file; tasks at once
 follow the machine's memory (parallel_for).
 """

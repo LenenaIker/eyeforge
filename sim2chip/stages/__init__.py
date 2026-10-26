@@ -14,11 +14,11 @@ from .points import Points
 from .preview_assets import PreviewAssets
 from .qa_assets import QAAssets
 from .render import Render
-from .scene_from_photo import SceneFromPhoto
+from .scene_render import SceneRender
 from .train import Train
 
 STAGES: list[Stage] = [Label(), GenerateAssets(), Ingest(), FetchAssets(), ConvertAssets(), PreviewAssets(),
-                       QAAssets(), SceneFromPhoto(), Render(), Crops(), Points(), Train(), Evaluate(), Export()]
+                       QAAssets(), SceneRender(), Render(), Crops(), Points(), Train(), Evaluate(), Export()]
 BY_NAME = {s.name: s for s in STAGES}
 
 __all__ = ["Context", "Stage", "STAGES", "BY_NAME"]

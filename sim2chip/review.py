@@ -21,7 +21,7 @@ from .workspace import Cache, Job
 CORRECTIONS = "corrections.json"
 # Folders of a job whose images the review may show.
 MEDIA_DIRS = ("input", "label", "preview_assets", "qa_assets", "generate_assets", "render", "ingest",
-              "scene_from_photo")
+              "scene_render")
 RENDER_SAMPLE = 12
 SYNTH_SAMPLE = 8  # pictures per group on the job page: the synthetic that went in, and what each filter left out
 
@@ -159,22 +159,14 @@ def apply(job: Job, cache: Cache, labels: dict[str, str], assets: dict[str, str]
     return "qa_assets" if assets else None
 
 
-def phase_of(route: str, file: str) -> str:
-    """Which phase of photo2scene made a frame: imitation (the photo's own place: the support route re-composed,
-    a surface re-framed) or extrapolation (past what the photo shows: a street or room template, joined surfaces)."""
-    if route in ("street", "room"):
-        return "extrapolation"
-    return "extrapolation" if route == "surface" and Path(file).parts[1:2] == ("mix",) else "imitation"
-
-
 def synthetic(job: Job, seed: int = 0) -> dict:
-    """What the job page shows of the synthetic images: how many went into training and how many each filter left
-    out (the vision model's review of a scene's views, the likeness to the user's photos), the imitation and
-    extrapolation split of the ones that went in, and a few pictures of each. Paths relative to the job folder.
-    When the setup itself rules the synthetic out, only why: the folders hold an earlier run's frames."""
+    """What the job page shows of the synthetic images: how many went into training and how many the likeness to
+    the user's photos left out, with a few pictures of each. Every frame is made in a walk scene, past what the
+    scene's photo shows ("extrapolation"; "imitation" and "review" stay for the page's layout and are 0). Paths
+    relative to the job folder. When the setup itself rules the synthetic out, only why: the folders hold an
+    earlier run's frames."""
     from .spec import load as load_spec
     from .stages.render import no_synthetic
-    from .stages.scene_from_photo import no_route
     none = {"went_in": 0, "split": {"imitation": 0, "extrapolation": 0}, "threshold": None,
             "left_out": {"likeness": 0, "review": 0}, "reviews": [],
             "samples": {"went_in": [], "likeness": [], "review": []}, "no_synthetic": None}
@@ -183,41 +175,20 @@ def synthetic(job: Job, seed: int = 0) -> dict:
     except (OSError, ValueError):
         return none
     why = no_synthetic(spec, job)
-    if no_route(spec) is not None or job.dropped("scene_from_photo") or job.dropped("render"):
+    if not spec.synthetic or job.dropped("scene_render") or job.dropped("render"):
         return {**none, "no_synthetic": why}
     rel = lambda p: str(Path(p).relative_to(job.root))  # noqa: E731
     load = lambda p: json.loads(p.read_text()) if p.exists() else None  # noqa: E731
-    src, render = job.stage_dir("scene_from_photo"), job.stage_dir("render")
-    built = load(src / "scenes.json") or []
-    given = (load(job.input / "scenes.json") or {}).get("ready", [])
-    route = {**{s["id"]: s["route"] for s in given}, **{b["dir"]: b["route"] for b in built if b.get("dir")},
-             "surface": "surface"}
-    frames = load(src / "frames.json") or []
+    render = job.stage_dir("render")
     like = load(render / "likeness.json")
-    labels = load(render / "labels.json") or []
-    # The place's frames come last in render/ (after the template's, when it was on): rgb_<first + i>.png.
-    first = len(list(render.glob("rgb_*.png"))) - len(frames)
-    kind = lambda i: phase_of(route.get(frames[i]["scene"], "support"), frames[i]["file"])  # noqa: E731
-    went = [lab for lab in labels if lab.get("scene") is not None and 0 <= lab["frame"] - first < len(frames)]
-    split = {"imitation": 0, "extrapolation": 0}
-    for lab in went:
-        split[kind(lab["frame"] - first)] += 1
+    went = [lab for lab in load(render / "labels.json") or [] if lab.get("scene") is not None]
     rng = random.Random(seed)
     pick = lambda xs: sorted(rng.sample(xs, min(SYNTH_SAMPLE, len(xs))), key=lambda x: x["image"])  # noqa: E731
-    kept = [{"image": rel(render / f"rgb_{lab['frame']:04d}.png"), "scene": lab["scene"],
-             "phase": kind(lab["frame"] - first)} for lab in went]
+    kept = [{"image": rel(render / f"rgb_{lab['frame']:04d}.png"), "scene": lab["scene"], "phase": "extrapolation"}
+            for lab in went]
     unlike = [{"image": rel(render / f"rgb_{f['frame']:04d}.png"), "similarity": f["similarity"]}
               for f in (like or {}).get("frames", []) if not f["kept"] and (render / f"rgb_{f['frame']:04d}.png").exists()]
-    reviews, rejected = [], []
-    for f in sorted(src.glob("*/review.json")):
-        r = json.loads(f.read_text())
-        reviews.append({"scene": f.parent.name, "score": r.get("score"), "keep": bool(r.get("keep")),
-                        "worst": r.get("worst", [])})
-        if not r.get("keep"):
-            views = sorted(p for d in ("isaac", "populated/isaac") for p in (f.parent / d).glob("render_*.png")
-                           if p.name != "render_00.png")  # the photo's own camera is not one of the views
-            rejected += [{"image": rel(p), "scene": f.parent.name} for p in views]
-    return {"went_in": len(went), "split": split, "threshold": (like or {}).get("threshold"),
-            "left_out": {"likeness": len(unlike), "review": len(rejected)}, "reviews": reviews,
-            "samples": {"went_in": pick(kept), "likeness": pick(unlike), "review": pick(rejected)},
+    return {"went_in": len(went), "split": {"imitation": 0, "extrapolation": len(went)},
+            "threshold": (like or {}).get("threshold"), "left_out": {"likeness": len(unlike), "review": 0},
+            "reviews": [], "samples": {"went_in": pick(kept), "likeness": pick(unlike), "review": []},
             "no_synthetic": why}

@@ -109,3 +109,41 @@ def test_objects_are_whole_in_the_frame_top_to_bottom(tmp_path):
             for z in (-1.6, -1.6 + heights[o["key"]] * 0.95):  # base centre and (about) top
                 c = m[:3, :3] @ np.array([*o["xy"], z]) + m[:3, 3]
                 assert 0 <= (K @ c)[1] / c[2] <= 480
+
+
+def test_scene_proposals_prefer_open_level_daylight_places(tmp_path, monkeypatch):
+    from sim2chip import scene_job, scene_pick
+    monkeypatch.setattr(scene_job, "has_focal", lambda f: f.name != "nofocal.jpg")
+    open_road = {"context": "ground", "light": "overcast", "camera_pitch_deg": 5, "camera_height_m": 1.6,
+                 "objects": [{"name": "bench", "count": 1, "size_m": 1.2}]}
+    parked = {**open_road, "objects": [{"name": "car", "count": 3, "size_m": 4.5}]}
+    photos = [{"id": 1, "file": tmp_path / "road.jpg", "description": open_road},
+              {"id": 2, "file": tmp_path / "parked.jpg", "description": parked},
+              {"id": 3, "file": tmp_path / "room.jpg", "description": {**open_road, "context": "indoor"}},
+              {"id": 4, "file": tmp_path / "down.jpg", "description": {**open_road, "camera_pitch_deg": 80}},
+              {"id": 5, "file": tmp_path / "night.jpg", "description": {**open_road, "light": "night"}},
+              {"id": 6, "file": tmp_path / "nofocal.jpg", "description": open_road}]
+    got = scene_pick.propose(photos, tmp_path)
+    assert [p["photo_id"] for p in got] == [1, 2] and got[0]["score"] > got[1]["score"]
+
+
+def test_the_chat_sees_ready_scenes_and_only_those_ids_pass(tmp_path):
+    from sim2chip import interview
+    from sim2chip.library import Library
+    lib = Library(tmp_path, tmp_path / "cache")
+    b = tmp_path / "f3c_x" / "bundle"
+    b.mkdir(parents=True)
+    (b / "scene.json").write_text(json.dumps({"route": "walk", "free_m2": 170.4}))
+    sid = lib.import_scene("admin", b, "Road")
+    lib.set_public(sid, True)
+    text, ids = lib.for_chat("someone")
+    assert f'scene "Road" (id {sid}, public, 170 m2 to walk)' in text and sid in ids
+
+    class S:
+        library_ids = ids
+    spec = from_dict({"name": "t", "classes": [{"id": "bin", "size_m": {"measure": "height", "range": [1, 1.2]},
+                                                "assets": {"source": "search", "queries": ["wheelie bin"]}}],
+                      "generation": {"scenes": [sid]}})
+    assert interview._walk_scenes_problem(S, spec) is None
+    spec.generation.scenes = ["0123456789abcdef"]
+    assert "not in the user's library" in interview._walk_scenes_problem(S, spec)

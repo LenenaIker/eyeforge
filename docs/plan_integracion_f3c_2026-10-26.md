@@ -110,3 +110,33 @@ Está hecho para photo21, photo47 y photo66. Suelo libre: 171, 521 y 376 m². En
 **Propuesta aparte**: mover `experiments/worldstereo/wsroute/` y `ws_route.py` a `sim2chip/walkscene/`, con `erase_qwen.py`. El trabajo de escena es ya producto, y el despliegue en la VM copia `sim2chip/`.
 
 Los documentos viejos (`plan_photo2scene.md`, `roadmap_photo2scene.md`, `roadmap_photosphere.md`) se quedan como historia.
+
+## Hecho el 26 por la tarde y noche: 1a a 1e y 2c
+
+- **1e:** fuera `scene_from_photo`, `photo2scene/`, `scenes/`, la plantilla (`base.TEMPLATE`) y sus pruebas.
+  - `erase_qwen.py` pasa a `wsroute/`.
+  - Lo que usa la vista previa de assets queda en `sim2chip/isaac_util.py`.
+  - La biblioteca sube a la versión 7: borra las escenas de rutas viejas (en local no había ninguna) y añade `public`.
+- **Spec:** `generation.scenes` (ids de escenas de la biblioteca). Sin escenas no hay rama sintética, ni tampoco la búsqueda de modelos 3D. Con escenas, cada clase necesita `size_m` y `assets`, y la entrevista los rellena.
+- **Pipeline:** `scene_render` entre `qa_assets` y `render`. `render` solo recoge los fotogramas y aplica el filtro de parecido. `crops` y `points` toman los fotogramas con las cajas de su etiqueta.
+- **Trabajo de escena:** `sim2chip/scene_job.py` (foto de la biblioteca → `ws_route` hasta `bundle` → biblioteca, con el progreso en `<home>/scene_jobs/<id>.json`).
+  - CLI: `sim2chip scene list|make|add|public|private`.
+- **Propuestas:** `sim2chip/scene_pick.py`, sin llamadas nuevas al modelo de visión.
+  - Lee las descripciones del perfil del dataset (Nemotron VL): exterior, a la altura de los ojos, mirando de frente, de día y con pocos objetos grandes.
+  - SigLIP descarta las fotos casi repetidas.
+  - Solo entran fotos con focal en el EXIF.
+- **Servidor:**
+  - `GET /api/library/datasets/{id}/scenes` (propuestas y su escena);
+  - `POST /api/library/scenes/extract`, que cobra unos 1 $ en el servidor público;
+  - `GET /api/library/scenes/{id}`;
+  - las escenas públicas se ven y se pueden usar desde cualquier cuenta;
+  - la escena elegida viaja con el trabajo sin el USDZ.
+- **Web:**
+  - tarjeta "Scenes from these photos" en el dataset, con Extract, barra y paso en curso;
+  - Assets > Scenes con las escenas en curso y las públicas.
+- **Biblioteca local** (`runs/web_local`): photo21, photo47 y photo66 importadas como públicas, con enlaces duros.
+
+Pendiente:
+- **Licencia:** `pano.py` usa FLUX.1-Fill-dev, que es no comercial. El código lo marca como "never goes in the product as is".
+- **Nube:** `scene_render` necesita en Nebius el Python de gsplat junto a Isaac. Hoy la imagen de Isaac no lo tiene (2d).
+- **Restos de la plantilla:** `match.py`, `ground_mix.py`, `describe-scene` y los campos `scene.*` del spec. No estaban en la lista 1e.

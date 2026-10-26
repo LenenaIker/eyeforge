@@ -162,11 +162,11 @@ Reply ONLY with one JSON object per turn: {{"say": "..."}}, {{"search": ["..."]}
 {{"pick_photos": {{...}}}}, {{"describe_scene": {{...}}}} or {{"say": "...", "spec": {{...}}}}."""
 
 # The same job without the scene template's parts (3D model search, props, Poly Haven tags, places, weather,
-# photos for 3D models): with stages.TEMPLATE off the synthetic images come from the user's photos only
-# (photo2scene) and those fields feed nothing. Measured against SYSTEM in experiments/interview_bench (arm L).
+# photos for 3D models): the template is gone (2026-10-26) and those fields feed nothing. Measured against
+# SYSTEM in experiments/interview_bench (arm L).
 SYSTEM_LEAN = """You are the setup assistant of EyeForge. EyeForge trains a small vision model that classifies
-or counts, runs on the user's own device and is sized to it, from the user's own photos plus synthetic images
-rebuilt from those photos. Your job: talk with the user and write the job spec. Users are not vision experts:
+or counts, runs on the user's own device and is sized to it, from the user's own photos plus, when they ask,
+synthetic images made in a 3D scene of a place. Your job: talk with the user and write the job spec. Users are not vision experts:
 they know their problem and their place, not datasets or models. Be brief and friendly, in the user's language.
 
 Ask only what nobody else can answer, at most one short question per turn, never something already answered
@@ -178,7 +178,7 @@ Ask only what nobody else can answer, at most one short question per turn, never
 - their device, if they did not say it;
 - which mistake hurts more, only when their goal does not tell.
 Decide everything else yourself, never ask: camera height and angle, light, place, how photos are organised,
-orientation, synthetic images. When you get the photos you receive their folder layout and a photo analysis:
+orientation. When you get the photos you receive their folder layout and a photo analysis:
 use them. As soon as you know what to recognize and have the analysis, send the spec with one or two plain
 sentences on what you saw in the photos: {{"say": "...", "spec": {{...}}}}. The user confirms once; do not ask
 for confirmations along the way.
@@ -231,6 +231,12 @@ trained with it) and what its photos show. Then:
   or left out; null for a new labeling. For the classes a labeling has, use its keys as class ids and its English
   names as "names";
 - put in the spec only the classes the user wants now. Use only the ids listed here.
+Scenes are places rebuilt in 3D (theirs, or public ones anyone may use) where 3D models of the classes are placed
+to make synthetic images. Only when the user asks for synthetic images in a scene, or names one, put its id in
+"generation": {{"scenes": ["<id>"]}} (several when they ask); then every class also needs "size_m":
+{{"measure": "length" | "width" | "height", "range": [min, max]}} (its real size in meters, the measure you are
+surest of) and "assets": {{"source": "search", "queries": [1 to 3 short English phrases that find its 3D model]}}.
+When a class is a surface or an area, not a thing (grass, a road), say that scenes cannot help and leave them out.
 {items}
 """
 
@@ -606,9 +612,8 @@ def summary(s: spec_mod.Spec) -> str:
     lines = [f"Spec '{s.name}' for {s.hardware}, {what}:",
              f"  classes: {', '.join(s.labels)} "
              + (f"(background: {s.background_class})" if s.background_class else "(no background class)")]
-    from .stages import base as stages
     for c in s.classes:
-        if not stages.TEMPLATE:  # sizes, 3D models and the scene fed the scene template only
+        if not s.synthetic:  # sizes and 3D models only matter for the synthetic images
             lines.append(f"  - {c.id}: {c.description}")
             continue
         size = f"{c.size_m.measure} {c.size_m.range[0]}-{c.size_m.range[1]} m" if c.size_m else "no 3D size"
@@ -622,22 +627,9 @@ def summary(s: spec_mod.Spec) -> str:
         if a and a.photos and a.source != "photos":
             cats += f" + made from photos ({a.queries[0]})"
         lines.append(f"  - {c.id}: {c.description} | {size} | models: {cats}")
-    sc = s.scene
-    if not stages.TEMPLATE:
-        lines.append(f"  camera: {s.camera.height_m[0]}-{s.camera.height_m[1]} m high")
-    else:
-        lines.append(f"  camera: {s.camera.height_m[0]}-{s.camera.height_m[1]} m high, scene {sc.template}, "
-                     f"weather {', '.join(sc.weather)}")
-        if sc.contexts:
-            lines.append("  places: " + ", ".join(f"{c.kind} {round(c.share * 100)}%" for c in sc.contexts) +
-                         (f"; walls {', '.join(sc.wall_tags)}" if sc.wall_tags else "") +
-                         (f"; railings {', '.join(sc.railings)}" if sc.railings else ""))
-        if sc.sky_tags or sc.ground_tags:
-            lines.append(f"  place: sky {', '.join(sc.sky_tags) or 'any'}, ground {', '.join(sc.ground_tags) or 'plain'}")
-        extra = [f"distractors {', '.join(sc.distractors)}" if sc.distractors else "",
-                 f"props {', '.join(p.id for p in s.props)}" if s.props else ""]
-        if any(extra):
-            lines.append("  also in the scene: " + "; ".join(e for e in extra if e))
+    lines.append(f"  camera: {s.camera.height_m[0]}-{s.camera.height_m[1]} m high")
+    if s.synthetic:
+        lines.append(f"  synthetic images: {s.generation.frames} in the scenes {', '.join(s.generation.scenes)}")
     ud = s.user_data
     photos = [f"sorted by class {ud.labeled}" if ud.labeled else "",
               f"unsorted {ud.raw} (the teacher model labels them)" if ud.raw else "",
@@ -749,6 +741,11 @@ def _dataset_as_model(session, s: spec_mod.Spec) -> str | None:
             'give "assets": {"source": "search", "queries": [the same search queries]} and "models": []')
 
 
+def _walk_scenes_problem(session, s: spec_mod.Spec) -> str | None:
+    unknown = sorted(set(s.generation.scenes) - getattr(session, "library_ids", set()))
+    return f"these scenes are not in the user's library: {unknown}; use only the listed ones" if unknown else None
+
+
 def _scene_problem(session, s: spec_mod.Spec) -> str | None:
     return session.scene_check(s.scene) if session.scene_check else None
 
@@ -769,7 +766,7 @@ def _photo_models_problem(session, s: spec_mod.Spec) -> str | None:
 
 # What a proposed spec must pass beyond spec.validate, in order: the first problem goes back to the model.
 SPEC_CHECKS = (_no_photos_problem, _unknown_categories, _foreign_folders, _library_refs, _dataset_as_model,
-               _scene_problem, lambda _, s: check_photos(s),
+               _walk_scenes_problem, _scene_problem, lambda _, s: check_photos(s),
                lambda _, s: sam3_names_problem(s), lambda _, s: catch_all_problem(s), _photo_models_problem,
                lambda session, s: session.sizes_problem(s))
 
@@ -791,14 +788,12 @@ class Session:
                  photo_ranker=None, uploads: Path | None = None, scene_profiler=None, photo_models: bool = True,
                  uploads_only: bool = False, researcher=None, chat_model: str | None = None,
                  lean: bool | None = None):
-        from .stages import base as stages
         self.client, self.model, self.categories, self.max_turns = client, model, categories, max_turns
         self.chat_model = chat_model if chat_model != model else None  # holds the conversation (SPLIT_NOTE)
-        # False where 3D models cannot be made from photos (the Nebius backend has no TRELLIS runtime yet), and
-        # while the scene template, the only user of those models, is off.
-        self.photo_models = photo_models and stages.TEMPLATE
-        if not stages.TEMPLATE:  # the scene's skies and ground textures were the template's
-            scene_check = None
+        # Off: 3D models made from photos (TRELLIS) fed the old scene template only, and the Nebius backend has
+        # no TRELLIS runtime; the template's skies and ground textures are gone with it (2026-10-26).
+        self.photo_models = False
+        scene_check = None
         # True on a public server: only photos uploaded in this chat, never a folder of the server's disk.
         self.uploads_only = uploads_only
         self.researcher = researcher  # question -> {"answer", "sources"} (research.searcher), or None
@@ -810,7 +805,7 @@ class Session:
         self.candidates: list[dict] = []  # the last photos proposed to the user
         # SYSTEM_LEAN, without the scene template's parts: the default while the template is off (benched 2026-10-13:
         # right specs 14/18 against 12/18, 0.11 rejected specs per interview against 0.94, 12 s against 27 s).
-        self.lean = not stages.TEMPLATE if lean is None else lean
+        self.lean = True if lean is None else lean
         self.messages = [{"role": "system", "content": system_prompt(lean)
                           + ("" if photo_models or lean else NO_PHOTO_MODELS) + (UPLOADS_ONLY if uploads_only else "")
                           + (RESEARCH.format(n=MAX_RESEARCH) if researcher else "")}]

@@ -341,61 +341,52 @@ function ObjectUpload({ onClose, onDone }: { onClose: () => void; onDone: () => 
   );
 }
 
-const ROUTES: Record<string, string> = { support: "Things on one surface", surface: "Surfaces seen from above",
-                                         street: "A street", room: "A room", none: "No route fits" };
+const ROUTES: Record<string, string> = { walk: "A place to walk through" };
 
 export function Scenes() {
   const { lib, error, reload } = useLibrary();
   const { sel, toggle, clear } = useSelection();
-  const objects = new Map((lib?.objects ?? []).map((o) => [o.id, o]));
   const datasets = new Map((lib?.datasets ?? []).map((d) => [d.id, d]));
   const ready = lib?.scenes.filter((sc) => sc.status === "ready") ?? [];
+  const building = lib?.scenes.some((sc) => sc.status === "building");
+  useEffect(() => {  // a scene being made: look again in a while
+    if (!building) return;
+    const t = setTimeout(reload, 15000);
+    return () => clearTimeout(t);
+  }, [building, reload, lib]);
   return (
-    <Page title="Scenes" intro="Places rebuilt in 3D from one of your photos: things on a table, a street or a room. Your objects are placed in them again at random, so the synthetic images look like your real place.">
+    <Page title="Scenes" intro="Places rebuilt in 3D from one photo, big objects erased. Ask the chat to train with one: the objects to learn are placed in it at random, so the synthetic images show your kind of place. Public scenes are ready for everyone.">
       {!lib ? <Loading error={error} /> : lib.scenes.length === 0 ? (
         <Empty icon={<Mountain className="h-6 w-6" />} title="No scenes yet">
-          When a model learns from your photos, it rebuilds one of them in 3D (things on a surface, a street or a
-          room), takes out what moves and keeps it here, ready for your next models of that dataset.
+          Open one of your datasets and press Extract on a proposed photo: in about two hours its place is here.
         </Empty>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {lib.scenes.map((sc) => {
             const ds = sc.dataset ? datasets.get(sc.dataset) : undefined;
-            const failed = sc.status !== "ready";
-            const names = [...new Set(sc.objects.map((id) => objects.get(id)?.name).filter(Boolean))];
+            const isReady = sc.status === "ready";
             return (
               <Card key={sc.id} className={cx("relative overflow-hidden", sel.has(sc.id) && "ring-2 ring-brand-500")}>
-                {!failed && <Tick on={sel.has(sc.id)} onToggle={() => toggle(sc.id)} />}
+                {isReady && sc.mine && <Tick on={sel.has(sc.id)} onToggle={() => toggle(sc.id)} />}
                 <div className="relative aspect-[4/3] bg-gray-100">
                   {sc.thumb ? <img src={cardUrl("scene", sc.id)} alt="" loading="lazy" className="h-full w-full object-cover" />
-                    : failed && sc.photo_id != null &&
+                    : sc.photo_id != null &&
                       <img src={libraryPhotoUrl(sc.photo_id)} alt="" loading="lazy" className="h-full w-full object-cover opacity-50 grayscale" />}
-                  {failed && <Badge tone="bad" className="absolute left-3 top-3">No scene</Badge>}
+                  {sc.status === "failed" && <Badge tone="bad" className="absolute left-3 top-3">No scene</Badge>}
+                  {sc.status === "building" && <Badge tone="ember" className="absolute left-3 top-3">Being made</Badge>}
+                  {sc.public && <Badge tone="brand" className="absolute right-3 top-3">Public</Badge>}
                 </div>
                 <div className="p-4">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="truncate font-medium" title={sc.name}>{failed && sc.photo_id != null ? `Photo ${sc.photo_id}` : sc.name}</div>
-                    <ItemMenu kind="scenes" id={sc.id} name={sc.name} onChanged={reload} />
+                    <div className="truncate font-medium" title={sc.name}>{sc.name}</div>
+                    {sc.mine && <ItemMenu kind="scenes" id={sc.id} name={sc.name} onChanged={reload} />}
                   </div>
                   <div className="text-sm text-muted">
                     {ROUTES[sc.route] ?? sc.route}
+                    {sc.free_m2 != null && <> · {Math.round(sc.free_m2)} m² to walk</>}
                     {ds && <> · from <Link to={`/app/datasets/${ds.id}`} className="hover:text-brand-600">{ds.name}</Link></>}
                   </div>
-                  {failed && <p className="mt-2 text-sm text-red-700">Why: {sc.why ?? "unknown"}.</p>}
-                  {sc.objects.length > 0 && (
-                    <div className="mt-3 flex gap-1.5 overflow-hidden" title="Taken out of the photo, placed again in every view">
-                      {sc.objects.slice(0, 6).map((id) => {
-                        const o = objects.get(id);
-                        return <div key={id} className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-gray-100 text-gray-300">
-                          {o?.thumb ? <img src={cardUrl("object", id)} alt={o.name} title={o.name} className="h-full w-full object-contain" />
-                            : <Box className="h-5 w-5" strokeWidth={1.25} />}
-                        </div>;
-                      })}
-                      {sc.objects.length > 6 && <span className="self-center text-xs text-muted">+{sc.objects.length - 6}</span>}
-                    </div>
-                  )}
-                  {names.length > 0 && <p className="mt-1 truncate text-xs text-muted" title={names.join(", ")}>
-                    {sc.objects.length} object{sc.objects.length === 1 ? "" : "s"}: {names.join(", ")}</p>}
+                  {sc.status === "failed" && <p className="mt-2 text-sm text-red-700">Why: {sc.why ?? "unknown"}.</p>}
                   <Used jobs={sc.jobs} />
                 </div>
               </Card>
@@ -403,7 +394,7 @@ export function Scenes() {
           })}
         </div>
       )}
-      <SelectBar kind="scenes" picked={ready.filter((sc) => sel.has(sc.id))} kits={lib?.kits ?? []} onClear={clear} onDone={reload} />
+      <SelectBar kind="scenes" picked={ready.filter((sc) => sel.has(sc.id) && sc.mine)} kits={lib?.kits ?? []} onClear={clear} onDone={reload} />
     </Page>
   );
 }

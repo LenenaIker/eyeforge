@@ -12,9 +12,10 @@ good (user, 2026-10-08; labelings redesigned 2026-10-10, docs/plan_etiquetado.md
   teacher's marks (take_teacher). Nothing else travels between jobs and the library.
 - The owner's 3D objects: uploaded, or built by a job from the owner's photos, with a picture for its card.
   Models found on the internet are our catalog for every user (asset_db.py), never an owner's object.
-- A scene is a place rebuilt from one of the owner's photos (photo2scene, docs/plan_photo2scene.md), built once by
-  a job (take_scenes) and given to the next jobs on that dataset (export_scenes). The things taken out of the
-  photo become the owner's objects, tied to their scene.
+- A scene is a walkable place rebuilt from one of the owner's photos by the scene job (the WorldStereo route's
+  bundle, add_scene), apart from any training; a training gets the scenes its spec names (generation.scenes,
+  export_scenes). It holds no object: any class is placed in it. A public scene (the admin's) is every owner's to
+  use (user, 2026-10-26).
 - A kit has no files: a named list of references to datasets, objects and scenes.
 - What a vision model said about a photo's scene is kept by photo content (photo_description), and each dataset
   has a profile (what objects show up, the backgrounds, the places), made before anyone says what to look for.
@@ -36,9 +37,10 @@ from pathlib import Path
 from .review import StackedMarks, stacked
 from .workspace import IMAGE_EXT, Job, content_key
 
-VERSION = 6  # 4: datasets, labelings, classes, marks and reviews (2026-10-10); older libraries were emptied
+VERSION = 7  # 4: datasets, labelings, classes, marks and reviews (2026-10-10); older libraries were emptied
 # 5: models found on the internet left the owners' objects (2026-10-11): they are our catalog (asset_db.py)
 # 6: scenes built from a photo (photo2scene, docs/plan_photo2scene.md) and the objects taken out of them
+# 7: walk scenes (the scene job) and public scenes; the older routes' scenes are gone (2026-10-26)
 THUMB = 512  # side of the picture kept for an object's or a scene's card
 TASKS = ("count", "classify")
 # Colors of the classes' marks, by position: distinct on photos and in both themes.
@@ -85,7 +87,7 @@ CREATE TABLE IF NOT EXISTS photo_description (
 CREATE TABLE IF NOT EXISTS scenes (
     id TEXT PRIMARY KEY, owner TEXT NOT NULL, photo_id INTEGER REFERENCES photo(id) ON DELETE SET NULL,
     name TEXT NOT NULL, route TEXT NOT NULL, status TEXT NOT NULL, why TEXT, dir TEXT, thumb TEXT,
-    info TEXT NOT NULL, created REAL NOT NULL);
+    info TEXT NOT NULL, created REAL NOT NULL, public INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS objects (
     id TEXT PRIMARY KEY, owner TEXT NOT NULL, origin TEXT NOT NULL, name TEXT NOT NULL, concept TEXT NOT NULL,
     source TEXT NOT NULL, file TEXT, thumb TEXT, kept INTEGER NOT NULL, info TEXT NOT NULL, created REAL NOT NULL,
@@ -103,9 +105,11 @@ CREATE TABLE IF NOT EXISTS synced (
 OLD_TABLES = ("datasets", "photos", "notes", "label_edits", "profiles", "uses", "synced")  # before VERSION 4
 TASK_NAME = {"count": "counts objects", "roi_classification": "one label per photo", "classify": "one label per photo"}
 TITLE = "title.txt"  # in a job folder: the name the user gave the model
-SCENES = "scenes.json"  # in a job's input: the ready scenes of its dataset; in scene_from_photo: the ones it built
-# A scene's working files nobody reads again, and one job's layout (photo2scene.COMPOSED).
-SCENE_SKIP = ("logs", "isaac", "report.json", "sheet.jpg", "scene.glb", "sheet_isaac.jpg", "review.jpg", "review.json")
+SCENES = "scenes.json"  # in a job's input: the scenes of its spec (export_scenes)
+WALK = "walk"           # the scene job's route (experiments/worldstereo/wsroute)
+# What a training needs of a walk scene (scene_render): the splat, its sky, the free ground and the conventions.
+# The USDZ (Isaac Sim, the video) stays in the library: half a gigabyte a scene a job never reads.
+SCENE_FILES = ("scene.json", "splat.ply", "sky.jpg", "free.npz")
 
 
 def _id(*parts: str) -> str:
@@ -161,7 +165,7 @@ def stage_signature(job: Job) -> float:
     and the model)."""
     paths = [job.spec_path, job.root / "request.json", job.stage_dir("convert_assets") / "assets.json",
              job.stage_dir("qa_assets") / "assets.json", job.stage_dir("label") / "verdicts.json",
-             job.stage_dir("scene_from_photo") / "scenes.json", job.stage_dir("export") / "report.json"]
+             job.stage_dir("export") / "report.json"]
     return max((p.stat().st_mtime for p in paths if p.exists()), default=0.0)
 
 
@@ -184,6 +188,16 @@ class Library:
             cols = [c[1] for c in self.db.execute("PRAGMA table_info(objects)")]
             if cols and "scene_id" not in cols:
                 self.db.execute("ALTER TABLE objects ADD COLUMN scene_id TEXT REFERENCES scenes(id) ON DELETE SET NULL")
+        if 0 < old < 7:
+            # The scenes of the routes before the walk one (support, street, room) feed nothing now.
+            cols = [c[1] for c in self.db.execute("PRAGMA table_info(scenes)")]
+            if cols and "public" not in cols:
+                self.db.execute("ALTER TABLE scenes ADD COLUMN public INTEGER NOT NULL DEFAULT 0")
+            if cols:
+                gone = [sid for (sid,) in self.db.execute("SELECT id FROM scenes WHERE route != ?", (WALK,))]
+                self.db.execute("DELETE FROM scenes WHERE route != ?", (WALK,))
+                for sid in gone:
+                    shutil.rmtree(self.files / f"scenes/{sid}", ignore_errors=True)
         self.db.executescript(SCHEMA)
         self.lock = threading.Lock()
         if old < 5:
@@ -548,7 +562,6 @@ class Library:
                     "classes": [{"key": c["key"], "description": c["description"], "phrases": c["phrases"]}
                                 for c in lab["classes"]], "photos": photos}
         (job_input / KEEP).write_text(json.dumps(snapshot, indent=1))
-        self.export_scenes(lab["dataset"], job_input)
         return folder
 
     def take_teacher(self, job: Job) -> int:
@@ -598,7 +611,6 @@ class Library:
             if row and row[0] >= stamp:
                 continue
             self._take_objects(owner, job)
-            self.take_scenes(owner, job)
             self.take_teacher(job)
             self.take_model(job)
             with self.lock:
@@ -700,79 +712,81 @@ class Library:
         meta_path.write_text(json.dumps(meta, indent=1))
         return names
 
-    # Scenes from a photo (photo2scene) -------------------------------------------------------------------
+    # Scenes (the scene job, apart from training) -----------------------------------------------------------
 
-    def export_scenes(self, ds: str, job_input: Path) -> int:
-        """The dataset's ready scenes into a job: job_input/scenes/<id>/ with their files and job_input/scenes.json
-        (id, photo, route, folder, objects) for scene_from_photo, which then builds none for those photos."""
-        rows = self.db.execute("SELECT s.id, s.photo_id, s.route, s.dir, s.info FROM scenes s JOIN photo p "
-                               "ON p.id = s.photo_id WHERE p.dataset_id = ? AND s.status = 'ready' "
-                               "ORDER BY s.created", (ds,)).fetchall()
-        tried = [pid for (pid,) in self.db.execute("SELECT s.photo_id FROM scenes s JOIN photo p ON p.id = s.photo_id "
-                                                   "WHERE p.dataset_id = ? AND s.status = 'failed'", (ds,))]
-        out = []
-        for sid, pid, route, folder, info in rows:
-            src = self.files / folder
-            for f in src.rglob("*"):
-                if f.is_file():
-                    _store(f, job_input / "scenes" / sid / f.relative_to(src))
-            objects = [{"id": oid, "name": name, "concept": concept, "file": file}
-                       for oid, name, concept, file in self.db.execute(
-                           "SELECT id, name, concept, file FROM objects WHERE scene_id = ? AND file IS NOT NULL", (sid,))]
-            out.append({"id": sid, "photo_id": pid, "route": route, "dir": f"scenes/{sid}",
-                        "info": json.loads(info), "objects": objects})
-        if out or tried:
-            (job_input / SCENES).write_text(json.dumps({"ready": out, "failed_photos": tried}, indent=1))
-        return len(out)
-
-    def take_scenes(self, owner: str, job: Job) -> int:
-        """The scenes a job built (scene_from_photo/scenes.json) into the owner's library, with the things taken
-        out of each photo as the owner's objects. A failed one is kept too, so the photo is not tried again."""
-        stage = job.stage_dir("scene_from_photo")
-        built = _load(stage / SCENES) or []
-        n = 0
+    def start_scene(self, owner: str, photo_id: int, name: str | None = None) -> str:
+        """A scene being made from one of the owner's photos (status "building"), or the one already there."""
+        sid = self.scene_of_photo(owner, photo_id)
         with self.lock:
-            for b in built:
-                pid = b.get("photo_id")
-                if pid is None or not self.db.execute("SELECT 1 FROM photo p JOIN dataset d ON d.id = p.dataset_id "
-                                                      "WHERE p.id = ? AND d.owner = ?", (pid, owner)).fetchone():
-                    continue
-                sid = _id(owner, "scene", str(pid))
-                if self.db.execute("SELECT 1 FROM scenes WHERE id = ?", (sid,)).fetchone() or self._removed(owner, sid):
-                    continue
-                folder, thumb = None, None
-                if b["status"] == "ready":
-                    src = stage / b["dir"]
-                    folder = f"scenes/{sid}"
-                    for f in src.rglob("*"):
-                        rel = f.relative_to(src)
-                        if f.is_file() and rel.parts[0] not in SCENE_SKIP:
-                            _store(f, self.files / folder / rel)
-                    if b.get("thumb") and (stage / b["thumb"]).exists():
-                        thumb = f"{folder}/card.jpg"
-                        _picture(stage / b["thumb"], self.files / thumb)
-                self.db.execute("INSERT INTO scenes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                (sid, owner, pid, b.get("name") or f"Scene {pid}", b["route"], b["status"],
-                                 b.get("why"), folder, thumb, json.dumps(b.get("info", {})), time.time()))
-                for o in b.get("objects", []) if folder else []:
-                    oid = _id(owner, "scene_object", sid, str(o["index"]))
-                    file = f"objects/{oid}/model.glb"
-                    _store(stage / b["dir"] / o["mesh"], self.files / file)
-                    card = None
-                    if o.get("card") and (stage / b["dir"] / o["card"]).exists():
-                        card = f"objects/{oid}/card.jpg"
-                        _picture(stage / b["dir"] / o["card"], self.files / card)
-                    info = {k: o[k] for k in ("height_m", "width_m", "role") if k in o}
-                    self.db.execute("INSERT OR IGNORE INTO objects VALUES (?, ?, ?, ?, ?, 'scene', ?, ?, 1, ?, ?, ?)",
-                                    (oid, owner, f"scene:{sid}:{o['index']}", o["name"], o.get("concept") or o["name"],
-                                     file, card, json.dumps(info), time.time(), sid))
-                self.db.execute("INSERT OR IGNORE INTO uses VALUES (?, 'scene', ?)", (job.name, sid))
-                n += 1
-            # The library's scenes the job composed again (frames named by scene id).
-            for sid in {f["scene"] for f in _load(stage / "frames.json") or []}:
-                if self.owns(owner, "scene", sid):
-                    self.db.execute("INSERT OR IGNORE INTO uses VALUES (?, 'scene', ?)", (job.name, sid))
-        return n
+            self.db.execute("DELETE FROM removed WHERE owner = ? AND item = ?", (owner, sid))
+            if not self.db.execute("SELECT 1 FROM scenes WHERE id = ?", (sid,)).fetchone():
+                self.db.execute("INSERT INTO scenes (id, owner, photo_id, name, route, status, why, dir, thumb, info, "
+                                "created, public) VALUES (?, ?, ?, ?, ?, 'building', NULL, NULL, NULL, '{}', ?, 0)",
+                                (sid, owner, photo_id, name or f"Scene {photo_id}", WALK, time.time()))
+            else:
+                self.db.execute("UPDATE scenes SET status = 'building', why = NULL WHERE id = ? AND status != 'ready'",
+                                (sid,))
+        return sid
+
+    def import_scene(self, owner: str, bundle: Path, name: str) -> str:
+        """A bundle made outside the library (the admin's: ws_route.py on any photo) as a ready scene of owner."""
+        bundle = Path(bundle)
+        sid = _id(owner, "scene", "bundle", bundle.resolve().parent.name)
+        with self.lock:
+            self.db.execute("DELETE FROM removed WHERE owner = ? AND item = ?", (owner, sid))
+            self.db.execute("INSERT OR IGNORE INTO scenes (id, owner, photo_id, name, route, status, why, dir, thumb, "
+                            "info, created, public) VALUES (?, ?, NULL, ?, ?, 'building', NULL, NULL, NULL, '{}', ?, 0)",
+                            (sid, owner, name, WALK, time.time()))
+        self.add_scene(sid, bundle)
+        return sid
+
+    def add_scene(self, sid: str, bundle: Path) -> None:
+        """The scene job's bundle (wsroute/bundle.py) into the library: its files and card, status "ready"."""
+        bundle = Path(bundle)
+        meta = json.loads((bundle / "scene.json").read_text())
+        folder = f"scenes/{sid}"
+        for f in bundle.iterdir():
+            if f.is_file():
+                _store(f, self.files / folder / f.name)
+        thumb = None
+        if (bundle / "card.jpg").exists():
+            thumb = f"{folder}/card_thumb.jpg"
+            _picture(bundle / "card.jpg", self.files / thumb)
+        info = {k: meta[k] for k in ("free_m2", "radius", "scores") if k in meta}
+        with self.lock:
+            self.db.execute("UPDATE scenes SET status = 'ready', why = NULL, dir = ?, thumb = ?, info = ? WHERE id = ?",
+                            (folder, thumb, json.dumps(info), sid))
+
+    def fail_scene(self, sid: str, why: str) -> None:
+        with self.lock:
+            self.db.execute("UPDATE scenes SET status = 'failed', why = ? WHERE id = ?", (why, sid))
+
+    def set_public(self, sid: str, public: bool) -> None:
+        """A scene every owner can use (only the admin calls this: server)."""
+        with self.lock:
+            self.db.execute("UPDATE scenes SET public = ? WHERE id = ?", (int(public), sid))
+
+    def can_use_scene(self, owner: str, sid: str) -> bool:
+        return self.db.execute("SELECT 1 FROM scenes WHERE id = ? AND (owner = ? OR public = 1)",
+                               (sid, owner)).fetchone() is not None
+
+    def export_scenes(self, owner: str, ids: list[str], job_input: Path) -> list[str]:
+        """The spec's scenes the owner may use (theirs or public, ready, walk) into a job: job_input/scenes/<id>/
+        with SCENE_FILES and job_input/scenes.json. Returns the ids exported."""
+        out = []
+        for sid in ids:
+            row = self.db.execute("SELECT photo_id, route, dir, info FROM scenes WHERE id = ? AND status = 'ready' "
+                                  "AND route = ? AND (owner = ? OR public = 1)", (sid, WALK, owner)).fetchone()
+            if not row or not row[2]:
+                continue
+            pid, route, folder, info = row
+            for name in SCENE_FILES:
+                if (self.files / folder / name).exists():
+                    _store(self.files / folder / name, job_input / "scenes" / sid / name)
+            out.append({"id": sid, "photo_id": pid, "route": route, "dir": f"scenes/{sid}", "info": json.loads(info)})
+        job_input.mkdir(parents=True, exist_ok=True)
+        (job_input / SCENES).write_text(json.dumps({"ready": out}, indent=1))
+        return [o["id"] for o in out]
 
     # The owner's own changes -------------------------------------------------------------------------------
 
@@ -871,6 +885,20 @@ class Library:
                     out.append(d)
         return out
 
+    def described_photos(self, owner: str, ds: str) -> list[dict]:
+        """The dataset's photos the profile described (scene_profile.GENERAL): [{"id", "file", "description"}]."""
+        from .scene_profile import GENERAL
+        if not self.owns(owner, "dataset", ds):
+            return []
+        rows = self.db.execute("SELECT p.id, p.file, d.data FROM photo p JOIN photo_description d "
+                               "ON d.content_hash = p.content_hash AND d.owner = ? AND d.classes = ? "
+                               "WHERE p.dataset_id = ? ORDER BY p.id", (owner, GENERAL, ds)).fetchall()
+        return [{"id": pid, "file": self.files / f, "description": json.loads(data)} for pid, f, data in rows]
+
+    def scene_of_photo(self, owner: str, photo_id: int) -> str:
+        """The id the scene made from this photo has (start_scene)."""
+        return _id(owner, "scene", str(photo_id))
+
     def profile_stale(self, owner: str, ds: str) -> bool:
         """Has the dataset no profile, or new photos the profile has not seen while it looked at fewer than
         it could?"""
@@ -930,16 +958,21 @@ class Library:
                 for oid, name, concept, source, file, thumb, kept, info, created, scene in rows]
 
     def scenes(self, owner: str) -> list[dict]:
-        """The owner's scenes, ready ones first, with the photo and dataset each comes from, the objects taken out
-        of it and its route; a failed one says why (it is kept so its photo is not tried again)."""
+        """The owner's scenes and the public ones, ready first, with the photo and dataset each comes from (the
+        owner's only); one being made says so, a failed one says why. "mine": the owner's own."""
         rows = self.db.execute("SELECT s.id, s.name, s.route, s.status, s.why, s.photo_id, p.dataset_id, s.thumb, "
-                               "s.info, s.created FROM scenes s LEFT JOIN photo p ON p.id = s.photo_id "
-                               "WHERE s.owner = ? ORDER BY s.status != 'ready', s.created DESC", (owner,)).fetchall()
-        return [{"id": sid, "name": name, "route": route, "status": status, "why": why, "photo_id": pid,
-                 "dataset": ds, "thumb": thumb is not None, **json.loads(info), "created": created,
-                 "jobs": self._used("scene", sid),
-                 "objects": [o for (o,) in self.db.execute("SELECT id FROM objects WHERE scene_id = ?", (sid,))]}
-                for sid, name, route, status, why, pid, ds, thumb, info, created in rows]
+                               "s.info, s.created, s.public, s.owner FROM scenes s LEFT JOIN photo p "
+                               "ON p.id = s.photo_id WHERE s.owner = ? OR (s.public = 1 AND s.status = 'ready') "
+                               "ORDER BY s.status != 'ready', s.created DESC", (owner,)).fetchall()
+        return [{"id": sid, "name": name, "route": route, "status": status, "why": why,
+                 "photo_id": pid if who == owner else None, "dataset": ds if who == owner else None,
+                 "thumb": thumb is not None, **json.loads(info), "created": created, "public": bool(public),
+                 "mine": who == owner, "jobs": self._used("scene", sid) if who == owner else []}
+                for sid, name, route, status, why, pid, ds, thumb, info, created, public, who in rows]
+
+    def scene_status(self, owner: str, sid: str) -> dict | None:
+        row = self.db.execute("SELECT status, why FROM scenes WHERE id = ? AND owner = ?", (sid, owner)).fetchone()
+        return {"status": row[0], "why": row[1]} if row else None
 
     def kits(self, owner: str) -> list[dict]:
         rows = self.db.execute("SELECT id, name, refs, created, updated FROM kits WHERE owner = ? "
@@ -988,6 +1021,12 @@ class Library:
         if loose:
             lines.append("- datasets outside kits: " + "; ".join(ds_line(d) for d in loose))
             ids |= {d["id"] for d in loose}
+        scenes = [s for s in self.scenes(owner) if s["status"] == "ready"]
+        if scenes:
+            lines.append("- scenes for synthetic images: " + "; ".join(
+                f'scene "{s["name"]}" (id {s["id"]}, {"public" if s["public"] and not s["mine"] else "theirs"}'
+                + (f', {round(s["free_m2"])} m2 to walk' if s.get("free_m2") else "") + ")" for s in scenes))
+            ids |= {s["id"] for s in scenes}
         return ("\n".join(lines) if lines else "- nothing yet"), ids
 
     def materialize_dataset(self, owner: str, ds: str, dst: Path) -> int:
@@ -1000,7 +1039,8 @@ class Library:
 
     def card_file(self, owner: str, kind: str, item: str) -> Path | None:
         table = {"object": "objects", "scene": "scenes"}[kind]
-        row = self.db.execute(f"SELECT thumb FROM {table} WHERE owner = ? AND id = ?", (owner, item)).fetchone()
+        public = " OR public = 1" if kind == "scene" else ""
+        row = self.db.execute(f"SELECT thumb FROM {table} WHERE (owner = ?{public}) AND id = ?", (owner, item)).fetchone()
         return self.files / row[0] if row and row[0] else None
 
 

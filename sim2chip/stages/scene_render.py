@@ -1,5 +1,5 @@
-"""Synthetic frames in the walk scenes of the user's place (the WorldStereo route, made apart from training: library
-scenes of route "walk", given to the job in input/scenes.json by library.export_scenes). The class's 3D models
+"""Synthetic frames in the walk scenes the user chose (generation.scenes: their own or public library scenes of
+route "walk", made apart from training and given to the job in input/scenes.json by library.export_scenes). The class's 3D models
 (qa_assets) are placed on each scene's free ground and rendered over its splat (sim2chip/walkscene): the plan in
 this Python, the backgrounds in gsplat's, the objects in Isaac Sim's. A scene is only the place, any class goes in
 it (user, 2026-10-26).
@@ -18,14 +18,15 @@ from pathlib import Path
 
 from .base import Context, Stage
 
-VIEWS = int(os.environ.get("SIM2CHIP_SCENE_VIEWS", 200))  # frames per job, shared by its scenes
+VIEWS = os.environ.get("SIM2CHIP_SCENE_VIEWS")  # frames per job instead of the spec's generation.frames (tests)
 MIN_WIDTH = 640    # frames are rendered at least this wide (the spec's resolution times a whole factor)
 ROUTE = "walk"
-NO_SCENE = "no scene of your place is ready yet (make one from a photo in the dataset's page)"
+NO_SCENE = "none of the chosen scenes is ready"
 
 
 def scene_folders(ctx: Context) -> dict[str, Path]:
-    """The job's walk scenes: {id: bundle folder}. SIM2CHIP_WALK_SCENES (folders, comma separated) takes their
+    """The job's walk scenes, those of generation.scenes the library gave it (input/scenes.json): {id: bundle
+    folder}. SIM2CHIP_WALK_SCENES (folders, comma separated) takes their
     place, to measure on scenes the library does not hold."""
     if os.environ.get("SIM2CHIP_WALK_SCENES"):
         return {Path(f).parent.name if Path(f).name == "bundle" else Path(f).name: Path(f)
@@ -33,7 +34,8 @@ def scene_folders(ctx: Context) -> dict[str, Path]:
     from ..library import SCENES
     f = ctx.job.input / SCENES
     ready = json.loads(f.read_text()).get("ready", []) if f.exists() else []
-    return {s["id"]: ctx.job.input / s["dir"] for s in ready if s.get("route") == ROUTE}
+    chosen = set(ctx.spec.generation.scenes)
+    return {s["id"]: ctx.job.input / s["dir"] for s in ready if s.get("route") == ROUTE and s["id"] in chosen}
 
 
 def resolve_asset(usd: str, out_dir: Path) -> str:
@@ -94,7 +96,10 @@ class SceneRender(Stage):
     results = ("*.json", "render_*.png")
 
     def enabled(self, spec) -> bool:
-        return bool(spec.synthetic and spec.generation.photo_scenes)
+        return spec.synthetic
+
+    def powered_by(self, spec, backend: str, model: str | None = None) -> str:
+        return f"NVIDIA Isaac Sim | {self.where(backend)}"
 
     def run(self, ctx: Context) -> dict:
         from .. import config, subproc
@@ -110,7 +115,8 @@ class SceneRender(Stage):
         assets = json.loads((ctx.job.stage_dir("qa_assets") / "assets.json").read_text())
         w, h = ctx.spec.camera.resolution
         k = max(1, math.ceil(MIN_WIDTH / w))
-        p = plan({s: Scene(f) for s, f in scenes.items()}, assets, ctx.spec, ctx.cache.root, VIEWS, (w * k, h * k))
+        n = int(VIEWS) if VIEWS else ctx.spec.generation.frames
+        p = plan({s: Scene(f) for s, f in scenes.items()}, assets, ctx.spec, ctx.cache.root, n, (w * k, h * k))
         if not p["views"]:
             raise RuntimeError(p.get("why") or "no frame found room for the objects in the scenes")
         for v in p["views"]:

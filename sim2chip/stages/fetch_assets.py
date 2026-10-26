@@ -1,22 +1,18 @@
-"""Find and download 3D models for each class, plus the sky maps of the scene.
+"""Find and download 3D models for each class.
 
 Downloads go to the shared cache; the job only keeps a manifest. Models generated from photos
 (generate_assets) and the user's own models from their library (spec `models`, files in the job's input) are
 added to it.
 Output: fetch_assets/manifest.json  [{uid, class, category, name, license, author, source, glb, role?}]
         (role "prop" for background props: `class` is then the prop id)
-        fetch_assets/scene.json     {"skies": [...], "ground": [...], "walls": [...]}  cache-relative paths
 """
 from __future__ import annotations
 
 import gzip
 import json
 import random
-import urllib.request
 from pathlib import Path
 
-from ..scenes.skies import SKIES
-from . import base
 from .base import Context, Stage
 
 # Licenses that allow commercial use and derivatives (attribution is listed in the export report).
@@ -36,15 +32,15 @@ class FetchAssets(Stage):
     runtime = "cpu"
     uses_cache = True
     uses_db = True
-    uses = ("classes", "props", "scene")
+    uses = ("classes", "props")
     after = ("generate_assets",)
     skippable = "with photos"
     # v2: glb paths relative to cache root; v3: search oversamples; v4: scene.json; v5: asset DB.
     # Generated models need no bump: generate_assets only enters the fingerprint when it is enabled.
-    version = "5"
+    version = "6"  # 6: no skies or ground textures (the scene template is gone)
 
     def enabled(self, spec) -> bool:
-        return spec.synthetic and base.TEMPLATE  # its 3D models fed the scene template only
+        return spec.synthetic  # the 3D models placed in the walk scenes (scene_render)
 
     @staticmethod
     def searched(spec) -> list[dict]:
@@ -88,15 +84,12 @@ class FetchAssets(Stage):
         generated = ctx.job.stage_dir("generate_assets") / "manifest.json"
         if generated.exists():
             manifest += json.loads(generated.read_text())
-        scene = self.scene_assets(ctx)
         out = ctx.out(self.name)
         (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
-        (out / "scene.json").write_text(json.dumps(scene, indent=1))
-        n_sky = len(scene["skies"])
         per_class = {}
         for m in manifest:
             per_class[m["class"]] = per_class.get(m["class"], 0) + 1
-        ctx.log(f"{len(manifest)} 3D models {per_class}, {n_sky} skies, {len(scene['ground'])} ground textures")
+        ctx.log(f"{len(manifest)} 3D models {per_class}")
         return {"models": per_class}
 
     @staticmethod
@@ -179,87 +172,6 @@ class FetchAssets(Stage):
         if missing:
             ctx.log(f"{len(missing)} 3D models failed to download and are dropped")
         return [m for m in manifest if m["glb"]]
-
-    def scene_assets(self, ctx: Context) -> dict:
-        """Sky maps and ground textures for the render, downloaded to the cache."""
-        from .. import polyhaven
-
-        sc, seed = ctx.spec.scene, ctx.spec.generation.seed
-        rel = lambda p: str(p.resolve().relative_to(ctx.cache.root.resolve()))  # noqa: E731
-        cached = lambda p: _from_bucket(ctx, [p])  # noqa: E731
-        if sc.sky_tags or sc.template != "road":
-            ids = polyhaven.pick_skies(polyhaven.catalog("hdris"), sc.sky_tags, sc.weather, 12, seed)
-            if not ids:
-                raise ValueError(f"no Poly Haven sky matches tags {sc.sky_tags} and weather {sc.weather}")
-            ctx.log(f"skies for {sc.sky_tags or 'any place'} + {sc.weather}: {', '.join(ids)}")
-            skies = [rel(polyhaven.download(i, "hdris", ctx.cache.hdri / "polyhaven", cached=cached)) for i in ids]
-        else:
-            skies = [rel(ctx.cache.hdri / s.file) for s in self._road_skies(ctx)]
-        ground, extra = [], {}
-        if sc.ground_tags:
-            ids = polyhaven.pick_textures(polyhaven.catalog("textures"), sc.ground_tags, 8, seed)
-            if not ids:
-                raise ValueError(f"no Poly Haven texture matches ground_tags {sc.ground_tags}")
-            ctx.log(f"ground textures for {sc.ground_tags}: {', '.join(ids)}")
-            ground = [rel(polyhaven.download(i, "textures", ctx.cache.root / "textures", cached=cached)) for i in ids]
-            if sc.ground_patches or sc.edge_tags:
-                ground, extra = self.mixed_ground(ctx, ids), {"ground_tile_m": _ground_mix_size()}
-        out = {"skies": skies, "ground": ground, **extra}
-        if sc.wall_tags:  # buildings and rooms of scene.contexts: a few textures per wall material
-            cat, ids = polyhaven.catalog("textures"), []
-            for w in sc.wall_tags:
-                ids += polyhaven.pick_textures(cat, [w, "wall"], 4, seed)
-            ctx.log(f"wall textures for {sc.wall_tags}: {', '.join(ids)}")
-            out["walls"] = [rel(polyhaven.download(i, "textures", ctx.cache.root / "textures", cached=cached)) for i in ids]
-        return out
-
-    def mixed_ground(self, ctx: Context, base_ids: list[str]) -> list[str]:
-        """Layouts of the base ground with patches and strips (ground_mix.py), at the textures' real size."""
-        from .. import ground_mix, polyhaven
-
-        sc, seed = ctx.spec.scene, ctx.spec.generation.seed
-        cat, dest = polyhaven.catalog("textures"), ctx.cache.root / "textures"
-
-        def get(ids):  # (file, side in meters); Poly Haven gives the real size in millimeters
-            return [(polyhaven.download(i, "textures", dest, cached=lambda p: _from_bucket(ctx, [p])), (cat[i].get("dimensions") or [2000])[0] / 1000)
-                    for i in ids]
-
-        patches, edges = [], []
-        for tags, into in ((sc.ground_patches, patches), (sc.edge_tags, edges)):
-            for t in tags:
-                ids = polyhaven.pick_textures(cat, [t], 3, seed)
-                if not ids:
-                    raise ValueError(f"no Poly Haven texture matches ground tag {t!r}")
-                into += get(ids)
-        files = ground_mix.make(get(base_ids), patches, edges, dest / "mix", seed, sc.patch_cover,
-                                sc.patch_size_m, sc.edge_share)
-        ctx.log(f"mixed ground: {len(files)} layouts, patches {sc.ground_patches}, strips {sc.edge_tags}")
-        return [str(f.resolve().relative_to(ctx.cache.root.resolve())) for f in files]
-
-    def _road_skies(self, ctx: Context) -> list:
-        """The curated skies of the road template (NVIDIA's bucket), as in the spike."""
-        d = ctx.cache.hdri
-        d.mkdir(parents=True, exist_ok=True)
-        wanted = [s for s in SKIES if s.weather in ctx.spec.scene.weather]
-        if not wanted:
-            raise ValueError(f"scene.weather {ctx.spec.scene.weather} matches no sky")
-        _from_bucket(ctx, [d / s.file for s in wanted])
-        for s in wanted:
-            f = d / s.file
-            if not f.exists():
-                ctx.log(f"downloading sky {s.file}")
-                tmp = f.with_suffix(".part")
-                urllib.request.urlretrieve(s.url, tmp)
-                if tmp.stat().st_size < 10_000:  # the bucket answers wrong paths with a small XML error
-                    tmp.unlink()
-                    raise RuntimeError(f"sky download failed: {s.url}")
-                tmp.rename(f)
-        return wanted
-
-
-def _ground_mix_size() -> float:
-    from ..ground_mix import SIZE_M
-    return SIZE_M
 
 
 def _from_bucket(ctx: Context, files: list[Path]) -> None:

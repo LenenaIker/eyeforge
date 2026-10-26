@@ -366,7 +366,7 @@ def test_the_scene_gpu_takes_as_many_runs_as_its_memory_holds(tmp_path, monkeypa
     assert job["env"]["S2C_WARM_PARALLEL"] == "3" and float(job["env"]["S2C_WARM_HOURS"]) > warm.HOURS
     assert warm.current(tmp_path, "isaac") == w and warm.current(tmp_path) is None
     script = (tmp_path / "warm" / "isaac.nebius.sh").read_text()
-    assert "SIM2CHIP_ISAAC_PYTHON" in script and "SIM2CHIP_ERASE_PYTHON" in script and "SIM2CHIP_SCENE_PYTHON" in script
+    assert "SIM2CHIP_ISAAC_PYTHON" in script
     # A run that renders goes to it; one that does not, too, while no light GPU is up.
     warm.worker_file(tmp_path, "isaac").write_text(json.dumps({**w, "job_id": "aijob-warm"}))
     cache = Cache(tmp_path / "cache")

@@ -39,7 +39,6 @@ from secrets import token_hex
 
 from .. import config
 from ..cloud_sync import REGION, S3Store
-from ..photo2scene.cloud import KITS as SCENE_KITS
 from ..stages import Stage
 from ..workspace import DONE, LOG_PREFIX as PREFIX, REPO, Cache, Job
 
@@ -87,7 +86,7 @@ PICODET_NODEPS = ["imgaug==0.4.0"]
 PADDLEDET_REF = "release/2.8.1"
 # Brought back for the web (status, report, review) after a worker run; the rest stays in the bucket.
 WORKER_RESULTS = ("*.json", "export/*", "label/*", "ingest/test/*", "qa_assets/sheets/*", "preview_assets/*_0.png",
-                  "generate_assets/*", "logs/*", "scene_from_photo/*")  # the scenes built go to the library whole
+                  "generate_assets/*", "logs/*", "scene_render/*.json")
 RENDER_SAMPLE = 48
 JOB_DIR, CACHE_DIR = "/tmp/s2c/job", "/tmp/s2c/cache"
 CLOUD_JOB = "cloud_job.json"  # in logs/: the Nebius job of a run in progress
@@ -177,11 +176,10 @@ _env = config.env
 
 
 def code_archive() -> bytes:
-    """The sim2chip package as a tar.gz, unpacked by every stage job (no custom image needed), with the notes
-    photo2scene's steps read (the vision model's prompts quote them)."""
+    """The sim2chip package as a tar.gz, unpacked by every stage job (no custom image needed)."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for f in sorted([*(REPO / "sim2chip").rglob("*.py"), *(REPO / "sim2chip/photo2scene/steps").glob("*.md")]):
+        for f in sorted((REPO / "sim2chip").rglob("*.py")):
             tar.add(f, arcname=str(f.relative_to(REPO)))
     return buf.getvalue()
 
@@ -419,8 +417,6 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
         f"PY={KIT_PY} TEACHER_PY={KIT_TEACHER}",
         # Without the picodet kit these paths do not exist and the train stage counts with the grid head.
         f"export SIM2CHIP_PICODET_PYTHON={KIT_PICODET} SIM2CHIP_PADDLEDET={KIT_PADDLEDET}",
-        # photo2scene's own Pythons, unpacked from the cache bucket when a step first needs one (photo2scene.cloud)
-        f"export SIM2CHIP_SCENE_PYTHON={SCENE_KITS['mesh']} SIM2CHIP_ERASE_PYTHON={SCENE_KITS['erase']}",
     ]
     lines = [
         "#!/bin/bash",
@@ -464,9 +460,6 @@ def warm_script(isaac: bool = True) -> str:
         f'{fetch} "$S2C_CODE_URL" /tmp/s2c/code.tgz',
         "tar xzf /tmp/s2c/code.tgz -C /tmp/s2c/code",
         f"export SIM2CHIP_PICODET_PYTHON={KIT_PICODET} SIM2CHIP_PADDLEDET={KIT_PADDLEDET}",
-        # photo2scene's own Pythons, unpacked from the cache bucket when a step first needs one (photo2scene.cloud);
-        # without them the scene GPU's runs failed at the eraser (2026-10-14)
-        f"export SIM2CHIP_SCENE_PYTHON={SCENE_KITS['mesh']} SIM2CHIP_ERASE_PYTHON={SCENE_KITS['erase']}",
         f"export SIM2CHIP_SAM3_PYTHON={KIT_TEACHER} HF_HUB_CACHE=/tmp/s2c/hf SIM2CHIP_WEIGHTS_DIR=/tmp/s2c/weights",
         # Tasks run side by side: TensorFlow must not take the whole GPU at its first use.
         "export TF_FORCE_GPU_ALLOW_GROWTH=true",
@@ -669,8 +662,8 @@ class NebiusBackend:
         if not todo:
             return
         job, cache = pipe.job, pipe.cache
-        # The teachers' Python also runs photo2scene's segmentation and vision model calls; its steps render in Isaac.
-        teacher = any(st.name in ("label", "scene_from_photo") for st in todo)
+        # The teachers' Python also runs the likeness filter of the synthetic frames (SigLIP 2).
+        teacher = any(st.name in ("label", "render") for st in todo)
         runtime = worker_runtime(any(st.runtime == "isaac" or st.gpu == "rtx" for st in todo))
         if self.spent_usd + WORKER_HOURS * USD_PER_HOUR > self.max_usd:
             raise RuntimeError(f"a cloud run can cost up to ${WORKER_HOURS * USD_PER_HOUR:.2f} (timeout "

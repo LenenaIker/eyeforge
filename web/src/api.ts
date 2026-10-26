@@ -411,7 +411,7 @@ export const trainCalibrated = (job: string, fixes: Fixes) =>
   api<{ rerun_from: null }>(`/api/jobs/${job}/train`, json(fixes));
 export const labelAll = (job: string, fixes: Fixes) =>
   api<{ rerun_from: string }>(`/api/jobs/${job}/label_all`, json(fixes));
-// The synthetic images of a job's last run (review.synthetic): what went into training, by photo2scene's phase
+// The synthetic images of a job's last run (review.synthetic): what went into training from the walk scenes
 // (imitation of the user's place, or extrapolation past what the photo shows), and what each filter left out.
 export type SyntheticShot = { image: string; scene?: string; phase?: "imitation" | "extrapolation"; similarity?: number };
 export type Synthetic = {
@@ -477,10 +477,19 @@ export const reprofileDataset = (id: string) => api<{ profiling: boolean }>(`/ap
 export type ObjectCard = { id: string; name: string; concept: string; source: "photos" | "scene" | "upload";
                            has_file: boolean; thumb: boolean; kept: boolean; license?: string; author?: string;
                            url?: string; created: number; jobs: string[] };
-export type SceneCard = { id: string; name: string; route: "support" | "surface" | "street" | "room" | "none";
-                          status: "ready" | "failed"; why: string | null;  // why a failed one made no scene
-                          photo_id: number | null; dataset: string | null; thumb: boolean; objects: string[];
-                          jobs: string[]; created: number };
+export type SceneCard = { id: string; name: string; route: "walk";
+                          status: "building" | "ready" | "failed"; why: string | null;  // why a failed one made no scene
+                          photo_id: number | null; dataset: string | null; thumb: boolean;
+                          public: boolean; mine: boolean;  // public: the admin's, every user may train with it
+                          free_m2?: number; jobs: string[]; created: number };
+// The scene job of one photo (scene_job.py): the route's step in progress, of how many.
+export type SceneState = { id: string; status: "building" | "ready" | "failed"; why: string | null;
+                           step?: string; done?: number; total?: number };
+export type SceneProposal = { photo_id: number; score: number; scene: SceneState | null };
+export const getSceneProposals = (dataset: string) =>
+  api<{ proposals: SceneProposal[]; computing: boolean }>(`/api/library/datasets/${dataset}/scenes`);
+export const extractScene = (photo_id: number) =>
+  api<SceneState>("/api/library/scenes/extract", json({ photo_id }));
 export type Kit = { id: string; name: string; datasets: string[]; objects: string[]; scenes: string[];
                     created: number; updated: number };
 export type LibraryData = { models: ModelCard[]; datasets: DatasetCard[]; objects: ObjectCard[]; scenes: SceneCard[];

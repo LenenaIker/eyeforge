@@ -9,7 +9,7 @@ from sim2chip.stages import Context, Stage
 from sim2chip.workspace import Cache, open_job
 
 SPEC = {"name": "t", "classes": [{"id": "cow", "size_m": {"measure": "length", "range": [2, 2.5]},
-                                  "assets": {"categories": ["cow"]}}]}
+                                  "assets": {"categories": ["cow"]}}], "generation": {"scenes": ["s1"]}}
 
 
 class Fake(Stage):
@@ -93,13 +93,13 @@ def test_unknown_dependency(tmp_path):
         make(tmp_path, stages=[Fake("x", after=("nope",))])
 
 
-def test_real_stage_registry_plans(tmp_path, template_on):
+def test_real_stage_registry_plans(tmp_path):
     from sim2chip.stages import STAGES
     spec = {**SPEC, "user_data": {"labeled": "photos"}}
     pipe = Pipeline(from_dict(spec), open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
     assert [p.stage.name for p in pipe.plan()] == [s.name for s in STAGES
                                                    if s.name not in ("preview_assets", "label", "generate_assets",
-                                                                     "points", "scene_from_photo")]
+                                                                     "points")]
     auto = Pipeline(from_dict({**spec, "qa": {"mode": "auto"}}), open_job(tmp_path, "j3"), Cache(tmp_path / "cache"))
     assert "preview_assets" in [p.stage.name for p in auto.plan()]
     no_photos = Pipeline(from_dict(SPEC), open_job(tmp_path, "j2"), Cache(tmp_path / "cache"))
@@ -109,9 +109,10 @@ def test_real_stage_registry_plans(tmp_path, template_on):
                      Cache(tmp_path / "cache"))
     names = [p.stage.name for p in count.plan()]
     assert "points" in names and "crops" not in names and "label" in names
-    assert "scene_from_photo" in names  # counting, the photos tell the route: a street or a room too
-    level = Pipeline(from_dict({**SPEC, "user_data": {"raw": "photos"}}), open_job(tmp_path, "j6"), Cache(tmp_path / "cache"))
-    assert "scene_from_photo" in [p.stage.name for p in level.plan()]  # classifying, the photos tell the route too
+    assert "scene_render" in names
+    no_scene = Pipeline(from_dict({**SPEC, "user_data": {"raw": "photos"}, "generation": {}}), open_job(tmp_path, "j6"),
+                        Cache(tmp_path / "cache"))
+    assert not {"scene_render", "render", "fetch_assets"} & {p.stage.name for p in no_scene.plan()}
     # The count task changes what the task-aware stages fingerprint; the default task changes nothing.
     assert from_dict(SPEC).section("task") is None
     assert count.fingerprints()["render"] != Pipeline(from_dict({**SPEC, "user_data": {"raw": "photos"}}),
@@ -124,7 +125,7 @@ def test_context_hardware(tmp_path):
     assert ctx.hardware.input_size == 96
 
 
-def test_generated_assets_feed_fetch(tmp_path, template_on):
+def test_generated_assets_feed_fetch(tmp_path):
     from sim2chip.stages import STAGES
     spec = from_dict(SPEC)
     plain = Pipeline(spec, open_job(tmp_path, "a"), Cache(tmp_path / "cache")).fingerprints()
@@ -136,11 +137,11 @@ def test_generated_assets_feed_fetch(tmp_path, template_on):
     assert "generate_assets" not in plain and fps["fetch_assets"] != plain["fetch_assets"]
 
 
-def test_powered_by_says_where_it_really_runs(template_on):
+def test_powered_by_says_where_it_really_runs():
     from sim2chip.stages import BY_NAME
     spec = from_dict({**SPEC, "qa": {"mode": "auto"}})
-    assert BY_NAME["render"].powered_by(spec, "local") == "NVIDIA Isaac Sim | local GPU"
-    assert BY_NAME["render"].powered_by(spec, "nebius") == "NVIDIA Isaac Sim | Nebius AI Cloud, L40S"
+    assert BY_NAME["scene_render"].powered_by(spec, "local") == "NVIDIA Isaac Sim | local GPU"
+    assert BY_NAME["scene_render"].powered_by(spec, "nebius") == "NVIDIA Isaac Sim | Nebius AI Cloud, L40S"
     assert BY_NAME["qa_assets"].powered_by(spec, "local") == \
         "vision model on Nebius Token Factory, called from local CPU"
     assert BY_NAME["label"].powered_by(spec, "nebius") == "Google SigLIP 2 | Nebius AI Cloud, L40S"
@@ -207,17 +208,17 @@ def test_a_step_the_model_can_do_without_is_left_out(tmp_path):
 
 
 def test_render_leaves_out_the_scene_frames_of_a_run_that_had_them(tmp_path):
-    """Scenes turned off: the frames an earlier run left in scene_from_photo/ are not this spec's."""
+    """Scenes turned off: the frames an earlier run left in scene_render/ are not this spec's."""
     from sim2chip.stages.render import scene_frames
-    spec = from_dict({**SPEC, "task": "count", "user_data": {"raw": "photos"},
-                      "camera": {"pitch_deg": [60, 85]}})
+    spec = from_dict({**SPEC, "task": "count", "user_data": {"raw": "photos"}})
     ctx = Context(spec, open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
-    src = ctx.job.stage_dir("scene_from_photo")
-    (src / "s").mkdir(parents=True)
-    (src / "s" / "v.png").write_bytes(b"png")
-    (src / "frames.json").write_text(json.dumps([{"file": "s/v.png", "scene": "s", "boxes": [["cow", 0, 0, 9, 9]]}]))
+    src = ctx.job.stage_dir("scene_render")
+    src.mkdir(parents=True)
+    (src / "render_0000.png").write_bytes(b"png")
+    (src / "frames.json").write_text(json.dumps([{"file": "render_0000.png", "scene": "s1",
+                                                  "boxes": [["cow", 0, 0, 9, 9]]}]))
     out = tmp_path / "render"
     out.mkdir()
-    assert len(scene_frames(ctx, out, 0)) == 1
-    spec.generation.photo_scenes = False
+    assert scene_frames(ctx, out, 0)[0]["boxes"] == [["cow", 0, 0, 9, 9]]
+    spec.generation.scenes = []
     assert scene_frames(ctx, out, 0) == []

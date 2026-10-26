@@ -32,7 +32,7 @@ from pathlib import Path
 
 DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 LOCAL = "local/"  # model prefix: answered by this machine's GPU (sim2chip.local_vlm), free
-# The vision model of every check that runs where the GPU is (photo2scene's steps): NVIDIA's Cosmos Reason 2 on
+# The vision model of the checks that run where the GPU is (the scene route's): NVIDIA's Cosmos Reason 2 on
 # this machine, free. User 2026-10-15: local wherever it can be (Token Factory's Qwen cost 47 $ in a fortnight).
 LOCAL_VLM = "local/nvidia/Cosmos-Reason2-8B"
 # Preferred model families per role, matched against the live /models list (ids change over time).

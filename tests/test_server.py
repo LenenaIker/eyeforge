@@ -14,6 +14,21 @@ GOOD = {"name": "Barn Cam", "classes": [{"id": "cow", "description": "cows", "si
         "range": [2, 2.5]}, "assets": {"categories": ["cow"], "count": 10}}], "user_data": {"raw": "photos"}}
 
 
+def with_scene(tmp_path) -> dict:
+    """GOOD with a ready walk scene of the local owner's library chosen for synthetic images."""
+    from PIL import Image
+
+    from sim2chip.library import Library
+    b = tmp_path / "f3c_x" / "bundle"
+    b.mkdir(parents=True)
+    for name in ("splat.ply", "splat.usdz", "free.npz"):
+        (b / name).write_bytes(b"x")
+    Image.new("RGB", (8, 8)).save(b / "sky.jpg")
+    (b / "scene.json").write_text(json.dumps({"route": "walk"}))
+    sid = Library(tmp_path, tmp_path / "cache").import_scene("local", b, "Road")
+    return {**GOOD, "generation": {"scenes": [sid]}}
+
+
 class Scripted:
     def __init__(self, actions):
         self.actions = list(actions)
@@ -101,15 +116,20 @@ def test_interview_over_http(app):
     assert app.post(f"/api/interview/{sid}", json={"text": "x"}).status_code == 404
 
 
-def test_job_with_photos_runs_and_reports(app, tmp_path, template_on):
+def test_job_with_photos_runs_and_reports(app, tmp_path):
     files = [("photos", ("a.jpg", b"jpg", "image/jpeg")), ("photos", ("notes.txt", b"hi", "text/plain"))]
-    r = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}, files=files)
+    spec = with_scene(tmp_path)
+    r = app.post("/api/jobs", data={"spec": json.dumps(spec)}, files=files)
     assert r.status_code == 200 and r.json() == {"job": "barn_cam", "photos": 1}
     job = tmp_path / "jobs" / "barn_cam"
     assert (job / "input" / "photos" / "a.jpg").exists() and not (job / "input" / "photos" / "notes.txt").exists()
     # The photos are a dataset of the library, labeled in a new labeling the job takes a copy of.
     ud = json.loads((job / "request.json").read_text())["user_data"]
     assert ud["raw"] == f"labeling_{ud['labeling']}" and (job / "input" / "labeling.json").exists()
+    # The chosen scene goes with it, without its USDZ.
+    sid = spec["generation"]["scenes"][0]
+    assert (job / "input" / "scenes" / sid / "splat.ply").exists()
+    assert not (job / "input" / "scenes" / sid / "splat.usdz").exists()
     assert app.launched[0][0] == "barn_cam" and app.launched[0][2] == "nebius"
     # The same spec again is a new job: it must not overwrite barn_cam.
     other = {**GOOD, "user_data": {"raw": "more"}}  # the same setup again while it runs is that run
@@ -294,47 +314,30 @@ def test_photos_in_batches_make_one_turn_and_one_rerun(app, tmp_path):
 
 
 def test_synthetic_shows_what_went_in_and_what_each_filter_left_out(app, tmp_path):
-    """The job page's synthetic panel: the place's frames that went into training by phase, the ones unlike the
-    user's photos, the views the vision model's review rejected, and pictures of each."""
+    """The job page's synthetic panel: the walk scenes' frames that went into training, the ones unlike the user's
+    photos, and pictures of each."""
     from PIL import Image
-    job = tmp_path / "jobs" / app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"]
-    src, render = job / "scene_from_photo", job / "render"
-    for d in (src / "photo_3" / "isaac", src / "photo_7" / "populated" / "isaac", src / "photo_9" / "isaac", render):
-        d.mkdir(parents=True)
-    (src / "scenes.json").write_text(json.dumps([
-        {"photo_id": 3, "route": "support", "status": "ready", "dir": "photo_3"},
-        {"photo_id": 7, "route": "street", "status": "ready", "dir": "photo_7"},
-        {"photo_id": 9, "route": "support", "status": "ready", "dir": "photo_9"}]))
-    (src / "frames.json").write_text(json.dumps([
-        {"file": "photo_3/isaac/render_01.png", "scene": "photo_3", "boxes": [["cow", 0, 0, 9, 9]]},
-        {"file": "photo_3/isaac/render_02.png", "scene": "photo_3", "boxes": [["cow", 0, 0, 9, 9]]},
-        {"file": "photo_7/populated/isaac/render_01.png", "scene": "photo_7", "boxes": [["cow", 0, 0, 9, 9]]}]))
+    job = tmp_path / "jobs" / app.post("/api/jobs", data={"spec": json.dumps(with_scene(tmp_path))}).json()["job"]
+    render = job / "render"
+    render.mkdir(parents=True)
     for i in range(3):
         Image.new("RGB", (64, 48)).save(render / f"rgb_{i:04d}.png")
-    (render / "labels.json").write_text(json.dumps([{"frame": f, "class": "cow", "scene": sc, "boxes": []}
-                                                    for f, sc in ((0, "photo_3"), (2, "photo_7"))]))
+    (render / "labels.json").write_text(json.dumps([{"frame": f, "class": "cow", "scene": "s1", "boxes": []}
+                                                    for f in (0, 2)]))
     (render / "likeness.json").write_text(json.dumps({"threshold": 0.7, "photos": 5, "kept": 2, "left_out": 1, "frames": [
         {"frame": 0, "similarity": 0.8, "kept": True}, {"frame": 1, "similarity": 0.6, "kept": False},
         {"frame": 2, "similarity": 0.75, "kept": True}]}))
-    (src / "photo_3" / "review.json").write_text(json.dumps({"score": 4, "keep": True, "worst": []}))
-    (src / "photo_9" / "review.json").write_text(json.dumps({"score": 2, "keep": False, "worst": ["melted cows"]}))
-    for n in ("render_00.png", "render_01.png", "render_02.png"):
-        Image.new("RGB", (64, 48)).save(src / "photo_9" / "isaac" / n)
     r = app.get(f"/api/jobs/{job.name}/synthetic").json()
-    assert r["went_in"] == 2 and r["split"] == {"imitation": 1, "extrapolation": 1}
-    assert r["left_out"] == {"likeness": 1, "review": 2} and r["threshold"] == 0.7
-    assert [x["scene"] for x in r["reviews"]] == ["photo_3", "photo_9"] and r["reviews"][1]["worst"] == ["melted cows"]
-    assert {x["phase"] for x in r["samples"]["went_in"]} == {"imitation", "extrapolation"}
+    assert r["went_in"] == 2 and r["split"] == {"imitation": 0, "extrapolation": 2}
+    assert r["left_out"] == {"likeness": 1, "review": 0} and r["threshold"] == 0.7
     assert r["samples"]["likeness"] == [{"image": "render/rgb_0001.png", "similarity": 0.6}]
-    assert [x["image"] for x in r["samples"]["review"]] == ["scene_from_photo/photo_9/isaac/render_01.png",
-                                                             "scene_from_photo/photo_9/isaac/render_02.png"]
-    assert app.get(f"/api/jobs/{job.name}/media/{r['samples']['review'][0]['image']}").status_code == 200
-    # A setup with the scenes turned off: only why, not the frames an earlier run left in the folders.
+    assert app.get(f"/api/jobs/{job.name}/media/{r['samples']['went_in'][0]['image']}").status_code == 200
+    # A setup without scenes: only why, not the frames an earlier run left in the folders.
     spec = json.loads((job / "request.json").read_text())
-    (job / "request.json").write_text(json.dumps({**spec, "generation": {**spec.get("generation", {}), "photo_scenes": False}}))
+    (job / "request.json").write_text(json.dumps({**spec, "generation": {**spec.get("generation", {}), "scenes": []}}))
     r = app.get(f"/api/jobs/{job.name}/synthetic").json()
     assert r["went_in"] == 0 and r["samples"]["went_in"] == [] and r["left_out"] == {"likeness": 0, "review": 0}
-    assert r["no_synthetic"] == "rebuilding your place is turned off in the setup"
+    assert r["no_synthetic"] == "no scene was chosen for synthetic images"
 
 
 def test_count_review_points_and_big_thumbnail(app, tmp_path):
@@ -430,7 +433,7 @@ def test_the_same_setup_sent_twice_runs_once(app):
     assert again["job"] == first["job"] and again["already_running"] and len(app.launched) == 1
 
 
-def test_timing_estimates_the_time_left_from_earlier_runs(app, tmp_path, template_on):
+def test_timing_estimates_the_time_left_from_earlier_runs(app, tmp_path):
     import time
     old = tmp_path / "jobs" / "old" / "logs"
     old.mkdir(parents=True)
@@ -439,7 +442,7 @@ def test_timing_estimates_the_time_left_from_earlier_runs(app, tmp_path, templat
              ("fetch_assets", 200, "nebius"), ("render", 300, "local")]  # a local render is not a cloud one
     (old / "timeline.jsonl").write_text("".join(json.dumps({"t": t, "step": s, "seconds": sec, "where": w}) + "\n"
                                                 for s, sec, w in steps))
-    job = app.post("/api/jobs", data={"spec": json.dumps(GOOD)}).json()["job"]
+    job = app.post("/api/jobs", data={"spec": json.dumps(with_scene(tmp_path))}).json()["job"]
     s = app.get(f"/api/jobs/{job}").json()
     assert s["timing"]["elapsed_s"] < 5
     # Nothing ran yet: upload, the GPU wait, label and fetch_assets (running, just started) are left; render

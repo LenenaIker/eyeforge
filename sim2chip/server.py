@@ -115,9 +115,8 @@ CHAT_VIEW = ".view.json"     # file in uploads/<session>: the chat as the web sh
 MAX_VIEW_BYTES = 2_000_000
 CHATS = "chats.json"         # in a job folder: the chats that set it up, [{"t", "revision", "msgs": [{"from", "text"}]}]
 SESSION_HOURS = 6  # an interview left open longer is dropped
-# Model calls are logged by purpose, which is the stage name except for qa's two-step strategy and photo2scene.
-PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets", "scene_plan": "scene_from_photo",
-                 "scene_assets": "scene_from_photo", "scene_review": "scene_from_photo"}
+# Model calls are logged by purpose, which is the stage name except for qa's two-step strategy.
+PURPOSE_STAGE = {"qa_describe": "qa_assets", "qa_decide": "qa_assets"}
 
 
 def create_app(home: Path, backend: str = "local", max_usd: float | None = None, interviewer=None,
@@ -555,6 +554,9 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
                 if phrases.get(c["id"]):
                     c["names"] = phrases[c["id"]]
         ud.update(raw=lib.export(lid, job.input), labeled=None, class_map={}, labeling=lid)
+        gen = data.setdefault("generation", {})
+        if gen.get("scenes"):  # the walk scenes the owner may use (theirs or public, ready) go with the job
+            gen["scenes"] = lib.export_scenes(owner, list(gen["scenes"]), job.input)
         return spec_mod.from_dict(data)
 
     def labeling_classes(parsed: spec_mod.Spec) -> list[dict]:
@@ -1100,6 +1102,79 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         acc = may_start(request, "profile")
         profile_soon(owner, item, acc.id if acc is not None else None)
         return {"profiling": True}
+
+    # Walk scenes: the dataset page's proposals and the scene job (scene_job.py), apart from training -----------
+    proposals: dict[str, tuple[float, list[dict]]] = {}  # dataset -> (profile time, proposals)
+    proposing: set[str] = set()
+    scene_runner = ThreadPoolExecutor(1, thread_name_prefix="scene")  # one scene at a time: one VM
+
+    def propose_soon(owner: str, ds: str, made: float) -> None:
+        if ds in proposing:
+            return
+        proposing.add(ds)
+
+        def work():
+            from . import scene_pick
+            try:
+                proposals[ds] = (made, scene_pick.propose(lib.described_photos(owner, ds), home / "cache"))
+            except Exception as e:
+                print(f"scene proposals of dataset {ds} failed: {type(e).__name__}: {e}", flush=True)
+            finally:
+                proposing.discard(ds)
+        profiler.submit(work)
+
+    def scene_state(owner: str, sid: str) -> dict | None:
+        from . import scene_job
+        st = lib.scene_status(owner, sid)
+        if st is None:
+            return None
+        return {"id": sid, **st, **{k: v for k, v in (scene_job.progress(home, sid) or {}).items()
+                                    if k in ("step", "done", "total")}}
+
+    @app.get("/api/library/datasets/{item}/scenes")
+    def library_scene_proposals(item: str, request: Request):
+        """The dataset's photos proposed for a walk scene, each with its scene when one was started; computing
+        while the profile or the proposals are being made (the page asks again)."""
+        owner, _ = owned(request, "datasets", item)
+        prof = lib.profile(owner, item)
+        if prof is None:
+            return {"proposals": [], "computing": item in profiling}
+        made, found = proposals.get(item, (None, None))
+        if made != prof["created"]:
+            propose_soon(owner, item, prof["created"])
+            return {"proposals": [], "computing": True}
+        return {"proposals": [{**p, "scene": scene_state(owner, lib.scene_of_photo(owner, p["photo_id"]))}
+                              for p in found], "computing": False}
+
+    @app.post("/api/library/scenes/extract")
+    async def library_scene_extract(request: Request):
+        """Start the scene job for one of the owner's photos (about two hours, two paid VM runs)."""
+        body = await request.json()
+        owner = owner_of(request)
+        pid = int(body.get("photo_id", -1))
+        if lib.photo_file(owner, pid) is None:
+            raise HTTPException(404, "no such photo")
+        sid = lib.scene_of_photo(owner, pid)
+        st = lib.scene_status(owner, sid)
+        if st and st["status"] in ("building", "ready"):
+            return scene_state(owner, sid)
+        acc = may_start(request, "scene")
+        lib.start_scene(owner, pid)
+
+        def work():
+            from . import scene_job
+            done = scene_job.run(home, owner, pid)
+            if acc is not None and accounts is not None and (lib.scene_status(owner, done) or {}).get("status") == "ready":
+                charged(acc.id, accounts.meter(acc.id, f"scene:{done}", "scene", scene_job.COST_USD))
+        scene_runner.submit(work)
+        return scene_state(owner, sid)
+
+    @app.get("/api/library/scenes/{item}")
+    def library_scene(item: str, request: Request):
+        st = scene_state(owner_of(request), item)
+        if st is None:
+            raise HTTPException(404, "no such scene")
+        return st
 
     def english_classes(names: list[str], task: str) -> list[dict]:
         """Class names as the user typed them, as a labeling's classes: keys in English whatever the language

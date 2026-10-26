@@ -8,7 +8,7 @@ erased when its foot is within REACH + MARGIN metres; structure stays. The erase
     things   SIM2CHIP_SAM3_PYTHON   the VLM's list (things.json)
     masks    SIM2CHIP_SAM3_PYTHON   SAM 3 per box (things.npz); stop the local VLM server first
     split    SIM2CHIP_SCENE_PYTHON  distances and the rule (split.json, split.jpg, instances.npz, erased.png)
-    (erase)  SIM2CHIP_ERASE_PYTHON  sim2chip/photo2scene/steps/erase_qwen.py on that folder
+    (erase)  SIM2CHIP_ERASE_PYTHON  wsroute/erase_qwen.py on that folder
     publish  any                    the erased photo as the case's input of the panorama step
     caption  SIM2CHIP_SAM3_PYTHON   the one scene caption (WorldGen's prompt and every walk's)
 

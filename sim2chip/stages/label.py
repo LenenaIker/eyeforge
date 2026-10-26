@@ -164,8 +164,8 @@ class Label(Stage):
                 v = {**v, "teacher": v["class"], "teacher_confidence": v["confidence"],
                      "class": fixes[key], "confidence": 1.0, "judge": "user"}
             verdicts[key] = {**v, "assigned": v["class"]}
-        # The centres go with it: new images the user never saw (photo2scene's views of their surfaces) are labelled
-        # by the same learnt criterion (scene_from_photo).
+        # The centres go with it: new images the user never saw are labelled
+        # by the same learnt criterion.
         learned = {"model": teacher.SIGLIP_MODEL, "prompts": prompts, "examples": n, "used_examples": used,
                    "note": teacher.explain_examples(n, used), "centres": centre}
         return verdicts, learned, {"examples": n}

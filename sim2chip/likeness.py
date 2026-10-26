@@ -1,6 +1,6 @@
 """Does a synthetic frame look like the user's photos? Every frame is compared with the user's training photos through
 SigLIP 2 embeddings (the classification teacher, teacher.py); what lies farther from all of them than the real photos
-lie from each other stays out of training (roadmap docs/roadmap_photo2scene.md, A.3). The same for every task.
+lie from each other stays out of training (roadmap_photo2scene.md, A.3). The same for every task.
 
 The threshold comes from the photos themselves: each training photo's similarity to its nearest other training
 photo, and the lowest of those. A frame no real photo is as close to as the two least alike neighbours among the

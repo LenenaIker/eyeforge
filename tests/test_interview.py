@@ -88,17 +88,6 @@ def test_is_yes():
         assert not interview.is_yes(a), a
 
 
-def test_scene_tags_are_checked(template_on):
-    scene = {"template": "generic", "sky_tags": ["moon"], "ground_tags": ["grass"]}
-    fixed = {"template": "generic", "sky_tags": ["forest"], "ground_tags": ["grass"]}
-    client = Scripted([{"spec": {**GOOD, "scene": scene}}, {"spec": {**GOOD, "scene": fixed}}])
-    check = lambda sc: "no Poly Haven sky matches" if "moon" in sc.sky_tags else None  # noqa: E731
-    s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}), scene_check=check)
-    t = s.reply("cows in a forest")
-    assert t.kind == "confirm" and t.spec.scene.sky_tags == ["forest"]
-    assert "no Poly Haven sky matches" in client.seen[1]
-
-
 def test_photo_folders_are_checked(tmp_path):
     from PIL import Image
 
@@ -126,29 +115,6 @@ def test_walls_are_not_ground():
     assert "not a floor" in interview.check_scene(s.scene)
 
 
-def test_interview_proposes_the_users_own_photos_for_3d(tmp_path, template_on):
-    from PIL import Image
-    photos = tmp_path / "phone"
-    photos.mkdir()
-    for n in ("close.jpg", "street.jpg", "blurry.jpg"):
-        Image.new("RGB", (8, 8)).save(photos / n)
-    scores = {"close.jpg": 0.9, "street.jpg": 0.2, "blurry.jpg": 0.7}
-
-    def ranker(folder, query):
-        return sorted(({"file": str(p), "score": scores[p.name], "reason": "r"} for p in Path(folder).iterdir()),
-                      key=lambda c: -c["score"])
-    pick = {"pick_photos": {"class": "pot", "query": "flower pot", "folder": str(photos), "say": "These?"}}
-    client = Scripted([pick, {"say": "Thanks, anything else?"}])
-    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), photo_ranker=ranker,
-                          uploads=tmp_path / "up")
-    t = s.reply("pots on my terrace, photos in " + str(photos))
-    assert t.kind == "pick" and [Path(c["file"]).name for c in t.request["candidates"]] == ["close.jpg", "blurry.jpg"]
-    # The user leaves one out; only proposed files are accepted.
-    t = s.choose([str(photos / "close.jpg"), "/etc/passwd"], "pot")
-    assert t.kind == "say" and [f.name for f in (tmp_path / "up" / "3d_pot").iterdir()] == ["close.jpg"]
-    assert "1 photos to build 3D models of class pot" in client.seen[-1]
-
-
 def test_turn_steps_show_what_the_interview_is_doing():
     client = Scripted(['{"say": ', {"search": ["cow"]}, {"spec": {"name": "x"}}, {"say": "Where is the camera?"}])
     s = interview.Session(client, "m", interview.CategoryIndex(counts={"cow": 62}))
@@ -171,20 +137,6 @@ def test_photo_steps_count_photos_when_the_helper_can():
         return folder
     assert s._counting(helper, step, "f") == "f" and (step["done"], step["total"]) == (3, 8)
     assert s._counting(lambda folder: folder, step, "g") == "g"  # helpers without progress still work
-
-
-def test_interview_asks_for_photos_when_none_fit(tmp_path, template_on):
-    (tmp_path / "phone").mkdir()
-    pick = {"pick_photos": {"class": "pot", "query": "flower pot", "folder": str(tmp_path / "phone")}}
-    ask = {"photos": {"for": "3d", "class": "pot", "say": "Do you have a clear photo of the pot?"}}
-    client = Scripted([pick, ask, {"say": "ok"}])
-    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), photo_ranker=lambda f, q: [])
-    t = s.reply("pots")
-    assert t.kind == "photos" and t.request == {"for": "3d", "class": "pot"}
-    assert "none of the 0 photos" in client.seen[1]
-    t = s.add_photos(str(tmp_path / "phone"), 3, "3d", "pot")
-    assert t.kind == "say" and "3 photos to build 3D models of class pot" in client.seen[-1]
-
 
 
 def test_photos_attached_to_a_message_make_one_turn_with_the_text(tmp_path):
@@ -362,17 +314,6 @@ def test_counting_asks_for_english_names_for_sam3():
     assert t.kind == "confirm" and t.spec.classes[0].names == ["flower pot"]
 
 
-def test_a_failed_photo_check_lets_the_user_choose(tmp_path, template_on):
-    """The vision model timed out on every photo (2026-09-30): that is not "no photo shows the pot"."""
-    photos = [str(tmp_path / f"{i}.jpg") for i in range(3)]
-    ranker = lambda f, q: [{"file": p, "score": 0.0, "reason": interview.NO_VERDICT[1]} for p in photos]
-    pick = {"pick_photos": {"class": "pot", "query": "flower pot", "folder": str(tmp_path)}}
-    s = interview.Session(Scripted([pick]), "m", interview.CategoryIndex(counts={}), photo_ranker=ranker)
-    t = s.reply("pots")
-    assert t.kind == "pick" and [c["file"] for c in t.request["candidates"]] == photos
-    assert "could not check" in t.text
-
-
 def test_counting_names_keep_only_english():
     """SAM 3 gets the names: the user's word is replaced, not kept after the English one."""
     cls = {"id": "pot", "size_m": {"measure": "length", "range": [0.1, 0.5]},
@@ -383,16 +324,19 @@ def test_counting_names_keep_only_english():
     assert t.kind == "confirm" and t.spec.classes[0].names == ["flower pot"]
 
 
-def test_no_synthetic_images_means_no_3d_stages(template_on):
-    """frames 0 with models built from photos (2026-09-30) ran the 3D stages for nothing."""
+def test_no_synthetic_images_means_no_3d_stages():
+    """frames 0 with models built from photos (2026-09-30) ran the 3D stages for nothing; no scene chosen, too."""
     from sim2chip.spec import from_dict
     from sim2chip.stages import STAGES
     cls = {"id": "pot", "size_m": {"measure": "length", "range": [0.1, 0.5]}, "names": ["flower pot"],
            "assets": {"source": "photos", "queries": ["flower pot"], "photos": "/nowhere"}}
-    spec = {"name": "pots", "task": "count", "background_class": "empty", "classes": [cls], "user_data": {"raw": "x"}}
+    spec = {"name": "pots", "task": "count", "background_class": "empty", "classes": [cls], "user_data": {"raw": "x"},
+            "generation": {"scenes": ["s1"]}}
     run = lambda s: [st.name for st in STAGES if st.enabled(from_dict(s))]
-    assert "render" in run(spec) and "generate_assets" in run(spec)
-    only_photos = run({**spec, "generation": {"frames": 0}})
+    assert {"render", "generate_assets", "scene_render", "fetch_assets"} <= set(run(spec))
+    no_scene = run({**spec, "generation": {}})
+    assert not {"fetch_assets", "scene_render", "render", "points"} & set(no_scene)
+    only_photos = run({**spec, "generation": {"frames": 0, "scenes": ["s1"]}})
     assert not {"fetch_assets", "generate_assets", "render", "points"} & set(only_photos)
     assert {"label", "ingest", "train", "export"} <= set(only_photos)
     assert "synthetic images: none" in interview.summary(from_dict({**spec, "generation": {"frames": 0}}))

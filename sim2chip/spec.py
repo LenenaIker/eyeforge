@@ -213,8 +213,10 @@ class GenerationSpec:
     empty_ratio: float = 0.2
     seed: int = 0
     max_targets: int | None = None  # count task: up to this many targets per frame (default 6)
-    # Frames from the user's own place too (scene_from_photo), when their photos fit (count, camera looking down).
-    photo_scenes: bool = True
+    # Library scenes (route "walk", the user's own or public ones) the classes' 3D models are placed in
+    # (stages/scene_render.py); none: the user's photos only.
+    scenes: list[str] = field(default_factory=list)
+    photo_scenes: bool = True  # no longer used (the old scene_from_photo), kept so older specs load
 
     @property
     def n_targets(self) -> int:
@@ -272,12 +274,10 @@ class Spec:
 
     @property
     def synthetic(self) -> bool:
-        """Whether the job makes synthetic images: frames are asked for and, with the scene template on, some class
-        has 3D models. generation.frames 0 means the user's photos only (the 3D stages would run for nothing,
-        2026-09-30). With the template off (stages.base.TEMPLATE) the images are rebuilt from the user's photos
-        (photo2scene) and the interview no longer asks for 3D models (SYSTEM_LEAN, 2026-10-13)."""
-        from .stages import base as stages
-        return self.generation.frames > 0 and (not stages.TEMPLATE or any(c.assets for c in self.classes))
+        """Whether the job makes synthetic images: frames are asked for and the user chose library scenes to place
+        the classes' 3D models in (generation.scenes, user 2026-10-26). generation.frames 0 means the user's
+        photos only."""
+        return self.generation.frames > 0 and bool(self.generation.scenes)
 
     def cls(self, class_id: str) -> ClassSpec:
         for c in self.classes:
@@ -502,23 +502,18 @@ def _validate_props(spec: Spec) -> None:
 
 
 def _validate_scene(spec: Spec) -> None:
-    from .scenes import TEMPLATES
-    named = sorted(set(TEMPLATES) - {"places"})  # places is chosen by scene.contexts, not by name
-    if spec.scene.template not in named:
-        raise SpecError(f"scene.template must be one of {named}")
     bad = [w for w in spec.scene.weather if w not in WEATHER]
     if bad or not spec.scene.weather:
         raise SpecError(f"scene.weather must be a non-empty subset of {WEATHER}")
-    if spec.scene.template == "road" and not spec.scene.sky_tags:
-        from .scenes.skies import SKIES
-        if not {s.weather for s in SKIES} & set(spec.scene.weather):
-            raise SpecError(f"scene.weather {spec.scene.weather}: the road template's own skies have none of "
-                            "these; add scene.sky_tags to take skies from Poly Haven")
+    if spec.synthetic:
+        missing = [c.id for c in spec.classes if c.size_m is None or c.assets is None]
+        if missing:
+            raise SpecError(f"classes {missing}: synthetic images in a scene need size_m and assets for every class")
 
 
 def no_photos(spec: Spec) -> str | None:
     """Why the spec cannot train: no photos of the user's. Synthetic images alone did not train a usable model (spike,
-    2026-09-23) and are made from the user's photos now (photo2scene), so without photos nothing trains (user,
+    2026-09-23) and only complete the user's photos now (walk scenes), so without photos nothing trains (user,
     2026-10-11). Not part of validate: older specs without photos still load, to show their jobs."""
     ud = spec.user_data
     if ud.labeled or ud.raw:
