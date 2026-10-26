@@ -40,7 +40,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "data" / "worldstereo_test"
 PANOS = ROOT / "data" / "panogen_test" / "out"
 TOOLS = Path(os.environ.get("TOOLS", "/media/lenena-iker/Crucial/tools"))

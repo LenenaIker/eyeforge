@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 IN = ROOT / "data" / "panogen_test" / "in"
 OUT = ROOT / "data" / "worldstereo_test" / "scene_in"
 REACH = 10.0    # metres: the walks' longest reach (ws_test.MAX_FREE)

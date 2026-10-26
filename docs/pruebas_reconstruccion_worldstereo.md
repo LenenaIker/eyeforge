@@ -3,6 +3,10 @@
 Ruta: foto, panorama de WorldGen, caminatas de WorldStereo, splat de gsplat, USDZ de NuRec. Caso de prueba: `photo21`.
 Objetivo: un 3D tan bueno como los vídeos, también fuera de los caminos grabados.
 
+Desde el 2026-10-26 los scripts `ws_*.py` que cita este documento están congelados en `experiments/worldstereo/closed/`
+(se ejecutan con esa ruta). La receta elegida, F3c, vive en `experiments/worldstereo/wsroute/` con el driver
+`experiments/worldstereo/ws_route.py`.
+
 Regla de trazabilidad (usuario, 2026-10-22): cada prueba cambia **una sola cosa** respecto a la fila que cita como base.
 Lo que mejora se queda como base de las siguientes; lo que no, se apunta y se quita.
 

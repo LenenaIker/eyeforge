@@ -3,7 +3,7 @@
 import sys
 import numpy as np, torch, cv2
 from PIL import Image, ImageDraw, ImageFont
-sys.path.insert(0, "experiments/worldstereo")
+sys.path.insert(0, "experiments/worldstereo/closed")
 import ws_nbv as nb, ws_test as ws
 dev = torch.device("cuda")
 D = ws.DATA / "photo21"

@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageFilter
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 PHRASES = ("car", "van", "truck", "person")
 THRESHOLD = 0.5
 GROW = 15
