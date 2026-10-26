@@ -1,6 +1,5 @@
 """Count task without TensorFlow, Isaac Sim or a GPU: decoding, scoring, placement, points, teacher marks, review."""
 import json
-import random
 
 import numpy as np
 import pytest

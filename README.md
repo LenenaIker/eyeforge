@@ -76,6 +76,7 @@ conda activate sim2chip
 pip install -e ".[train,assets,web,cloud,dev]"
 cp .env.example .env    # then fill in the keys and paths (see the comments in it)
 pytest
+ruff check sim2chip tests experiments/worldstereo/wsroute experiments/worldstereo/ws_route.py
 (cd web && npm install && npm run build)   # the web app (Node 20+), served by `sim2chip serve`
 ```
 

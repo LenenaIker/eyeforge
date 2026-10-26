@@ -223,7 +223,7 @@ def consistency(case_name: str, last: float = 1.0):
         print(f"{k:20s} pairs {v['pairs']:3d}  consistency {v['consistency']:.3f}  colour error "
               f"{v['colour_error']:.1f}  overlap {v['overlap']}")
     per_leg = {}
-    for k, (ag, co, ce) in pairs.items():
+    for k, (ag, co, _ce) in pairs.items():
         for leg in k.split(">"):
             s = per_leg.setdefault(leg, [0, 0])
             s[0] += ag

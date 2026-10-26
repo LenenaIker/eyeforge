@@ -121,7 +121,7 @@ def views(case_name: str, name: str = "views.npz", skip: tuple = ()):
     # A frame without enough seen pixels (deep into a leg) takes its leg's median scale, else the run's.
     glob_k = float(np.nanmedian(np.concatenate([np.array(v) for v in scales.values()])))
     n = len(camera.bank_cameras())
-    for leg, ks in scales.items():
+    for ks in scales.values():
         lk = float(np.nanmedian(ks)) if np.isfinite(ks).any() else glob_k
         for k in ks:
             prox, mg = depths[n].astype(np.float32)
