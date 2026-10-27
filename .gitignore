@@ -23,3 +23,9 @@ firmware/*/tools/node_modules/
 experiments/**/logs/
 experiments/**/*.log
 experiments/**/*.err
+
+# how the public demo server is deployed: private, the repo only explains running it locally
+deploy/
+docs/deploy.md
+/Dockerfile
+/.dockerignore
