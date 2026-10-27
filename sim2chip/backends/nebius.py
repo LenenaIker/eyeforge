@@ -15,6 +15,8 @@ working as the pipeline's view of the job.
 Configuration (environment or the repo's .env):
     SIM2CHIP_NEBIUS_CLI        nebius CLI (default: on PATH or ~/.nebius/bin/nebius)
     SIM2CHIP_NEBIUS_PROJECT    project id (default: the CLI profile's parent-id)
+    SIM2CHIP_NEBIUS_PROJECTS   projects in other regions ("region=id,..."), where runs go when REGION has no
+                               machine (platforms(): SIM2CHIP_NEBIUS_ELSEWHERE, SIM2CHIP_SM120_KITS)
     SIM2CHIP_BUCKET_PREFIX     bucket name prefix (default sim2chip)
     SIM2CHIP_S3_SECRET         MysteryBox secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for the jobs
     SIM2CHIP_NEBIUS_SECRET     MysteryBox secret holding NEBIUS_API_KEY, for stages that call Token Factory
@@ -34,6 +36,7 @@ import subprocess
 import tarfile
 import time
 from dataclasses import dataclass, field
+from typing import NamedTuple
 from pathlib import Path
 from secrets import token_hex
 
@@ -51,8 +54,32 @@ USD_PER_HOUR = config.env_float("SIM2CHIP_USD_PER_HOUR", 1.55)  # on-demand L40S
 # whose smallest preset is bigger. "" turns it off.
 FALLBACK = config.env("SIM2CHIP_NEBIUS_FALLBACK", "gpu-l40s-d/1gpu-16vcpu-96gb")
 NO_GPU_S = 1800  # a platform that found no machine is asked last for this long
-# On-demand price of the smallest preset per platform (nebius.com/prices, 2026-10-13); others cost USD_PER_HOUR.
-PRICES = {"gpu-l40s-a": USD_PER_HOUR, "gpu-l40s-d": 1.82}
+# On-demand price of the smallest preset per platform (nebius.com/prices, 2026-10-13 and 10-21); others cost
+# USD_PER_HOUR.
+PRICES = {"gpu-l40s-a": USD_PER_HOUR, "gpu-l40s-d": 1.82, "gpu-rtx6000-a": 1.80, "gpu-rtx6000": 1.80}
+# The L40S is only in eu-north1 (2026-10-27, every region listed with the CLI); the other GPUs with RT cores are
+# RTX PRO 6000 (Blackwell), asked for when eu-north1 has no machine. "region:platform/preset", comma-separated;
+# a region without a project in SIM2CHIP_NEBIUS_PROJECTS is left out.
+ELSEWHERE = config.env("SIM2CHIP_NEBIUS_ELSEWHERE", "eu-south1:gpu-rtx6000-a/1gpu-24vcpu-218gb,"
+                       "uk-south2:gpu-rtx6000-a/1gpu-24vcpu-218gb,us-central1:gpu-rtx6000/1gpu-24vcpu-218gb")
+# Project per region other than REGION: "region=project-id", comma-separated.
+PROJECTS = dict(kv.split("=", 1) for kv in config.env("SIM2CHIP_NEBIUS_PROJECTS", "").split(",") if "=" in kv)
+ARCH = {"gpu-l40s-a": "sm_89", "gpu-l40s-d": "sm_89", "gpu-rtx6000-a": "sm_120", "gpu-rtx6000": "sm_120"}
+# Kits shown to run on Blackwell (sm_120). Isaac Sim 5.1 does; Paddle cu126 does not, and gsplat's wheel has no
+# sm_120 code (2026-10-27). Until a kit is listed, runs that need it stay on the L40S.
+SM120_KITS = set(filter(None, config.env("SIM2CHIP_SM120_KITS", "").split(",")))
+
+
+class Where(NamedTuple):
+    """Where a job runs. Data stays in REGION's buckets: a job elsewhere reads them across regions (0.015 $/GiB,
+    about 0.17 $ a run for the kits) and pulls REGION's images with a token."""
+    platform: str
+    preset: str
+    region: str = REGION
+
+    @property
+    def arch(self) -> str:
+        return ARCH.get(self.platform, "sm_89")
 
 
 def usd_per_hour(platform: str | None) -> float:
@@ -139,18 +166,41 @@ class NoGPU(RuntimeError):
     """Nebius found no machine for a job in PROVISION_S."""
 
 
-def _sick_last(home: Path | None, out: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """out with the platforms that found no machine lately (home/logs/no_gpu.json) moved last."""
+def _sick_last(home: Path | None, out: list[Where]) -> list[Where]:
+    """out with the places that found no machine lately (home/logs/no_gpu.json) moved last, in order otherwise."""
     try:
         sick = json.loads((home / "logs" / "no_gpu.json").read_text()) if home else {}
     except (OSError, ValueError):
         sick = {}
-    return sorted(out, key=lambda pp: time.time() - sick.get(pp[0], 0) < NO_GPU_S)
+    return sorted(out, key=lambda w: time.time() - sick.get(_sick_key(w), 0) < NO_GPU_S)
 
 
-def platforms(home: Path | None) -> list[tuple[str, str]]:
-    """(platform, preset) to ask in turn: the ones that found no machine lately last."""
-    return _sick_last(home, [(PLATFORM, PRESET)] + ([tuple(FALLBACK.split("/", 1))] if FALLBACK else []))
+def _sick_key(w: Where) -> str:
+    return w.platform if w.region == REGION else f"{w.region}:{w.platform}"
+
+
+def _where(text: str, region: str = REGION) -> Where:
+    if ":" in text:
+        region, text = text.split(":", 1)
+    return Where(*text.split("/", 1), region)
+
+
+def runs_on(w: Where, kits: set[str]) -> bool:
+    """The job can run there: its region has a project, and its GPU runs every kit it needs (the interpreters
+    of `pythons` run anywhere)."""
+    if w.region != REGION and w.region not in PROJECTS:
+        return False
+    return w.arch == "sm_89" or not (kits - {"pythons"}) - SM120_KITS
+
+
+def platforms(home: Path | None, kits: set[str] = frozenset(KITS)) -> list[Where]:
+    """Where to ask in turn, the same for the same state: REGION's platforms (no traffic between regions), cheapest
+    first, then the other regions' by price; the ones that found no machine lately last. kits: the ones the job
+    needs (all of them by default, as a warm GPU)."""
+    home_region = [Where(PLATFORM, PRESET)] + ([_where(FALLBACK)] if FALLBACK else [])
+    others = sorted((_where(t) for t in ELSEWHERE.split(",") if t.strip()),
+                    key=lambda w: (usd_per_hour(w.platform), w.region))
+    return _sick_last(home, [w for w in home_region + others if runs_on(w, kits)])
 
 
 # The scene GPU for several runs at once: three fit in its 96 GB (2026-10-14, 0.51 $ a run against 1.02 to 1.15 $
@@ -158,18 +208,18 @@ def platforms(home: Path | None) -> list[tuple[str, str]]:
 SCENE_BIG = config.env("SIM2CHIP_SCENE_BIG", "gpu-l40s-d/1gpu-16vcpu-96gb")
 
 
-def scene_platforms(home: Path | None, runs: int = 1) -> list[tuple[str, str]]:
-    """Where the scene GPU (warm.py) is asked, in turn: SIM2CHIP_SCENE_GPU ("platform/preset") when set; else, for
-    two runs or more, SCENE_BIG first; else as any run. Platforms that found no machine lately go last."""
+def scene_platforms(home: Path | None, runs: int = 1) -> list[Where]:
+    """Where the scene GPU (warm.py) is asked, in turn: SIM2CHIP_SCENE_GPU ("[region:]platform/preset") when set;
+    else, for two runs or more, SCENE_BIG first; else as any run. Places that found no machine lately go last."""
     if (where := _env("SIM2CHIP_SCENE_GPU")):
-        return [tuple(where.split("/", 1))]
+        return [_where(where)]
     if runs < 2 or not SCENE_BIG:
         return platforms(home)
-    big = tuple(SCENE_BIG.split("/", 1))
-    return _sick_last(home, [big] + [pp for pp in platforms(home) if pp[0] != big[0]])
+    big = _where(SCENE_BIG)
+    return _sick_last(home, [big] + [w for w in platforms(home) if w != big])
 
 
-def note_no_gpu(home: Path | None, platform: str) -> None:
+def note_no_gpu(home: Path | None, where: Where | str) -> None:
     if home is None:
         return
     f = home / "logs" / "no_gpu.json"
@@ -178,7 +228,7 @@ def note_no_gpu(home: Path | None, platform: str) -> None:
     except (OSError, ValueError):
         sick = {}
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps({**sick, platform: time.time()}))
+    f.write_text(json.dumps({**sick, where if isinstance(where, str) else _sick_key(where): time.time()}))
 TERMINAL = {"COMPLETED", "SUCCEEDED", "FAILED", "ERROR", "CANCELLED", "CANCELED", "STOPPED", "DELETED"}
 
 
@@ -334,8 +384,7 @@ def worker_runtime(isaac: bool) -> Runtime:
 def kit_keys(teacher: bool, picodet: bool = False, gsplat: bool = False) -> list[str]:
     """Cache bucket keys of the kits a run unpacks: the Python itself, the worker's, the teachers' if it labels,
     PaddlePaddle's if it trains a PicoDet counter, gsplat's if it renders walk scenes."""
-    used = ({"pythons", "py"} | ({"teacher"} if teacher else set()) | ({"picodet"} if picodet else set())
-            | ({"gsplat"} if gsplat else set()))
+    used = needed_kits(teacher, picodet, gsplat)
     return [f"{ENVS_PREFIX}/{IMAGE_TAG}/{k}.tar.zst" for k in KITS if k in used]
 
 
@@ -344,6 +393,11 @@ def trains_picodet(spec, todo) -> bool:
     from .. import hardware
     from ..tasks import task_of
     return any(st.name == "train" for st in todo) and task_of(spec).detector(hardware.get(spec.hardware)) == "picodet_s"
+
+
+def needed_kits(teacher: bool, picodet: bool = False, gsplat: bool = False) -> set[str]:
+    """The kits a job unpacks (kit_keys), which decide the GPUs it can run on (runs_on)."""
+    return {"pythons", "py"} | {k for k, on in (("teacher", teacher), ("picodet", picodet), ("gsplat", gsplat)) if on}
 
 
 def renders_walks(todo) -> bool:
@@ -500,6 +554,7 @@ class NebiusCLI:
             Path.home() / ".nebius/bin/nebius")
         self.project = project or _env("SIM2CHIP_NEBIUS_PROJECT")
         self.dry_run = dry_run
+        self._secret_ids: dict[str, str] = {}
 
     def __call__(self, *args: str, check: bool = True) -> str:
         cmd = [self.exe, *args]
@@ -511,8 +566,16 @@ class NebiusCLI:
             raise RuntimeError(f"{shlex.join(cmd[:4])}...: {r.stderr.strip()[-500:]}")
         return r.stdout
 
-    def _parent(self) -> list[str]:
-        return ["--parent-id", self.project] if self.project else []
+    def _parent(self, region: str = REGION) -> list[str]:
+        project = self.project if region == REGION else PROJECTS[region]
+        return ["--parent-id", project] if project else []
+
+    def _registry(self, region: str) -> list[str]:
+        """REGION's registry asks a job elsewhere for credentials (2026-10-21): a short-lived IAM token."""
+        if region == REGION:
+            return []
+        token = "<token>" if self.dry_run else self("iam", "get-access-token").strip()
+        return ["--registry-username", "iam", "--registry-password", token]
 
     def ensure_bucket(self, name: str) -> None:
         if self.dry_run:
@@ -535,15 +598,18 @@ class NebiusCLI:
         self("storage", "bucket", "delete", "--id", bucket_id)
 
     def create_job(self, name: str, runtime: Runtime, env: dict[str, str], script: Path, timeout_h: int,
-                   env_secrets: list[str], where: tuple[str, str] = (PLATFORM, PRESET)) -> str:
-        args = ["ai", "job", "create", "--name", name, "--image", runtime.image, "--platform", where[0],
-                "--preset", where[1], "--on-demand", "--timeout", f"{timeout_h}h", *self._parent(),
+                   env_secrets: list[str], where: Where = Where(PLATFORM, PRESET)) -> str:
+        where = Where(*where)
+        args = ["ai", "job", "create", "--name", name, "--image", runtime.image, "--platform", where.platform,
+                "--preset", where.preset, "--on-demand", "--timeout", f"{timeout_h}h", *self._parent(where.region),
+                *self._registry(where.region),
                 "--inject-file", f"{script}:/opt/s2c_stage.sh", "--container-command", "bash",
                 "--args", "/opt/s2c_stage.sh", "--async"]
         for k, v in {**runtime.env, **env}.items():
             args += ["--env", f"{k}={v}"]
         for s in env_secrets:
-            args += ["--env-secret", s]
+            key, sel = s.split("=", 1)
+            args += ["--env-secret", s if where.region == REGION else f"{key}={self._secret_ids.setdefault(sel, self.secret_id(sel))}"]
         out = self(*args)
         if self.dry_run:
             return "<job id>"
@@ -551,6 +617,16 @@ class NebiusCLI:
             if "Job ID:" in line:
                 return line.split("Job ID:", 1)[1].strip()
         raise RuntimeError(f"no job id in: {out[-300:]}")
+
+    def secret_id(self, name: str) -> str:
+        """A MysteryBox secret's id, which a job in another region's project names it by (its name is looked up in
+        the job's own project)."""
+        if self.dry_run or name.startswith("mbsec-"):
+            return name
+        for line in self("mysterybox", "secret", "get-by-name", "--name", name, *self._parent()).splitlines():
+            if line.strip().startswith("id:"):
+                return line.split(":", 1)[1].strip()
+        raise RuntimeError(f"no MysteryBox secret {name}")
 
     def job_state(self, job_id: str) -> str:
         for line in self("ai", "job", "get", job_id).splitlines():
@@ -748,13 +824,16 @@ class NebiusBackend:
                 if state is not None:
                     return self._finish(job, cache, job_bucket, cache_bucket, state, hours, todo, log, t_up)
         home = job.root.parents[1]
-        options = platforms(home)
+        options = platforms(home, needed_kits(teacher, picodet, gsplat))
+        if not options:
+            raise NoGPU("no GPU place runs this job's kits (SIM2CHIP_NEBIUS_*, SIM2CHIP_SM120_KITS)")
         for i, where in enumerate(options):
             t0 = time.time()
             job_id = self.cli.create_job(name, runtime, env, script, WORKER_HOURS, secrets, where)
             if self.dry_run:
                 return
-            log(f"  nebius job {job_id} ({where[0]}, {where[1]}, {runtime.image.rsplit('/', 1)[-1]}), whole pipeline in one job")
+            log(f"  nebius job {job_id} ({where.region}, {where.platform}, {where.preset}, "
+                f"{runtime.image.rsplit('/', 1)[-1]}), whole pipeline in one job")
             # While this file exists a cloud job may be running and billing: the web reads it (and can cancel the
             # job) even when the process that launched it is gone.
             marker = job.logs / CLOUD_JOB
@@ -764,13 +843,13 @@ class NebiusBackend:
                 break
             except NoGPU as e:
                 marker.unlink(missing_ok=True)
-                note_no_gpu(home, where[0])
+                note_no_gpu(home, where)
                 if i == len(options) - 1:
                     raise
-                log(f"  {e}: trying {options[i + 1][0]}")
+                log(f"  {e}: trying {options[i + 1].platform} in {options[i + 1].region}")
         marker.unlink(missing_ok=True)
         hours = (time.time() - t0) / 3600
-        self.spent_usd += hours * usd_per_hour(where[0])
+        self.spent_usd += hours * usd_per_hour(where.platform)
         self._record(job, "run", job_id, state, hours, where=where)
         (job.logs / "worker.job.log").write_text(self.cli.job_logs(job_id))
         self._finish(job, cache, job_bucket, cache_bucket, state, hours, todo, log, t_up)
@@ -808,7 +887,8 @@ class NebiusBackend:
         runtime = worker_runtime(kind == "isaac")
         isaac = runtime.python == RUNTIMES["isaac"].python
         script.write_text(warm_script(isaac))
-        where = scene_platforms(home, runs)[0] if kind == "isaac" else platforms(home)[0]
+        where = scene_platforms(home, runs)[0] if kind == "isaac" else \
+            platforms(home, needed_kits(True, True, False))[0]
         hours = warm.HOURS if kind == "light" else WORKER_HOURS + 1  # a run that renders takes up to WORKER_HOURS
         parallel = warm.parallel_for(kind, where[1])
         env = {"S2C_CACHE_BUCKET": cache_bucket, "SIM2CHIP_REGION": REGION, "S2C_WARM_ID": wid,
@@ -819,7 +899,7 @@ class NebiusBackend:
         secrets = self._secrets(kind == "isaac" or bool(_env("SIM2CHIP_NEBIUS_SECRET")))
         job_id = self.cli.create_job(f"s2c-warm-{wid}", runtime, env, script, hours, secrets, where)
         w = {"wid": wid, "job_id": job_id, "started": time.time(), "image": runtime.image, "platform": where[0],
-             "preset": where[1], "kind": kind, "parallel": parallel}
+             "preset": where[1], "region": Where(*where).region, "kind": kind, "parallel": parallel}
         warm.worker_file(home, kind).write_text(json.dumps(w))
         return w
 
@@ -1103,11 +1183,11 @@ class NebiusBackend:
 
     @staticmethod
     def _record(job: Job, stage: str, job_id: str, state: str, hours: float, warm: bool = False,
-                where: tuple[str, str] = (PLATFORM, PRESET)) -> None:
+                where: Where = Where(PLATFORM, PRESET)) -> None:
         """warm: a task of the warm GPU, whose whole life the server notes apart (warm.py): the daily budget skips
         these records, the usage panel shows them."""
         rec = {"t": round(time.time()), "stage": stage, "job_id": job_id, "state": state, "platform": where[0],
-               "preset": where[1], "hours": round(hours, 4),
+               "preset": where[1], "region": Where(*where).region, "hours": round(hours, 4),
                "usd_estimate": round(hours * usd_per_hour(where[0]), 4)}
         if warm:
             rec["warm"] = True

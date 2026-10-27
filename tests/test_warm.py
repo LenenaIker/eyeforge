@@ -305,9 +305,9 @@ def test_a_job_nebius_finds_no_gpu_for_is_cancelled(tmp_path, monkeypatch):
     assert cli.cancelled == ["aijob-1", "aijob-2"]
     nebius.note_no_gpu(tmp_path, "gpu-l40s-d")
     nebius.note_no_gpu(tmp_path, "gpu-l40s-a")
-    assert [p for p, _ in nebius.platforms(tmp_path)] == ["gpu-l40s-a", "gpu-l40s-d"]  # both sick: as listed
+    assert [w.platform for w in nebius.platforms(tmp_path)] == ["gpu-l40s-a", "gpu-l40s-d"]  # both sick: as listed
     (tmp_path / "logs" / "no_gpu.json").write_text(json.dumps({"gpu-l40s-a": time.time()}))
-    assert [p for p, _ in nebius.platforms(tmp_path)] == ["gpu-l40s-d", "gpu-l40s-a"]
+    assert [w.platform for w in nebius.platforms(tmp_path)] == ["gpu-l40s-d", "gpu-l40s-a"]
 
 
 def test_start_writes_the_worker_and_its_script(tmp_path, monkeypatch):
@@ -389,7 +389,7 @@ def test_the_scene_gpu_takes_as_many_runs_as_its_memory_holds(tmp_path, monkeypa
     monkeypatch.setattr(be, "_secrets", lambda llm: ["llm"] if llm else [])
     w = be.start_warm(tmp_path, "isaac")
     job = be.cli.jobs[0]
-    assert job["image"].endswith("eyeforge-isaac:t1") and job["where"] == ("gpu-l40s-d", "1gpu-16vcpu-96gb")
+    assert job["image"].endswith("eyeforge-isaac:t1") and job["where"] == nebius.Where("gpu-l40s-d", "1gpu-16vcpu-96gb")
     assert job["env"]["S2C_WARM_PARALLEL"] == "3" and float(job["env"]["S2C_WARM_HOURS"]) > warm.HOURS
     assert warm.current(tmp_path, "isaac") == w and warm.current(tmp_path) is None
     script = (tmp_path / "warm" / "isaac.nebius.sh").read_text()
@@ -461,11 +461,11 @@ def test_the_scene_gpu_machine_follows_the_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(nebius, "PLATFORM", "gpu-l40s-a")
     monkeypatch.setattr(nebius, "PRESET", "1gpu-8vcpu-32gb")
     monkeypatch.setattr(nebius, "FALLBACK", "gpu-l40s-d/1gpu-16vcpu-96gb")
-    assert nebius.scene_platforms(tmp_path, 1)[0] == ("gpu-l40s-a", "1gpu-8vcpu-32gb")
-    big, small = ("gpu-l40s-d", "1gpu-16vcpu-96gb"), ("gpu-l40s-a", "1gpu-8vcpu-32gb")
+    big, small = nebius.Where("gpu-l40s-d", "1gpu-16vcpu-96gb"), nebius.Where("gpu-l40s-a", "1gpu-8vcpu-32gb")
+    assert nebius.scene_platforms(tmp_path, 1)[0] == small
     assert nebius.scene_platforms(tmp_path, 2) == [big, small]
     nebius.note_no_gpu(tmp_path, "gpu-l40s-d")  # no AMD machine lately: Intel first
-    assert nebius.scene_platforms(tmp_path, 3)[0] == ("gpu-l40s-a", "1gpu-8vcpu-32gb")
+    assert nebius.scene_platforms(tmp_path, 3)[0] == small
 
 
 def test_a_full_scene_gpu_sends_the_run_to_its_own_gpu(tmp_path, monkeypatch):
@@ -504,3 +504,47 @@ def test_a_scene_gpu_the_run_left_is_cancelled_unless_it_has_other_work(tmp_path
     warm.withdraw(store, "sim2chip-cache", "w1", "t2")
     be._drop_idle_scene_gpu(w, tmp_path, lambda line: None)
     assert be.cli.cancelled == ["aijob-warm"] and warm.current(tmp_path, "isaac") is None
+
+
+def test_other_regions_come_after_eu_north1_and_only_for_kits_their_gpu_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(nebius, "PLATFORM", "gpu-l40s-a")
+    monkeypatch.setattr(nebius, "PRESET", "1gpu-8vcpu-32gb")
+    monkeypatch.setattr(nebius, "FALLBACK", "gpu-l40s-d/1gpu-16vcpu-96gb")
+    monkeypatch.setattr(nebius, "ELSEWHERE", "us-central1:gpu-rtx6000/p,eu-south1:gpu-rtx6000-a/p,uk-south2:gpu-rtx6000-a/p")
+    monkeypatch.setattr(nebius, "PROJECTS", {"eu-south1": "project-s", "us-central1": "project-u"})
+    light = nebius.needed_kits(True)
+    monkeypatch.setattr(nebius, "SM120_KITS", set())  # nothing shown on Blackwell yet: eu-north1 only
+    assert [w.platform for w in nebius.platforms(tmp_path, light)] == ["gpu-l40s-a", "gpu-l40s-d"]
+    monkeypatch.setattr(nebius, "SM120_KITS", {"py", "teacher"})
+    # Same price: by region name; uk-south2 has no project. PicoDet's kit keeps a run on the L40S.
+    assert [w.region for w in nebius.platforms(tmp_path, light)] == ["eu-north1", "eu-north1", "eu-south1", "us-central1"]
+    assert len(nebius.platforms(tmp_path, nebius.needed_kits(True, picodet=True))) == 2
+    for w in nebius.platforms(tmp_path, light)[:3]:
+        nebius.note_no_gpu(tmp_path, w)  # no machine there lately: the others first, in the same order
+    assert [w.region for w in nebius.platforms(tmp_path, light)] == ["us-central1", "eu-north1", "eu-north1", "eu-south1"]
+
+
+def test_a_job_in_another_region_names_its_project_registry_token_and_secret_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(nebius, "PROJECTS", {"eu-south1": "project-s"})
+    cli = nebius.NebiusCLI(exe="nebius", project="project-n")
+    calls = []
+
+    def fake(*args, check=True):
+        calls.append(args)
+        if args[:2] == ("iam", "get-access-token"):
+            return "tok\n"
+        if args[:3] == ("mysterybox", "secret", "get-by-name"):
+            return "metadata:\n  id: mbsec-1\n"
+        return "Job ID: aijob-9\n"
+    monkeypatch.setattr(nebius.NebiusCLI, "__call__", lambda self, *a, check=True: fake(*a, check=check))
+    script = tmp_path / "s.sh"
+    script.write_text("")
+    rt = nebius.Runtime("img", "python3")
+    cli.create_job("n", rt, {}, script, 1, ["AWS_ACCESS_KEY_ID=sim2chip-s3"], nebius.Where("gpu-l40s-a", "p"))
+    home = calls[-1]
+    assert "project-n" in home and "--registry-password" not in home and "AWS_ACCESS_KEY_ID=sim2chip-s3" in home
+    cli.create_job("n", rt, {}, script, 1, ["AWS_ACCESS_KEY_ID=sim2chip-s3"],
+                   nebius.Where("gpu-rtx6000-a", "p", "eu-south1"))
+    away = calls[-1]
+    assert "project-s" in away and away[away.index("--registry-password") + 1] == "tok"
+    assert "AWS_ACCESS_KEY_ID=mbsec-1" in away

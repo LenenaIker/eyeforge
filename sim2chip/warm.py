@@ -355,10 +355,11 @@ class WarmGPU:
             self.log(f"warm GPU {w['job_id']} silent for {SILENT_S / 60:.0f} min: cancelled")
             self.backend.cli.cancel(w["job_id"])
         elif heartbeat(self.backend.store, self._bucket(), w["wid"]) is None:
-            from .backends.nebius import PLATFORM, note_no_gpu
+            from .backends.nebius import PLATFORM, PRESET, REGION, Where, note_no_gpu
             self.log(f"warm GPU {w['job_id']} not up after {(time.time() - w['started']) / 60:.0f} min: cancelled")
             self.backend.cli.cancel(w["job_id"])
-            note_no_gpu(self.home, w.get("platform", PLATFORM))  # the next one is asked elsewhere
+            note_no_gpu(self.home, Where(w.get("platform", PLATFORM), w.get("preset", PRESET),
+                                         w.get("region", REGION)))  # the next one is asked elsewhere
         self.record_end(w, "REPLACED")
 
     def watch(self, every: float = 60) -> None:
