@@ -2,6 +2,8 @@
 
 **Describe what your camera should see. Get a tiny model ready to flash on a $10 chip.**
 
+EyeForge is a pipeline that turns a conversation and a few of your photos into an on-device vision model, trained with synthetic images rendered in a 3D scene of your own place.
+
 EyeForge trains small vision models that run on the device itself, from a short conversation, a handful
 of the user's own photos and synthetic images rendered with NVIDIA Isaac Sim. The target hardware is part
 of the spec: an ESP32-CAM or a XIAO ESP32-S3 gets an int8 TFLite Micro model (and a C array) that fits in a

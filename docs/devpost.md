@@ -10,6 +10,8 @@ Registrados al crear el proyecto en Devpost (2026-09-23). Se pueden editar hasta
 
 **Description:**
 
+EyeForge is a pipeline that turns a conversation and a few of your photos into an on-device vision model, trained with synthetic images rendered in a 3D scene of your own place.
+
 EyeForge trains vision models for low-power hardware like the ESP32-CAM, starting from a plain description and a handful of photos instead of thousands of labeled images.
 
 An interview with NVIDIA Nemotron (Nebius Token Factory) turns the user's needs into a dataset spec: classes, lighting, weather, camera height, and details like "motorbikes always carry a rider". NVIDIA Isaac Sim generates labeled synthetic scenes from that spec on Nebius AI Cloud GPUs, using open 3D models checked by a vision model. If the user has a few raw photos, a large model labels them automatically. The result is a quantized int8 model small enough to run on a microcontroller.
