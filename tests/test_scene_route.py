@@ -12,9 +12,8 @@ import pytest
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "experiments" / "worldstereo"))
-from wsroute import pano, steps  # noqa: E402
-from wsroute.config import RouteConfig  # noqa: E402
-from wsroute.paths import PANOS, Case  # noqa: E402
+from wsroute import steps  # noqa: E402
+from wsroute.paths import Case  # noqa: E402
 
 from sim2chip import locks, scene_job  # noqa: E402
 

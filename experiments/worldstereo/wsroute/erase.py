@@ -235,5 +235,7 @@ def caption(photo: str, case: str):
                                         image_part(PHOTOS / f"{case}.png")]}]
     text = client.chat(msg, vlm(), purpose="scene_caption", temperature=0.0, max_tokens=16384)
     text = " ".join(text.split("</think>")[-1].strip().strip('"').split())
+    if not text:  # an empty .txt would mark the step done and stop the pano step after loading Qwen
+        raise SystemExit(f"{case}: the VLM ({vlm()}) gave an empty caption")
     (PHOTOS / f"{case}.txt").write_text(text)
     print(f"{case}: {text}")
