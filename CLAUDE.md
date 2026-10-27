@@ -44,7 +44,7 @@ Desarrollo en la RTX 3090 local; el producto final lanza los trabajos en **Nebiu
 
 ## Requisitos de entrega del hackathon
 
-- **Licencia: AGPL-3.0-only** (decisión del usuario, 2026-09-28): las bases exigen repo público con licencia open source; AGPL protege el negocio (quien lo ofrezca como servicio debe publicar su código) y el autor puede vender licencias comerciales aparte. Se publica el proyecto entero, web incluida, cerca de la entrega. Pendiente confirmar con la organización que "such as Apache 2.0, MIT, or MPL 2.0" admite AGPL (si no, MPL 2.0). No aceptar contribuciones externas sin un acuerdo que permita esa doble licencia.
+- **Licencia: Apache-2.0** (decisión del usuario, 2026-10-27; sustituye a AGPL-3.0-only del 2026-09-28): las bases exigen repo público con licencia open source y Apache 2.0 es una de las que citan ("such as Apache 2.0, MIT, or MPL 2.0"), así que no hace falta confirmarlo con la organización. Se publica el proyecto entero, web incluida, cerca de la entrega.
 
 Deadline: **2026-10-30, 10:00 PDT**.
 

@@ -118,7 +118,7 @@ export function Terms() {
     <Page title="Terms of service">
       <p>
         These terms cover the EyeForge service at eyeforge.app, run by {OWNER}, Spain (contact: <Mail />). By using
-        it you accept them. EyeForge's source code is open under the AGPL-3.0 license; these terms are only about
+        it you accept them. EyeForge's source code is open under the Apache-2.0 license; these terms are only about
         the service we run.
       </p>
 

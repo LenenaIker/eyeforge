@@ -203,7 +203,6 @@ The result lands in `<SIM2CHIP_HOME>/jobs/<name>/export/`: `model_int8.tflite`, 
   QWEN-EDIT_360 LoRA (MIT) and the Lightning LoRA (Apache 2.0), MoGe-2 (MIT), MapAnything (Apache 2.0
   weights), gsplat (Apache 2.0), 3DGRUT (Apache 2.0) and NVIDIA Fixer (NVIDIA Open Model License). None of
   them is redistributed here.
-- Copyright (c) 2026 Iker Lenena. The code is licensed under the GNU Affero General Public License v3.0
-  (`LICENSE`): anyone may use, change and share it, and whoever offers a changed version as a network
-  service must publish its source under the same license. For other terms, contact the author.
+- Copyright (c) 2026 Iker Lenena. The code is licensed under the Apache License 2.0 (`LICENSE`): anyone
+  may use, change and share it, also commercially, keeping the license and copyright notices.
 - MIO-TCD is used only for evaluation and is not redistributed (non-commercial research license).

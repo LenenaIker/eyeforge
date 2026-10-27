@@ -28,7 +28,7 @@ Lo que hay que saber para implementar `docs/roadmap_photosphere.md` con criterio
 - **MoGe (MIT)**, ya instalado en `/media/lenena-iker/Crucial/tools/MoGe`, con pesos de MoGe-2 en `tools/moge_ckpt/moge-2-vitl`. Su `infer_panorama.py` usa v1: corta 12 vistas de 90° (vértices de un icosaedro) a 512 px y funde el logaritmo de la distancia resolviendo gradientes y laplaciano por mínimos cuadrados (LSMR), de grueso a fino. Cambiar a v2 es cambiar el import y el checkpoint.
 - La fusión por gradientes pierde la escala absoluta. La escala sale después: del suelo y la altura de captura (ámbito 3), con la mediana de las distancias métricas de MoGe-2 por vista como control.
 - Lo no capturado (negro del lienzo) debe entrar como máscara inválida en `pred_masks`, o envenena la fusión. Las vistas del icosaedro que caen enteras fuera de la captura se saltan.
-- Alternativas revisadas y descartadas por licencia (el producto es comercial y AGPL):
+- Alternativas revisadas y descartadas por licencia (el producto es comercial y Apache-2.0):
   - Depth Any Panoramas (Insta360, dic. 2025): métrica, pesos publicados, **CC BY-NC 4.0**.
   - UniK3D (CVPR 2025): cualquier cámara, panorámicas incluidas, **CC BY-NC-SA 4.0**.
   - RPG360 (2025): sin entrenar, misma idea que MoGe (cubo + escala por cara + grafo) con normales. Como referencia si la fusión de MoGe falla en costuras.
