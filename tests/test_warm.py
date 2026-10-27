@@ -146,6 +146,32 @@ def test_the_warm_gpu_runs_tasks_cancels_them_and_stops_when_idle(tmp_path, monk
     assert not store.listing("cache", warm.key("w1", "tasks"))
 
 
+def test_the_warm_gpu_keeps_beating_while_its_weights_load(tmp_path, monkeypatch):
+    # 2026-10-27: one "setup" heartbeat and then silence while the weights loaded; runs gave it up after STALE_S.
+    from sim2chip import teacher, warm_worker
+
+    store = Store()
+    monkeypatch.setattr(warm_worker, "S3Store", lambda: store)
+    monkeypatch.setattr(warm_worker, "ROOT", tmp_path / "s2c")
+    monkeypatch.setattr(warm_worker, "CACHE", tmp_path / "s2c" / "home" / "cache")
+    monkeypatch.setattr(warm_worker, "SETUP_BEAT_S", 0.05)
+    monkeypatch.setattr(teacher, "weights", lambda repo, log=print, timeline=None: time.sleep(0.5) or repo)
+    monkeypatch.setattr(warm, "POLL_S", 0.05)
+    monkeypatch.setattr(warm, "IDLE_S", 0.1)
+    monkeypatch.setenv("S2C_CACHE_BUCKET", "cache")
+    monkeypatch.setattr(sys, "argv", ["warm_worker", "--id", "w1"])
+    beats = []
+    real_put = store.put
+
+    def put(bucket, key, data):
+        real_put(bucket, key, data)
+        if key == warm.key("w1", "state.json"):
+            beats.append(json.loads(data)["state"])
+    store.put = put
+    warm_worker.main()
+    assert beats.count("setup") >= 10 and beats[-1] == "stopped"
+
+
 class CLI:
     def __init__(self, worker_state="RUNNING"):
         self.jobs, self.worker_state = [], worker_state
@@ -463,3 +489,18 @@ def test_a_full_scene_gpu_sends_the_run_to_its_own_gpu(tmp_path, monkeypatch):
     store.put("sim2chip-cache", warm.key("w1", "state.json"), json.dumps(
         {"state": "ready", "t": time.time(), "running": ["t1"], "parallel": 3}).encode())
     assert be.warm_for(Cache(tmp_path / "cache"), nebius.worker_runtime(True)) is not None
+
+
+def test_a_scene_gpu_the_run_left_is_cancelled_unless_it_has_other_work(tmp_path, monkeypatch):
+    # 2026-10-27: the server asked for it, the run went to a GPU of its own and the scene GPU kept billing.
+    store = Store()
+    be = NebiusBackend(max_usd=10.0, cli=CLI(), store=store, poll_s=0)
+    (tmp_path / "warm").mkdir()
+    w = {"wid": "w1", "job_id": "aijob-warm", "started": time.time(), "kind": "isaac"}
+    warm.worker_file(tmp_path, "isaac").write_text(json.dumps(w))
+    warm.submit(store, "sim2chip-cache", "w1", {"id": "t2"})  # another run waits for it
+    be._drop_idle_scene_gpu(w, tmp_path, lambda line: None)
+    assert not getattr(be.cli, "cancelled", None) and warm.current(tmp_path, "isaac") == w
+    warm.withdraw(store, "sim2chip-cache", "w1", "t2")
+    be._drop_idle_scene_gpu(w, tmp_path, lambda line: None)
+    assert be.cli.cancelled == ["aijob-warm"] and warm.current(tmp_path, "isaac") is None

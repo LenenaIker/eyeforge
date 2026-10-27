@@ -887,11 +887,30 @@ class NebiusBackend:
         marker.unlink(missing_ok=True)
         if started is None:
             log("  the warm GPU did not take the run: it gets a GPU of its own")
+            if w.get("kind") == "isaac":
+                self._drop_idle_scene_gpu(w, job.root.parents[1], log)
             return None, 0.0
         hours = (time.time() - started) / 3600
         self.spent_usd += hours * USD_PER_HOUR
         self._record(job, "run", w["job_id"], state, hours, warm=True)
         return state, hours
+
+    def _drop_idle_scene_gpu(self, w: dict, home: Path, log) -> None:
+        """The scene GPU was asked for this run (job_service.start); with the run gone elsewhere and no other task
+        on it, it would only bill its start-up and keep-alive (2026-10-27): cancel it."""
+        from .. import warm
+        cache_bucket = f"{self.prefix}-cache"
+        try:
+            if any(k.startswith(warm.key(w["wid"], "tasks") + "/")
+                   for k in self.store.listing(cache_bucket, warm.key(w["wid"]) + "/")):
+                return
+            if (warm.heartbeat(self.store, cache_bucket, w["wid"]) or {}).get("running"):
+                return
+            self.cli.cancel(w["job_id"])
+            log(f"  scene GPU {w['job_id']}: no other task, cancelled")
+            warm.WarmGPU(home, backend=self, log=log, kind="isaac").record_end(w, "CANCELLED")
+        except Exception as e:  # it stops by itself after its keep-alive
+            log(f"  scene GPU {w['job_id']}: not cancelled ({type(e).__name__}: {e})")
 
     def prefetch_warm(self, job: Job, cache: Cache, spec, sample: int, log=print) -> bool:
         """Count calibration: the warm GPU fills the teacher's answers for every photo of the job (Label.prefetch)

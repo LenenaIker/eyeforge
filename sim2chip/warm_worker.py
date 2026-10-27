@@ -31,6 +31,7 @@ from .workspace import say
 ROOT = Path("/tmp/s2c")
 CACHE = ROOT / "home" / "cache"  # the cache every task shares (cloud_worker's --home is per task)
 SOCKET = ROOT / "teacher.sock"  # teacher_server.py: the teachers kept loaded
+SETUP_BEAT_S = 30  # heartbeats while the weights load, well under warm.STALE_S
 
 
 class Task:
@@ -102,6 +103,13 @@ def main() -> int:
             say(f"heartbeat failed: {e}")
 
     beat("setup")
+    # The weights load for minutes and the main loop beats only after: keep beating meanwhile, or runs give the
+    # GPU up as silent after STALE_S (2026-10-27).
+    loading = threading.Event()
+    def setup_beats():
+        while not loading.wait(SETUP_BEAT_S):
+            beat("setup")
+    threading.Thread(target=setup_beats, daemon=True).start()
     from . import teacher
     preload = []
     # SigLIP first: it loads in seconds and a classify round needs nothing else.
@@ -111,6 +119,7 @@ def main() -> int:
         except Exception as e:  # the task that needs them tries again and says why
             say(f"weights for {repo}: {e}")
     server = start_teachers(preload)
+    loading.set()
     say(f"warm GPU ready after {time.time() - t0:.0f} s")
     last_busy = time.time()
     stopping = False
