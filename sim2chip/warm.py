@@ -12,7 +12,7 @@ The server and the GPU talk through the cache bucket, under warm/<id>/ (the job'
 
     state.json        GPU   {"state": "setup" | "ready" | "stopping" | "stopped", "t", "running": [task ids]}
     keepalive.json    server {"until": epoch}: stay up at least until then
-    tasks/<id>.json   server {"id", "job", "bucket", "code_url", "args", "env", "picodet", "log", "kind"}
+    tasks/<id>.json   server {"id", "job", "bucket", "code_url", "args", "env", "picodet", "gsplat", "log", "kind"}
     running/<id>.json GPU   the task started
     done/<id>.json    GPU   {"code", "started", "ended"}
     cancel/<id>       server stop that task
@@ -61,7 +61,7 @@ PICK_S = 180      # a task the GPU has not started by then, while it says ready,
 # PROVISIONING, its instance FAILED, for over 12 min): it is given up, and its tasks go elsewhere. A start-up
 # takes about 92 s with the light image, 4 min at worst seen.
 SETUP_S = config.env_float("SIM2CHIP_WARM_SETUP_S", 420)
-LATE_READY = "/tmp/s2c/late.ready"  # written when the kits fetched after start-up (PicoDet's) are unpacked
+LATE_READY = "/tmp/s2c/late.ready"  # written when the kits fetched after start-up (PicoDet's, gsplat's) are unpacked
 
 
 def enabled() -> bool:

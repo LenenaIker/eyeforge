@@ -59,6 +59,9 @@ class FakeStore:
     def delete(self, bucket, key):
         self.objects.pop((bucket, key), None)
 
+    def copy(self, bucket, key, dst_bucket, dst_key):
+        self.objects[(dst_bucket, dst_key)] = self.objects[(bucket, key)]
+
     def download(self, bucket, prefix, dst, patterns, overwrite=True):
         import fnmatch
         n = 0
@@ -396,6 +399,24 @@ def test_new_jobs_get_their_own_bucket_and_stale_input_is_removed(tmp_path):
     assert b"0.3" in store.objects[("sim2chip-j", "input/corrections.json")]
 
 
+def test_walk_scenes_go_up_once_through_the_cache_bucket(tmp_path):
+    store = FakeStore()
+    j = Job(tmp_path / "j")
+    (j.input / "scenes" / "s1").mkdir(parents=True)
+    (j.input / "scenes" / "s1" / "splat.ply").write_bytes(b"splat")
+    (j.input / "scenes.json").write_text("{}")
+    j.spec_path.write_text("{}")
+    sent = []
+    copy = store.copy
+    store.copy = lambda *a: (sent.append(a[1]), copy(*a))
+    backend(store)._upload_job(j, Cache(tmp_path / "cache"), "sim2chip-j", "sim2chip-cache")
+    assert store.objects[("sim2chip-cache", "scenes/s1/splat.ply")] == b"splat"
+    assert store.objects[("sim2chip-j", "input/scenes/s1/splat.ply")] == b"splat"
+    assert sent == ["scenes/s1/splat.ply"]
+    backend(store)._upload_job(j, Cache(tmp_path / "cache"), "sim2chip-j", "sim2chip-cache")
+    assert sent == ["scenes/s1/splat.ply"]  # already in the job's bucket: not copied again
+
+
 def test_follow_brings_done_markers_back_while_the_job_runs(tmp_path):
     store = ListingStore()
     store.objects[("b", f"label/{DONE}")] = b'{"fingerprint": "x"}'  # ingest has not finished yet
@@ -422,7 +443,10 @@ def test_the_run_picks_the_light_image_unless_it_renders(monkeypatch):
     assert nebius.kit_keys(False) == ["envs/abc/pythons.tar.zst", "envs/abc/py.tar.zst"]
     assert nebius.kit_keys(True)[-1] == "envs/abc/teacher.tar.zst"
     assert nebius.kit_keys(False, picodet=True)[-1] == "envs/abc/picodet.tar.zst"
+    assert nebius.kit_keys(False, gsplat=True)[-1] == "envs/abc/gsplat.tar.zst"
     assert f"SIM2CHIP_PICODET_PYTHON={nebius.KIT_PICODET}" in script
+    assert f"SIM2CHIP_GSPLAT_PYTHON={nebius.KIT_GSPLAT}" in script
+    assert nebius.renders_walks([BY_NAME["scene_render"]]) and not nebius.renders_walks([BY_NAME["train"]])
     store = ListingStore()
     be = backend(store)
     with pytest.raises(RuntimeError, match="images/build.sh kits"):
@@ -439,6 +463,10 @@ def test_the_run_picks_the_light_image_unless_it_renders(monkeypatch):
     assert not nebius.trains_picodet(count, [train])
     monkeypatch.setattr(nebius, "IMAGE_TAG", None)  # no images of our own: the stock one for every run
     assert nebius.worker_runtime(False) == nebius.RUNTIMES["isaac"]
+    stock = nebius.worker_script("j", [], gsplat=True)  # installs gsplat's Python 3.10 with uv
+    assert "uv venv -q --python 3.10 /tmp/s2c/gsplat" in stock and "gsplat-1.5.3" in stock
+    assert "SIM2CHIP_GSPLAT_PYTHON=/tmp/s2c/gsplat/bin/python" in stock
+    assert "gsplat" not in nebius.worker_script("j", [])
 
 
 def test_teacher_weights_come_from_the_cache_bucket_once(tmp_path, monkeypatch):

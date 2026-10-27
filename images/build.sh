@@ -21,7 +21,7 @@ src = pathlib.Path("sim2chip/backends/nebius.py").read_text()
 deps = {n.targets[0].id: ast.literal_eval(n.value) for n in ast.parse(src).body
         if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in
         ("WORKER_DEPS", "WORKER_NODEPS", "TEACHER_DEPS", "PICODET_DEPS", "PICODET_NODEPS",
-         "PADDLEDET_REF")}
+         "PADDLEDET_REF", "GSPLAT_DEPS")}
 out = pathlib.Path(sys.argv[1])
 (out / "worker.txt").write_text("\n".join(deps["WORKER_DEPS"]) + "\n")
 (out / "worker-nodeps.txt").write_text("\n".join(deps["WORKER_NODEPS"]) + "\n")
@@ -29,10 +29,11 @@ out = pathlib.Path(sys.argv[1])
 (out / "picodet.txt").write_text("\n".join(deps["PICODET_DEPS"]) + "\n")
 (out / "picodet-nodeps.txt").write_text("\n".join(deps["PICODET_NODEPS"]) + "\n")
 (out / "paddledet.txt").write_text(deps["PADDLEDET_REF"] + "\n")
+(out / "gsplat.txt").write_text("\n".join(deps["GSPLAT_DEPS"]) + "\n")
 EOF
 cp images/Dockerfile "$ctx/"
 tag=$( (grep -v '^#' "$ctx/Dockerfile"; cat "$ctx/worker.txt" "$ctx/worker-nodeps.txt" "$ctx/teacher.txt" "$ctx/picodet.txt" "$ctx/picodet-nodeps.txt" \
-  "$ctx/paddledet.txt") | sha256sum | cut -c1-12)
+  "$ctx/paddledet.txt" "$ctx/gsplat.txt") | sha256sum | cut -c1-12)
 
 for target in ${@:-kits light isaac}; do
   if [ "$target" = kits ]; then

@@ -84,6 +84,15 @@ PICODET_DEPS = ["paddlepaddle-gpu @ https://paddle-whl.cdn.bcebos.com/stable/cu1
 # imgaug wants opencv-python, which needs X libraries the images lack: the headless one above does instead.
 PICODET_NODEPS = ["imgaug==0.4.0"]
 PADDLEDET_REF = "release/2.8.1"
+# The walk scenes' backgrounds (scene_render, sim2chip.walkscene.background): gsplat's only prebuilt wheels are for
+# Python 3.10 and torch 2.4 (docs.gsplat.studio/whl, 2026-10-27), with sm_86 code that runs on the L40S (sm_89).
+# The kit holds its own Python 3.10. Only fetched when the run renders walk scenes.
+GSPLAT_DEPS = ["torch @ https://download.pytorch.org/whl/cu124/torch-2.4.1%2Bcu124-cp310-cp310-linux_x86_64.whl",
+               "gsplat @ https://github.com/nerfstudio-project/gsplat/releases/download/v1.5.3/"
+               "gsplat-1.5.3%2Bpt24cu124-cp310-cp310-linux_x86_64.whl",
+               "numpy==1.26.4", "pillow", "plyfile==1.1.3",
+               # gsplat loads its compiled code through these (torch's cpp_extension) but does not declare them
+               "packaging", "setuptools"]
 # Brought back for the web (status, report, review) after a worker run; the rest stays in the bucket.
 WORKER_RESULTS = ("*.json", "export/*", "label/*", "ingest/test/*", "qa_assets/sheets/*", "preview_assets/*_0.png",
                   "generate_assets/*", "logs/*", "scene_render/*.json")
@@ -114,10 +123,11 @@ RUNTIMES = {
 # Without them every run uses NVIDIA's public Isaac Sim image and installs at start.
 REGISTRY = config.env("SIM2CHIP_NEBIUS_REGISTRY")  # cr.<region>.nebius.cloud/<registry id>
 IMAGE_TAG = config.env("SIM2CHIP_IMAGE_TAG")
-ENVS_PREFIX, KITS = "envs", ("pythons", "py", "teacher", "picodet")
+ENVS_PREFIX, KITS = "envs", ("pythons", "py", "teacher", "picodet", "gsplat")
 ENVS = "/tmp/s2c/envs"
 KIT_PY, KIT_TEACHER = f"{ENVS}/py/bin/python", f"{ENVS}/teacher/bin/python"
 KIT_PICODET, KIT_PADDLEDET = f"{ENVS}/picodet/bin/python", f"{ENVS}/paddledet"  # the picodet kit holds both
+KIT_GSPLAT = f"{ENVS}/gsplat/bin/python"  # its kit holds its Python 3.10 too (gsplat-python/)
 KIT_TIMES = "/tmp/s2c/kit_times.txt"  # per streamed kit: index, start and end (epoch s), bytes
 # A job Nebius cannot give a machine to this long is cancelled and asked for on the next platform (2026-10-13:
 # PROVISIONING, its instance FAILED, retried for over 12 min); waiting longer only keeps the user staring at a run
@@ -321,10 +331,11 @@ def worker_runtime(isaac: bool) -> Runtime:
     return Runtime(f"{REGISTRY}/eyeforge-light:{IMAGE_TAG}", KIT_PY, kits=True)
 
 
-def kit_keys(teacher: bool, picodet: bool = False) -> list[str]:
+def kit_keys(teacher: bool, picodet: bool = False, gsplat: bool = False) -> list[str]:
     """Cache bucket keys of the kits a run unpacks: the Python itself, the worker's, the teachers' if it labels,
-    PaddlePaddle's if it trains a PicoDet counter."""
-    used = {"pythons", "py"} | ({"teacher"} if teacher else set()) | ({"picodet"} if picodet else set())
+    PaddlePaddle's if it trains a PicoDet counter, gsplat's if it renders walk scenes."""
+    used = ({"pythons", "py"} | ({"teacher"} if teacher else set()) | ({"picodet"} if picodet else set())
+            | ({"gsplat"} if gsplat else set()))
     return [f"{ENVS_PREFIX}/{IMAGE_TAG}/{k}.tar.zst" for k in KITS if k in used]
 
 
@@ -333,6 +344,11 @@ def trains_picodet(spec, todo) -> bool:
     from .. import hardware
     from ..tasks import task_of
     return any(st.name == "train" for st in todo) and task_of(spec).detector(hardware.get(spec.hardware)) == "picodet_s"
+
+
+def renders_walks(todo) -> bool:
+    """The run renders the walk scenes (scene_render), whose backgrounds need the gsplat kit."""
+    return any(st.name == "scene_render" for st in todo)
 
 
 # Streams one kit from its presigned URL to stdout (into zstd and tar) and writes how many bytes came.
@@ -384,11 +400,11 @@ def kit_lines(var: str = "S2C_ENVS", late_marker: str | None = None) -> list[str
 
 
 def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
-                  runtime: Runtime = RUNTIMES["isaac"]) -> str:
-    """Shell script for the worker job: the Pythons (TensorFlow, and torch for the teachers only when the run
-    labels photos), the code from a presigned URL, then the whole pipeline. With our own images the Pythons are
-    kits unpacked from the presigned URLs in S2C_ENVS, all at once; in the stock Isaac Sim image it makes them
-    with uv (a couple of minutes)."""
+                  runtime: Runtime = RUNTIMES["isaac"], gsplat: bool = False) -> str:
+    """Shell script for the worker job: the Pythons (TensorFlow, torch for the teachers only when the run
+    labels photos, gsplat's only when it renders walk scenes), the code from a presigned URL, then the whole
+    pipeline. With our own images the Pythons are kits unpacked from the presigned URLs in S2C_ENVS, all at
+    once; in the stock Isaac Sim image it makes them with uv (a couple of minutes)."""
     from ..gpu_usage import SAMPLER
     isaac = runtime.python == RUNTIMES["isaac"].python
     # A download can meet a passing 503 (2026-10-03, after the GPU was paid): retry before giving up.
@@ -413,10 +429,16 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
                     "/tmp/s2c/bin/uv pip install -q --python /tmp/s2c/sam3/bin/python "
                     + " ".join(shlex.quote(d) for d in TEACHER_DEPS),
                     "TEACHER_PY=/tmp/s2c/sam3/bin/python"]
+    if gsplat:
+        install += ["/tmp/s2c/bin/uv venv -q --python 3.10 /tmp/s2c/gsplat",
+                    "/tmp/s2c/bin/uv pip install -q --python /tmp/s2c/gsplat/bin/python "
+                    + " ".join(shlex.quote(d) for d in GSPLAT_DEPS),
+                    "export SIM2CHIP_GSPLAT_PYTHON=/tmp/s2c/gsplat/bin/python"]
     unpack = kit_lines() + [
         f"PY={KIT_PY} TEACHER_PY={KIT_TEACHER}",
         # Without the picodet kit these paths do not exist and the train stage counts with the grid head.
         f"export SIM2CHIP_PICODET_PYTHON={KIT_PICODET} SIM2CHIP_PADDLEDET={KIT_PADDLEDET}",
+        f"export SIM2CHIP_GSPLAT_PYTHON={KIT_GSPLAT}",  # scene_render says so if the kit did not come
     ]
     lines = [
         "#!/bin/bash",
@@ -438,9 +460,9 @@ def worker_script(job_name: str, plan_args: list[str], teacher: bool = False,
 
 
 def warm_script(isaac: bool = True) -> str:
-    """Shell script of the warm GPU (warm.py): the kits (the worker's Python and the teachers'), the PicoDet kit in
-    the background, its own code, then its loop. Tasks bring their run's code. isaac: it runs in Isaac Sim's image,
-    so whole runs that render go to it too (user, 2026-10-09: one GPU from the first labels to the model)."""
+    """Shell script of the warm GPU (warm.py): the kits (the worker's Python and the teachers'), the PicoDet kit (and
+    on the scene GPU gsplat's) in the background, its own code, then its loop. Tasks bring their run's code.
+    isaac: it runs in Isaac Sim's image, so whole runs that render go to it too (user, 2026-10-09: one GPU from the first labels to the model)."""
     fetch = (f"{KIT_PY} -c 'import sys, time, urllib.request\n"
              "for i in range(5):\n"
              "    try: urllib.request.urlretrieve(sys.argv[1], sys.argv[2]); break\n"
@@ -460,6 +482,7 @@ def warm_script(isaac: bool = True) -> str:
         f'{fetch} "$S2C_CODE_URL" /tmp/s2c/code.tgz',
         "tar xzf /tmp/s2c/code.tgz -C /tmp/s2c/code",
         f"export SIM2CHIP_PICODET_PYTHON={KIT_PICODET} SIM2CHIP_PADDLEDET={KIT_PADDLEDET}",
+        *([f"export SIM2CHIP_GSPLAT_PYTHON={KIT_GSPLAT}"] if isaac else []),
         f"export SIM2CHIP_SAM3_PYTHON={KIT_TEACHER} HF_HUB_CACHE=/tmp/s2c/hf SIM2CHIP_WEIGHTS_DIR=/tmp/s2c/weights",
         # Tasks run side by side: TensorFlow must not take the whole GPU at its first use.
         "export TF_FORCE_GPU_ALLOW_GROWTH=true",
@@ -588,9 +611,9 @@ class NebiusBackend:
         self.cli.delete_bucket(bucket_id)
         return True
 
-    def _kit_urls(self, cache_bucket: str, teacher: bool, picodet: bool = False) -> str:
+    def _kit_urls(self, cache_bucket: str, teacher: bool, picodet: bool = False, gsplat: bool = False) -> str:
         """Presigned URLs of the run's kits, checked before a GPU is paid for."""
-        keys = kit_keys(teacher, picodet)
+        keys = kit_keys(teacher, picodet, gsplat)
         if self.dry_run:
             return " ".join(f"<presigned {k}>" for k in keys)
         have = self.store.listing(cache_bucket, f"{ENVS_PREFIX}/{IMAGE_TAG}/")
@@ -609,6 +632,7 @@ class NebiusBackend:
                 self.cli.ensure_bucket(b)
             self.store.put(bucket, "_code/sim2chip.tar.gz", code_archive())
             if job.input.exists():
+                self._scenes_through_cache(job, bucket, cache_bucket)
                 n = self.store.upload_dir(bucket, job.input, "input")
                 print(f"  uploaded {n} input files to s3://{bucket}", flush=True)
             # Input the job no longer has must not reach the worker (it would label and train on it).
@@ -627,6 +651,23 @@ class NebiusBackend:
             self.store.put(bucket, f"input/{f.name}", f.read_bytes())
         self.store.put(bucket, "spec.json", spec_json.encode() if spec_json is not None else job.spec_path.read_bytes())
         return self.store.url(bucket, "_code/sim2chip.tar.gz")
+
+    def _scenes_through_cache(self, job: Job, bucket: str, cache_bucket: str) -> None:
+        """The job's walk scenes (input/scenes/<id>/, library.export_scenes) go up once, to the cache bucket's
+        scenes/<id>/, and are copied from there into the job's bucket inside Object Storage: a splat is about 1 GB
+        and the same public scene goes with many runs. A scene's files never change once it is ready. The job's
+        own upload then finds them there at their size and skips them."""
+        root = job.input / "scenes"
+        if not root.is_dir():
+            return
+        have = self.store.listing(bucket, "input/scenes/")
+        for d in sorted(p for p in root.iterdir() if p.is_dir()):
+            n = self.store.upload_dir(cache_bucket, d, f"scenes/{d.name}")
+            for key, size in self.store.listing(cache_bucket, f"scenes/{d.name}/").items():
+                dst = f"input/{key}"
+                if have.get(dst) != size:
+                    self.store.copy(cache_bucket, key, bucket, dst)
+            print(f"  scene {d.name}: {n} files uploaded to s3://{cache_bucket}/scenes/", flush=True)
 
     def prepare(self, pipe):
         """Local folders named in the spec travel as job input, and what the cloud cannot do yet is swapped
@@ -686,12 +727,13 @@ class NebiusBackend:
         plan_args += ["--force"] if force else []
         script = job.logs / "worker.nebius.sh"
         script.parent.mkdir(parents=True, exist_ok=True)
-        script.write_text(worker_script(job.name, plan_args, teacher, runtime))
+        gsplat = renders_walks(todo)
+        script.write_text(worker_script(job.name, plan_args, teacher, runtime, gsplat))
         secrets = self._secrets(any(st.calls_llm(pipe.spec) for st in todo))
         env = {"S2C_JOB_BUCKET": job_bucket, "S2C_CACHE_BUCKET": cache_bucket, "S2C_CODE_URL": code_url,
                "SIM2CHIP_REGION": REGION}
         if runtime.kits:
-            env["S2C_ENVS"] = self._kit_urls(cache_bucket, teacher, trains_picodet(pipe.spec, todo))
+            env["S2C_ENVS"] = self._kit_urls(cache_bucket, teacher, trains_picodet(pipe.spec, todo), gsplat)
         if os.environ.get("SIM2CHIP_LABEL_SAMPLE"):  # calibration: the teacher marks only a few photos
             env["SIM2CHIP_LABEL_SAMPLE"] = os.environ["SIM2CHIP_LABEL_SAMPLE"]
         name = f"s2c-{job.name}-run".lower().replace("_", "-")[:63]
@@ -702,7 +744,7 @@ class NebiusBackend:
             if w is not None:
                 extra = {k: env[k] for k in ("SIM2CHIP_LABEL_SAMPLE",) if k in env}
                 state, hours = self._run_warm(w, job, job_bucket, cache_bucket, code_url, plan_args, extra, picodet,
-                                              [st.name for st in todo], log)
+                                              [st.name for st in todo], log, gsplat)
                 if state is not None:
                     return self._finish(job, cache, job_bucket, cache_bucket, state, hours, todo, log, t_up)
         home = job.root.parents[1]
@@ -755,7 +797,8 @@ class NebiusBackend:
         from .. import warm
         cache_bucket = f"{self.prefix}-cache"
         self.cli.ensure_bucket(cache_bucket)
-        kits = self._kit_urls(cache_bucket, teacher=True, picodet=True).split()  # pythons, py, teacher, picodet
+        # pythons, py, teacher; late: picodet, and gsplat's on the scene GPU
+        kits = self._kit_urls(cache_bucket, teacher=True, picodet=True, gsplat=kind == "isaac").split()
         wid = token_hex(6)
         self.store.put(cache_bucket, warm.key(wid, "code.tgz"), code_archive())
         script = home / "warm" / ("warm.nebius.sh" if kind == "light" else f"{kind}.nebius.sh")
@@ -770,7 +813,7 @@ class NebiusBackend:
         parallel = warm.parallel_for(kind, where[1])
         env = {"S2C_CACHE_BUCKET": cache_bucket, "SIM2CHIP_REGION": REGION, "S2C_WARM_ID": wid,
                "S2C_CODE_URL": self.store.url(cache_bucket, warm.key(wid, "code.tgz"), hours=warm.HOURS + 1),
-               "S2C_ENVS": " ".join(kits[:3]), "S2C_ENVS_LATE": kits[3], "S2C_WARM_PARALLEL": str(parallel),
+               "S2C_ENVS": " ".join(kits[:3]), "S2C_ENVS_LATE": " ".join(kits[3:]), "S2C_WARM_PARALLEL": str(parallel),
                "S2C_WARM_HOURS": str(hours)}
         # Rounds may put phrases in English; runs on the scene GPU call the vision models.
         secrets = self._secrets(kind == "isaac" or bool(_env("SIM2CHIP_NEBIUS_SECRET")))
@@ -828,12 +871,12 @@ class NebiusBackend:
         return state, started[0]
 
     def _run_warm(self, w: dict, job: Job, job_bucket: str, cache_bucket: str, code_url: str, plan_args: list[str],
-                  env: dict, picodet: bool, stages: list[str], log) -> tuple[str | None, float]:
+                  env: dict, picodet: bool, stages: list[str], log, gsplat: bool = False) -> tuple[str | None, float]:
         """The run as a task of the warm GPU. (None, 0) when the GPU did not take it: the run starts its own job."""
         from .. import warm
         tid = token_hex(6)
         task = {"id": tid, "kind": "run", "job": job.name, "bucket": job_bucket, "code_url": code_url,
-                "args": plan_args, "env": env, "picodet": picodet, "log": "worker.job.log"}
+                "args": plan_args, "env": env, "picodet": picodet, "gsplat": gsplat, "log": "worker.job.log"}
         log(f"  warm GPU {w['job_id']} ({w.get('platform', PLATFORM)}): no start-up, task {tid}")
         marker = job.logs / CLOUD_JOB
         marker.write_text(json.dumps({"id": w["job_id"], "warm": w["wid"], "task": tid, "started": time.time(),

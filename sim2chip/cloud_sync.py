@@ -58,6 +58,10 @@ class S3Store:
     def delete(self, bucket: str, key: str) -> None:
         self.s3.delete_object(Bucket=bucket, Key=key)
 
+    def copy(self, bucket: str, key: str, dst_bucket: str, dst_key: str) -> None:
+        """Inside the object store (in parts when big): nothing goes through this machine."""
+        self.s3.copy({"Bucket": bucket, "Key": key}, dst_bucket, dst_key)
+
     def url(self, bucket: str, key: str, hours: float = 12) -> str:
         return self.s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": key},
                                               ExpiresIn=int(hours * 3600))

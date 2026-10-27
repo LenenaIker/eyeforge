@@ -150,7 +150,7 @@ Audit antes de la primera ejecución (26 por la noche, sin ejecutar):
 - la inclinación sale del spec, recortada a lo que aguanta el splat.
 
 Pendiente:
-- **Nube:** `scene_render` necesita en Nebius el Python de gsplat junto a Isaac. Hoy la imagen de Isaac no lo tiene (2d).
+- **Nube:** `scene_render` necesita en Nebius el Python de gsplat junto a Isaac. Hecho en código el 27 (kit `gsplat`, `docs/imagenes.md`; las escenas pasan por el bucket de caché). Falta publicar los kits y las imágenes con la etiqueta nueva y una ejecución en Nebius.
 - **Aspecto de cámara (`look.py`):** `crops` y `points` lo aplican si el spec trae `look`, pero ya nada lo mide. Propuesta: medirlo solo de las fotos de entrenamiento del usuario, sin comando aparte, y comparar con y sin él en la primera ejecución de punta a punta.
 
 Restos de la plantilla, retirados el 26 por la noche:

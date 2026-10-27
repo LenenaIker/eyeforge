@@ -53,7 +53,7 @@ class Task:
                 (d / "code.tgz").write_bytes(r.read())
             with tarfile.open(d / "code.tgz") as tar:
                 tar.extractall(d / "code")
-            if self.spec.get("picodet"):
+            if self.spec.get("picodet") or self.spec.get("gsplat"):
                 while not Path(warm.LATE_READY).exists() and not self.cancelled:
                     time.sleep(1)
             env = {**os.environ, **(self.spec.get("env") or {}), "S2C_JOB_BUCKET": self.spec["bucket"],

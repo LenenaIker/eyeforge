@@ -297,6 +297,7 @@ def test_start_writes_the_worker_and_its_script(tmp_path, monkeypatch):
     assert env["S2C_ENVS"].count("https://") == 3 and "picodet" in env["S2C_ENVS_LATE"]
     script = (tmp_path / "warm" / "warm.nebius.sh").read_text()
     assert "sim2chip.warm_worker" in script and warm.LATE_READY in script and "TF_FORCE_GPU_ALLOW_GROWTH" in script
+    assert "gsplat" not in env["S2C_ENVS_LATE"] and "SIM2CHIP_GSPLAT_PYTHON" not in script
     # The light image (starts 2.2 min sooner): runs that render start their own Isaac Sim job.
     assert be.cli.jobs[0]["image"].endswith("eyeforge-light:t1") and "SIM2CHIP_ISAAC_PYTHON" not in script
     warm.worker_file(tmp_path).write_text(json.dumps({**w, "job_id": "aijob-warm"}))  # the fake CLI's running job
@@ -366,7 +367,10 @@ def test_the_scene_gpu_takes_as_many_runs_as_its_memory_holds(tmp_path, monkeypa
     assert job["env"]["S2C_WARM_PARALLEL"] == "3" and float(job["env"]["S2C_WARM_HOURS"]) > warm.HOURS
     assert warm.current(tmp_path, "isaac") == w and warm.current(tmp_path) is None
     script = (tmp_path / "warm" / "isaac.nebius.sh").read_text()
-    assert "SIM2CHIP_ISAAC_PYTHON" in script
+    assert "SIM2CHIP_ISAAC_PYTHON" in script and f"SIM2CHIP_GSPLAT_PYTHON={nebius.KIT_GSPLAT}" in script
+    # gsplat's kit (walk scenes) comes late with PicoDet's, on this GPU only
+    late = job["env"]["S2C_ENVS_LATE"].split()
+    assert len(late) == 2 and "picodet" in late[0] and "gsplat" in late[1]
     # A run that renders goes to it; one that does not, too, while no light GPU is up.
     warm.worker_file(tmp_path, "isaac").write_text(json.dumps({**w, "job_id": "aijob-warm"}))
     cache = Cache(tmp_path / "cache")
