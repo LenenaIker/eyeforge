@@ -289,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     sc.set_defaults(func=cmd_scene)
 
     args = p.parse_args(argv)
+    args.home = str(Path(args.home).resolve())  # the stages' tools (Isaac, PaddleDetection) run in other folders
     sys.stdout.reconfigure(line_buffering=True)  # progress shows up when piped to tee or a log file
     try:
         return args.func(args)

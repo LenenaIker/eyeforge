@@ -173,7 +173,7 @@ def main():
     ap.add_argument("--owner", required=True)
     ap.add_argument("--photo", type=int, required=True)
     a = ap.parse_args()
-    print(run(Path(a.home), a.owner, a.photo))
+    print(run(Path(a.home).resolve(), a.owner, a.photo))
 
 
 if __name__ == "__main__":
