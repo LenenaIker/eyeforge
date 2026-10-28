@@ -100,7 +100,8 @@ export default function LiveBoard() {
       if (answered.current) answered.current(null, ev.message);
       else setError(`The board says: ${ev.message}`);
     } else if (ev.kind === "label" || ev.kind === "counts") {
-      setFrame(ev);
+      // A line that lost bytes on the way still gives the label, not the picture: the last picture stays.
+      setFrame((prev) => (ev.jpeg || !prev?.jpeg ? ev : { ...ev, jpeg: prev.jpeg } as Frame));
       setFrames((n) => n + 1);
     } else if (ev.kind === "photo") photo.current?.(ev);
   }

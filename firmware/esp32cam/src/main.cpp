@@ -57,11 +57,13 @@
 #include "test_frame.h"  // TEST_FRAME_W, TEST_FRAME_H, test_frame[]: RGB565, big endian as the camera's
 #endif
 
-#define FIRMWARE_VERSION "1.3.0"  // tools/copy_web.sh copies it into the web's manifest.json
+#define FIRMWARE_VERSION "1.3.1"  // tools/copy_web.sh copies it into the web's manifest.json
 
-// 921600 lost bytes in the ESP32-CAM-MB's CH340 (2026-10-28: the ready line came without the same 24 bytes every
-// time, on a computer and on a phone); a frame and its JPEG are about 4 KB a second, a 1600x1200 photo 75 KB.
-constexpr int APP_BAUD = 460800;
+// The ESP32-CAM-MB's CH340 lost bytes at 921600 (2026-10-28: the ready line came without the same 24 bytes every
+// time, on a computer and on a phone) and, on the phone (Chrome's WebUSB), every line with a picture at 460800.
+// At the ROM's own 115200 a frame and its JPEG (about 4 KB) take 0.35 s of the 1.2 s a frame takes anyway; a
+// 1600x1200 photo (75 KB) about 6.5 s.
+constexpr int APP_BAUD = 115200;
 constexpr int READY_EVERY = 5;  // frames between repeats of the ready line, for a reader that missed the first
 constexpr size_t ARENA = 512 * 1024;  // PSRAM: the internal RAM has no block this big
 constexpr int MAX_CLASSES = 16;
