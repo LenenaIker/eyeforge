@@ -38,6 +38,19 @@ def task_of(spec) -> Task:
     return TASKS[spec.task]
 
 
+def finds_objects(spec) -> bool:
+    """SAM 3 labels the user's raw photos: to count, and to classify objects in a photo that may show none
+    (a "nothing" label). SigLIP 2 compares whole photos, which a small bin on a street hardly changes: it found
+    14 bins in 80 street photos where SAM 3 found 33 (eyeforge.app, 2026-10-28). Classes that fill the view
+    (no "nothing" label: day / night, lawn / border) stay with SigLIP 2."""
+    return task_of(spec).points or spec.background_class is not None
+
+
+def teacher_of(spec) -> str:
+    """Who labels the user's raw photos, for the stage's line in the web and the report."""
+    return f"Meta {teachers.NAME}" if finds_objects(spec) else task_of(spec).teacher
+
+
 @dataclass(frozen=True)
 class Recipe:
     """How a seed's model was made, which says how it ships and how it is read."""

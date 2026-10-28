@@ -449,6 +449,7 @@ function Message({ m, session, onPick, onAddPhotos, confirm }: {
           </button>
         )}
         {t?.kind === "pick" && session && <PickPhotos turn={t} session={session} onPick={onPick} />}
+        {t?.kind === "scene" && <ScenePhotos photos={t.request?.photos ?? []} />}
         {confirm && <ConfirmCard {...confirm} />}
       </div>
     </div>
@@ -477,6 +478,34 @@ function PickPhotos({ turn, session, onPick }: { turn: Turn; session: string; on
               onClick={() => { setSent(true); onPick([...chosen], turn.request?.class ?? ""); }}>
         Use {chosen.size} photo{chosen.size === 1 ? "" : "s"}
       </Button>
+    </Card>
+  );
+}
+
+// Photos that could become a scene of the user's place: one click starts the scene job (about 2 h), apart from
+// the model being set up; the dataset page shows its progress too.
+function ScenePhotos({ photos }: { photos: API.SceneProposal[] }) {
+  const [state, setState] = useState<Record<number, API.SceneState | string>>(
+    () => Object.fromEntries(photos.filter((p) => p.scene).map((p) => [p.photo_id, p.scene!])));
+  const make = (id: number) => API.extractScene(id).then((st) => setState((s) => ({ ...s, [id]: st })),
+                                                        (e) => setState((s) => ({ ...s, [id]: (e as Error).message })));
+  return (
+    <Card className="p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {photos.map((p) => {
+          const st = state[p.photo_id];
+          return (
+            <div key={p.photo_id} className="overflow-hidden rounded-lg ring-1 ring-line">
+              <img src={API.libraryPhotoUrl(p.photo_id)} alt="" className="aspect-[4/3] w-full object-cover" />
+              <div className="p-2 text-xs">
+                {typeof st === "string" ? <span className="text-red-700">{st}</span> :
+                  st ? <span className="text-muted">{st.status === "ready" ? "Scene ready" : st.status === "failed" ? `Failed: ${st.why}` : "Being made, about 2 h"}</span> :
+                  <Button size="sm" variant="secondary" className="w-full" onClick={() => make(p.photo_id)}>Create this scene</Button>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </Card>
   );
 }

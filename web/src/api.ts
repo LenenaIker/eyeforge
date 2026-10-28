@@ -15,11 +15,13 @@ export type Candidate = { file: string; score: number; reason: string };
 export type Step = { text: string; state: "running" | "done" | "failed"; started: number; ended?: number;
                      detail?: string; done?: number; total?: number };
 export type Turn = {
-  kind: "say" | "confirm" | "done" | "failed" | "photos" | "pick";
+  kind: "say" | "confirm" | "done" | "failed" | "photos" | "pick" | "scene";
   text: string;
   intro?: string;  // confirm: the assistant's words without the spec summary, which the app shows as a card
   spec?: Spec;
-  request?: { for?: "training" | "3d"; class?: string | null; candidates?: Candidate[] };
+  // scene: the dataset's photos that could become a walk scene (the chat's scene_photos action)
+  request?: { for?: "training" | "3d"; class?: string | null; candidates?: Candidate[]; dataset?: string;
+              photos?: SceneProposal[] };
   photos?: number;
   activity?: Step[];  // what the turn did, step by step
 };
@@ -86,9 +88,9 @@ export type Status = {
   title?: string | null;  // the name the user gave the model
   spec: Spec | null;
   running: boolean;
-  calibration: { state: "labeling" | "ready" | "failed"; error?: string } | null;  // teacher check before the first run
+  calibration: { state: "labeling" | "ready" | "failed" | "stopped"; error?: string } | null;  // teacher check before the first run
   // A job that only labels a library dataset (Datasets page): checking the teacher, labeling every photo, done.
-  labeling?: { dataset: string; labeling?: string; state: "checking" | "labeling" | "done" | "failed"; error?: string } | null;
+  labeling?: { dataset: string; labeling?: string; state: "checking" | "labeling" | "done" | "failed" | "stopped"; error?: string } | null;
   stages: Stage[];
   log: string[];
   cloud_usd: number;

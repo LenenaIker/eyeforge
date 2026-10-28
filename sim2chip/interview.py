@@ -86,18 +86,28 @@ them. When the user names a kit or a dataset listed below, use it; never ask for
 named. Before proposing a spec that uses a dataset, look at it: {{"dataset": "<id>"}}. You get its labelings (each
 one a named list of classes with their keys and English names, the photos the user reviewed and the models
 trained with it) and what its photos show. Then:
-- its photos go in user_data "raw": "library:<id>" (one dataset per model); photos attached in this chat join
-  it: "raw": ["library:<id>", "<attached folder>"];
+- its photos go in user_data "raw": "library:<id>". Several datasets, or a dataset and photos attached in this
+  chat, go together in a list: "raw": ["library:<id>", "library:<id2>", "<attached folder>"]. They make a new
+  dataset that joins them (the user's checked labels carry over), and their own datasets stay as they are. Only
+  when the user asks to add the photos to one of their datasets, set user_data "add_to": "library:<that id>".
+  Joining datasets is always possible: never say it is not. When the user only wants them joined, without a
+  model yet: {{"join": {{"datasets": ["<id>", ...], "photos": true when the attached photos go too, "name": "..."}}}};
 - user_data "labeling": the id of the labeling to use when the user wants what it has, or it with classes added
   or left out; null for a new labeling. For the classes a labeling has, use its keys as class ids and its English
   names as "names";
 - put in the spec only the classes the user wants now. Use only the ids listed here.
 Scenes are places rebuilt in 3D (theirs, or public ones anyone may use) where 3D models of the classes are placed
-to make synthetic images. Only when the user asks for synthetic images in a scene, or names one, put its id in
-"generation": {{"scenes": ["<id>"]}} (several when they ask); then every class also needs "size_m":
+to make synthetic images. Only when the user asks for synthetic images, put scene ids from the list below in
+"generation": {{"scenes": ["<id>"]}} (several when they ask). The user does not see ids: name scenes by their
+name, never ask for an id. When they do not name one, choose yourself the listed scene most like their photos
+and say which. When the list has no scenes, say there is none yet and go on without synthetic images. Then
+every class also needs "size_m":
 {{"measure": "length" | "width" | "height", "range": [min, max]}} (its real size in meters, the measure you are
 surest of) and "assets": {{"source": "search", "queries": [1 to 3 short English phrases that find its 3D model]}}.
 When a class is a surface or an area, not a thing (grass, a road), say that scenes cannot help and leave them out.
+When the user wants a scene of their own place, send {{"scene_photos": {{"dataset": "<id>", "say": "..."}}}}: they
+see the photos of that dataset best suited to become a scene and create one themselves (about 2 hours and 1 $; it
+can be used once it is ready). Meanwhile offer a listed scene, or their photos alone.
 {items}
 """
 
@@ -392,7 +402,8 @@ def is_yes(answer: str) -> bool:
     return words[0] in YES or text in YES
 
 
-def summary(s: spec_mod.Spec) -> str:
+def summary(s: spec_mod.Spec, scene_names: dict[str, str] | None = None) -> str:
+    """The spec in plain lines for the user to confirm; scene_names: id -> name (the user never sees ids)."""
     what = "counts and locates" if s.task == "count" else "classifies"
     lines = [f"Spec '{s.name}' for {s.hardware}, {what}:",
              f"  classes: {', '.join(s.labels)} "
@@ -414,7 +425,8 @@ def summary(s: spec_mod.Spec) -> str:
         lines.append(f"  - {c.id}: {c.description} | {size} | models: {cats}")
     lines.append(f"  camera: {s.camera.height_m[0]}-{s.camera.height_m[1]} m high")
     if s.synthetic:
-        lines.append(f"  synthetic images: {s.generation.frames} in the scenes {', '.join(s.generation.scenes)}")
+        lines.append(f"  synthetic images: {s.generation.frames} in the scenes "
+                     + ", ".join((scene_names or {}).get(sid, sid) for sid in s.generation.scenes))
     ud = s.user_data
     photos = [f"sorted by class {ud.labeled}" if ud.labeled else "",
               f"unsorted {ud.raw} (the teacher model labels them)" if ud.raw else "",
@@ -525,7 +537,8 @@ def _dataset_as_model(session, s: spec_mod.Spec) -> str | None:
 
 def _walk_scenes_problem(session, s: spec_mod.Spec) -> str | None:
     unknown = sorted(set(s.generation.scenes) - getattr(session, "library_ids", set()))
-    return f"these scenes are not in the user's library: {unknown}; use only the listed ones" if unknown else None
+    return (f"these scenes are not in the list: {unknown}. Use only listed scene ids, choose one yourself when the "
+            "user does not name one, and never ask the user for an id" if unknown else None)
 
 
 def _no_photos_problem(session, s: spec_mod.Spec) -> str | None:
@@ -552,7 +565,8 @@ SPEC_CHECKS = (_no_photos_problem, _unknown_categories, _foreign_folders, _libra
 @dataclass
 class Turn:
     kind: str                       # "say" (a question), "photos" (asks for photos), "pick" (proposes some of
-    text: str                       # the user's photos), "confirm" (spec proposed), "done" or "failed"
+    text: str                       # the user's photos), "scene" (photos that could become a scene),
+                                    # "confirm" (spec proposed), "done" or "failed"
     spec: spec_mod.Spec | None = None
     request: dict | None = None     # photos: {"for", "class"}; pick: {"for", "class", "query", "candidates"}
     intro: str | None = None        # confirm: the model's own words, without the spec summary (a front end
@@ -604,15 +618,19 @@ class Session:
         self.measured: dict | None = None  # the last photo analysis without its suggestions (_apply_measured)
 
     def use_library(self, items: str, ids: set[str], kit: str | None = None, notes=None, open_dataset=None,
-                    datasets: set[str] | None = None, dataset_card=None) -> None:
+                    datasets: set[str] | None = None, dataset_card=None, join=None) -> None:
         """Tell the model what the user's library holds (kits and datasets, see LIBRARY); kit: the name of the kit
         the user chose to start from. notes: keeps and reuses photo descriptions (Library.describe);
         open_dataset(id): a folder with a dataset's photos, so describe_scene can measure it for this goal;
         datasets: every dataset id, never a 3D model; dataset_card(id): the dataset as it is now
         (library.dataset_card), for the "dataset" action, for its labelings' class names and for asking which
-        labeling to use (relabel_question)."""
+        labeling to use (relabel_question); join(ids, name, folder or None): a new dataset joining those datasets
+        (and the chat's photos), returns its card, for the "join" action."""
         self.library_ids = set(ids)
         self.dataset_card = dataset_card
+        self.join = join
+        # Scenes by name: the user names them so, and the chat often writes the name for the id.
+        self.scene_titles = {sid: n for n, sid in re.findall(r'scene "([^"]+)" \(id ([0-9a-f]{16})', items)}
         self.dataset_ids = set(datasets or ())
         self.photo_notes, self.open_dataset = notes, open_dataset
         self.messages[0]["content"] += LIBRARY.format(items=items)
@@ -900,8 +918,10 @@ class Session:
     # never got the spec to confirm and the model kept saying it was ready.
     ACTIONS = (("say", "_on_say"), ("pick_photos", "_on_pick"), ("describe_scene", "_on_describe"),
                ("photos", "_on_photos"), ("research", "_on_research"), ("search", "_on_search"),
-               ("dataset", "_on_dataset"), ("spec", "_on_spec"))
-    OBJECT_ACTIONS = {"pick_photos", "describe_scene", "photos"}  # taken only with an object as value
+               ("dataset", "_on_dataset"), ("join", "_on_join"), ("scene_photos", "_on_scene_photos"),
+               ("spec", "_on_spec"))
+    # taken only with an object as value
+    OBJECT_ACTIONS = {"pick_photos", "describe_scene", "photos", "join", "scene_photos"}
 
     def _advance(self) -> Turn:
         from .llm import parse_json
@@ -1007,6 +1027,60 @@ class Session:
             self.analysed.add(ds)
             self._describe({"folder": f"library:{ds}", "classes": "the objects"})
 
+    def _on_join(self, action: dict) -> None:
+        """A new dataset joining some of the user's datasets (and the photos attached in this chat), with no model
+        yet (user, 2026-10-28). The model is told its id and can go on with it."""
+        req = action["join"]
+        ids = [re.sub(r"^library:", "", str(d).strip()) for d in req.get("datasets") or []]
+        ids = [d for d in dict.fromkeys(ids) if d in getattr(self, "dataset_ids", set())]
+        folder = self.uploads / "training" if req.get("photos") and self.uploads is not None else None
+        if folder is not None and not folder.is_dir():
+            folder = None
+        if getattr(self, "join", None) is None or len(ids) + (folder is not None) < 2:
+            self._note("join: give at least two of the listed datasets, or one and photos attached in this chat.")
+            return
+        step = self._step("Joining your datasets")
+        card = self.join(ids, str(req.get("name") or "").strip(), folder)
+        self._end(step, detail=f"{card['name']}, {card['photos']} photos")
+        self.library_ids.add(card["id"])
+        self.dataset_ids.add(card["id"])
+        self._note(f"[Joined] New dataset \"{card['name']}\" (id {card['id']}, {card['photos']} photos); the "
+                   "datasets it joins stay as they were. Tell the user, and use it as any listed dataset.")
+
+    def use_scenes(self, proposals) -> None:
+        """proposals(dataset id) -> {"photos": [{"photo_id", "score", "scene"}], "computing", "unavailable"}: the
+        dataset's photos best suited to become a walk scene (scene_pick), for the scene_photos action."""
+        self.scene_proposals = proposals
+
+    def _on_scene_photos(self, action: dict) -> Turn | None:
+        """The photos of a dataset that could become a scene of the user's own place, shown to the user, who
+        creates one with a click (user, 2026-10-28: "use the photos SigLIP chose"). Not part of any training."""
+        req = action["scene_photos"]
+        ds = re.sub(r"^library:", "", str(req.get("dataset") or "").strip())
+        if getattr(self, "scene_proposals", None) is None or ds not in getattr(self, "dataset_ids", set()):
+            self._note("scene_photos: give one of the listed datasets.")
+            return None
+        step = self._step("Looking for photos that could become a scene")
+        got = self.scene_proposals(ds)
+        if got.get("unavailable"):
+            self._end(step, "failed", "not available here yet")
+            self._note(f"scene_photos: making a new scene is not available on this server yet ({got['unavailable']}). "
+                       "Tell the user in plain words, and offer a listed scene or their photos alone.")
+            return None
+        if not got["photos"]:
+            self._end(step, "failed", "no photos proposed yet")
+            self._note("scene_photos: " + ("the dataset's photos are still being described; tell the user to ask "
+                       "again in a minute" if got.get("computing") else "no photo of this dataset suits a scene "
+                       "(it needs an outdoor daylight photo taken at eye height, with its camera data)")
+                       + ", and offer a listed scene or their photos alone.")
+            return None
+        self._end(step, detail=f"{len(got['photos'])} photos")
+        text = str(req.get("say") or "").strip() or ("These photos of yours could become a scene of your place. "
+                                                     "Creating one takes about 2 hours and 1 $.")
+        self._note(f"[Scene photos of dataset {ds}] The user sees {len(got['photos'])} photos and creates a scene "
+                   "with a click if they want; it is not part of the model being set up.")
+        return Turn("scene", text, request={"dataset": ds, "photos": got["photos"]})
+
     def _on_photos(self, action: dict) -> Turn:
         req = action["photos"]
         purpose = req.get("for") if req.get("for") in ("3d", "training") else "training"
@@ -1034,6 +1108,10 @@ class Session:
     def _on_spec(self, action: dict) -> Turn | None:
         # The fixers read classes as objects; a spec with bare class names (seen in the interview bench,
         # 2026-10-12) goes straight to the check, which tells the model it is invalid.
+        gen = action["spec"].get("generation") if isinstance(action["spec"], dict) else None
+        if isinstance(gen, dict) and isinstance(gen.get("scenes"), list):  # a scene's name for its id
+            names = {n.lower(): sid for sid, n in getattr(self, "scene_titles", {}).items()}
+            gen["scenes"] = [names.get(str(x).strip().lower(), x) for x in gen["scenes"]]
         if isinstance(action["spec"], dict) and all(isinstance(c, dict) for c in action["spec"].get("classes") or []):
             self._english_queries(action["spec"])
             _drop_background_class(action["spec"])
@@ -1066,10 +1144,11 @@ class Session:
             return None
         self.proposed = s
         intro = str(action.get("say") or "").strip()
-        reuse = self._reuse_line(s)
+        reuse = "\n".join(x for x in (self._photos_line(s), self._reuse_line(s)) if x)
         if reuse:
             intro = (intro + "\n\n" if intro else "") + reuse
-        return Turn("confirm", (intro + "\n\n" if intro else "") + summary(s), s, intro=intro)
+        return Turn("confirm", (intro + "\n\n" if intro else "") + summary(s, getattr(self, "scene_titles", {})), s,
+                    intro=intro)
 
     def _labeling_of(self, s) -> tuple[dict | None, list[dict]]:
         """The labeling a spec names (from its dataset's card) and the labelings of its dataset."""
@@ -1077,6 +1156,29 @@ class Session:
         labelings = [l for _, card in cards for l in card["labelings"]]
         lid = s.user_data.labeling if isinstance(s, spec_mod.Spec) else (s.get("user_data") or {}).get("labeling")
         return next((l for l in labelings if l["id"] == lid), None), labelings
+
+    def _photos_line(self, s: spec_mod.Spec) -> str:
+        """For the user to confirm, written here and not by the model (eyeforge.app, 2026-10-28: the chat said
+        "Trash and your photos" for a user who asked for Roads): which photos the model uses and where they go."""
+        raw = s.user_data.raw if isinstance(s.user_data.raw, list) else [s.user_data.raw] if s.user_data.raw else []
+        cards = dict(self._cards(raw))
+        folders = [r for r in raw if r and not re.fullmatch(r"(?:library:)?[0-9a-f]{16}", str(r))]
+        parts = [f"{c['name']} ({c['photos']} photos)" for c in cards.values()]
+        attached = sum(count_photos(Path(f)) for f in folders if Path(f).is_dir())
+        if attached:
+            parts.append(f"{attached} photos attached here")
+        if not parts:
+            return ""
+        add_to = re.sub(r"^library:", "", s.user_data.add_to or "")
+        if len(parts) == 1:
+            where = ""
+        elif add_to in cards:
+            where = f", added to {cards[add_to]['name']}"
+        elif cards:
+            where = ", joined in a new dataset (yours stay as they are)"
+        else:
+            where = ""
+        return "Photos: " + " + ".join(parts) + where + "."
 
     def _reuse_line(self, s: spec_mod.Spec) -> str:
         """For the user to confirm: the labeling the photos use (and how many of them the user reviewed), and the

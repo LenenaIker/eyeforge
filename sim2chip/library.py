@@ -243,6 +243,56 @@ class Library:
             self._put_photos(ds, files)
         return ds
 
+    def join_datasets(self, owner: str, name: str, datasets: list[str], files: list[Path] = ()) -> str:
+        """A new dataset with the photos of several of the owner's datasets and `files` (user, 2026-10-28: Roads
+        and Trash in one model). The sources stay as they were; a photo in several of them is there once."""
+        datasets = [d for d in dict.fromkeys(datasets) if self.owns(owner, "dataset", d)]
+        want = {p["hash"] for d in datasets for p in self.photos(d)} | {content_key(f) for f in files}
+        for (old,) in self.db.execute("SELECT id FROM dataset WHERE owner = ? AND name = ?", (owner, name)).fetchall():
+            if {p["hash"] for p in self.photos(old)} == want:  # the same join again (a new version of the model)
+                return old
+        ds = _id(owner, "joined", str(time.time_ns()))
+        with self.lock:
+            self.db.execute("INSERT INTO dataset VALUES (?, ?, ?, ?)", (ds, owner, name, time.time()))
+            for src in datasets:
+                self.db.execute("INSERT OR IGNORE INTO photo (dataset_id, content_hash, file, added) "
+                                "SELECT ?, content_hash, file, ? FROM photo WHERE dataset_id = ?",
+                                (ds, time.time(), src))
+            self._put_photos(ds, list(files))
+        return ds
+
+    def carry_reviews(self, lid: str, datasets: list[str]) -> int:
+        """The user's reviews of the same photos in other datasets' labelings, into this one where they say the
+        same: a classify labeling with exactly these classes (an "empty" means nothing of these classes only
+        then), a count labeling with at least these classes (its marks of the others left out). The newest
+        review of a photo wins. Returns how many photos it reviewed."""
+        mine = self.labeling(lid)
+        keys = {c["key"] for c in mine["classes"]}
+        ds = mine["dataset"]
+        here = {p["hash"]: p["id"] for p in self.photos(ds)}
+        reviewed = {p for (p,) in self.db.execute("SELECT photo_id FROM review WHERE labeling_id = ?", (lid,))}
+        found: dict[int, tuple[float, list[dict]]] = {}
+        for src in datasets:
+            for lab in self.labelings(src):
+                have = {c["key"] for c in lab["classes"]}
+                if lab["task"] != mine["task"] or not (have == keys if mine["task"] == "classify" else have >= keys):
+                    continue
+                when = dict(self.db.execute("SELECT photo_id, reviewed_at FROM review WHERE labeling_id = ?",
+                                            (lab["id"],)))
+                for p in self.labeling_photos(lab["id"]):
+                    pid = here.get(p["hash"])
+                    if not p["reviewed"] or pid is None or pid in reviewed:
+                        continue
+                    marks = [{k: m[k] for k in ("class", "x", "y", "w", "h") if m.get(k) is not None}
+                             for m in p["marks"] if m["source"] == "user" and m["class"] in keys]
+                    if mine["task"] == "classify" and len(marks) != 1:
+                        continue
+                    if pid not in found or when[p["id"]] > found[pid][0]:
+                        found[pid] = (when[p["id"]], marks)
+        for pid, (_, marks) in found.items():
+            self.review_photo(lid, pid, marks)
+        return len(found)
+
     def chat_dataset(self, owner: str, session: str) -> str | None:
         ds = _id(owner, "chat", session)
         return ds if self.owns(owner, "dataset", ds) else None
@@ -1031,6 +1081,8 @@ class Library:
                 f'scene "{s["name"]}" (id {s["id"]}, {"public" if s["public"] and not s["mine"] else "theirs"}'
                 + (f', {round(s["free_m2"])} m2 to walk' if s.get("free_m2") else "") + ")" for s in scenes))
             ids |= {s["id"] for s in scenes}
+        else:  # said, so the chat does not ask the user for one (eyeforge.app, 2026-10-28: 8 times)
+            lines.append("- scenes for synthetic images: none yet")
         return ("\n".join(lines) if lines else "- nothing yet"), ids
 
     def materialize_dataset(self, owner: str, ds: str, dst: Path) -> int:

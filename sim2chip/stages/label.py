@@ -1,6 +1,8 @@
 """Teacher: label the user's raw photos (see teacher.py for why each model).
 
-Classification (SigLIP 2): every photo is embedded once; a photo gets the label whose centre is nearest, the
+Classification of objects that may be missing (a "nothing" label, tasks.finds_objects): SAM 3, as for count;
+the photo is the class of the surest object above the threshold, else nothing (teacher.choose_presence).
+Classification of what fills the view (SigLIP 2): every photo is embedded once; a photo gets the label whose centre is nearest, the
 centre being the label's description in English plus the photos the user put in it (input/corrections.json).
 The teacher always commits to a label, never "unsure" (user, 2026-09-30). Calibration (`sample`) asks about
 photos as different from each other as possible, so a few corrections cover the folder.
@@ -29,7 +31,7 @@ from pathlib import Path
 
 from .. import counting, review, teacher
 from ..config import env_int
-from ..tasks import task_of
+from ..tasks import finds_objects, task_of, teacher_of
 from ..workspace import IMAGE_EXT, cache_key, content_key, copy_names
 from .base import Context, Stage
 
@@ -38,10 +40,10 @@ NO_ANSWER = "no_answer"  # the teacher failed on the photo: left out, asked agai
 
 class Label(Stage):
     name = "label"
-    version = "7"  # 2: SAM 3 instead of a vision model on Token Factory; 3: SigLIP 2 for classification;
+    version = "8"  # 2: SAM 3 instead of a vision model on Token Factory; 3: SigLIP 2 for classification;
     # 4: count, one class per object (SigLIP 2 tells apart classes SAM 3 found on the same object);
     # 5: count, the user's corrections per class; 6: the user's truth from the job's labeling; 7: classify keeps
-    # the learnt centres
+    # the learnt centres; 8: classify with a "nothing" label by SAM 3 (tasks.finds_objects)
     runtime = "cpu"  # the teachers run in their own Python (teacher.py); this process plans and writes
     gpu = "any"
     reads_input = True
@@ -54,7 +56,7 @@ class Label(Stage):
         return bool(spec.user_data.raw)
 
     def powered_by(self, spec, backend: str, model: str | None = None) -> str:
-        return f"{task_of(spec).teacher} | {self.where(backend)}"
+        return f"{teacher_of(spec)} | {self.where(backend)}"
 
     @staticmethod
     def _timeline(ctx: Context):
@@ -74,6 +76,8 @@ class Label(Stage):
         truth = self._truth(ctx)
         if task_of(spec).points:
             verdicts, learned, info = self._count(ctx, files, keys, previous, sample, truth["points"])
+        elif finds_objects(spec):
+            verdicts, learned, info = self._presence(ctx, files, keys, previous, sample, truth["labels"])
         else:
             verdicts, learned, info = self._classify(ctx, files, keys, previous, sample, truth["labels"])
 
@@ -350,7 +354,7 @@ class Label(Stage):
         if not files:
             return True
         sample = self._sample()
-        if task_of(ctx.spec).points:
+        if finds_objects(ctx.spec):
             if sample:
                 if any(not self._embedding_file(ctx, f).exists() for f in files):
                     return True
@@ -364,11 +368,18 @@ class Label(Stage):
         return any(not self._embedding_file(ctx, f).exists() for f in files)
 
     def prefetch(self, ctx, rounds: int = 3) -> int:
-        """Count: SAM 3's answers for every photo of the job, without labeling it. The next calibration rounds and
-        the first run then find them cached: the answers do not depend on the user's corrections (they keep every
-        score down to FLOOR; corrections move only the threshold). The photos the next `rounds` calibration rounds
-        will show go first, so a quick user rarely waits. Returns how many photos SAM 3 looked at."""
+        """SAM 3's answers for every photo of the job (count, presence), without labeling it. The next calibration
+        rounds and the first run then find them cached: the answers do not depend on the user's corrections (they
+        keep every score down to FLOOR; corrections move only the threshold). The photos the next `rounds`
+        calibration rounds will show go first, so a quick user rarely waits. SigLIP 2's embeddings come first, and
+        alone for a spec SAM 3 does not label (or a draft with no classes yet, JobService.prefetch_draft). Returns
+        how many photos the teacher looked at."""
         files, keys = self._files(ctx)
+        if not finds_objects(ctx.spec):
+            todo = sum(not self._embedding_file(ctx, f).exists() for f in files)
+            ctx.log(f"prefetch: {todo} of {len(files)} photos for {teacher.SIGLIP_NAME}")
+            self._embeddings(ctx, files, keys)
+            return todo
         answers = self._answer_files(ctx, files, keys)
         shown = dict.fromkeys(self._previous(ctx))
         order, sample = [], self._sample() or 6
@@ -385,11 +396,10 @@ class Label(Stage):
             teacher.detect([(f, missing[f]) for f in todo], log=ctx.log, timeline=self._timeline(ctx))
         return len(todo)
 
-    def _count(self, ctx, files, keys, previous, sample, truth):
-        """truth: the user's marks, {photo: [[x, y, class], ...]} (every class looked at)."""
-        spec = ctx.spec
-        ids = {c.id for c in spec.classes}
-        truth = {k: [p for p in v if p[2] in ids] for k, v in truth.items()}  # marks of other classes: not this job's
+    def _find(self, ctx, files, keys, previous, sample, fix_points):
+        """SAM 3's objects of every class in the photos (a calibration round: the photos already shown and `sample`
+        new ones, as different as possible), one class per object. Returns the photos looked at and {key: objects}
+        of those it answered."""
         phrases = self._phrases(ctx)
         if sample:  # new photos, as different as possible
             files = self._pick(ctx, files, keys, previous, sample)
@@ -411,8 +421,45 @@ class Label(Stage):
                 dets[keys[f]] = found
         if not dets:
             raise RuntimeError(f"the teacher failed on all {len(files)} photos, see the lines above")
+        return files, self._tell_apart(ctx, {keys[f]: f for f in files}, dets, fix_points)
 
-        dets = self._tell_apart(ctx, {keys[f]: f for f in files}, dets, truth)
+    def _presence(self, ctx, files, keys, previous, sample, fixes):
+        """Classify with a "nothing" label (tasks.finds_objects): a photo is the class of the surest object SAM 3
+        finds in it above the threshold, else nothing. The threshold follows the user's error preference and the
+        photos they labeled (teacher.choose_presence), whose labels win."""
+        spec, bg = ctx.spec, ctx.spec.background_class
+        fixes = {k: c for k, c in fixes.items() if c in spec.labels}  # labels of other classes: not this job's
+        files, dets = self._find(ctx, files, keys, previous, sample, {})
+        chosen = teacher.choose_presence(spec.errors or "balanced", dets, fixes, bg)
+        th = chosen["threshold"]
+        ctx.log(f"threshold {th} ({chosen['preference']}, from {chosen['photos']} reviewed photos)")
+        verdicts = {}
+        for f in files:
+            key = keys[f]
+            if key not in dets:
+                v = {"class": NO_ANSWER, "confidence": 0, "reason": "no valid answer"}
+            else:
+                got = teacher.present(dets[key], th)
+                surest = max((d["score"] for d in dets[key]), default=0.0)
+                v = {"class": got[0], "confidence": round(got[1], 3),
+                     "reason": f"{teacher.NAME}: found a {got[0].replace('_', ' ')}, threshold {th}"} if got else \
+                    {"class": bg, "confidence": round(1 - surest, 3),
+                     "reason": f"{teacher.NAME}: nothing found at or above {th}"}
+            v["model"], v["threshold"] = teacher.MODEL, th
+            if key in fixes:  # the user's label wins over the teacher's
+                v = {**v, "teacher": v["class"], "teacher_confidence": v["confidence"],
+                     "class": fixes[key], "confidence": 1.0, "judge": "user"}
+            verdicts[key] = {**v, "assigned": v["class"]}
+        learned = {**chosen, "model": teacher.MODEL, "phrases": self._phrases(ctx), "note": teacher.explain(chosen)}
+        return verdicts, learned, {"threshold": th}
+
+    def _count(self, ctx, files, keys, previous, sample, truth):
+        """truth: the user's marks, {photo: [[x, y, class], ...]} (every class looked at)."""
+        spec = ctx.spec
+        ids = {c.id for c in spec.classes}
+        truth = {k: [p for p in v if p[2] in ids] for k, v in truth.items()}  # marks of other classes: not this job's
+        phrases = self._phrases(ctx)
+        files, dets = self._find(ctx, files, keys, previous, sample, truth)
         chosen = teacher.choose(spec.errors or "balanced", dets, truth)
         th = chosen["threshold"]
         ctx.log(f"threshold {th} ({chosen['preference']}, from {chosen['photos']} reviewed photos)")

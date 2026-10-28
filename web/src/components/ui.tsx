@@ -74,7 +74,9 @@ export function Spinner({ className }: { className?: string }) {
   </span>;
 }
 
-export function Notice({ tone = "ember", children }: { tone?: "ember" | "bad"; children: ReactNode }) {
+// ember: something to act on; bad: an error; info: plain news, nothing wrong.
+export function Notice({ tone = "ember", children }: { tone?: "ember" | "bad" | "info"; children: ReactNode }) {
   return <div className={cx("rounded-[var(--radius-control)] px-4 py-3 text-sm",
-                            tone === "bad" ? "bg-red-50 text-red-800" : "bg-ember-50 text-ember-700")}>{children}</div>;
+                            tone === "bad" ? "bg-red-50 text-red-800" : tone === "info" ? "bg-gray-50 text-ink" :
+                              "bg-ember-50 text-ember-700")}>{children}</div>;
 }

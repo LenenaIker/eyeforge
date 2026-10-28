@@ -7,7 +7,9 @@ can drive the same work. One JobService per server process: it holds the runs an
 from __future__ import annotations
 
 import json
+import math
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -16,10 +18,37 @@ from pathlib import Path
 
 from . import spec as spec_mod
 from . import warm as warm_mod
-from .workspace import REPO, Cache, Job, note_run
+from .workspace import REPO, Cache, Job, content_key, note_run
 
 CALIBRATION = "calibration.json"  # a new job whose teacher the user checks before the first run
-CALIBRATION_PHOTOS = 6  # photos the teacher marks per calibration round
+# Photos the teacher marks per calibration round (user, 2026-10-28: 6 were too few to correct it): at least
+# CALIBRATION_PHOTOS, a share of a large dataset (10 % from 150 photos on), at most CALIBRATION_MAX a round.
+CALIBRATION_PHOTOS = 15
+CALIBRATION_SHARE = 0.1
+CALIBRATION_MAX = 40
+
+
+def _stopped(state: Path) -> bool:
+    """The user stopped the teacher (JobService.cancel): its process ending in an error is no failure."""
+    try:
+        return json.loads(state.read_text()).get("state") == "stopped"
+    except (OSError, ValueError):
+        return False
+
+
+def calibration_photos(total: int) -> int:
+    """The photos one calibration round shows, for a dataset of `total` photos (all of a smaller one)."""
+    n = max(CALIBRATION_PHOTOS, min(CALIBRATION_MAX, math.ceil(total * CALIBRATION_SHARE)))
+    return min(n, total) if total else n
+
+
+def job_photos(job: Job) -> int:
+    """How many photos the job's labeling has (input/labeling.json), 0 without one."""
+    from .library import KEEP
+    try:
+        return len(json.loads((job.input / KEEP).read_text())["photos"])
+    except (OSError, ValueError, KeyError):
+        return 0
 LABELING = "labeling.json"  # a job that only labels a library dataset: {"dataset", "state"} (Datasets page)
 
 
@@ -88,6 +117,7 @@ class JobService:
         self.runs: dict[str, subprocess.Popen] = {}
         self.calibrations: dict[str, threading.Thread] = {}
         self.prefetching: set[str] = set()
+        self.drafts: dict[str, tuple] = {}  # draft folder -> (photos, spec) waiting for prefetch_draft
         self._lock = threading.Lock()  # calibration threads and requests may touch the same job at once
 
     @property
@@ -144,6 +174,15 @@ class JobService:
             from .backends.nebius import NebiusCLI
             NebiusCLI().cancel(cj["id"])
             (job.logs / "cloud_job.json").unlink(missing_ok=True)
+        for name in (CALIBRATION, LABELING):  # the teacher's check or labeling: stopped, not failed
+            f = job.root / name
+            try:
+                state = json.loads(f.read_text())
+            except (OSError, ValueError):
+                continue
+            if state.get("state") == "labeling":
+                f.write_text(json.dumps({**state, "state": "stopped"}))
+        job.logs.mkdir(parents=True, exist_ok=True)
         with open(job.logs / "pipeline.log", "a") as f:
             f.write("FAILED: cancelled by the user\n")
         return cj
@@ -187,7 +226,8 @@ class JobService:
                     warm_mod.note(self.home, "check", job.name)
                     self.prefetch(job)
             except Exception as e:  # shown on the job page, with the option to train anyway
-                state.write_text(json.dumps({"state": "failed", "error": str(e)[:300]}))
+                if not _stopped(state):
+                    state.write_text(json.dumps({"state": "failed", "error": str(e)[:300]}))
 
         state.write_text(json.dumps({"state": "labeling"}))
         self.calibrations[job.name] = threading.Thread(target=work, daemon=True)
@@ -205,7 +245,7 @@ class JobService:
         from .stages import Context
         from .stages.label import Label
         stage = Label()
-        stage.sample = CALIBRATION_PHOTOS
+        stage.sample = calibration_photos(job_photos(job))
         return stage, Context(spec_mod.load(job.root / "request.json"), job, self.cache)
 
     def _calibrate_here(self, job: Job) -> None:
@@ -234,13 +274,17 @@ class JobService:
                 self._labels_done(job)
                 put(state="done")
             except Exception as e:
-                put(state="failed", error=str(e)[:300])
+                if not _stopped(state):
+                    put(state="failed", error=str(e)[:300])
 
         put(state="labeling")
         self.calibrations[job.name] = threading.Thread(target=work, daemon=True)
         self.calibrations[job.name].start()
 
-    def _calibrate_in_cloud(self, job: Job, sample: int | None = CALIBRATION_PHOTOS) -> None:
+    def _calibrate_in_cloud(self, job: Job, sample: int | None = -1) -> None:
+        """sample: the photos of a calibration round (-1: the job's, calibration_photos), None for every photo."""
+        if sample == -1:
+            sample = calibration_photos(job_photos(job))
         cmd = [sys.executable, "-m", "sim2chip.cli", "--home", str(self.home), "run", str(job.root / "request.json"),
                "--job", job.name, "--backend", self.backend, "--only", "label"]
         if self.max_usd is not None:
@@ -269,13 +313,13 @@ class JobService:
             return False
 
     def prefetch(self, job: Job) -> None:
-        """Count calibration: while the user checks the first photos, the warm GPU answers for the rest, so the
+        """Count and presence calibration (SAM 3): while the user checks the first photos, the warm GPU answers for the rest, so the
         next rounds and the first run need no GPU work for the teacher (warm.py, Label.prefetch)."""
         from .stages import Context
         from .stages.label import Label
-        from .tasks import task_of
+        from .tasks import finds_objects
         spec = spec_mod.load(job.root / "request.json")
-        if not task_of(spec).points:
+        if not finds_objects(spec):
             return
         try:
             if not Label().gpu_needed(Context(spec, job, self.cache)):
@@ -290,9 +334,75 @@ class JobService:
         def go():
             try:
                 from .backends.nebius import NebiusBackend
-                NebiusBackend(max_usd=self.max_usd).prefetch_warm(job, self.cache, spec, CALIBRATION_PHOTOS)
+                NebiusBackend(max_usd=self.max_usd).prefetch_warm(job, self.cache, spec,
+                                                                calibration_photos(job_photos(job)))
             except Exception as e:  # the rounds and the run then ask the teacher themselves
                 print(f"prefetch {job.name} failed: {e}", flush=True)
             finally:
                 self.prefetching.discard(job.name)
+        threading.Thread(target=go, daemon=True).start()
+
+    def prefetch_draft(self, owner: str, photos: list[Path], spec: spec_mod.Spec | None = None,
+                       reason: str = "photos uploaded") -> None:
+        """The teacher's work that needs no labeling yet, on the warm GPU while the user is still in the chat
+        (user, 2026-10-28: the check came minutes after "Teach it" while the GPU had idled since the upload). With
+        the photos only (an upload, a dataset the chat opened): SigLIP 2's embeddings, which every check uses to
+        pick varied photos. With the proposed spec: also SAM 3's answers for its classes. Both are kept by photo
+        content, so the job made from the chat finds them and its check runs here in seconds (_answers_here).
+        One draft folder per owner, in drafts/ (no job of theirs); a call while one runs waits for it."""
+        if self.warm is None or not photos or self.over_budget() is not None:
+            return
+        import hashlib
+
+        from .tasks import finds_objects
+        name = "draft_" + hashlib.sha256(owner.encode()).hexdigest()[:10]
+        if spec is None or not finds_objects(spec):  # the embeddings only (Label.prefetch)
+            spec = spec_mod.from_dict({"name": name, "background_class": None, "classes": [{"id": "a"}, {"id": "b"}],
+                                       "user_data": {"raw": "photos"}, "generation": {"frames": 0}})
+        else:
+            data = json.loads(spec.to_json())
+            data["user_data"] = {"raw": "photos"}
+            data["generation"] = {"frames": 0}
+            spec = spec_mod.from_dict(data)
+        with self._lock:
+            self.drafts[name] = (photos, spec)  # the newest wins: an earlier call not started yet is replaced
+            if name in self.prefetching:
+                return
+            self.prefetching.add(name)
+        self.warm_up(reason, f"draft:{name}")
+
+        def go():
+            from .backends.nebius import NebiusBackend, worker_runtime
+            from .workspace import open_job
+            try:
+                while True:
+                    with self._lock:
+                        got = self.drafts.pop(name, None)
+                    if got is None:
+                        return
+                    files, draft = got
+                    job = open_job(self.home / "drafts", name)
+                    shutil.rmtree(job.input / "photos", ignore_errors=True)
+                    (job.input / "photos").mkdir(parents=True)
+                    for f in files:  # by content: the same photo twice is one
+                        dst = job.input / "photos" / f"{content_key(f)}{f.suffix.lower()}"
+                        if not dst.exists():
+                            try:
+                                os.link(f, dst)
+                            except OSError:
+                                shutil.copyfile(f, dst)
+                    be = NebiusBackend(max_usd=self.max_usd)
+                    for _ in range(20):  # the warm GPU asked for just now: its record comes in a moment
+                        if be.warm_for(self.cache, worker_runtime(False)) is not None:
+                            break
+                        time.sleep(3)
+                    t0 = time.time()
+                    ok = be.prefetch_warm(job, self.cache, draft, calibration_photos(len(files)))
+                    print(f"prefetch {name}: {len(files)} photos, {'done' if ok else 'not done'} in "
+                          f"{time.time() - t0:.0f} s", flush=True)
+            except Exception as e:  # the check then asks the teacher itself
+                print(f"prefetch {name} failed: {e}", flush=True)
+            finally:
+                with self._lock:
+                    self.prefetching.discard(name)
         threading.Thread(target=go, daemon=True).start()

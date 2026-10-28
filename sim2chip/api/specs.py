@@ -12,7 +12,7 @@ from .. import library, review
 from .. import spec as spec_mod
 from ..interview import sources as interview_sources
 from ..interview import spec_paths
-from ..job_service import CALIBRATION_PHOTOS
+from ..job_service import calibration_photos
 from ..server import library_ref
 from ..workspace import Cache, Job, content_key
 
@@ -23,8 +23,10 @@ def helpers(ctx) -> None:
 
     def adopt_library(parsed: spec_mod.Spec, owner: str, job: Job, session: str | None = None) -> spec_mod.Spec:
         """The library and the job (docs/plan_etiquetado.md). The spec's 3D objects ("library:<id>") become files
-        of the job. Its photos are one dataset of the owner: a library dataset it names (photos attached in the chat
-        join it), else the chat's own dataset or a new one. They are labeled in one labeling of that dataset: the
+        of the job. Its photos are one dataset of the owner: the library dataset it names alone, else a new one
+        joining the datasets it names and the photos attached in the chat (or the one of them `add_to` names, when
+        the user asked to add the others to it), else the chat's own dataset or a new one. The user's reviews in
+        the joined datasets carry over (library.carry_reviews). They are labeled in one labeling of that dataset: the
         one the chat named (changed to the spec's classes, a copy when a model was trained with it), else one with
         the same classes, else a new one. The job takes a fixed copy of that labeling (library.export) as its raw
         photos; the teacher's marks come back from it (library.take_teacher)."""
@@ -57,10 +59,8 @@ def helpers(ctx) -> None:
         if not dsets and not folders and not labeled:  # synthetic images only
             ud.update(raw=None, labeled=None, labeling=None)
             return spec_mod.from_dict(data)
-        if len(dsets) > 1:
-            raise HTTPException(400, "invalid spec: one dataset per model (photos attached in the chat join it)")
-        if dsets and not lib.owns(owner, "dataset", dsets[0]):
-            raise HTTPException(400, f"invalid spec: no dataset {dsets[0]} in your library")
+        if bad := [d for d in dsets if not lib.owns(owner, "dataset", d)]:
+            raise HTTPException(400, f"invalid spec: no dataset {', '.join(bad)} in your library")
         files = [f for v in folders for f in library._images(job.resolve_input(v))]
         sorted_into: dict[str, list[Path]] = {}  # photos the user sorted into a folder per class
         if labeled:
@@ -69,9 +69,18 @@ def helpers(ctx) -> None:
                 sorted_into[label] = [f for sub in parsed.user_data.class_map.get(label, [label])
                                       for f in library._images(base / sub)]
         every = files + [f for fs in sorted_into.values() for f in fs]
-        if dsets:
+        joined: list[str] = []  # the datasets a new one joins: the user's reviews there carry over
+        add_to = library_ref(ud.get("add_to"))
+        if len(dsets) == 1 and not every:
             ds = dsets[0]
-            lib.add_photos(owner, ds, every)
+        elif dsets and add_to in dsets:  # the user asked to add the other photos to this dataset
+            ds, joined = add_to, [d for d in dsets if d != add_to]
+            lib.add_photos(owner, ds, every + [lib.files / p["file"] for d in joined for p in lib.photos(d)])
+        elif dsets:  # never a dataset changed without asking (eyeforge.app, 2026-10-28: Trash took the chat's photos)
+            names = {d["id"]: d["name"] for d in lib.datasets(owner)}
+            name = " + ".join([names[d] for d in dsets] + ([f"{len(every)} chat photos"] if every else []))
+            ds = lib.join_datasets(owner, name[:120], dsets, every)
+            joined = dsets
         elif session:
             ds = lib.add_chat_photos(owner, session, every)
         else:
@@ -81,6 +90,7 @@ def helpers(ctx) -> None:
         task = library.task_of(parsed.task)
         classes = labeling_classes(parsed)
         lid = ud.get("labeling")
+        ud["add_to"] = None
         if lid and not (lib.owns_labeling(owner, lid) and lib.labeling(lid)["dataset"] == ds
                         and lib.labeling(lid)["task"] == task):
             lid = None
@@ -90,6 +100,8 @@ def helpers(ctx) -> None:
             else:
                 lid = lib.find_labeling(ds, task, [c["key"] for c in classes]) or \
                     lib.create_labeling(ds, parsed.name.replace("_", " ").capitalize(), task, classes)
+            if joined:
+                lib.carry_reviews(lid, joined)
             for label, fs in sorted_into.items():
                 for f in fs:
                     if (pid := lib.photo_id(ds, content_key(f))) is not None:
@@ -128,7 +140,8 @@ def helpers(ctx) -> None:
         """The teacher's check comes first while the user has reviewed fewer photos of the labeling than one round
         shows: then the teacher has learned nothing of their criterion yet."""
         snap = kept(job)
-        return snap is not None and sum(p["reviewed"] for p in snap["photos"].values()) < CALIBRATION_PHOTOS
+        return snap is not None and \
+            sum(p["reviewed"] for p in snap["photos"].values()) < calibration_photos(len(snap["photos"]))
 
     def refresh(job: Job) -> None:
         """The job's copy of its labeling made again (new reviews, new photos), unless the labeling is gone."""

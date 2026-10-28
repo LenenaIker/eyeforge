@@ -558,3 +558,70 @@ def test_the_photo_analysis_goes_into_the_spec_in_code():
     spec = {}
     s._apply_measured(spec)
     assert spec == {}
+
+
+def test_two_datasets_and_attached_photos_are_said_as_they_will_be_used(tmp_path):
+    """The photos line is written in code (eyeforge.app, 2026-10-28: the chat said "Trash and your photos" to a
+    user who asked for Roads): every source, and whether they join in a new dataset or go into one."""
+    roads, trash = "a7d9ef2d4b43c27b", "b7d9ef2d4b43c27b"
+    up = tmp_path / "training"
+    up.mkdir()
+    for i in range(3):
+        (up / f"{i}.jpg").write_bytes(b"jpg")
+    spec = {"name": "bins", "classes": [{"id": "container", "description": "any waste container"}],
+            "user_data": {"raw": [f"library:{roads}", f"library:{trash}", str(up)]}}
+    cards = {roads: {**card([]), "name": "Roads", "photos": 74, "labelings": []},
+             trash: {**card([]), "name": "Trash", "photos": 40, "labelings": []}}
+    s = interview.Session(Scripted([{"say": "ok", "spec": spec},
+                                    {"spec": {**spec, "user_data": {**spec["user_data"], "add_to": f"library:{roads}"}}}]),
+                          "m", interview.CategoryIndex(counts={}), uploads=tmp_path)
+    s.use_library("- datasets", {roads, trash}, datasets={roads, trash}, dataset_card=cards.get)
+    t = s.reply("Roads y Trash con mis fotos")
+    assert t.kind == "confirm" and ("Photos: Roads (74 photos) + Trash (40 photos) + 3 photos attached here, joined "
+                                    "in a new dataset (yours stay as they are).") in t.intro
+    assert "Photos: Roads (74 photos) + Trash (40 photos) + 3 photos attached here, added to Roads." in \
+        s.reply("añádelas a Roads").intro
+
+
+def test_datasets_can_be_joined_without_a_model(tmp_path):
+    a, b = "a7d9ef2d4b43c27b", "b7d9ef2d4b43c27b"
+    joined = []
+
+    def join(ids, name, folder):
+        joined.append((ids, name, folder))
+        return {"id": "c7d9ef2d4b43c27b", "name": name, "photos": 114}
+    client = Scripted([{"join": {"datasets": [a]}}, {"join": {"datasets": [a, f"library:{b}"], "name": "Both"}},
+                       {"say": "Done: Both has 114 photos."}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}), uploads=tmp_path)
+    s.use_library("- datasets", {a, b}, datasets={a, b}, dataset_card=lambda i: card([]), join=join)
+    assert s.reply("une Roads y Trash").text == "Done: Both has 114 photos."
+    assert joined == [([a, b], "Both", None)] and "at least two" in client.seen[1]
+    assert "c7d9ef2d4b43c27b" in s.library_ids and '[Joined] New dataset "Both"' in client.seen[2]
+
+
+def test_scenes_go_by_name_and_none_is_said():
+    """The user never sees scene ids: a name in the spec is taken for its id and the summary says names."""
+    sid = "8cd8777a1225444d"
+    spec = {**GOOD, "user_data": {"raw": "photos"}, "qa": {"mode": "none"},
+            "generation": {"scenes": ["Street with a bike lane"]}}
+    s = interview.Session(Scripted([{"spec": spec}]), "m", interview.CategoryIndex(counts={"cow": 3}))
+    s.use_library(f'- scenes for synthetic images: scene "Street with a bike lane" (id {sid}, public)', {sid})
+    s.messages.append({"role": "user", "content": "photos"})
+    t = s._advance()
+    assert t.kind == "confirm" and t.spec.generation.scenes == [sid]
+    assert "in the scenes Street with a bike lane" in t.text and sid not in t.text
+
+
+def test_the_chat_shows_photos_that_could_become_a_scene():
+    ds = "a7d9ef2d4b43c27b"
+    answers = [{"photos": [], "computing": False, "unavailable": "the scene route is not set up here"},
+               {"photos": [{"photo_id": 7, "score": 0.9, "scene": None}], "computing": False, "unavailable": None}]
+    client = Scripted([{"scene_photos": {"dataset": ds}}, {"say": "Not here yet. A public scene?"},
+                       {"scene_photos": {"dataset": ds, "say": "These could be a scene."}}])
+    s = interview.Session(client, "m", interview.CategoryIndex(counts={}))
+    s.use_library("- a dataset", {ds}, datasets={ds}, dataset_card=lambda i: card([]))
+    s.use_scenes(lambda d: answers.pop(0))
+    assert s.reply("quiero una escena de mi calle").text == "Not here yet. A public scene?"
+    assert "not available on this server yet" in client.seen[1]
+    t = s.reply("vale, otra vez")
+    assert t.kind == "scene" and t.request == {"dataset": ds, "photos": [{"photo_id": 7, "score": 0.9, "scene": None}]}

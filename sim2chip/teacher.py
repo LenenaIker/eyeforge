@@ -393,6 +393,36 @@ def choose(preference: str, dets: dict[str, list[dict]], truth: dict) -> dict:
     return {"threshold": best, "preference": preference, "photos": len(keys), "fbeta": round(score(best), 3)}
 
 
+def present(dets: list[dict], threshold: float) -> tuple[str, float] | None:
+    """Classify with a "nothing" label: the class of the surest object at or above the threshold, and its score;
+    None when there is none."""
+    best = max((d for d in dets if d["score"] >= threshold), key=lambda d: d["score"], default=None)
+    return (best["class"], best["score"]) if best else None
+
+
+def choose_presence(preference: str, dets: dict[str, list[dict]], truth: dict[str, str], background: str) -> dict:
+    """Classify with a "nothing" label: the threshold for the user's preference, the best F-beta of "some object of
+    the right class" over the photos the user labeled (truth: key -> label), or the default with too few of them.
+    A photo of a class needs its class found; a photo of nothing, nothing found."""
+    beta, default = BETA[preference], DEFAULT[preference]
+    keys = [k for k in truth if k in dets]
+    if len(keys) < MIN_CORRECTED or not any(truth[k] != background for k in keys):
+        return {"threshold": default, "preference": preference, "photos": len(keys)}
+
+    def score(t):
+        tp = fp = fn = 0
+        for k in keys:
+            got = present(dets[k], t)
+            got = got[0] if got else background
+            if truth[k] != background:
+                tp, fn = tp + (got == truth[k]), fn + (got != truth[k])
+            fp += got != background and got != truth[k]
+        return fbeta(tp, fp, fn, beta)
+
+    best = max(THRESHOLDS, key=lambda t: (round(score(t), 4), -abs(t - default)))
+    return {"threshold": best, "preference": preference, "photos": len(keys), "fbeta": round(score(best), 3)}
+
+
 def explain(chosen: dict) -> str:
     """One line for review: what the teacher learned from the corrections."""
     what = {"find_more": "find every object, even with some false marks",

@@ -186,7 +186,8 @@ def split(keys: list[str], held: set[str], prev: dict[str, str], test_cap: int, 
     First split: half to test when there are fewer photos than both caps, else test_cap to test and train_cap
     to train. Later splits (prev, the earlier sides) keep every known photo where it was and split only the
     new ones: half of them to test while test_cap allows, the rest all to training. Photos in `held` (3D
-    models were made from them) never go to test; photos in `first` (reviewed by the user) go to test first.
+    models were made from them) never go to test. Photos in `first` (reviewed by the user) go half to test, first,
+    and half to training (user, 2026-10-28: all of them in test left the model nothing of the user's own labels).
     `usable` is checked lazily: opening every photo of a large dataset just to read its size would take
     minutes."""
     ordered = sorted(keys, key=lambda k: (k in held, k not in first, order(k)))
@@ -201,13 +202,25 @@ def split(keys: list[str], held: set[str], prev: dict[str, str], test_cap: int, 
                 picked.append(k)
         n_test = min(test_cap, len(picked) // 2) if len(picked) < need else test_cap
         n_test = min(n_test, sum(k not in held for k in picked))
-        sides |= {k: "test" for k in picked[:n_test]} | {k: "train" for k in picked[n_test:n_test + train_cap]}
+        test, train = _share_reviewed(picked[:n_test], picked[n_test:n_test + train_cap], held, first)
     else:
         fresh = [k for k in new if usable(k)]
         room = max(0, test_cap - sum(v == "test" for v in sides.values()))
         n_test = min(room, sum(k not in held for k in fresh) // 2)
-        sides |= {k: "test" for k in fresh[:n_test]} | {k: "train" for k in fresh[n_test:]}
+        test, train = _share_reviewed(fresh[:n_test], fresh[n_test:], held, first)
+    sides |= {k: "test" for k in test} | {k: "train" for k in train}
     return {k: sides.get(k, "unused") for k in keys}
+
+
+def _share_reviewed(test: list[str], train: list[str], held: set[str], first: set[str]) -> tuple[list, list]:
+    """Every other reviewed photo the test took goes to training, in place of a photo only the teacher marked
+    (one that may go to test), so the test keeps its size."""
+    test, train = list(test), list(train)
+    move = [k for k in test if k in first][1::2]
+    swap = [k for k in train if k not in first and k not in held]
+    for a, b in zip(move, swap):
+        test[test.index(a)], train[train.index(b)] = b, a
+    return test, train
 
 
 def test_photos(by_key: dict, cap: int, usable) -> list:

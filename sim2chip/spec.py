@@ -126,11 +126,13 @@ class UserData:
     `labeled`) used only for the real test. `raw` may list several sources (a library dataset and the photos
     attached in the chat): the web server puts them in one folder of the job before it runs.
     `labeling`: the library labeling the photos come from and go back to (web server, library.export); the chat
-    names one of a dataset's labelings, or null for a new one."""
+    names one of a dataset's labelings, or null for a new one. Several sources make a new dataset that joins
+    them, unless `add_to` names the one of them ("library:<id>") the user asked to add the others' photos to."""
     labeled: str | None = None
     raw: str | list[str] | None = None
     test: str | None = None
     labeling: str | None = None
+    add_to: str | None = None
     # No longer used, kept so older specs load: the teacher always commits to a class, there is no "unsure" pile
     # (user, 2026-09-30).
     label_min_confidence: float = 0.6

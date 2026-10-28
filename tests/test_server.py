@@ -501,9 +501,18 @@ def test_calibrate_the_teacher_before_the_first_run(app, tmp_path, monkeypatch):
     from PIL import Image
 
     from sim2chip import teacher
-    from sim2chip.job_service import CALIBRATION_PHOTOS
+    from sim2chip.job_service import calibration_photos
 
     asked = []
+    n = calibration_photos(20)
+
+    def detect(items, log=print, timeline=None):  # SAM 3 without a GPU: a cow in every other photo
+        for path, outs in items:
+            for _phrase, out in outs.items():
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(json.dumps({"detections": [{"box": [0.1, 0.1, 0.5, 0.5], "score": 0.8}]
+                                           if int(path.stem) % 2 else []}))
+    monkeypatch.setattr(teacher, "detect", detect)
 
     def embed(items, texts, text_out, log=print, timeline=None):  # SigLIP 2 without a GPU: every photo along its own axis
         for path, out in items:
@@ -538,21 +547,21 @@ def test_calibrate_the_teacher_before_the_first_run(app, tmp_path, monkeypatch):
     assert st["calibration"] == {"state": "ready"}
     photos = app.get(f"/api/jobs/{r['job']}/review").json()["photos"]
     # Every photo is embedded (cheap, and needed to pick varied ones); the user sees only a few.
-    assert len(photos) == CALIBRATION_PHOTOS and len(asked) == 20
+    assert len(photos) == n and len(asked) == 20
     # Corrections: another round over those photos and new ones, tuned to them. Still no run.
     fixes = {photos[0]["key"]: "cow", photos[1]["key"]: "empty"}
     assert app.post(f"/api/jobs/{r['job']}/corrections", json={"labels": fixes}).json() == {
         "rerun_from": "calibration"}
     settle(r["job"])
     review = app.get(f"/api/jobs/{r['job']}/review").json()
-    assert len(review["photos"]) == 2 * CALIBRATION_PHOTOS and len(asked) == 20
-    # The photos of the round left as they were count as checked too: the teacher learns from all six.
-    assert "6 photos you corrected" in review["teacher_rules"][0] and not app.launched
+    assert len(review["photos"]) == 20 and len(asked) == 20  # n of them, then the 5 left
+    # The photos of the round left as they were count as checked too: the teacher learns from all of them.
+    assert f"your {n} corrected photos" in review["teacher_rules"][0] and not app.launched
     # Train: the run starts from the calibrated answers; every photo the check showed is reviewed.
     assert app.post(f"/api/jobs/{r['job']}/train", json={}).json() == {"rerun_from": None}
     from sim2chip.library import Library
     lid = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())["user_data"]["labeling"]
-    assert Library(tmp_path, tmp_path / "cache").labeling(lid)["reviewed"] == 2 * CALIBRATION_PHOTOS
+    assert Library(tmp_path, tmp_path / "cache").labeling(lid)["reviewed"] == 20
     assert app.launched and app.launched[-1][3] is None
     assert app.get(f"/api/jobs/{r['job']}").json()["calibration"] is None
     assert app.post(f"/api/jobs/{r['job']}/train", json={}).status_code == 409
@@ -633,6 +642,13 @@ def test_photos_in_the_interview_warm_up_a_gpu_and_rounds_with_answers_skip_it(t
         text_out.write_text(json.dumps({"embeddings": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]][:len(texts)]}))
     monkeypatch.setattr(teacher, "embed", embed)
     monkeypatch.setattr(teacher, "prompts", lambda spec, client=None: {k: k for k in spec.labels})
+
+    def detect(items, log=print, timeline=None):  # the answers the prefetch brought (gpu_needed says so)
+        for _path, outs in items:
+            for out in outs.values():
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(json.dumps({"detections": []}))
+    monkeypatch.setattr(teacher, "detect", detect)
     buf = io.BytesIO()
     Image.new("RGB", (64, 64)).save(buf, "JPEG")
     r = client.post("/api/jobs", data={"spec": json.dumps(GOOD), "calibrate": "true"},
@@ -722,7 +738,7 @@ def test_labeling_a_dataset_puts_the_class_ids_in_english(app, tmp_path, monkeyp
 
 def test_a_job_uses_the_labeling_it_names_or_one_with_the_same_classes(app, tmp_path):
     """Same classes: the same labeling, with its English names for the teacher. Other classes with a labeling
-    named: that labeling changed to them. One dataset per model; a dataset id is never a 3D model."""
+    named: that labeling changed to them. A dataset id is never a 3D model."""
     lib, ds, ids = street(tmp_path, 2)
     count = {**GOOD, "task": "count", "classes": [{**GOOD["classes"][0], "names": ["cattle"]}],
              "user_data": {"raw": f"library:{ds}"}}
@@ -737,12 +753,52 @@ def test_a_job_uses_the_labeling_it_names_or_one_with_the_same_classes(app, tmp_
     assert req["user_data"]["labeling"] == lid and [c["key"] for c in lib.classes(lid)] == ["cow", "horse"]
     other, _, _ = street(tmp_path / "o", 1)
     two = {**count, "name": "Barn 3", "user_data": {"raw": [f"library:{ds}", f"library:{other.datasets('local')[0]['id']}"]}}
-    assert app.post("/api/jobs", data={"spec": json.dumps(two)}).status_code == 400
+    assert app.post("/api/jobs", data={"spec": json.dumps(two)}).status_code == 400  # not a dataset of this library
     as_model = {**count, "name": "Barn 4", "classes": [{**count["classes"][0], "assets": {"source": "library", "models": [f"library:{ds}"]},
                                                          "size_m": {"measure": "length", "range": [1.0, 2.0]}}]}
     r = app.post("/api/jobs", data={"spec": json.dumps(as_model)})
     assets = json.loads((tmp_path / "jobs" / r.json()["job"] / "request.json").read_text())["classes"][0]["assets"]
     assert r.status_code == 200 and assets["source"] == "search" and assets["queries"] == ["cattle"] and not assets["models"]
+
+
+def test_two_datasets_make_a_new_one_with_the_users_reviews(app, tmp_path):
+    """Two datasets and the chat's photos (eyeforge.app, 2026-10-28): a new dataset joins them, the sources stay as
+    they were and the user's reviews with the same classes carry over; add_to adds them to one of the two."""
+    from PIL import Image
+    lib, roads, ids = street(tmp_path, 3)
+    files = []
+    for i in range(2):
+        f = tmp_path / "scratch2" / f"t{i}.jpg"
+        f.parent.mkdir(exist_ok=True)
+        Image.new("RGB", (64, 64), (0, i * 90 + 40, 0)).save(f, "JPEG")
+        files.append(f)
+    trash = lib.new_dataset("local", "trash", files + [tmp_path / "scratch" / "p00.jpg"])  # p00 in both
+    keys = [{"key": "empty"}, {"key": "cow"}]
+    old = lib.create_labeling(trash, "Cows", "classify", keys)
+    (t0, *_), p00 = [p["id"] for p in lib.photos(trash)], lib.photo_id(trash, lib.photos(roads)[0]["hash"])
+    lib.review_photo(old, t0, [{"class": "cow"}])
+    lib.review_photo(old, p00, [{"class": "empty"}])
+    other = lib.create_labeling(trash, "Horses", "classify", [{"key": "empty"}, {"key": "horse"}])
+    lib.review_photo(other, t0, [{"class": "horse"}])  # other classes: says nothing of cows
+    spec = {**GOOD, "user_data": {"raw": [f"library:{roads}", f"library:{trash}"], "labeling": old}}
+    r = app.post("/api/jobs", data={"spec": json.dumps(spec)}).json()
+    req = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())
+    lid = req["user_data"]["labeling"]
+    joined = lib.labeling(lid)["dataset"]
+    assert joined not in (roads, trash) and len(lib.photos(joined)) == 5
+    assert len(lib.photos(roads)) == 3 and len(lib.photos(trash)) == 3  # the sources as they were
+    assert {p["hash"]: p["marks"][0]["class"] for p in lib.labeling_photos(lid) if p["reviewed"]} == {
+        lib.photos(trash)[0]["hash"]: "cow", lib.photos(roads)[0]["hash"]: "empty"}
+    names = {d["id"]: d["name"] for d in lib.datasets("local")}
+    assert names[joined] == "street + trash"
+    again = app.post("/api/jobs", data={"spec": json.dumps({**spec, "name": "Barn again"})}).json()
+    again = json.loads((tmp_path / "jobs" / again["job"] / "request.json").read_text())["user_data"]["labeling"]
+    assert lib.labeling(again)["dataset"] == joined  # the same join: no second dataset
+    add = {**spec, "name": "Barn add", "user_data": {**spec["user_data"], "add_to": f"library:{trash}"}}
+    r = app.post("/api/jobs", data={"spec": json.dumps(add)}).json()
+    req = json.loads((tmp_path / "jobs" / r["job"] / "request.json").read_text())
+    assert lib.labeling(req["user_data"]["labeling"])["dataset"] == trash and len(lib.photos(trash)) == 5
+    assert len(lib.photos(roads)) == 3 and req["user_data"]["add_to"] is None
 
 
 def test_a_finished_turn_can_be_picked_up_after_the_request_was_cut(app):

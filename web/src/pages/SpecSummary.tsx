@@ -1,5 +1,6 @@
 import { Camera, Cpu, Image, Map, Target } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import * as API from "../api";
 import type { Spec } from "../api";
 
 // Plain-language names for what the spec says; the JSON stays under "Advanced".
@@ -11,8 +12,20 @@ export const DEVICES: Record<string, string> = {
 };
 const TASKS: Record<string, string> = { count: "Count", roi_classification: "Recognize", classify: "Recognize" };
 
+// The library's scene names (the user never sees ids), read once per page.
+let sceneNames: Promise<Record<string, string>> | null = null;
+function useSceneNames(): Record<string, string> {
+  const [names, setNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    sceneNames ??= API.getLibrary().then((l) => Object.fromEntries(l.scenes.map((s) => [s.id, s.name])), () => ({}));
+    sceneNames.then(setNames);
+  }, []);
+  return names;
+}
+
 export function SpecSummary({ spec }: { spec: Spec }) {
   const scenes: string[] = spec.generation?.scenes ?? [];
+  const names = useSceneNames();
   const ud = spec.user_data ?? {};
   const cam = spec.camera ?? {};
   return (
@@ -27,7 +40,7 @@ export function SpecSummary({ spec }: { spec: Spec }) {
           ))}
         </Row>
         <Row icon={<Map />} label="Scenes">
-          {scenes.length ? `${scenes.length} from your library` : "none"}
+          {scenes.length ? scenes.map((id) => names[id] ?? "a scene of your library").join(", ") : "none"}
         </Row>
         <Row icon={<Camera />} label="Camera">
           {cam.distance_m ? `${cam.distance_m[0]} to ${cam.distance_m[1]} m away` : "as in your photos"}

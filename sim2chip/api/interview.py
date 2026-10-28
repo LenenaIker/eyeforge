@@ -11,10 +11,11 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
+from .. import library
 from .. import spec as spec_mod
 from ..interview import FIRST_QUESTION
 from ..server import (CHAT_VIEW, MAX_VIEW_BYTES, SESSION_HOURS, SESSION_OWNER, attach_library, default_interviewer,
-                      latest_spec, photo_thumb, save_photos, slug, timed)
+                      latest_spec, library_ref, photo_thumb, save_photos, slug, timed)
 from ..workspace import IMAGE_EXT, content_key
 
 
@@ -25,6 +26,26 @@ def add(app: FastAPI, ctx) -> None:
     accounts, meter_chat, owned = ctx.accounts, ctx.meter_chat, ctx.owned
 
     sessions: dict[str, object] = {}
+
+    def scene_photos(owner: str, ds: str) -> dict:
+        """For the chat's scene_photos action: the dataset's proposed photos, or why there are none now."""
+        from .. import scene_job
+        if not lib.owns(owner, "dataset", ds):
+            return {"photos": [], "computing": False, "unavailable": None}
+        got = ctx.scene_proposals(owner, ds)
+        return {"photos": got["proposals"], "computing": got["computing"], "unavailable": scene_job.unavailable()}
+
+    def spec_photos(owner: str, spec: spec_mod.Spec) -> list[Path]:
+        """The photos a proposed spec names: its library datasets' and the folders attached in the chat."""
+        raw = spec.user_data.raw if isinstance(spec.user_data.raw, list) else [spec.user_data.raw]
+        out = []
+        for src in raw:
+            ds = library_ref(src)
+            if ds and lib.owns(owner, "dataset", ds):
+                out += [lib.files / p["file"] for p in lib.photos(ds)]
+            elif src and not ds and Path(src).is_dir() and Path(src).resolve().is_relative_to(home / "uploads"):
+                out += library._images(Path(src))
+        return out
     started: dict[str, float] = {}  # interview session -> start time
     new_session = interviewer
 
@@ -60,8 +81,12 @@ def add(app: FastAPI, ctx) -> None:
         if hasattr(getattr(sessions[sid], "client", None), "usage_log"):
             sessions[sid].client.usage_log = interview_usage(sid)
         if hasattr(sessions[sid], "use_library"):  # the user's kits and datasets, to start from them
-            attach_library(sessions[sid], lib, owner_of(request), home / "uploads" / sid, kit,
-                           on_open=lambda: jobs.warm_up("library photos", f"session:{sid}"))
+            owner = owner_of(request)
+            attach_library(sessions[sid], lib, owner, home / "uploads" / sid, kit,
+                           on_open=lambda folder: jobs.prefetch_draft(owner, library._images(folder),
+                                                                      reason="library photos"))
+            if hasattr(sessions[sid], "use_scenes"):  # the chat offers photos for a scene of the user's own place
+                sessions[sid].use_scenes(lambda ds: scene_photos(owner, ds))
 
     locks: dict[str, threading.Lock] = {}
 
@@ -159,6 +184,12 @@ def add(app: FastAPI, ctx) -> None:
             out["request"] = turn.request
         if turn.intro is not None:
             out["intro"] = turn.intro
+        if turn.kind == "confirm" and turn.spec is not None:  # its classes known: SAM 3 answers before "Teach it"
+            try:
+                owner = (home / "uploads" / sid / SESSION_OWNER).read_text().strip()
+                jobs.prefetch_draft(owner, spec_photos(owner, turn.spec), turn.spec, reason="setup proposed")
+            except OSError:
+                pass
         if turn.kind in ("done", "failed"):
             sessions.pop(sid, None)
             locks.pop(sid, None)
@@ -256,10 +287,12 @@ def add(app: FastAPI, ctx) -> None:
                 lib.add_chat_photos(owner_of(request), sid, saved)
         if not n and not total:
             raise HTTPException(400, "no images among the files")
-        if purpose == "training":  # the GPU starts while the interview goes on
+        if purpose == "training" and more:  # the GPU starts while the rest of the photos come
             jobs.warm_up("photos uploaded", f"session:{sid}")
         if more:
             return {"stored": n}
+        if purpose == "training":  # and gets the teacher's first work, while the interview goes on
+            jobs.prefetch_draft(owner_of(request), library._images(folder))
         n = max(n, total)
         if (kept := kept_answer(sid, act, request)) is not None:
             return kept

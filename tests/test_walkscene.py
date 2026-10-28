@@ -159,4 +159,4 @@ def test_the_chat_sees_ready_scenes_and_only_those_ids_pass(tmp_path):
                       "generation": {"scenes": [sid]}})
     assert interview._walk_scenes_problem(S, spec) is None
     spec.generation.scenes = ["0123456789abcdef"]
-    assert "not in the user's library" in interview._walk_scenes_problem(S, spec)
+    assert "not in the list" in interview._walk_scenes_problem(S, spec)

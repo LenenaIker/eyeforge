@@ -44,6 +44,8 @@ def fake_sam3(monkeypatch, answer):
 
 
 TEXT = {"empty": [1, 0, 0], "cow": [0, 1, 0], "dog": [0, 0, 1]}
+# SigLIP 2 labels classes that fill the view (no "nothing" label, tasks.finds_objects): "empty" is one of them here.
+VIEW = {**SPEC, "classes": SPEC["classes"] + [{"id": "empty", "description": "nothing"}], "background_class": None}
 
 
 def fake_siglip(monkeypatch, vector):
@@ -70,7 +72,7 @@ def test_label_then_ingest(tmp_path, monkeypatch):
     # A blurry photo still gets a label (closest: cow), never "unsure".
     near = {"cow": [0, 1, 0.1], "dog": [0.1, 0, 1], "blur": [0.5, 0.6, 0.1], "none": [1, 0.1, 0]}
     fake_siglip(monkeypatch, lambda name: near[name.split("_")[0]])
-    ctx = Context(from_dict({**SPEC, "user_data": {"raw": "raw", "test_per_class": 2, "train_per_class": 2}}),
+    ctx = Context(from_dict({**VIEW, "user_data": {"raw": "raw", "test_per_class": 2, "train_per_class": 2}}),
                   open_job(tmp_path, "job"), Cache(tmp_path / "cache"))
     link_input(ctx.job, "raw", raw)
     info = Label().run(ctx)
@@ -85,7 +87,7 @@ def test_label_reuses_answers_and_learns_from_corrections(tmp_path, monkeypatch)
         img(raw / name)
     near = {"a.jpg": [0, 1, 0.1], "b.jpg": [0, 0.2, 1], "c.jpg": [0.6, 0.8, 0], "d.jpg": [0.62, 0.78, 0]}
     asked = fake_siglip(monkeypatch, lambda name: near[name])
-    ctx = Context(from_dict({**SPEC, "user_data": {"raw": "raw"}}), open_job(tmp_path, "job"), Cache(tmp_path / "c"))
+    ctx = Context(from_dict({**VIEW, "user_data": {"raw": "raw"}}), open_job(tmp_path, "job"), Cache(tmp_path / "c"))
     link_input(ctx.job, "raw", raw)
     Label().run(ctx)
     v = json.loads((ctx.job.stage_dir("label") / "verdicts.json").read_text())
@@ -102,6 +104,33 @@ def test_label_reuses_answers_and_learns_from_corrections(tmp_path, monkeypatch)
     assert "3 photos you corrected" in got["teacher_rules"][0]
     assert {p["key"]: p["label"] for p in got["photos"]} == {
         "a.jpg": "cow", "c.jpg": "empty", "d.jpg": "empty", "sub/b.jpg": "dog"}
+
+
+def test_objects_that_may_be_missing_are_found_by_sam3(tmp_path, monkeypatch):
+    """Classify with a "nothing" label: the class of the surest object SAM 3 finds, else nothing; the threshold
+    moves to the photos the user labeled, whose labels win."""
+    raw = tmp_path / "raw"
+    for name in ("cow.jpg", "faint.jpg", "dog.jpg", "both.jpg", "none.jpg", "none2.jpg"):
+        img(raw / name)
+    found = {"cow.jpg": [("cow", 0.9)], "faint.jpg": [("cow", 0.35)], "dog.jpg": [("dog", 0.8)],
+             "both.jpg": [("cow", 0.6), ("dog", 0.7)], "none.jpg": [], "none2.jpg": [("dog", 0.3)]}
+    answer = lambda name: [{"class": c, "score": sc, "box": [0.1 * i, 0.1, 0.1 * i + 0.05, 0.2]}
+                           for i, (c, sc) in enumerate(found[name])]
+    asked = fake_sam3(monkeypatch, answer)
+    monkeypatch.setattr(teacher, "embed", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no SigLIP 2")))
+    ctx = Context(from_dict({**SPEC, "user_data": {"raw": "raw"}}), open_job(tmp_path, "job"), Cache(tmp_path / "c"))
+    link_input(ctx.job, "raw", raw)
+    assert Label().powered_by(ctx.spec, "local").startswith("Meta SAM 3")
+    assert Label().run(ctx)["labels"] == {"cow": 1, "dog": 2, "empty": 3}  # default threshold 0.5
+    v = json.loads((ctx.job.stage_dir("label") / "verdicts.json").read_text())
+    assert v["both.jpg"]["class"] == "dog" and v["faint.jpg"]["class"] == "empty"
+    # The user says the faint cow is a cow and none2 is empty: the threshold drops to find it, not none2's dog.
+    assert review.apply(ctx.job, ctx.cache, {"faint.jpg": "cow", "none2.jpg": "empty", "dog.jpg": "dog"}, {}) == "label"
+    n = len(asked)
+    info = Label().run(ctx)
+    assert info["threshold"] == 0.35 and len(asked) == n  # no photo asked twice
+    v = json.loads((ctx.job.stage_dir("label") / "verdicts.json").read_text())
+    assert v["faint.jpg"]["judge"] == "user" and v["none2.jpg"]["class"] == "empty" and v["cow.jpg"]["class"] == "cow"
 
 
 def test_without_background_class_the_teacher_always_picks_one(tmp_path, monkeypatch):

@@ -13,9 +13,10 @@ import * as API from "../api";
 import type { Report, Stage, Status, Synthetic, SyntheticShot, Usage, Version } from "../api";
 import { Badge, Button, Card, Notice, cx } from "../components/ui";
 import ReviewPanel from "./Review";
+import { usesSynthetic } from "./SpecSummary";
 
 const FRIENDLY: Record<string, string> = {
-  label: "Reading your photos", generate_assets: "Building 3D models from your photos", ingest: "Sorting your photos",
+  label: "The teacher labels your photos", generate_assets: "Building 3D models from your photos", ingest: "Sorting your photos",
   fetch_assets: "Finding 3D models", convert_assets: "Preparing the 3D models", preview_assets: "Photographing the 3D models",
   qa_assets: "Checking the 3D models", scene_render: "Placing objects in your scenes", render: "Generating synthetic images", points: "Preparing training data",
   crops: "Preparing training data", train: "Training", evaluate: "Testing on your real photos", export: "Packing the model",
@@ -77,7 +78,8 @@ export default function JobPage() {
       {error && <Notice tone="bad">Lost contact with the server, retrying: {error}</Notice>}
       {news && <Notice>{news}</Notice>}
       {(s.no_synthetic ?? s.report?.no_synthetic) && !s.labeling && !s.calibration &&
-        <Notice>No synthetic images: {s.no_synthetic ?? s.report?.no_synthetic}. The model learns from your photos alone.</Notice>}
+        // Asked for (no scene, or photos only): plain news. Asked for and it failed: something to look at.
+        <Notice tone={s.spec && usesSynthetic(s.spec) ? "ember" : "info"}>Trained on your photos only: {s.no_synthetic ?? s.report?.no_synthetic}.</Notice>}
       {s.labeling && !s.calibration ? <Labeling s={s} /> : s.calibration ? <Calibration s={s} reviewKey={reviewKey} onRerun={restart} /> :
         (s.running || !s.report || failed) && <Progress s={s} failed={failed} onRerun={restart} />}
       {s.report && <Result job={s.job} r={s.report} usd={s.cloud_usd} version={s.version} />}
@@ -96,12 +98,28 @@ function Calibration({ s, reviewKey, onRerun }: { s: Status; reviewKey: number; 
   const [error, setError] = useState<string | null>(null);
   const train = () => API.trainCalibrated(s.job, { labels: {}, assets: {}, points: {} }).then(() => onRerun(), (e) =>
     e instanceof API.ApiError && e.status === 409 ? onRerun(e.message) : setError((e as Error).message));
+  const teacher = s.stages.find((x) => x.name === "label")?.powered_by.split(" | ")[0];
   if (s.running) {
     return (
       <Card className="flex items-center gap-3 p-4 text-sm">
         <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-        <span>The teacher is marking a few of your photos, so you can check it understood what to look for.</span>
+        <span className="min-w-0 flex-1">The teacher{teacher ? ` (${teacher})` : ""} is marking some of your photos, so you can
+          check it understood what to look for.{s.timing?.elapsed_s != null && <span className="text-muted"> {minutes(s.timing.elapsed_s)} so far.</span>}</span>
+        <StopButton job={s.job} />
       </Card>
+    );
+  }
+  if (s.calibration?.state === "stopped") {
+    return (
+      <div className="space-y-3">
+        <Card className="p-4 text-sm">You stopped the teacher. Nothing more is spent until you start it again.</Card>
+        {error && <Notice tone="bad">{error}</Notice>}
+        <div className="flex gap-2">
+          <Button onClick={() => API.applyFixes(s.job, { labels: {}, assets: {}, points: {} }, true).then(() => onRerun(), (e) => setError((e as Error).message))}>
+            <RotateCcw className="h-4 w-4" /> Start the teacher again</Button>
+          <Button variant="secondary" onClick={train}>Train anyway</Button>
+        </div>
+      </div>
     );
   }
   if (s.calibration?.state === "failed") {
@@ -122,13 +140,34 @@ function Labeling({ s }: { s: Status }) {
   const back = <Link to={`/app/datasets/${l.dataset}${l.labeling ? `/labelings/${l.labeling}` : ""}`}
                      className="font-medium text-brand-600 hover:underline">See them in the labeling</Link>;
   if (l.state === "failed") return <Notice tone="bad">The teacher could not label the photos: {l.error}</Notice>;
+  if (l.state === "stopped") return <Card className="p-4 text-sm">You stopped the teacher. {back}</Card>;
   if (l.state === "done") return <Card className="p-4 text-sm">Every photo is marked and kept in its labeling, for any model you build with it. {back}</Card>;
   return (
     <Card className="flex items-center gap-3 p-4 text-sm">
       <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-      <span>The teacher is labeling every photo. You can leave: the labels go to the dataset when it ends.</span>
+      <span className="min-w-0 flex-1">The teacher is labeling every photo. You can leave: the labels go to the dataset when it ends.</span>
+      <StopButton job={s.job} />
     </Card>
   );
+}
+
+// Stops the teacher's work (and its cloud GPU time): asks once, in place.
+function StopButton({ job }: { job: string }) {
+  const [asking, setAsking] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const stop = async () => {
+    setAsking(false);
+    setStopping(true);
+    try { await API.cancelJob(job); } catch (e) { alert((e as Error).message); }
+    setStopping(false);
+  };
+  return asking ? (
+    <div className="flex shrink-0 gap-2">
+      <Button variant="ghost" size="sm" onClick={() => setAsking(false)}>Keep going</Button>
+      <Button variant="danger" size="sm" onClick={stop}><Square className="h-3.5 w-3.5" /> Stop</Button>
+    </div>
+  ) : <Button variant="danger" size="sm" className="shrink-0" onClick={() => setAsking(true)} disabled={stopping}>
+    <Square className="h-3.5 w-3.5" /> {stopping ? "Stopping..." : "Stop"}</Button>;
 }
 
 function Skeleton() {

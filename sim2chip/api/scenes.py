@@ -47,11 +47,9 @@ def add(app: FastAPI, ctx) -> None:
         return {"id": sid, **st, **{k: v for k, v in (scene_job.progress(home, sid) or {}).items()
                                     if k in ("step", "done", "total")}}
 
-    @app.get("/api/library/datasets/{item}/scenes")
-    def library_scene_proposals(item: str, request: Request):
+    def proposals_of(owner: str, item: str) -> dict:
         """The dataset's photos proposed for a walk scene, each with its scene when one was started; computing
-        while the profile or the proposals are being made (the page asks again)."""
-        owner, _ = owned(request, "datasets", item)
+        while the profile or the proposals are being made (asked again later). Also for the chat."""
         prof = lib.profile(owner, item)
         if prof is None:
             return {"proposals": [], "computing": item in profiling}
@@ -61,6 +59,12 @@ def add(app: FastAPI, ctx) -> None:
             return {"proposals": [], "computing": True}
         return {"proposals": [{**p, "scene": scene_state(owner, lib.scene_of_photo(owner, p["photo_id"]))}
                               for p in found], "computing": False}
+    ctx.scene_proposals = proposals_of
+
+    @app.get("/api/library/datasets/{item}/scenes")
+    def library_scene_proposals(item: str, request: Request):
+        owner, _ = owned(request, "datasets", item)
+        return proposals_of(owner, item)
 
     @app.post("/api/library/scenes/extract")
     async def library_scene_extract(request: Request):

@@ -144,7 +144,11 @@ def test_powered_by_says_where_it_really_runs():
     assert BY_NAME["scene_render"].powered_by(spec, "nebius") == "NVIDIA Isaac Sim | Nebius AI Cloud, L40S"
     assert BY_NAME["qa_assets"].powered_by(spec, "local") == \
         "vision model on Nebius Token Factory, called from local CPU"
-    assert BY_NAME["label"].powered_by(spec, "nebius") == "Google SigLIP 2 | Nebius AI Cloud, L40S"
+    assert BY_NAME["label"].powered_by(spec, "nebius") == "Meta SAM 3 | Nebius AI Cloud, L40S"  # "empty": objects
+    assert BY_NAME["label"].powered_by(from_dict({**SPEC, "background_class": None, "classes": SPEC["classes"] + [
+        {"id": "grass", "description": "grass", "size_m": {"measure": "height", "range": [0.1, 0.2]},
+         "assets": {"categories": ["grass"]}}]}), "nebius") == \
+        "Google SigLIP 2 | Nebius AI Cloud, L40S"
     assert BY_NAME["label"].powered_by(from_dict({**SPEC, "task": "count"}), "local") == "Meta SAM 3 | local GPU"
     # Without auto QA the stage makes no Token Factory call, so it must not claim one.
     assert BY_NAME["qa_assets"].powered_by(from_dict(SPEC), "local") == "local CPU"

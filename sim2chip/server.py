@@ -93,20 +93,26 @@ def default_interviewer(home: Path, backend: str = "local", public: bool = False
 
 def attach_library(session, lib, owner: str, folders: Path, kit: str | None = None, on_open=None) -> None:
     """The owner's library to an interview (interview.Session.use_library). folders: where a dataset the chat
-    looks at is put as plain photos; on_open: called when that happens (the server asks for the warm GPU, as for
-    an upload)."""
+    looks at is put as plain photos; on_open(folder): called when that happens (the server sends the warm GPU the
+    teacher's first work, as for an upload)."""
     chosen = next((k["name"] for k in lib.kits(owner) if k["id"] == kit), None) if kit else None
 
     def open_dataset(ds: str) -> Path | None:
         if not lib.owns(owner, "dataset", ds):
             return None
-        if on_open is not None:
-            on_open()
         lib.materialize_dataset(owner, ds, folders / f"library_{ds}")
+        if on_open is not None:
+            on_open(folders / f"library_{ds}")
         return folders / f"library_{ds}"
+    def join(ids: list[str], name: str, folder: Path | None) -> dict:
+        names = {d["id"]: d["name"] for d in lib.datasets(owner)}
+        files = library._images(folder) if folder is not None else []
+        name = name or " + ".join([names[d] for d in ids if d in names] + ([f"{len(files)} chat photos"] if files else []))
+        return lib.dataset_card(owner, lib.join_datasets(owner, name[:120], ids, files))
+
     session.use_library(*lib.for_chat(owner), kit=chosen, notes=functools.partial(lib.describe, owner),
                         open_dataset=open_dataset, datasets={d["id"] for d in lib.datasets(owner)},
-                        dataset_card=functools.partial(lib.dataset_card, owner))
+                        dataset_card=functools.partial(lib.dataset_card, owner), join=join)
 
 
 MAX_PHOTOS = 400  # per upload on a public server
