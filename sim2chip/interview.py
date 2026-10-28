@@ -100,14 +100,14 @@ Scenes are places rebuilt in 3D (theirs, or public ones anyone may use) where 3D
 to make synthetic images. Only when the user asks for synthetic images, put scene ids from the list below in
 "generation": {{"scenes": ["<id>"]}} (several when they ask). The user does not see ids: name scenes by their
 name, never ask for an id. When they do not name one, choose yourself the listed scene most like their photos
-and say which. When the list has no scenes, say there is none yet and go on without synthetic images. Then
-every class also needs "size_m":
+and say which. When the list has no scenes, tell them synthetic images need a scene first, made apart from
+this model (offer scene_photos below), and go on without synthetic images. Then every class also needs "size_m":
 {{"measure": "length" | "width" | "height", "range": [min, max]}} (its real size in meters, the measure you are
 surest of) and "assets": {{"source": "search", "queries": [1 to 3 short English phrases that find its 3D model]}}.
 When a class is a surface or an area, not a thing (grass, a road), say that scenes cannot help and leave them out.
 When the user wants a scene of their own place, send {{"scene_photos": {{"dataset": "<id>", "say": "..."}}}}: they
 see the photos of that dataset best suited to become a scene and create one themselves (about 2 hours and 1 $; it
-can be used once it is ready). Meanwhile offer a listed scene, or their photos alone.
+can be used once it is ready, in a new model). Meanwhile offer a listed scene, or their photos alone.
 {items}
 """
 
