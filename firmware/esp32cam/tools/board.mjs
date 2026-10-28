@@ -6,7 +6,7 @@
 //     backup <out.bin> [bytes]    read the flash (default 4 MB); serial only, see below
 //     write <addr>=<file> ...     write files, e.g. 0x10000=firmware.bin 0x190000=model.bin
 //     monitor [seconds]           reset the board and print its serial output (default 20 s) at --mbaud
-//                                 (default 921600, the firmware's speed after boot; the ROM's lines are garbled)
+//                                 (default 460800, the firmware's speed after boot; the ROM's lines are garbled)
 //
 // Without --usb it goes through Web Serial (what Chrome and Edge use on a computer), here node-serialport.
 // With --usb it goes through esptool-js's WebUSB CH340 driver (what Chrome on Android uses), here node-usb.
@@ -30,7 +30,7 @@ const flag = (name, fallback) => {
 const useUsb = args.includes("--usb") && args.splice(args.indexOf("--usb"), 1);
 const baud = Number(flag("--baud", 460800));
 const path = flag("--port", "/dev/ttyUSB0");
-const monitorBaud = Number(flag("--mbaud", 921600));
+const monitorBaud = Number(flag("--mbaud", 460800));
 const [command, ...rest] = args;
 const terminal = { clean() {}, writeLine: l => console.log(l), write: t => process.stdout.write(t) };
 const sleep = ms => new Promise(r => setTimeout(r, ms));

@@ -9,13 +9,13 @@
 // Built with EYEFORGE_TEST_FRAME (env qemu_*, tools/qemu_test.sh), it runs in Espressif's QEMU: no
 // camera, every frame is the fixed one of test_frame/test_frame.h.
 //
-// Lines it prints (the web app reads them, web/src/flash/board.ts):
-//   {"event":"ready","firmware":"1.2.0","crc":"1a2b3c4d","task":"classify","input":96,"frame":[320,240],...,"labels":[...]}
+// Lines it prints (the web app reads them, web/src/flash/board.ts); the ready line again every READY_EVERY frames:
+//   {"event":"ready","firmware":"1.3.0","crc":"1a2b3c4d","task":"classify","input":96,"frame":[320,240],...,"labels":[...]}
 //   {"label":"grass","score":0.91,"ms":1210,"scores":{...},"jpeg":"<base64>"}
 //   {"ms":1300,"counts":{"bottle":3},"points":[[0.42,0.25,"bottle"],...],"jpeg":"<base64>"}
 //   {"event":"photo","w":800,"h":600,"bytes":41234,"capture_ms":610,"jpeg":"<base64>"}
 //   {"event":"photo_sent","bytes":41234,"send_ms":720}   (after the photo, for measuring)
-//   {"event":"error","message":"...","firmware":"1.2.0"}
+//   {"event":"error","message":"...","firmware":"1.3.0"}
 // Points are 0-1 on the picture the model saw, which is the whole frame stretched to a square, so they
 // are also 0-1 on the whole frame and on a photo from "capture" (same field of view). Up to 1.1.0 the
 // model saw the centre square of the frame instead, and the ready line had no "frame".
@@ -57,9 +57,12 @@
 #include "test_frame.h"  // TEST_FRAME_W, TEST_FRAME_H, test_frame[]: RGB565, big endian as the camera's
 #endif
 
-#define FIRMWARE_VERSION "1.2.0"  // tools/copy_web.sh copies it into the web's manifest.json
+#define FIRMWARE_VERSION "1.3.0"  // tools/copy_web.sh copies it into the web's manifest.json
 
-constexpr int APP_BAUD = 921600;
+// 921600 lost bytes in the ESP32-CAM-MB's CH340 (2026-10-28: the ready line came without the same 24 bytes every
+// time, on a computer and on a phone); a frame and its JPEG are about 4 KB a second, a 1600x1200 photo 75 KB.
+constexpr int APP_BAUD = 460800;
+constexpr int READY_EVERY = 5;  // frames between repeats of the ready line, for a reader that missed the first
 constexpr size_t ARENA = 512 * 1024;  // PSRAM: the internal RAM has no block this big
 constexpr int MAX_CLASSES = 16;
 constexpr int MAX_POINTS = 64;
@@ -460,15 +463,21 @@ extern "C" void app_main() {
     if (!view || (grid && !probs)) halt("out of memory");
     float threshold = 0.5f;  // sim2chip/counting.py THRESHOLD; the web sends the model's own
 
-    printf("{\"event\":\"ready\",\"firmware\":\"" FIRMWARE_VERSION "\",\"crc\":\"%08lx\",\"task\":\"%s\",\"input\":%d,"
-           "\"frame\":[320,240],\"channels\":%d,\"grid\":%d,\"arena\":%u,\"labels\":[",
-           (unsigned long)model.crc, model.task == 0 ? "classify" : "count", model.side, channels, grid,
-           (unsigned)interpreter.arena_used_bytes());
-    for (int c = 0; c < model.classes; c++) printf("%s\"%s\"", c ? "," : "", model.labels[c]);
-    printf("]}\n");
-    fflush(stdout);
+    // Said at start and again every READY_EVERY frames: a page that opened the port late, or lost bytes of the
+    // line, still learns which firmware and model run here.
+    auto sayReady = [&]() {
+        printf("{\"event\":\"ready\",\"firmware\":\"" FIRMWARE_VERSION "\",\"crc\":\"%08lx\",\"task\":\"%s\",\"input\":%d,"
+               "\"frame\":[320,240],\"channels\":%d,\"grid\":%d,\"arena\":%u,\"labels\":[",
+               (unsigned long)model.crc, model.task == 0 ? "classify" : "count", model.side, channels, grid,
+               (unsigned)interpreter.arena_used_bytes());
+        for (int c = 0; c < model.classes; c++) printf("%s\"%s\"", c ? "," : "", model.labels[c]);
+        printf("]}\n");
+        fflush(stdout);
+    };
+    sayReady();
 
-    while (true) {
+    for (unsigned frame = 1;; frame++) {
+        if (frame % READY_EVERY == 0) sayReady();
         camera_fb_t* fb = grabFrame();
         if (!fb) {
             printf("{\"event\":\"error\",\"message\":\"capture failed\"}\n");

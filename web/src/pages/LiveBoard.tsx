@@ -28,7 +28,7 @@ type Step =
   | { step: "live" }
   | { step: "stopped"; error?: string };
 
-const ANSWER_MS = 8000;   // the board says "ready" about 2 s after a reset
+const ANSWER_MS = 12000;  // the board says "ready" about 2 s after a reset, and again every 5 frames (about 6 s)
 const PHOTO_MS = 30000;   // a photo at the biggest size takes a few seconds through the cable
 
 export default function LiveBoard() {
