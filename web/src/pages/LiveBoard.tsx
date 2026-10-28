@@ -128,6 +128,14 @@ export default function LiveBoard() {
       return;
     }
     const { r, message } = await answer;
+    // A board that runs and says what went wrong with its hardware: writing it again would not help (eyeforge.app,
+    // 2026-10-28: "camera init failed" on a phone's USB showed "Flash this model first" over and over).
+    if (!r && message && /camera/i.test(message)) {
+      await board.current?.stop();
+      board.current = null;
+      setStep({ step: "stopped", error: cameraTrouble(message) });
+      return;
+    }
     const wrong = boardMismatch(r, crc, manifest.firmware);
     if (wrong && !wrong.optional) {
       await board.current?.stop();
@@ -140,6 +148,12 @@ export default function LiveBoard() {
     const threshold = (report as any).output?.threshold;
     if (report.task === "count" && typeof threshold === "number") board.current?.send(`threshold ${threshold}`).catch(() => {});
     setStep({ step: "live" });
+  }
+
+  function cameraTrouble(message: string) {
+    return `The board runs, but its camera did not start (${message.split(":")[0]}). Writing it again will not help. ` +
+      "Check that the camera's ribbon cable sits firmly in its connector, then plug the board into a computer or a " +
+      "powered USB hub: a phone's USB often cannot give the camera the current it needs to start.";
   }
 
   async function connect() {
