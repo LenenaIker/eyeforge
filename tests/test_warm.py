@@ -515,7 +515,7 @@ def test_other_regions_come_after_eu_north1_and_only_for_kits_their_gpu_runs(tmp
     light = nebius.needed_kits(True)
     monkeypatch.setattr(nebius, "SM120_KITS", set())  # nothing shown on Blackwell yet: eu-north1 only
     assert [w.platform for w in nebius.platforms(tmp_path, light)] == ["gpu-l40s-a", "gpu-l40s-d"]
-    monkeypatch.setattr(nebius, "SM120_KITS", {"py", "teacher"})
+    monkeypatch.setattr(nebius, "SM120_KITS", {"teacher"})  # TensorFlow (py) trains on the CPU there
     # Same price: by region name; uk-south2 has no project. PicoDet's kit keeps a run on the L40S.
     assert [w.region for w in nebius.platforms(tmp_path, light)] == ["eu-north1", "eu-north1", "eu-south1", "us-central1"]
     assert len(nebius.platforms(tmp_path, nebius.needed_kits(True, picodet=True))) == 2

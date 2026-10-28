@@ -66,8 +66,12 @@ ELSEWHERE = config.env("SIM2CHIP_NEBIUS_ELSEWHERE", "eu-south1:gpu-rtx6000-a/1gp
 PROJECTS = dict(kv.split("=", 1) for kv in config.env("SIM2CHIP_NEBIUS_PROJECTS", "").split(",") if "=" in kv)
 ARCH = {"gpu-l40s-a": "sm_89", "gpu-l40s-d": "sm_89", "gpu-rtx6000-a": "sm_120", "gpu-rtx6000": "sm_120"}
 # Kits shown to run on Blackwell (sm_120). Isaac Sim 5.1 does; Paddle cu126 does not, and gsplat's wheel has no
-# sm_120 code (2026-10-27). Until a kit is listed, runs that need it stay on the L40S.
-SM120_KITS = set(filter(None, config.env("SIM2CHIP_SM120_KITS", "").split(",")))
+# sm_120 code (2026-10-27). The teachers' torch 2.11 does: SAM 3 and SigLIP 2 marked 40 photos in 43 s on an RTX
+# PRO 6000 (eu-south1, 2026-10-28). Until a kit is listed, runs that need it stay on the L40S.
+SM120_KITS = set(filter(None, config.env("SIM2CHIP_SM120_KITS", "teacher").split(",")))
+# TensorFlow 2.18 has no sm_120 code and its PTX does not load there (CUDA_ERROR_INVALID_PTX, same probe): on
+# Blackwell the student trains on the machine's CPUs (24 cores), the GPU left to the teachers (TF_ON_CPU).
+TF_ON_CPU = "SIM2CHIP_TF_CPU"
 
 
 class Where(NamedTuple):
@@ -190,7 +194,7 @@ def runs_on(w: Where, kits: set[str]) -> bool:
     of `pythons` run anywhere)."""
     if w.region != REGION and w.region not in PROJECTS:
         return False
-    return w.arch == "sm_89" or not (kits - {"pythons"}) - SM120_KITS
+    return w.arch == "sm_89" or not (kits - {"pythons", "py"}) - SM120_KITS  # py: on the CPU there
 
 
 def platforms(home: Path | None, kits: set[str] = frozenset(KITS)) -> list[Where]:
@@ -829,7 +833,8 @@ class NebiusBackend:
             raise NoGPU("no GPU place runs this job's kits (SIM2CHIP_NEBIUS_*, SIM2CHIP_SM120_KITS)")
         for i, where in enumerate(options):
             t0 = time.time()
-            job_id = self.cli.create_job(name, runtime, env, script, WORKER_HOURS, secrets, where)
+            job_env = {**env, TF_ON_CPU: "1"} if where.arch == "sm_120" else env
+            job_id = self.cli.create_job(name, runtime, job_env, script, WORKER_HOURS, secrets, where)
             if self.dry_run:
                 return
             log(f"  nebius job {job_id} ({where.region}, {where.platform}, {where.preset}, "

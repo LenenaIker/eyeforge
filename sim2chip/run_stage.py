@@ -8,9 +8,13 @@ of the exit code, because Isaac Sim's app.close() ends the process with its own 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import traceback
 from pathlib import Path
+
+
+GPU_STAGES = ("label", "scene_render", "generate_assets")  # their tools need the GPU whatever TensorFlow does
 
 
 def main() -> int:
@@ -26,6 +30,10 @@ def main() -> int:
     from .workspace import Cache, Job
 
     stage = BY_NAME[args.stage]
+    # A GPU TensorFlow cannot use (Blackwell, backends.nebius.TF_ON_CPU): TensorFlow's stages run on the CPUs. Set
+    # before anything imports TensorFlow; the teachers and the renderers keep the GPU.
+    if os.environ.get("SIM2CHIP_TF_CPU") and stage.runtime in ("tf", "cpu") and stage.name not in GPU_STAGES:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     job = Job(args.job)
     ctx = Context(spec_mod.load(job.spec_path), job, Cache(args.cache))
     app = None
