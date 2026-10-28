@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import raw from "../../public/firmware/esp32/manifest.json";
+import { wholeJpeg } from "./board";
 import { boardAspect, boardGuess, boardMismatch, planWrite, checkModel, flashable, friendlyError, fromBase64, lineSplitter, logLine, modelCrc, parseLine,
          parseManifest } from "./board";
 
@@ -60,13 +61,15 @@ it("explains errors in plain words", () => {
   expect(friendlyError(new Error("Unable to claim interface."), "connect")).toMatch(/Another program/);
 });
 
+const JPG = btoa(String.fromCharCode(0xff, 0xd8, 0, 0, 0xff, 0xd9));  // tiny, with the JPEG start and end marks
+
 it("reads the firmware 1.1.0 lines: fingerprint, pictures, points and photos", () => {
   const ready = parseLine('{"event":"ready","firmware":"1.1.0","crc":"0badf00d","task":"count","input":96,"channels":3,"grid":12,"arena":1,"labels":["bg","bottle"]}');
   expect(ready).toEqual({ kind: "ready", input: 96, labels: ["bg", "bottle"], firmware: "1.1.0", crc: "0badf00d", task: "count" });
-  expect(parseLine('{"label":"grass","score":0.91,"ms":1210,"scores":{"grass":0.91},"jpeg":"/9j/"}'))
-    .toMatchObject({ kind: "label", label: "grass", jpeg: "/9j/" });
-  expect(parseLine('{"ms":1300,"counts":{"bottle":2},"points":[[0.25,0.5,"bottle"],[0.75,0.5,"bottle"]],"jpeg":"/9j/"}'))
-    .toEqual({ kind: "counts", ms: 1300, counts: { bottle: 2 }, points: [[0.25, 0.5, "bottle"], [0.75, 0.5, "bottle"]], jpeg: "/9j/" });
+  expect(parseLine(`{"label":"grass","score":0.91,"ms":1210,"scores":{"grass":0.91},"jpeg":"${JPG}"}`))
+    .toMatchObject({ kind: "label", label: "grass", jpeg: JPG });
+  expect(parseLine(`{"ms":1300,"counts":{"bottle":2},"points":[[0.25,0.5,"bottle"],[0.75,0.5,"bottle"]],"jpeg":"${JPG}"}`))
+    .toEqual({ kind: "counts", ms: 1300, counts: { bottle: 2 }, points: [[0.25, 0.5, "bottle"], [0.75, 0.5, "bottle"]], jpeg: JPG });
   expect(parseLine('{"event":"photo","w":800,"h":600,"bytes":3,"capture_ms":700,"jpeg":"AAEC"}'))
     .toEqual({ kind: "photo", w: 800, h: 600, bytes: 3, captureMs: 700, jpeg: "AAEC" });
   expect(parseLine('{"event":"photo_sent","bytes":3,"send_ms":900}')).toEqual({ kind: "photo_sent", bytes: 3, sendMs: 900 });
@@ -132,4 +135,15 @@ it("a ready line with bytes lost still says which firmware and model the board r
   expect(ev.frame).toEqual([320, 240]);
   expect(boardMismatch(ev, "b6c43ecd", "1.2.0")).toBeNull();
   expect(parseLine('{"label":"street","score":0.95,"ms":1211,"scores":{"trash_contaitreet":0.95},"jpeg":"/9j').kind).toBe("label");
+});
+
+it("a live picture that lost bytes is left out, so the last whole one stays on screen", () => {
+  const jpeg = btoa(String.fromCharCode(0xff, 0xd8, 1, 2, 3, 4, 5, 6, 7, 0xff, 0xd9));
+  expect(wholeJpeg(jpeg)).toBe(true);
+  expect(wholeJpeg(jpeg.slice(0, -4))).toBe(false);  // its last 4 characters lost: still base64, no end marker
+  expect(wholeJpeg(jpeg.slice(1))).toBe(false);
+  const line = (j: string) => `{"label":"street","score":0.95,"ms":1211,"scores":{"street":0.95},"jpeg":"${j}"}`;
+  const good = parseLine(line(jpeg)), bad = parseLine(line(jpeg.slice(0, -4)));
+  expect(good.kind === "label" && good.jpeg).toBe(jpeg);
+  expect(bad.kind === "label" && bad.jpeg === undefined).toBe(true);
 });

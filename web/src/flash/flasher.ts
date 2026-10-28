@@ -6,7 +6,42 @@ import { BOARDS, checkModel, friendlyError, lineSplitter, parseLine, parseManife
 
 type Esptool = typeof import("esptool-js");
 let esptool: Promise<Esptool> | null = null;
-const lib = () => (esptool ??= import("esptool-js"));  // 100 KB only for people who flash
+const lib = () => (esptool ??= import("esptool-js").then((m) => { keepReading(m.WebUSBSerialPort); return m; }));  // 100 KB only for people who flash
+
+const IN_FLIGHT = 8;  // USB reads waiting at once on the phone's CH340 path
+/** esptool-js 0.7.0 reads the CH340 over WebUSB one 64-byte transfer at a time: between two, the adapter's small
+ * buffer overflows and bytes are lost (2026-10-28, a Pixel 7a at 115200 baud: most live pictures came broken).
+ * The readable stream is made again with IN_FLIGHT transfers always waiting, taken in order. */
+function keepReading(Port: any) {
+  if (!Port?.prototype?.createStreams || Port.prototype.__keepsReading) return;
+  const make = Port.prototype.createStreams;
+  Port.prototype.__keepsReading = true;
+  Port.prototype.createStreams = function (this: any) {
+    make.call(this);
+    const self = this, device = this.usbDevice, endpoint = this.endpointIn, size = 64;
+    this.readable = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        const queue: Promise<any>[] = [];
+        const ask = () => queue.push(device.transferIn(endpoint, size).catch((e: unknown) => ({ error: e })));
+        (async () => {
+          for (let i = 0; i < IN_FLIGHT; i++) ask();
+          while (self.readLoopRunning && device.opened) {
+            const r = await queue.shift();
+            if (!self.readLoopRunning || !device.opened) break;
+            if (r?.error) { controller.error(r.error); return; }
+            if (r?.status === "stall") { await device.clearHalt("in", endpoint).catch(() => {}); }
+            else if (r?.status === "ok" && r.data?.byteLength) {
+              controller.enqueue(new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength));
+            }
+            ask();
+          }
+          try { controller.close(); } catch { /* already closed */ }
+        })();
+      },
+      cancel: () => { self.readLoopRunning = false; },
+    });
+  };
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const isAndroid = () => /android/i.test(navigator.userAgent);

@@ -90,7 +90,7 @@ export function parseLine(line: string): BoardEvent {
   if (!t.startsWith("{")) return { kind: "text" };
   let o: any;
   try { o = JSON.parse(t); } catch { return salvage(t); }
-  const jpeg = typeof o.jpeg === "string" ? { jpeg: o.jpeg as string } : {};
+  const jpeg = typeof o.jpeg === "string" && wholeJpeg(o.jpeg) ? { jpeg: o.jpeg as string } : {};
   if (o.event === "ready") {
     return { kind: "ready", input: o.input, labels: o.labels ?? [],
              ...(o.firmware ? { firmware: String(o.firmware) } : {}), ...(o.crc ? { crc: String(o.crc) } : {}),
@@ -154,6 +154,17 @@ export function boardGuess(ev: BoardEvent | null, ready?: Extract<BoardEvent, { 
     return { points: (ev.points ?? []).map(onPhoto), top: null };
   }
   return { points: [], top: null };
+}
+
+/** A JPEG that came whole: base64 of the right length, starting and ending with the JPEG markers. A line that lost
+ * bytes inside its picture still parses as JSON, and the picture shows as a broken image (2026-10-28, a phone). */
+export function wholeJpeg(b64: string): boolean {
+  if (b64.length < 8 || b64.length % 4) return false;
+  try {
+    const bytes = fromBase64(b64);
+    const n = bytes.length;
+    return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[n - 2] === 0xff && bytes[n - 1] === 0xd9;
+  } catch { return false; }
 }
 
 export function fromBase64(b64: string): Uint8Array<ArrayBuffer> {

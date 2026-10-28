@@ -42,6 +42,7 @@ export default function LiveBoard() {
   const [ready, setReady] = useState<Ready | null>(null);
   const [update, setUpdate] = useState<string | null>(null);  // a newer firmware the board could get
   const [frame, setFrame] = useState<Frame | null>(null);
+  const shown = useRef<string | null>(null);  // the last picture the browser could draw: a broken one falls back to it
   const [frames, setFrames] = useState(0);
   const [saved, setSaved] = useState(0);
   const [taking, setTaking] = useState(false);
@@ -218,7 +219,9 @@ export default function LiveBoard() {
     <div className="fixed inset-0 z-40 overflow-hidden bg-black text-white select-none">
       {step.step === "live" && frame?.jpeg && (
         <div className="absolute" style={box}>
-          <img src={`data:image/jpeg;base64,${frame.jpeg}`} alt="What the board's camera sees" className="block h-full w-full" />
+          <img src={`data:image/jpeg;base64,${frame.jpeg}`} alt="What the board's camera sees" className="block h-full w-full"
+               onLoad={() => { shown.current = frame.jpeg ?? null; }}
+               onError={() => { const last = shown.current; if (last && last !== frame.jpeg) setFrame((f) => f && { ...f, jpeg: last }); }} />
           {counting && frame.kind === "counts" && <Dots points={frame.points ?? []} />}
         </div>
       )}
