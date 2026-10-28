@@ -440,7 +440,7 @@ def summary(s: spec_mod.Spec, scene_names: dict[str, str] | None = None) -> str:
     return "\n".join(lines)
 
 
-FIRST_QUESTION = "Describe what your camera should see / Describe qué debe ver tu cámara:"
+FIRST_QUESTION = "Describe what your camera should see"
 CONFIRM = "Is this right? / ¿Es correcto? (yes/sí, or tell me what to change / o dime qué cambiar)"
 
 
