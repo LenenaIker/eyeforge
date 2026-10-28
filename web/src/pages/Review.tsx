@@ -117,7 +117,7 @@ export default function ReviewPanel({ job, onRerun, calibrating = false, labelin
         {tab === "assets" && review.assets.map((a) => {
           const keep = a.uid in fixes.assets ? fixes.assets[a.uid] === "keep" : a.kept;
           return (
-            <Tile key={a.uid} src={a.image && media(a.image)} changed={a.uid in fixes.assets} title={`${a.name ?? a.uid}: ${a.reason}`}
+            <Tile key={a.uid} src={a.image ? media(a.image) : a.sketchfab ? API.assetThumbUrl(job, a.uid) : null} changed={a.uid in fixes.assets} title={`${a.name ?? a.uid}: ${a.reason}`}
                   empty={<AssetName a={a} />}
                   dim={!keep} onClick={() => { const next = keep ? "discard" : "keep"; set("assets", a.uid, (next === "keep") === a.kept ? undefined : next); }}>
               <Badge tone={keep ? "good" : "bad"}>{keep ? "kept" : "dropped"}</Badge>

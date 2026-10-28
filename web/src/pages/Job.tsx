@@ -492,8 +492,7 @@ function SyntheticPanel({ job }: { job: string }) {
   if (!d || (!d.went_in && !d.left_out.likeness && !d.left_out.review && !d.no_synthetic)) return null;
   const rejected = d.reviews.filter((r) => !r.keep);
   const groups: [string, string, SyntheticShot[], (x: SyntheticShot) => string | null][] = [
-    ["Went into training", `${d.went_in}`, d.samples.went_in,
-     (x) => x.phase === "extrapolation" ? "beyond the photo" : "your place"],
+    ["Went into training", `${d.went_in}`, d.samples.went_in, () => null],
     ["Left out: unlike your photos", `${d.left_out.likeness}`, d.samples.likeness,
      (x) => x.similarity != null && d.threshold != null ? `${x.similarity.toFixed(2)} < ${d.threshold.toFixed(2)}` : null],
     ["Left out by the vision model's review", `${d.left_out.review}`, d.samples.review, () => null],
@@ -502,13 +501,12 @@ function SyntheticPanel({ job }: { job: string }) {
     <Card className="p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <p className="font-semibold">Synthetic images</p>
-        <p className="text-sm text-muted">{d.went_in} went into training{d.went_in > 0 &&
-          ` · ${d.split.imitation} of your place, ${d.split.extrapolation} beyond what the photo shows`}</p>
+        <p className="text-sm text-muted">{d.went_in} went into training</p>
       </div>
       {d.no_synthetic && <p className="mt-2 text-sm text-muted">None went in: {d.no_synthetic}.</p>}
       <p className="mt-2 text-sm text-muted">
-        They come from one of your photos rebuilt in 3D, with your objects placed again at random. Before training,
-        the vision model rates each scene's views, and every image must look like at least one of your photos
+        3D models of your objects placed at random on the free ground of a scene, a real place rebuilt in 3D. Before
+        training, every image must look like at least one of your photos
         {d.threshold != null && <> (similarity {d.threshold.toFixed(2)} or more, the least alike pair among your photos)</>}.
       </p>
       {rejected.length > 0 && (

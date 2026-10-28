@@ -110,7 +110,8 @@ def gather(job: Job, cache: Cache, labels: list[str], seed: int = 0, task: str =
                                   "generated": bool(a.get("generated")),
                                   "kept": a["uid"] in kept, "decision": r.get("decision"),
                                   "reason": r.get("reason", ""), "judge": r.get("judge"),
-                                  "image": rel(image) if image else None})
+                                  "image": rel(image) if image else None,
+                                  "sketchfab": "sketchfab.com/" in str(a.get("source") or "")})
 
     frames = sorted(job.stage_dir("render").rglob("rgb_*.png"))
     out["renders"] = [rel(p) for p in sorted(random.Random(seed).sample(frames, min(RENDER_SAMPLE, len(frames))))]
@@ -184,8 +185,9 @@ def synthetic(job: Job, seed: int = 0) -> dict:
     went = [lab for lab in load(render / "labels.json") or [] if lab.get("scene") is not None]
     rng = random.Random(seed)
     pick = lambda xs: sorted(rng.sample(xs, min(SYNTH_SAMPLE, len(xs))), key=lambda x: x["image"])  # noqa: E731
+    # A cloud run brings back only some of its frames (the review's sample): the page shows those.
     kept = [{"image": rel(render / f"rgb_{lab['frame']:04d}.png"), "scene": lab["scene"], "phase": "extrapolation"}
-            for lab in went]
+            for lab in went if (render / f"rgb_{lab['frame']:04d}.png").exists()]
     unlike = [{"image": rel(render / f"rgb_{f['frame']:04d}.png"), "similarity": f["similarity"]}
               for f in (like or {}).get("frames", []) if not f["kept"] and (render / f"rgb_{f['frame']:04d}.png").exists()]
     return {"went_in": len(went), "split": {"imitation": 0, "extrapolation": len(went)},

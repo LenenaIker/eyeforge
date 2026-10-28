@@ -183,6 +183,20 @@ def add(app: FastAPI, ctx) -> None:
             raise HTTPException(404, "no such image")
         return FileResponse(thumbnail(job, src, 1024 if size > 360 else 360))
 
+    @app.get("/api/jobs/{name}/assets/{uid}/thumb")
+    def asset_thumb(name: str, uid: str, request: Request):
+        """A 3D model's card picture from Sketchfab, for the review (only the job's own models; kept in the cache)."""
+        from .. import asset_search
+        job = job_of(name, request)
+        f = job.stage_dir("convert_assets") / "assets.json"
+        known = {a["uid"] for a in json.loads(f.read_text())} if f.exists() else set()
+        if uid not in known:
+            raise HTTPException(404, "no such model")
+        got = asset_search.thumbnail(uid, home / "cache" / "sketchfab_thumbs" / f"{uid}.jpg")
+        if got is None:
+            raise HTTPException(404, "no picture")
+        return FileResponse(got, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+
     @app.post("/api/jobs/{name}/cancel")
     def cancel(name: str, request: Request):
         """Stops the run: the local process and, on Nebius, the cloud job (which bills until it ends)."""

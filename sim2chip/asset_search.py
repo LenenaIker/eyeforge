@@ -91,3 +91,27 @@ def find(queries: list[str], count: int, mirror: Mirror, fetch: Callable[[str], 
                 seen.add(hits[rank].uid)
                 out.append(hits[rank])
     return out
+
+
+def thumbnail(uid: str, dst: Path, width: int = 360, fetch: Callable[[str], dict] = get_json) -> Path | None:
+    """The model's card picture from Sketchfab (no key needed), the one nearest `width` wide, kept at dst for
+    the next time. None when Sketchfab has none or cannot be reached. The 3D models of a run are no longer
+    photographed (preview_assets left the pipeline with the old scenes), so the review shows these."""
+    if dst.exists():
+        return dst
+    try:
+        images = (fetch(f"https://api.sketchfab.com/v3/models/{urllib.parse.quote(uid)}").get("thumbnails") or {}
+                  ).get("images") or []
+        best = min(images, key=lambda i: abs((i.get("width") or 0) - width), default=None)
+        if not best or not str(best.get("url", "")).startswith("https://"):
+            return None
+        req = urllib.request.Request(best["url"], headers={"User-Agent": "sim2chip"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = r.read(5 << 20)
+    except (OSError, ValueError):
+        return None
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(dst)
+    return dst

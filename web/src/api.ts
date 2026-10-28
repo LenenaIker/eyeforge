@@ -111,7 +111,7 @@ export type Review = {
             label?: string; teacher?: string; confidence?: number; reason: string; judge: string;
             corrected: boolean }[];
   assets: { uid: string; class: string; role: string; name?: string; author?: string | null; generated: boolean; kept: boolean;
-            decision?: string; reason: string; judge?: string; image: string | null }[];
+            decision?: string; reason: string; judge?: string; image: string | null; sketchfab?: boolean }[];
   renders: string[];
   // count (count task): the model's count by class, from its density output; older models have none.
   test: { key: string; file: string; image: string; truth: any; pred: any; count?: Record<string, number> }[];
@@ -427,6 +427,8 @@ export const getSynthetic = (job: string) => api<Synthetic>(`/api/jobs/${job}/sy
 export const mediaUrl = (job: string, path: string, big = false) =>
   `/api/jobs/${job}/media/${path}${big ? "?size=1024" : ""}`;
 export const fileUrl = (job: string, file: string) => `/api/jobs/${job}/files/${file}`;
+// A 3D model's card picture from Sketchfab, for a model the run did not photograph.
+export const assetThumbUrl = (job: string, uid: string) => `/api/jobs/${job}/assets/${uid}/thumb`;
 export const versionFileUrl = (job: string, n: number, file: string) => `/api/jobs/${job}/versions/${n}/files/${file}`;
 
 // The library (sim2chip/library.py): models are the visitor's jobs; datasets, objects and scenes are kept for good
