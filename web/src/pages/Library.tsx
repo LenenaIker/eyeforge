@@ -161,6 +161,22 @@ export function Datasets() {
   );
 }
 
+// The photos the server takes (workspace.IMAGE_EXT): other files of a folder are left out.
+const isImage = (f: File) => /\.(jpe?g|png|webp|bmp)$/i.test(f.name);
+
+// The files of a dropped file or folder, folders read all the way down.
+async function filesIn(entry: FileSystemEntry): Promise<File[]> {
+  if (entry.isFile) return new Promise((ok) => (entry as FileSystemFileEntry).file((f) => ok([f]), () => ok([])));
+  const reader = (entry as FileSystemDirectoryEntry).createReader();
+  const all: FileSystemEntry[] = [];
+  for (;;) {  // readEntries gives at most 100 at a time
+    const batch = await new Promise<FileSystemEntry[]>((ok) => reader.readEntries(ok, () => ok([])));
+    if (!batch.length) break;
+    all.push(...batch);
+  }
+  return (await Promise.all(all.map(filesIn))).flat();
+}
+
 function PhotoUpload({ into, onClose, onDone }: { into: { id: string; name: string } | null; onClose: () => void; onDone: () => void }) {
   const [name, setName] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -168,6 +184,17 @@ function PhotoUpload({ into, onClose, onDone }: { into: { id: string; name: stri
   const [progress, setProgress] = useState<Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const made = useRef<string | null>(null);  // the dataset a failed upload already made: trying again adds to it
+  // Every pick adds to the photos chosen (a file picker shows one folder at a time); the same file once.
+  const add = (more: File[]) => setFiles((have) => {
+    const key = (f: File) => `${f.name}|${f.size}|${f.lastModified}`;
+    const seen = new Set(have.map(key));
+    return [...have, ...more.filter((f) => isImage(f) && !seen.has(key(f)) && seen.add(key(f)))];
+  });
+  const drop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    const entries = [...e.dataTransfer.items].map((i) => i.webkitGetAsEntry()).filter((x): x is FileSystemEntry => !!x);
+    add(entries.length ? (await Promise.all(entries.map(filesIn))).flat() : [...e.dataTransfer.files]);
+  };
   const go = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -189,11 +216,24 @@ function PhotoUpload({ into, onClose, onDone }: { into: { id: string; name: stri
     <Dialog title={into ? `Add photos to ${into.name}` : "New dataset"} onClose={onClose}>
       <form onSubmit={go} className="space-y-4">
         {!into && <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name, e.g. Shop shelf" autoFocus className={field} aria-label="Name" />}
-        <label className="flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed border-line px-4 py-8 text-center text-sm text-muted hover:border-brand-500">
+        <div onDragOver={(e) => e.preventDefault()} onDrop={drop}
+             className="flex flex-col items-center gap-3 rounded-xl border-2 border-dashed border-line px-4 py-6 text-center text-sm text-muted">
           <Images className="h-6 w-6" />
-          {files.length ? `${files.length} photos chosen` : "Choose photos"}
-          <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => setFiles([...(e.target.files ?? [])])} />
-        </label>
+          <span>{files.length ? `${files.length} photos chosen` : "Choose photos from as many folders as you like, or drop them here"}</span>
+          <div className="flex flex-wrap justify-center gap-2">
+            <label className="cursor-pointer rounded-[var(--radius-control)] bg-gray-100 px-3 py-1.5 font-medium text-ink hover:bg-gray-200">
+              Add photos
+              <input type="file" accept="image/*" multiple className="hidden"
+                     onChange={(e) => { add([...(e.target.files ?? [])]); e.target.value = ""; }} />
+            </label>
+            <label className="cursor-pointer rounded-[var(--radius-control)] bg-gray-100 px-3 py-1.5 font-medium text-ink hover:bg-gray-200">
+              Add a folder
+              <input type="file" multiple className="hidden" {...{ webkitdirectory: "" }}
+                     onChange={(e) => { add([...(e.target.files ?? [])]); e.target.value = ""; }} />
+            </label>
+            {files.length > 0 && <button type="button" onClick={() => setFiles([])} className="px-2 text-xs hover:text-ink">Clear</button>}
+          </div>
+        </div>
         {error && <Notice tone="bad">{error}</Notice>}
         <Button type="submit" className="w-full" disabled={busy || !files.length || (!into && !name.trim())}>
           {busy ? progressText(progress) + "..." : error && made.current ? "Try again" : "Upload"}
