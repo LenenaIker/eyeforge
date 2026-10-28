@@ -66,11 +66,30 @@ export type BoardEvent =
   | { kind: "photo_sent"; bytes: number; sendMs: number }
   | { kind: "text" };
 
+// A line with bytes lost on the way (the USB adapter drops some at 921600 baud: on 2026-10-28 the board's ready
+// line came without '"task":"classification","input":96' every time, and the page took the board for silent and
+// asked to flash it again and again). What is still whole of a ready or a label line is enough.
+function salvage(t: string): BoardEvent {
+  const str = (k: string) => t.match(new RegExp(`"${k}":"([^"]*)"`))?.[1];
+  const num = (k: string) => { const m = t.match(new RegExp(`"${k}":(-?[0-9.]+)`)); return m ? Number(m[1]) : undefined; };
+  if (t.includes('"event":"ready"')) {
+    const labels = t.match(/"labels":\[([^\]]*)\]/)?.[1].match(/"([^"]*)"/g)?.map((x) => x.slice(1, -1)) ?? [];
+    const frame = t.match(/"frame":\[(\d+),(\d+)\]/);
+    const firmware = str("firmware"), crc = str("crc"), task = str("task");
+    return { kind: "ready", input: num("input") ?? 96, labels,
+             ...(firmware ? { firmware } : {}), ...(crc && /^[0-9a-f]{8}$/.test(crc) ? { crc } : {}),
+             ...(task ? { task } : {}), ...(frame ? { frame: [Number(frame[1]), Number(frame[2])] as [number, number] } : {}) };
+  }
+  const label = str("label"), score = num("score");
+  if (label !== undefined && score !== undefined) return { kind: "label", label, score, ms: num("ms") ?? 0, scores: {} };
+  return { kind: "text" };
+}
+
 export function parseLine(line: string): BoardEvent {
   const t = line.trim();
   if (!t.startsWith("{")) return { kind: "text" };
   let o: any;
-  try { o = JSON.parse(t); } catch { return { kind: "text" }; }
+  try { o = JSON.parse(t); } catch { return salvage(t); }
   const jpeg = typeof o.jpeg === "string" ? { jpeg: o.jpeg as string } : {};
   if (o.event === "ready") {
     return { kind: "ready", input: o.input, labels: o.labels ?? [],

@@ -118,3 +118,18 @@ it("writes only what the board is missing", () => {
   expect(parseLine('{"event":"error","message":"no model flashed","firmware":"1.1.0"}'))
     .toEqual({ kind: "error", message: "no model flashed", firmware: "1.1.0" });
 });
+
+it("a ready line with bytes lost still says which firmware and model the board runs", () => {
+  // As the board's line arrived on 2026-10-28, '"task":"classification","input":96' lost on the way.
+  const line = '{"event":"ready","firmware":"1.2.0","crc":"b6c43ecd","task":"cla,"frame":[320,240],"channels":3,"grid":0,' +
+    '"arena":205184,"labels":["trash_container","street"]}';
+  const ev = parseLine(line);
+  expect(ev.kind).toBe("ready");
+  if (ev.kind !== "ready") return;
+  expect(ev.firmware).toBe("1.2.0");
+  expect(ev.crc).toBe("b6c43ecd");
+  expect(ev.labels).toEqual(["trash_container", "street"]);
+  expect(ev.frame).toEqual([320, 240]);
+  expect(boardMismatch(ev, "b6c43ecd", "1.2.0")).toBeNull();
+  expect(parseLine('{"label":"street","score":0.95,"ms":1211,"scores":{"trash_contaitreet":0.95},"jpeg":"/9j').kind).toBe("label");
+});
