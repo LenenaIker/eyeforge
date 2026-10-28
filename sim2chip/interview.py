@@ -94,7 +94,7 @@ trained with it) and what its photos show. Then:
   model yet: {{"join": {{"datasets": ["<id>", ...], "photos": true when the attached photos go too, "name": "..."}}}};
 - user_data "labeling": the id of the labeling to use when the user wants what it has, or it with classes added
   or left out; null for a new labeling. For the classes a labeling has, use its keys as class ids and its English
-  names as "names";
+  names as "names"; its class "empty" is the background (photos with none of the others): never rename it;
 - put in the spec only the classes the user wants now. Use only the ids listed here.
 Scenes are places rebuilt in 3D (theirs, or public ones anyone may use) where 3D models of the classes are placed
 to make synthetic images. Only when the user asks for synthetic images, put scene ids from the list below in
@@ -329,14 +329,17 @@ any disk, so never ask for a folder path and use only the folders you are told a
 """
 
 
-def _drop_background_class(spec: dict) -> None:
+def _drop_background_class(spec: dict, labeling_keys: set[str] | None = None) -> None:
     """The model sometimes lists the background ("empty") as one more class (2026-09-27); the pipeline adds it by
-    itself, so drop it instead of rejecting the whole spec."""
+    itself, so drop it instead of rejecting the whole spec. labeling_keys: the classes of the labeling the spec
+    names, when it names one."""
     # A classification on a labeling of the user's: their classes already cover every photo (the labeling has no
     # background either, server.teach). The chat kept "empty" for lawn / border / no grass (2026-10-11) and the
-    # synthetic filled it with bare ground, against the user's labels.
+    # synthetic filled it with bare ground, against the user's labels. A labeling that has "empty" itself keeps it
+    # as the background: without it the chat invented a class "street" for the photos with no bin (eyeforge.app,
+    # 2026-10-28) and the teacher went back to SigLIP 2.
     if spec.get("task", "roi_classification") != "count" and (spec.get("user_data") or {}).get("labeling"):
-        spec["background_class"] = None
+        spec["background_class"] = "empty" if labeling_keys and "empty" in labeling_keys else None
     bg = spec.get("background_class", "empty")
     if bg is None:
         return
@@ -1114,7 +1117,8 @@ class Session:
             gen["scenes"] = [names.get(str(x).strip().lower(), x) for x in gen["scenes"]]
         if isinstance(action["spec"], dict) and all(isinstance(c, dict) for c in action["spec"].get("classes") or []):
             self._english_queries(action["spec"])
-            _drop_background_class(action["spec"])
+            chosen, _ = self._labeling_of(action["spec"])
+            _drop_background_class(action["spec"], {c["key"] for c in chosen["classes"]} if chosen else None)
             self._reuse_label_names(action["spec"])
             self._apply_measured(action["spec"])
             _fix_slips(action["spec"], set(self.categories.counts))

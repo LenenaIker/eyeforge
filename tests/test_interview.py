@@ -461,6 +461,11 @@ def test_a_classification_on_the_users_labels_has_no_background_class():
     unlabeled = {"background_class": "empty", "user_data": {"raw": "photos"}, "classes": [{"id": "cat"}]}
     interview._drop_background_class(unlabeled)
     assert unlabeled["background_class"] == "empty"
+    # A labeling that has "empty" keeps it as the background (eyeforge.app, 2026-10-28: the chat made up "street").
+    bins = {"task": "roi_classification", "background_class": None, "user_data": labels,
+            "classes": [{"id": "trash_container"}, {"id": "empty"}]}
+    interview._drop_background_class(bins, {"empty", "trash_container"})
+    assert bins["background_class"] == "empty" and bins["classes"] == [{"id": "trash_container"}]
 
 
 def test_a_dataset_the_user_names_is_looked_at_first_and_never_searched_on_the_web():
@@ -625,3 +630,22 @@ def test_the_chat_shows_photos_that_could_become_a_scene():
     assert "not available on this server yet" in client.seen[1]
     t = s.reply("vale, otra vez")
     assert t.kind == "scene" and t.request == {"dataset": ds, "photos": [{"photo_id": 7, "score": 0.9, "scene": None}]}
+
+
+def test_the_same_labeling_for_another_device_is_reused_as_it_is():
+    """"The same, for an ESP32-CAM" (eyeforge.app, 2026-10-28): a classify labeling with "empty" keeps it as the
+    background, so the spec names that labeling unchanged and nothing is asked about new classes."""
+    ds = "a7d9ef2d4b43c27b"
+    lab = {"id": LID, "name": "Container detector", "task": "classify", "photos_reviewed_by_user": 0,
+           "photos_with_marks": 114, "models": ["container_detector"],
+           "classes": [{"key": "empty", "names": ["empty"], "description": ""},
+                       {"key": "trash_container", "names": ["trash bin"], "description": "bins"}]}
+    spec = {"name": "bins", "hardware": "esp32cam", "background_class": None,
+            "classes": [{"id": "trash_container", "description": "bins"}],
+            "user_data": {"raw": f"library:{ds}", "labeling": LID}}
+    s = interview.Session(Scripted([{"spec": spec}]), "m", interview.CategoryIndex(counts={}))
+    s.use_library("- a dataset", {ds}, datasets={ds},
+                  dataset_card=lambda i: {**card([]), "name": "Roads y Trash", "photos": 114, "labelings": [lab]})
+    t = s.reply("lo mismo para ESP32-CAM")
+    assert t.kind == "confirm" and t.spec.background_class == "empty"
+    assert t.spec.labels == ["empty", "trash_container"] and "new classes" not in t.intro
