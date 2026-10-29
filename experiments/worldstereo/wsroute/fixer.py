@@ -26,13 +26,13 @@ from PIL import Image
 from . import camera, student
 from .camera import F, H, W
 from .conflict import CONFLICT, NODATA, Evidence, classify, evidence_views
-from .paths import FIXER, Case
+from .paths import FIXER, Case, env
 from .config import arm_views
 from .splat import NONE, PSEUDO, frame_index, is_held
 
 FW, FH = 1024, 576          # Fixer's working size
 SCALE = FH / H              # 1.2: the frames' pixels, bigger
-IMAGE = "fixer-cosmos-env"
+IMAGE = env("SIM2CHIP_FIXER_IMAGE") or "fixer-cosmos-env"  # the scene VM pulls it from the registry
 MIN_ALPHA = 0.5             # a pseudo-view pixel the splat covers less than this teaches nothing
 F3_TARGET_DILATE = 4        # frame pixels around a target that teach too (Fixer's edits do not stop at the mask)
 CANDIDATES_PER_VIEW = 4     # the worst 4n student cameras, then n spread out among them

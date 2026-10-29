@@ -117,8 +117,15 @@ def recipe(cfg: RouteConfig) -> list[Step]:
             Step(f"train_{tag}", "gsplat", ["train", *c, "--arm", tag], exists(case.splat_ply(tag))),
         ]
     final = case.splat_ply(cfg.final_arm)
+    grut = env("SIM2CHIP_GRUT_DIR")
+    if grut and (Path(grut) / ".venv/bin/activate").exists():
+        usdz = Step("usdz", "grut", [str(final)], exists(final.with_suffix(".usdz")),
+                    script=str(SPHERE_WALK / "gs_usd.py"))
+    else:  # the scene VM: 3DGRUT's checkout inside the route image, its exporter without the model
+        usdz = Step("usdz", "gsplat", [grut or "/opt/3dgrut", str(final)], exists(final.with_suffix(".usdz")),
+                    script=str(SPHERE_WALK / "gs_usd_light.py"))
     steps += [
-        Step("usdz", "grut", [str(final)], exists(final.with_suffix(".usdz")), script=str(SPHERE_WALK / "gs_usd.py")),
+        usdz,
         Step("grid_final", "gsplat", ["grid", *c, "--arm", cfg.final_arm],
              exists(case.conflict(cfg.final_arm) / "grid.json")),
         Step("bundle", "gsplat", ["bundle", *c], exists(case.dir / "bundle" / "scene.json")),
