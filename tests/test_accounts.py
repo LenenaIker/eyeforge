@@ -1,4 +1,4 @@
-"""Login with Google or GitHub, judge access and credits (docs/plan_login.md), with a fake OAuth provider."""
+"""Login with Google or GitHub, judge access and credits, with a fake OAuth provider."""
 import json
 import time
 from urllib.parse import parse_qs, urlparse

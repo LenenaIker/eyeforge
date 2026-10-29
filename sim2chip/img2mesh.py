@@ -5,7 +5,7 @@ BiRefNet (MIT) cuts it out and TRELLIS v1 (MIT) generates the mesh. Feasibility 
 experiments/NOTES.md ("Imagen a 3D con TRELLIS v1").
 
 License note: TRELLIS bakes the texture with nvdiffrast and a Gaussian rasterizer (mip-splatting), both
-non-commercial. Replace that export before any commercial use (TODO.md, 3.E).
+non-commercial. Replace that export before any commercial use.
 
 Environment: SIM2CHIP_TRELLIS_DIR is the TRELLIS checkout (environment or .env); model weights come from the
 Hugging Face cache.

@@ -1,6 +1,6 @@
 """Accounts of a public server (login with Google or GitHub), their tier and their credits, in one SQLite file.
 
-Tiers (docs/plan_login.md, user 2026-10-03):
+Tiers:
   judge   free and unlimited until the judging ends (SIM2CHIP_JUDGE_UNTIL): an account with a verified email of
           the sponsors' or the organiser's domains, or one the owner marks by hand for a judge who wrote in
   normal  everything costs credits, the interview included; a new account has none

@@ -1,6 +1,6 @@
 # Diseño de la web de EyeForge
 
-Plan general en `docs/plan_web.md`. Esto fija la identidad y las pantallas para que cualquier sesión construya igual.
+Esto fija la identidad y las pantallas para que cualquier sesión construya igual.
 
 ## Identidad
 

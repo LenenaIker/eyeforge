@@ -139,7 +139,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
     daily_usd: no new run when the cloud GPU spent in the last 24 h plus one more run could pass it.
     auth (auth.Auth) and accounts (accounts.Accounts): login with Google or GitHub instead of the key; jobs
     belong to the account (so they follow it to the phone), and interviews and runs are paid with credits,
-    free for judges (docs/plan_login.md). contact: the address judges write to for free access.
+    free for judges. contact: the address judges write to for free access.
     warm (warm.WarmGPU): a cloud GPU asked for when a user uploads photos and kept while they check the teacher,
     so their runs skip the start-up (Nebius only). scenes: the scene GPU, where the runs that render queue."""
     import hmac

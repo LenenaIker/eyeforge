@@ -39,7 +39,7 @@ from .workspace import IMAGE_EXT, Job, content_key
 
 VERSION = 7  # 4: datasets, labelings, classes, marks and reviews (2026-10-10); older libraries were emptied
 # 5: models found on the internet left the owners' objects (2026-10-11): they are our catalog (asset_db.py)
-# 6: scenes built from a photo (photo2scene, docs/plan_photo2scene.md) and the objects taken out of them
+# 6: scenes built from a photo (photo2scene, retired 2026-10-26) and the objects taken out of them
 # 7: walk scenes (the scene job) and public scenes; the older routes' scenes are gone (2026-10-26)
 THUMB = 512  # side of the picture kept for an object's or a scene's card
 TASKS = ("count", "classify")
