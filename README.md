@@ -116,21 +116,61 @@ scenes: the synthetic images came from generic Isaac Sim scenes.
 
 A few real photos plus synthetic data beat either one alone by about 20 points.
 
-## Setup
+## For judges: three ways to try it
 
-Requirements: Linux and a Python 3.11 environment. Running the pipeline locally also needs an NVIDIA RTX
-GPU (rendering needs RT cores) and Isaac Sim 5.1; with the Nebius backend the GPU work runs in the cloud.
+| Level | What you get | What you need |
+|---|---|---|
+| A. Hosted demo | The whole product: interview, photos, teacher, cloud training, model on your phone or ESP32-CAM | A browser |
+| B. Local app | The web app and the interview on your machine, the test suite | Linux, Python 3.11, Node 20+, a Nebius Token Factory key |
+| C. Full pipeline | Training runs on your own GPU or on your own Nebius AI Cloud project | B, plus an NVIDIA RTX GPU with Isaac Sim 5.1, or a Nebius AI Cloud project |
 
-```bash
-conda create -n sim2chip python=3.11
-conda activate sim2chip
-pip install -e ".[train,assets,web,cloud,dev]"
-cp .env.example .env    # then fill in the keys and paths (see the comments in it)
-sim2chip config         # checks the settings: typos, numbers, interpreters and folders
-pytest
-ruff check sim2chip tests experiments/worldstereo/wsroute experiments/worldstereo/ws_route.py
-(cd web && npm install && npm run build)   # the web app (Node 20+), served by `sim2chip serve`
-```
+**A. Hosted demo.** Open https://eyeforge.app and sign in with Google or GitHub. Accounts with a verified
+email at nvidia.com, nebius.com, tavily.com or devpost.com are free until the judging ends (2026-12-15);
+a judge with another email can write to contact@eyeforge.app for free access.
+
+**B. Local app.** Steps 1 to 6, tested in a clean `python:3.11` container:
+
+1. Get the code and a Python 3.11 environment:
+   ```bash
+   git clone https://github.com/LenenaIker/eyeforge.git && cd eyeforge
+   conda create -n sim2chip python=3.11 && conda activate sim2chip
+   ```
+2. Install. `onnx2tf` goes apart without its dependencies: it pins TensorFlow 2.19 and the rest uses 2.18.
+   ```bash
+   pip install -e ".[train,assets,web,cloud,dev]"
+   pip install --no-deps onnx2tf==1.29.24
+   ```
+3. Build the web app (Node 20+). `sim2chip serve` serves it, and some tests need it:
+   ```bash
+   (cd web && npm install && npm run build)
+   ```
+4. Settings. Copy the template; for this level only `NEBIUS_API_KEY` is needed (a Token Factory key from
+   https://tokenfactory.nebius.com), and `TAVILY_API_KEY` is optional (web research in the interview).
+   Leave the rest empty.
+   ```bash
+   cp .env.example .env
+   sim2chip config         # checks the settings: typos, numbers, interpreters and folders
+   ```
+5. Tests and lint (no keys needed):
+   ```bash
+   pytest
+   ruff check sim2chip tests experiments/worldstereo/wsroute experiments/worldstereo/ws_route.py
+   ```
+6. Run it: `sim2chip serve` and open http://127.0.0.1:8000, or `sim2chip interview` in the terminal.
+
+**C. Full pipeline.** On top of B:
+
+1. Hugging Face: accept the license of SAM 3 at https://huggingface.co/facebook/sam3 (gated; the other
+   teacher, SigLIP 2, downloads without asking), then `hf auth login` or set `HF_TOKEN` in `.env`.
+2. The teachers' Python: another environment with `pip install torch "transformers>=5" accelerate pillow`,
+   and `SIM2CHIP_SAM3_PYTHON` pointing at its `python`.
+3. Where the GPU work runs, one of:
+   - local: an NVIDIA RTX GPU (rendering needs RT cores) and Isaac Sim 5.1, with `SIM2CHIP_ISAAC_PYTHON`
+     set to its `python.sh`;
+   - Nebius AI Cloud: the `nebius` CLI logged in, and the Nebius block of `.env` filled in (described below).
+4. `sim2chip config` again, then a run (see Usage).
+
+## Setup details
 
 The web app is React + Vite + Tailwind in `web/` and installs as an app on phones (PWA). To work on it,
 run `sim2chip serve` and, in `web/`, `npm run dev`: it serves the app with live reload and forwards `/api`
