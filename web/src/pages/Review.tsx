@@ -148,10 +148,11 @@ export default function ReviewPanel({ job, onRerun, calibrating = false, labelin
       </div>
 
       {(n > 0 || calibrating) && (
-        <div className="sticky bottom-0 -mx-4 border-t border-line bg-white/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
-          <div className="flex items-center justify-between gap-3">
+        <div className="sticky bottom-0 z-10 -mx-4 border-t border-line bg-white/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur">
+          {/* On a phone the count, "Undo all" and both calibration buttons are wider than the screen: they wrap. */}
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
             <span className="text-sm text-muted">{n} correction{n === 1 ? "" : "s"}</span>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               {n > 0 && <Button variant="ghost" size="sm" onClick={() => setFixes({ labels: {}, assets: {}, points: {} })}>Undo all</Button>}
               {calibrating ? <>
                 <Button variant="ghost" size="sm" onClick={() => apply()} disabled={applying || n === 0}>Teach it</Button>
