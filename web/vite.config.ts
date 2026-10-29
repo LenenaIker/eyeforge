@@ -17,7 +17,7 @@ export default defineConfig({
       manifest: {
         name: "EyeForge",
         short_name: "EyeForge",
-        description: "Describe what your camera should see. Get a tiny model ready to flash on a $10 chip.",
+        description: "Describe what your camera should see. Get a tiny model ready to run on your own device.",
         start_url: "/app",
         scope: "/",
         display: "standalone",

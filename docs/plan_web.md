@@ -126,7 +126,7 @@ Cuando esté todo, se borra `legacy.html`.
 
 ## Fase 4b: probar el modelo en vivo en el móvil (HECHA 2026-09-27, ver TODO.md)
 
-**Por qué** (usuario, 2026-09-27): cuando el modelo termina, quien lo ha entrenado (o un jurado) lo prueba en el acto con la cámara del móvil, dentro de la misma web o app. El modelo corre en el teléfono, sin red: es la misma idea que el chip de 10 $, demostrable sin hardware. De paso cubre la prueba en Android que estaba pendiente (sin Classifier Lens).
+**Por qué** (usuario, 2026-09-27): cuando el modelo termina, quien lo ha entrenado (o un jurado) lo prueba en el acto con la cámara del móvil, dentro de la misma web o app. El modelo corre en el teléfono, sin red: es la misma idea que el chip, demostrable sin hardware. De paso cubre la prueba en Android que estaba pendiente (sin Classifier Lens).
 
 **Qué ya existe:**
 - `export/model.tflite`: entrada float32 RGB 0-255, sin normalizar (el modelo normaliza), probabilidades a la salida.

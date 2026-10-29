@@ -1,6 +1,6 @@
 # EyeForge
 
-**Describe what your camera should see. Get a tiny model ready to flash on a $10 chip.**
+**Describe what your camera should see. Get a tiny model ready to run on your own device.**
 
 EyeForge is a pipeline that turns a conversation and a few of your photos into an on-device vision model, trained with synthetic images rendered in a 3D scene of your own place.
 

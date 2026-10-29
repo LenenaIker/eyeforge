@@ -39,7 +39,7 @@ export default function Landing() {
               Raw phone photos are enough. Big models label them for you.
             </Promise>
             <Promise icon={<><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" /><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3" /></>} title="Sized for your device">
-              From a $10 chip to your own GPU. The model fits the hardware.
+              From a tiny chip to your own GPU. The model fits the hardware.
             </Promise>
             <Promise icon={<><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></>} title="Stays private">
               The answer is computed on the camera. No images leave it.
@@ -118,10 +118,10 @@ export default function Landing() {
           <h2>Big models know a bit of everything. Your camera needs one thing, done well.</h2>
           <p className="sub">Foundation models are the teachers. A student sized for your hardware learns from them.</p>
           <div className="devs">
-            <div className="d"><h3>ESP32-CAM</h3><p>96 px, a few coarse classes</p><span className="price">about $10</span></div>
-            <div className="d"><h3>Raspberry Pi</h3><p>Detect and count</p><span className="price">about $60</span></div>
-            <div className="d"><h3>NVIDIA Jetson</h3><p>Fine distinctions</p><span className="price">from $250</span></div>
-            <div className="d"><h3>Your GPU</h3><p>The biggest student</p><span className="price">what you have</span></div>
+            <div className="d"><h3>ESP32-CAM</h3><p>96 px, a few coarse classes</p></div>
+            <div className="d"><h3>Raspberry Pi</h3><p>Detect and count</p></div>
+            <div className="d"><h3>NVIDIA Jetson</h3><p>Fine distinctions</p></div>
+            <div className="d"><h3>Your GPU</h3><p>The biggest student</p></div>
           </div>
           <div className="built">
             <div><b>NVIDIA Nemotron</b><span>interview and reasoning</span></div>

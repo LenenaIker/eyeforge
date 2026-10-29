@@ -5,7 +5,7 @@ import type { Spec } from "../api";
 
 // Plain-language names for what the spec says; the JSON stays under "Advanced".
 export const DEVICES: Record<string, string> = {
-  esp32cam: "ESP32-CAM (about $10 microcontroller)",
+  esp32cam: "ESP32-CAM (microcontroller)",
   esp32s3: "ESP32-S3 camera board",
   jetson_nano: "NVIDIA Jetson Nano",
   generic: "Phone or computer (no specific chip yet)",

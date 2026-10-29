@@ -4,9 +4,9 @@ Registrados al crear el proyecto en Devpost (2026-09-23). Se pueden editar hasta
 
 **Name:** EyeForge (antes Sim2Chip; cambiar también en Devpost)
 
-**Track:** Physical AI
+**Track:** Best Apps and Agents (usuario, 2026-10-27)
 
-**Tagline:** Describe what your camera should see. Get a tiny model ready to flash on a $10 chip.
+**Tagline:** Describe what your camera should see. Get a tiny model ready to run on your own device.
 
 **Description:**
 
