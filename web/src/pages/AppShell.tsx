@@ -68,7 +68,7 @@ export default function AppShell() {
               {config && (
                 <span className="hidden sm:block">
                   <Badge tone={config.backend === "nebius" ? "brand" : "neutral"}>
-                    {config.backend === "nebius" ? "Nebius AI Cloud" : "Local GPU"}
+                    {config.backend === "nebius" ? "Runs on Nebius AI Cloud" : "Runs on a local GPU"}
                   </Badge>
                 </span>
               )}
