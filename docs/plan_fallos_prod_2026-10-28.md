@@ -143,3 +143,43 @@ Pendiente:
 - G con el usuario;
 - qué datasets de PROD se borran;
 - commit.
+
+## Apuntado durante la prueba del 28 por la tarde (usuario)
+
+- **Progreso mientras espera al profesor.** En la revisión (y en el etiquetado), el usuario no ve nada que cambie: no tiene registro ni barra de progreso, así que no hay sensación de avance y se frustra. Hay que imitar lo que ya hace el entrenamiento: el panel de progreso con la fase en curso (pidiendo GPU, arrancando la máquina, bajando la imagen, cargando el profesor, marcando N de M fotos), el tiempo que lleva y las líneas del registro.
+- **Visto en la prueba:** Nebius tardó más de 7 min en dar la L40S de la GPU caliente (`gpu-l40s-a`, eu-north1). El servidor la canceló, la revisión pasó a una GPU propia (`gpu-l40s-d`, eu-north1) y el prefetch del borrador no llegó a correr.
+- **Reintento a ciegas.** Tras cancelar la GPU caliente sin máquina (`gpu-l40s-a`, eu-north1), la revisión pidió su propia GPU en `gpu-l40s-d` (5 min sin máquina) y después volvió a `gpu-l40s-a` en eu-north1, la que acababa de fallar. La cancelación de la GPU caliente debe apuntar esa región como sin máquinas (`note_no_gpu`), y la web debe decir "Nebius no tiene GPU libre, probando en otra región" en vez de un spinner mudo.
+- **Decir de quién es la espera (usuario, 2026-10-28).** Cuando la tardanza es de Nebius (sin GPU libre, máquina arrancando, bajando la imagen), la web lo dice con un mensaje neutral, para que los jueces no lo tomen como un fallo de EyeForge ni como una queja contra el patrocinador. Por ejemplo: "Waiting for a cloud GPU to become available (Nebius AI Cloud). This usually takes a minute; at busy times it can take longer. Your work is saved." Y al cambiar de sitio: "No GPU free in this region right now, trying another one." Va junto al panel de progreso de la revisión (punto anterior) y en el progreso del entrenamiento, con el tiempo de espera aparte del tiempo de trabajo.
+- **Tiempos de esta prueba** (`container_detector`, 28 de octubre): de "Teach it" (15:01:45) al entrenamiento, unos 34 min esperando GPU de Nebius, unos 5,5 min arrancando la máquina y unos 23 min de trabajo (`label` 61 s, `scene_render` 1209 s, `render` 70 s, `crops` 16 s).
+
+## Resultado de la prueba de la tarde (`container_detector`, 28 de octubre)
+
+- **Chat:**
+  - unió Roads (74) y Trash (40) en "Roads y Trash" (114) sin tocar los originales;
+  - eligió él la escena "Street with a bike lane";
+  - no pidió ids;
+  - la línea "Photos: …" salió del código.
+- **Revisión:** no llegó a hacerse. Nebius no tuvo L40S en eu-north1 durante unos 22 min (tres intentos) y el usuario pulsó "Train anyway".
+- **Profesor:**
+  - SAM 3 con el umbral por defecto 0,5 (sin revisión): 33 contenedores y 81 vacías, en 61 s;
+  - test con 40 vacías y 16 contenedores, las 56 marcadas solo por el profesor.
+- **Sintético:** `scene_render` 1209 s; 656 imágenes tras el filtro de parecido (70 s).
+- **Alumno:**
+  - entrenamiento 249 s;
+  - validación de 0,96 a 1,0;
+  - test real (int8) 0,804 ± 0,029: vacías de 0,85 a 0,93, contenedor de 0,56 a 0,63.
+  - El test es la verdad de SAM 3 sin revisar, así que la nota no es comparable con el 0,917 de anoche (otro profesor y otro test).
+- **Coste:**
+  - el trabajo, unos 0,89 $ (34,4 min contados desde que se pidió, provisión incluida);
+  - las dos GPU calientes que no arrancaron aparecen con 0,21 $ estimados cada una en `warm_usage.jsonl`, aunque Nebius no cobra sin máquina. El presupuesto diario las cuenta igual: corregirlo.
+- **Para mejorar la nota:**
+  - hacer la revisión: 15 fotos o más, que también pasan la mitad a entrenamiento;
+  - ver si el contenedor falla en el test por el profesor (falsos vacíos) o por el alumno, con una hoja de los fallos.
+- **Modelos 3D malos en el sintético.**
+  - La búsqueda de "trash container" trajo una regadera ("CC0 - Watering Can 6") y cubos ("CC0 - Bucket 3"), y entraron como `trash_container` en las imágenes sintéticas.
+  - El control de calidad de modelos está apagado (`qa.mode: none`).
+  - Valorar activarlo (Nemotron VL o Cosmos mira cada modelo) o filtrar por nombre, medido antes: enseñar regaderas como contenedores puede explicar parte del 0,56 a 0,63 en contenedor.
+- **La GPU caliente retrasa a la ejecución.**
+  - `trash_container_detector` (16:24): la revisión esperó 7 min a la GPU caliente (`gpu-l40s-a`, sin máquina) antes de pedir la suya; luego `gpu-l40s-d` dio máquina en 1 min.
+  - La ejecución debe dejar de esperar a una GPU caliente que no arranca en 2 o 3 min y pedir la suya en otro sitio.
+  - El prefetch del borrador tampoco corrió (se perdió con la GPU caliente).
