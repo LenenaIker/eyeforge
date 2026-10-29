@@ -7,6 +7,7 @@
 //     write <addr>=<file> ...     write files, e.g. 0x10000=firmware.bin 0x190000=model.bin
 //     monitor [seconds]           reset the board and print its serial output (default 20 s) at --mbaud
 //                                 (default 115200, the firmware's speed after boot; the ROM's lines are garbled)
+//     monitor [seconds] --send "capture uxga" --at 15   also send a line to the firmware after --at seconds
 //
 // Without --usb it goes through Web Serial (what Chrome and Edge use on a computer), here node-serialport.
 // With --usb it goes through esptool-js's WebUSB CH340 driver (what Chrome on Android uses), here node-usb.
@@ -31,6 +32,8 @@ const useUsb = args.includes("--usb") && args.splice(args.indexOf("--usb"), 1);
 const baud = Number(flag("--baud", 460800));
 const path = flag("--port", "/dev/ttyUSB0");
 const monitorBaud = Number(flag("--mbaud", 115200));
+const sendLine = flag("--send", null);
+const sendAt = Number(flag("--at", 15));
 const [command, ...rest] = args;
 const terminal = { clean() {}, writeLine: l => console.log(l), write: t => process.stdout.write(t) };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -90,8 +93,21 @@ async function monitor(seconds) {
   await set({ dtr: false, rts: true });  // pulse EN for a clean boot, IO0 high
   await sleep(120);
   await set({ dtr: false, rts: false });
-  port.on("data", d => process.stdout.write(d.toString("latin1")));
-  await sleep(seconds * 1000);
+  // A photo's base64 is a huge line: show only its start.
+  let pending = "";
+  port.on("data", d => {
+    const lines = (pending + d.toString("latin1")).split("\n");
+    pending = lines.pop();
+    for (const l of lines) console.log(l.replace(/("jpeg":")([A-Za-z0-9+/=]{40})[A-Za-z0-9+/=]*/, "$1$2..."));
+  });
+  if (sendLine) {
+    await sleep(sendAt * 1000);
+    console.log(`\n>>> ${sendLine}`);
+    await new Promise(ok => port.write(sendLine + "\n", ok));
+    await sleep(Math.max(0, seconds - sendAt) * 1000);
+  } else {
+    await sleep(seconds * 1000);
+  }
   await new Promise(ok => port.close(ok));
 }
 
