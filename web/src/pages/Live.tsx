@@ -259,7 +259,7 @@ export default function Live() {
             <input type="range" min={0.2} max={0.95} step={0.05} value={threshold} aria-label="Sensitivity"
                    onChange={(e) => setThreshold(+e.target.value)} className="mb-4 w-full touch-auto accent-ember-500" />
           )}
-          <div className="flex items-center justify-between gap-3">
+          <div className="mb-4 flex">
             <div style={face} className="grid h-16 min-w-16 place-items-center rounded-2xl bg-black/35 px-3 backdrop-blur">
               {counting ? (
                 <div className="text-center leading-none">
@@ -273,13 +273,10 @@ export default function Live() {
                 </div>
               )}
             </div>
-            <div className="flex gap-3">
-              <button onClick={shoot} aria-label="Take a photo to improve the model"
-                      className="grid h-14 w-14 place-items-center rounded-full border-4 border-white bg-white/25 active:bg-white/60" />
-              {counting && <RoundButton label="Sensitivity" on={tuning} style={face} onClick={() => setTuning(!tuning)}><SlidersHorizontal className="h-5 w-5" /></RoundButton>}
-              {photo
-                ? <RoundButton label="Camera" style={face} onClick={() => { setPhoto(null); setFrame(null); setSeen(null); counts.current = []; }}><Camera className="h-5 w-5" /></RoundButton>
-                : <RoundButton label="Switch camera" style={face} onClick={() => { setFrame(null); setFacing(facing === "environment" ? "user" : "environment"); }}><RefreshCw className="h-5 w-5" /></RoundButton>}
+          </div>
+          {/* Camera app layout: gallery on the left, shutter in the middle, the rest on the right. */}
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+            <div className="flex justify-start">
               <label style={face} className="grid h-12 w-12 cursor-pointer place-items-center rounded-full bg-black/35 backdrop-blur" aria-label="Use a photo">
                 <ImageIcon className="h-5 w-5" />
                 <input type="file" accept="image/*" hidden onChange={(e) => {
@@ -288,6 +285,14 @@ export default function Live() {
                   e.target.value = "";
                 }} />
               </label>
+            </div>
+            <button onClick={shoot} aria-label="Take a photo to improve the model"
+                    className="grid h-16 w-16 place-items-center rounded-full border-4 border-white bg-white/25 active:bg-white/60" />
+            <div className="flex justify-end gap-3">
+              {counting && <RoundButton label="Sensitivity" on={tuning} style={face} onClick={() => setTuning(!tuning)}><SlidersHorizontal className="h-5 w-5" /></RoundButton>}
+              {photo
+                ? <RoundButton label="Camera" style={face} onClick={() => { setPhoto(null); setFrame(null); setSeen(null); counts.current = []; }}><Camera className="h-5 w-5" /></RoundButton>
+                : <RoundButton label="Switch camera" style={face} onClick={() => { setFrame(null); setFacing(facing === "environment" ? "user" : "environment"); }}><RefreshCw className="h-5 w-5" /></RoundButton>}
             </div>
           </div>
         </div>
