@@ -30,9 +30,9 @@
 .lp .btn-s {background: rgba(5,43,66,.05); color: var(--brand); }
 .lp .btn-s:hover {background: rgba(5,43,66,.09); }
 .lp .btn-sm {height: 40px; padding: 0 16px; font-size: 15px; }
-.lp .hero {padding: 96px 0 0; }
+.lp .hero {padding-top: 96px; }
 @media (max-width: 577px) {
-.lp .hero {padding: 32px 0 0; }
+.lp .hero {padding-top: 32px; }
 }
 .lp h1 {font-size: 94px; line-height: .95; letter-spacing: -.02em; font-weight: 700; max-width: 1000px; }
 @media (max-width: 769px) {
@@ -49,7 +49,7 @@
 }
 .lp .ctas {margin-top: 32px; display: flex; flex-wrap: wrap; gap: 8px; }
 .lp .cta .ctas {justify-content: center; }
-.lp .visual {margin: 64px 0 0; border-radius: 24px; overflow: hidden; background: linear-gradient(180deg, #dfe8f3 0%, #eef1f4 55%, #d9dccf 100%); position: relative; aspect-ratio: 16 / 8; min-height: 320px; }
+.lp .visual {margin: 64px 0 0; border-radius: 24px; overflow: hidden; background: linear-gradient(180deg, #dfe8f3 0%, #eef1f4 55%, #d9dccf 100%); position: relative; aspect-ratio: 16 / 8; min-height: 320px; max-width: 100%; }
 .lp .shelf {position: absolute; left: 10%; right: 10%; top: 8%; bottom: 0; background: #efe6d6; border: solid #d8c6a6; border-width: 0 14px; }
 .lp .board {position: absolute; left: 0; right: 0; height: 3%; background: #c9b28a; box-shadow: 0 6px 10px -6px rgba(0,0,0,.25); }
 .lp .item {position: absolute; }
@@ -69,6 +69,17 @@
 .lp .hud .cnt strong {font-size: 28px; letter-spacing: -.03em; }
 .lp .hud .dev {background: rgba(15,27,36,.78); color: #fff; border-radius: 999px; padding: 8px 14px; font-size: 13px; display: flex; gap: 8px; align-items: center; }
 .lp .hud .dev i {width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
+/* max-width: 100% above keeps min-height from widening the box past the screen through aspect-ratio. On a phone, a
+   taller frame and boxes without labels, which overlapped. */
+@media (max-width: 577px) {
+.lp .visual {margin-top: 32px; aspect-ratio: 4 / 3; min-height: 0; }
+.lp .shelf {left: 4%; right: 4%; }
+.lp .hit b {display: none; }
+.lp .hud {left: 10px; right: 10px; bottom: 10px; }
+.lp .hud .cnt {padding: 8px 12px; }
+.lp .hud .cnt strong {font-size: 22px; }
+.lp .hud .dev {font-size: 12px; padding: 6px 10px; }
+}
 .lp section {padding: 96px 0; }
 @media (max-width: 577px) {
 .lp section {padding: 64px 0; }
@@ -80,18 +91,6 @@
 .lp h2 {font-size: 36px; line-height: 40px; }
 }
 .lp .sub {margin-top: 12px; color: var(--muted); font-size: 17px; line-height: 24px; max-width: 640px; }
-.lp .four {display: grid; gap: 24px 16px; margin-top: 24px; }
-@media (min-width: 700px) {
-.lp .four {grid-template-columns: repeat(2, 1fr); }
-}
-@media (min-width: 1040px) {
-.lp .four {grid-template-columns: repeat(4, 1fr); }
-}
-.lp .f {background: #fff; border-radius: var(--r); padding: 32px; }
-.lp .f .ic {width: 44px; height: 44px; border-radius: 12px; background: var(--brand-50); display: grid; place-items: center; }
-.lp .f .ic svg {width: 22px; height: 22px; stroke: var(--brand); }
-.lp .f h3 {font-size: 20px; line-height: 24px; margin-top: 40px; font-weight: 600; }
-.lp .f p {color: var(--muted); margin-top: 8px; line-height: 1.5; }
 .lp .rows {display: grid; gap: 96px; margin-top: 48px; }
 @media (max-width: 577px) {
 .lp .rows {gap: 64px; margin-top: 32px; }
@@ -128,31 +127,13 @@
 .lp .chipcard {background: #fff; border-radius: 16px; padding: 20px; display: grid; gap: 14px; }
 .lp .dl {display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; font-size: 15px; }
 .lp .dl small {color: var(--muted); }
-.lp .stats {display: grid; gap: 24px 16px; margin-top: 24px; }
-@media (min-width: 860px) {
-.lp .stats {grid-template-columns: repeat(4, 1fr); }
-}
-.lp .st {background: var(--brand); color: #fff; border-radius: var(--r); padding: 32px; min-height: 190px; display: flex; flex-direction: column; justify-content: space-between; }
-.lp .st.amber {background: var(--ember); color: #1c1917; }
-.lp .st b {font-size: clamp(36px, 4vw, 52px); letter-spacing: -.04em; font-weight: 600; }
-.lp .st span {font-size: 15px; opacity: .9; line-height: 1.4; }
-.lp .note {margin-top: 14px; font-size: 14px; color: var(--muted); }
-.lp .devs {display: grid; gap: 24px 16px; margin-top: 24px; }
-@media (min-width: 700px) {
-.lp .devs {grid-template-columns: repeat(3, 1fr); }
-}
-.lp .d {border: 1px solid var(--line); border-radius: var(--r); padding: 32px; background: #fff; }
-.lp .d h3 {font-size: 19px; font-weight: 600; }
-.lp .d p {color: var(--muted); margin-top: 6px; }
-.lp .built {display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; margin-top: 24px; }
-@media (min-width: 860px) {
-.lp .built {grid-template-columns: repeat(4, 1fr); }
-}
-.lp .built div {background: #fff; padding: 32px; }
-.lp .built b {display: block; font-weight: 600; }
-.lp .built span {color: var(--muted); font-size: 15px; }
-.lp .cta {text-align: center; padding: 96px 0; }
+.lp .built {margin: 40px auto 0; max-width: 640px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.lp .built b {color: var(--ink); font-weight: 600; white-space: nowrap; }
+.lp .cta {text-align: center; padding-top: 96px; padding-bottom: 96px; }
 .lp .cta h2 {margin: 0 auto; }
+@media (max-width: 577px) {
+.lp .cta {padding-top: 32px; padding-bottom: 64px; }
+}
 .lp footer {background: var(--night); color: #b8c3cc; padding: 48px 0; font-size: 14px; }
 .lp footer .wrap {display: flex; flex-wrap: wrap; gap: 24px; justify-content: space-between; align-items: center; }
 .lp footer .logo {color: #fff; }

@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import "./landing.css";
 
@@ -14,7 +14,7 @@ export default function Landing() {
       <header><div className="wrap"><nav>
         <Link className="logo" to="/"><LogoMark /> EyeForge</Link>
         <div className="links">
-          <a href="#how">How it works</a><a href="#numbers">Real numbers</a><a href="#devices">Devices</a>
+          <a href="#how">How it works</a>
           {REPO && <a href={REPO}>GitHub</a>}
         </div>
         <Link className="btn btn-p btn-sm" to="/app">Try it</Link>
@@ -26,41 +26,6 @@ export default function Landing() {
         <div className="ctas"><Link className="btn btn-p" to="/app">Build a model</Link><a className="btn btn-s" href="#how">See how it works</a></div>
         <Shelf />
       </div>
-
-      <section>
-        <div className="wrap">
-          <span className="eyebrow">Why EyeForge</span>
-          <h2>Vision on your own device, without being an expert</h2>
-          <div className="four">
-            <Promise icon={<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />} title="Plain words">
-              Say what you want to spot or count. No labels, no code, no jargon.
-            </Promise>
-            <Promise icon={<><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z" /><circle cx="12" cy="13" r="3" /></>} title="A few photos">
-              Raw phone photos are enough. Big models label them for you.
-            </Promise>
-            <Promise icon={<><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" /><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3" /></>} title="Sized for your device">
-              From a tiny chip to your own GPU. The model fits the hardware.
-            </Promise>
-            <Promise icon={<><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></>} title="Stays private">
-              The answer is computed on the camera. No images leave it.
-            </Promise>
-          </div>
-        </div>
-      </section>
-
-      <section className="band" id="numbers">
-        <div className="wrap">
-          <span className="eyebrow">Measured, not promised</span>
-          <h2>Two real runs, start to finish</h2>
-          <div className="stats">
-            <div className="st"><b>~5 min</b><span>from photos to model, with your photos only</span></div>
-            <div className="st"><b>~11 min</b><span>adding 1,500 synthetic images</span></div>
-            <div className="st amber"><b>$0.13</b><span>of cloud GPU per run, from</span></div>
-            <div className="st"><b>612 KB</b><span>int8 model for an ESP32-CAM, no network</span></div>
-          </div>
-          <p className="note">Measured on 2026-10-04 on Nebius AI Cloud.</p>
-        </div>
-      </section>
 
       <section id="how">
         <div className="wrap">
@@ -84,8 +49,8 @@ export default function Landing() {
             <div className="row rev">
               <div>
                 <span className="step"><b>2</b> Generate</span>
-                <h3>Thousands of training images, made to measure</h3>
-                <p>EyeForge finds 3D models of your object, builds scenes like yours and renders them with labels. Your own photos join them. A cloud GPU does it and switches off when done.</p>
+                <h3>Thousands of training images, in your own place</h3>
+                <p>From a few photos of your place, EyeForge builds a 3D scene of it, finds 3D models of your object and renders them there, already labeled. Your own photos join them. A cloud GPU does the work and switches off when done.</p>
                 <p className="pw">Rendered with <b>NVIDIA Isaac Sim</b>, runs on Nebius AI Cloud</p>
               </div>
               <div className="shot">
@@ -98,7 +63,7 @@ export default function Landing() {
                 <span className="step"><b>3</b> Deploy</span>
                 <h3>A tiny model, tested on your real photos</h3>
                 <p>You get a score in plain words, the photos it got right and wrong, and a file ready for your board. Spot a mistake? Fix it and retrain.</p>
-                <p className="pw">int8, for <b>ESP32-CAM, Raspberry Pi, a phone</b> or your computer</p>
+                <p className="pw">int8, for <b>ESP32-CAM or a phone</b></p>
               </div>
               <div className="shot">
                 <div className="chipcard">
@@ -112,25 +77,6 @@ export default function Landing() {
         </div>
       </section>
 
-      <section className="band" id="devices">
-        <div className="wrap">
-          <span className="eyebrow">Why a specialist</span>
-          <h2>Big models know a bit of everything. Your camera needs one thing, done well.</h2>
-          <p className="sub">Foundation models are the teachers. A student sized for your hardware learns from them.</p>
-          <div className="devs">
-            <div className="d"><h3>ESP32-CAM</h3><p>96 px, a few coarse classes</p></div>
-            <div className="d"><h3>Raspberry Pi</h3><p>Detect and count</p></div>
-            <div className="d"><h3>Your GPU</h3><p>The biggest student</p></div>
-          </div>
-          <div className="built">
-            <div><b>NVIDIA Nemotron</b><span>interview and reasoning</span></div>
-            <div><b>NVIDIA Isaac Sim</b><span>synthetic images</span></div>
-            <div><b>Nebius AI Cloud</b><span>L40S GPU, pay per run</span></div>
-            <div><b>Nebius Token Factory</b><span>open models as teachers</span></div>
-          </div>
-        </div>
-      </section>
-
       <div className="wrap cta">
         <h2>Build your first model</h2>
         <p className="sub" style={{ marginLeft: "auto", marginRight: "auto" }}>One sentence and a few photos. About the price of a coffee.</p>
@@ -138,6 +84,7 @@ export default function Landing() {
           <Link className="btn btn-p" to="/app">Start now</Link>
           {REPO && <a className="btn btn-s" href={REPO}>Read the code</a>}
         </div>
+        <p className="built">Built with <b>NVIDIA Nemotron</b> · <b>NVIDIA Isaac Sim</b> · <b>Nebius AI Cloud</b> · <b>Nebius Token Factory</b></p>
       </div>
 
       <footer><div className="wrap">
@@ -156,15 +103,6 @@ function LogoMark() {
       <g stroke="#b45309" strokeWidth="2.5" strokeLinecap="round"><path d="M27 20v4M32 20v4M37 20v4M27 40v4M32 40v4M37 40v4M20 27h4M20 32h4M20 37h4M40 27h4M40 32h4M40 37h4" /></g>
       <rect x="23" y="23" width="18" height="18" rx="3.5" fill="#f59e0b" /><circle cx="32" cy="32" r="4" fill="#1c1917" />
     </svg>
-  );
-}
-
-function Promise({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
-  return (
-    <div className="f">
-      <div className="ic"><svg viewBox="0 0 24 24" fill="none" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">{icon}</svg></div>
-      <h3>{title}</h3><p>{children}</p>
-    </div>
   );
 }
 

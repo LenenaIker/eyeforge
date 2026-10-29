@@ -24,7 +24,7 @@ Datos de un dataset (usuario, 2026-10-09): lo que se sabe de las fotos se guarda
 
 ### Landing `/`
 
-Propuesta D (usuario, 2026-10-08), en `src/pages/Landing.tsx` y `landing.css` (copiado del HTML aprobado y acotado a `.lp`). Los textos son del usuario: no reordenar ni reescribir sin permiso. Estructura: barra (How it works, Real numbers, Devices, GitHub, "Try it"); héroe "Describe it. Forge it. Spot it." con la estantería dibujada en CSS; cuatro promesas; cifras medidas en bloques de color; los tres pasos en filas alternas; dispositivos con precio y "Built with"; llamada final y pie oscuro. Pendiente: sustituir los dibujos por ejemplos reales del pipeline (etiquetado del profesor, filtro de tamaño, escena construida).
+Propuesta D (usuario, 2026-10-08), en `src/pages/Landing.tsx` y `landing.css` (copiado del HTML aprobado y acotado a `.lp`). Los textos son del usuario: no reordenar ni reescribir sin permiso. Estructura (recortada por el usuario el 2026-10-29): barra (How it works, GitHub, "Try it"); héroe "Describe it. Forge it. Spot it." con la estantería dibujada en CSS (en móvil, marco 4:3 y cajas sin etiqueta); los tres pasos en filas alternas (el 2 describe la escena 3D del sitio del usuario); llamada final con una línea "Built with" (Nemotron, Isaac Sim, Nebius AI Cloud, Token Factory) y pie oscuro. Fuera: las cuatro promesas, el bloque "Why a specialist", las cifras del 2026-10-04 (anteriores a F3c) y las tarjetas de dispositivos (alcance ESP32-CAM a móvil). Pendiente: sustituir los dibujos por ejemplos reales del pipeline (etiquetado del profesor, filtro de tamaño, escena construida).
 
 ### Crear modelo `/app`
 
