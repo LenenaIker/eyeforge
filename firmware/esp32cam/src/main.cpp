@@ -57,7 +57,7 @@
 #include "test_frame.h"  // TEST_FRAME_W, TEST_FRAME_H, test_frame[]: RGB565, big endian as the camera's
 #endif
 
-#define FIRMWARE_VERSION "1.3.2"  // tools/copy_web.sh copies it into the web's manifest.json
+#define FIRMWARE_VERSION "1.3.3"  // tools/copy_web.sh copies it into the web's manifest.json
 
 // The ESP32-CAM-MB's CH340 lost bytes at 921600 (2026-10-28: the ready line came without the same 24 bytes every
 // time, on a computer and on a phone) and, on the phone (Chrome's WebUSB), every line with a picture at 460800.
@@ -354,11 +354,38 @@ static int decodePoints(const float* probs, int g, int n, float threshold, Point
     return found;
 }
 
+// The camera's start draws a burst of current: from a phone's USB (OTG) it failed (2026-10-28, a Pixel 7a), where
+// a computer's port started it at once. A few tries, the supply settling in between, before giving up.
+static bool startCamera() {
+    for (int i = 0; i < 4; i++) {
+        if (i) { stopCamera(); vTaskDelay(pdMS_TO_TICKS(400 * i)); }
+        if (initCamera() == ESP_OK) return true;
+    }
+    return false;
+}
+
+// The restart in JPEG failed from a phone's USB (2026-10-29, a Pixel 7a), as the first start did: a few tries
+// with the supply settling, then the next smaller size, before giving up.
+static esp_err_t startPhotoCamera(framesize_t& size) {
+    static const framesize_t smaller[] = {FRAMESIZE_QXGA, FRAMESIZE_UXGA, FRAMESIZE_XGA, FRAMESIZE_SVGA};
+    esp_err_t err = ESP_FAIL;
+    for (framesize_t s : smaller) {
+        if (s > size) continue;
+        for (int i = 0; i < 3; i++) {
+            stopCamera();
+            vTaskDelay(pdMS_TO_TICKS(200 + 300 * i));
+            if ((err = initCamera(PIXFORMAT_JPEG, s)) == ESP_OK) { size = s; return ESP_OK; }
+        }
+    }
+    return err;
+}
+
 // One photo of the whole frame at a bigger size, as JPEG, then back to inference.
 static void sendPhoto(framesize_t size) {
     const int64_t t0 = esp_timer_get_time();
     stopCamera();
-    if (initCamera(PIXFORMAT_JPEG, size) == ESP_OK) {
+    const esp_err_t err = startPhotoCamera(size);
+    if (err == ESP_OK) {
         camera_fb_t* fb = nullptr;
         for (int i = 0; i < 4; i++) {  // the first frames after a restart are dark: let exposure settle
             if (fb) releaseFrame(fb);
@@ -380,10 +407,11 @@ static void sendPhoto(framesize_t size) {
         }
         stopCamera();
     } else {
-        printf("{\"event\":\"error\",\"message\":\"camera does not take that photo size\"}\n");
+        printf("{\"event\":\"error\",\"message\":\"the camera did not restart for the photo (%s): power the board "
+               "from a computer or a powered USB hub\"}\n", esp_err_to_name(err));
     }
     fflush(stdout);
-    if (initCamera() != ESP_OK) halt("camera init failed");
+    if (!startCamera()) halt("camera init failed");
     for (int i = 0; i < 3; i++) {  // dark frames again after the restart: not worth a result
         camera_fb_t* fb = grabFrame();
         if (fb) releaseFrame(fb);
@@ -421,16 +449,6 @@ static void runCommand(const char* cmd, float& threshold) {
         const float v = strtof(cmd + 10, nullptr);
         if (v > 0 && v < 1) threshold = v;
     }
-}
-
-// The camera's start draws a burst of current: from a phone's USB (OTG) it failed (2026-10-28, a Pixel 7a), where
-// a computer's port started it at once. A few tries, the supply settling in between, before giving up.
-static bool startCamera() {
-    for (int i = 0; i < 4; i++) {
-        if (i) { stopCamera(); vTaskDelay(pdMS_TO_TICKS(400 * i)); }
-        if (initCamera() == ESP_OK) return true;
-    }
-    return false;
 }
 
 extern "C" void app_main() {
