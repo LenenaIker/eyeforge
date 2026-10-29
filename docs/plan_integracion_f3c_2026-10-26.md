@@ -150,7 +150,7 @@ Audit antes de la primera ejecución (26 por la noche, sin ejecutar):
 - la inclinación sale del spec, recortada a lo que aguanta el splat.
 
 Pendiente:
-- **Nube:** `scene_render` necesita en Nebius el Python de gsplat junto a Isaac. Hecho el 27 (kit `gsplat`, `docs/imagenes.md`; las escenas pasan por el bucket de caché). Kits e imágenes publicados con la etiqueta `4b1ac9c4e6d1`.
+- **Nube:** `scene_render` necesita en Nebius el Python de gsplat junto a Isaac. Hecho el 27 (kit `gsplat`; las escenas pasan por el bucket de caché). Kits e imágenes publicados con la etiqueta `4b1ac9c4e6d1`.
   - Probado en Nebius el 27 por la tarde: la ejecución A (`street_bins_nebius`), lanzada por la API de la web con el backend de Nebius, terminó en 42,4 min y unos 1,10 $ en una L40S. `scene_render` tardó 1424 s (en local, 1222 s). PicoDet-S, F1 0,542 ± 0,030 (en local, 0,457 ± 0,056; la verdad es SAM 3 sin revisar).
   - Antes no hubo L40S libres en eu-north1 durante unos 80 min (cuatro peticiones de 5 min). Una sonda de RTX PRO 6000 a las 17:24 consiguió máquina en uk-south2 y eu-south1, pero no en us-central1. Usarlas pediría gsplat compilado para sm_120 y dejar PicoDet fuera (Paddle cu126 no soporta Blackwell).
   - Falta en el servidor de Hetzner: `SIM2CHIP_IMAGE_TAG=4b1ac9c4e6d1`.

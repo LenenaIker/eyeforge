@@ -64,7 +64,7 @@ Cada etapa escribe al terminar `jobs/<id>/<etapa>/_done.json` con un hash de la 
 
 ## Por qué subprocesos
 
-Isaac Sim tiene su propio Python (`python.sh`) y TensorFlow vive en el entorno conda `edge-sdg`: no pueden compartir proceso. Cada etapa se lanza como `python -m sim2chip.run_stage <nombre> --job <carpeta>` con el intérprete de su runtime. En Nebius, un solo job ejecuta el pipeline entero con el backend local dentro del contenedor (modo worker), sobre una de las dos imágenes propias: la ligera si no hay sintético, la de Isaac si se renderiza (`docs/imagenes.md`). Sin ellas, usa la imagen pública de Isaac Sim e instala TensorFlow y lo demás con `uv` al arrancar. El paquete `sim2chip` solo usa la biblioteca estándar en su núcleo (spec, pipeline, etapas base), para que funcione en los dos intérpretes sin instalar nada más en el de Isaac.
+Isaac Sim tiene su propio Python (`python.sh`) y TensorFlow vive en el entorno conda `edge-sdg`: no pueden compartir proceso. Cada etapa se lanza como `python -m sim2chip.run_stage <nombre> --job <carpeta>` con el intérprete de su runtime. En Nebius, un solo job ejecuta el pipeline entero con el backend local dentro del contenedor (modo worker), sobre una de las dos imágenes propias: la ligera si no hay sintético, la de Isaac si se renderiza. Sin ellas, usa la imagen pública de Isaac Sim e instala TensorFlow y lo demás con `uv` al arrancar. El paquete `sim2chip` solo usa la biblioteca estándar en su núcleo (spec, pipeline, etapas base), para que funcione en los dos intérpretes sin instalar nada más en el de Isaac.
 
 ## Espacio de trabajo
 

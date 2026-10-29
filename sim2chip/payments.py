@@ -4,7 +4,7 @@ Configuration (environment or .env):
     STRIPE_SECRET_KEY        sk_test_... (test mode) or sk_live_...
     STRIPE_WEBHOOK_SECRET    whsec_... of the webhook endpoint <public url>/api/stripe/webhook
     SIM2CHIP_STRIPE_TAX      1: Stripe Tax adds the buyer's VAT on the checkout page (set it up in Stripe first)
-Without the first two there are no top-ups. Setup steps in docs/pagos.md.
+Without the first two there are no top-ups.
 
 - A top-up is a Stripe Checkout page: Stripe shows the card form, no card data reaches this server. The card is
   saved for later (setup_future_usage), so an auto top-up can charge it while the user is away.

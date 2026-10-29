@@ -1,4 +1,4 @@
-# The worker's images and Python kits (docs/imagenes.md), built and published by images/build.sh:
+# The worker's images and Python kits, built and published by images/build.sh:
 #   light  for runs without synthetic data: Ubuntu plus the tools to unpack the kits
 #   isaac  NVIDIA's Isaac Sim image plus the same tools, for runs that render
 #   kits   the Pythons, TensorFlow (student), torch (teachers), PaddlePaddle (PicoDet counter, with the
@@ -6,7 +6,7 @@
 #          Python 3.10), as zstd tarballs for the cache bucket
 # The Pythons are not inside the images: a run pulls only the kits it uses (the teachers' only when it labels
 # photos, Paddle's only when it trains a PicoDet counter), streamed from the bucket into tar while the others
-# download (docs/imagenes.md). They live in /tmp/s2c/envs, a path every image can write (Isaac's runs as a
+# download. They live in /tmp/s2c/envs, a path every image can write (Isaac's runs as a
 # normal user), so they unpack where they were built. No weights either: the teachers' come from the cache bucket (sim2chip.teacher.weights), the
 # shader caches too (sim2chip.cloud_worker). The pip lists are written by build.sh from
 # sim2chip/backends/nebius.py (WORKER_DEPS, WORKER_NODEPS, TEACHER_DEPS,
