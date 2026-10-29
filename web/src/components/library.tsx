@@ -76,7 +76,7 @@ export function MoreMenu({ items }: { items: (close: () => void) => ReactNode })
   return (
     <>
       <button ref={button} onClick={toggle} aria-label="More" aria-expanded={!!at}
-              className="rounded-lg p-1.5 text-muted hover:bg-gray-100 hover:text-ink"><MoreHorizontal className="h-4 w-4" /></button>
+              className="relative rounded-lg p-1.5 text-muted before:absolute before:-inset-2 before:content-[''] hover:bg-gray-100 hover:text-ink"><MoreHorizontal className="h-4 w-4" /></button>
       {at && createPortal(
         <div ref={menu} role="menu" style={{ top: at.top, left: at.left, width: MENU_WIDTH }}
              className="fixed z-50 overflow-hidden rounded-xl border border-line bg-white py-1 shadow-lg">
@@ -227,7 +227,7 @@ export function DeleteDialog({ kind, items, onClose, onDone }:
 export function Tick({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   return (
     <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggle(); }} aria-label={on ? "Unselect" : "Select"}
-            className={cx("absolute top-2 left-2 z-[1] flex h-6 w-6 items-center justify-center rounded-md border-2 shadow-sm transition-colors",
+            className={cx("absolute top-2 left-2 z-[1] flex h-6 w-6 items-center justify-center rounded-md border-2 shadow-sm transition-colors before:absolute before:-inset-2.5 before:content-['']",
                           on ? "border-brand-600 bg-brand-600 text-white" : "border-white bg-white/80 text-transparent hover:border-brand-500")}>
       <Check className="h-4 w-4" strokeWidth={3} />
     </button>

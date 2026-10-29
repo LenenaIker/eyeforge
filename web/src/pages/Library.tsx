@@ -78,7 +78,7 @@ export function Models() {
   const { lib, error, reload } = useLibrary();
   const jobs = lib?.models;
   return (
-    <Page title="Models" intro="Every model you built, with how well it did on your real photos." action={newModel}>
+    <Page title="Models" intro="Every model you built, with how well it did on your real photos." action={jobs?.length === 0 ? undefined : newModel}>
       {!jobs ? <Loading error={error} /> : jobs.length === 0 ? (
         <Empty icon={<Cpu className="h-6 w-6" />} title="No models yet" action={newModel}>
           Describe what your camera should see in the chat and we build a model sized for your device.
@@ -100,6 +100,7 @@ export function Models() {
                 <div className="mt-0.5 truncate text-sm text-muted">
                   {j.classes.map(pretty).join(", ")}{j.hardware && ` · ${j.hardware}`} · {day(j.created)}
                 </div>
+                {j.model?.score != null && <div className="mt-0.5 text-sm sm:hidden"><Score m={j.model} /></div>}
               </div>
               <div className="hidden shrink-0 text-right text-sm sm:block">
                 {j.model ? <><Score m={j.model} />{j.model.kb != null && <div className="text-muted">{Math.round(j.model.kb)} KB</div>}</>
@@ -122,7 +123,7 @@ export function Datasets() {
   const sets = lib?.datasets;
   const action = <Button size="sm" className="h-10" onClick={() => setUpload("new")}><Upload className="h-4 w-4" /> Upload photos</Button>;
   return (
-    <Page title="Datasets" intro="Every real photo you gave us, kept as datasets. Photos you attach in a chat become a dataset right away." action={action}>
+    <Page title="Datasets" intro="Every real photo you gave us, kept as datasets. Photos you attach in a chat become a dataset right away." action={sets?.length === 0 ? undefined : action}>
       {!sets ? <Loading error={error} /> : sets.length === 0 ? (
         <Empty icon={<Images className="h-6 w-6" />} title="No photos yet" action={action}>
           Upload photos here or attach them in the chat. Each set becomes a dataset you can use again in other models.
@@ -275,7 +276,7 @@ export function Objects() {
   const shown = all.filter((o) => rejected || o.kept);
   const action = <Button size="sm" className="h-10" onClick={() => setUpload(true)}><Upload className="h-4 w-4" /> Upload 3D model</Button>;
   return (
-    <Page title="Objects" intro="Your 3D models: built from your photos, taken out of your scenes or uploaded. The approved ones go into synthetic images." action={action}>
+    <Page title="Objects" intro="Your 3D models: built from your photos, taken out of your scenes or uploaded. The approved ones go into synthetic images." action={lib && all.length === 0 ? undefined : action}>
       {!lib ? <Loading error={error} /> : all.length === 0 ? (
         <Empty icon={<Box className="h-6 w-6" />} title="No 3D objects yet" action={action}>
           3D models built from your photos or taken out of your scenes are kept here. You can also upload your own (.glb).
@@ -446,7 +447,7 @@ export function Kits() {
   const datasets = new Map((lib?.datasets ?? []).map((d) => [d.id, d]));
   const objects = new Map((lib?.objects ?? []).map((o) => [o.id, o]));
   return (
-    <Page title="Kits" intro="A kit is a list of datasets, objects and scenes you already have. Name it in the chat to start a new model from it, nothing is built twice." action={action}>
+    <Page title="Kits" intro="A kit is a list of datasets, objects and scenes you already have. Name it in the chat to start a new model from it, nothing is built twice." action={lib?.kits.length === 0 ? undefined : action}>
       {!lib ? <Loading error={error} /> : lib.kits.length === 0 ? (
         <Empty icon={<Package className="h-6 w-6" />} title="No kits yet" action={action}>
           Pick the photos, 3D objects and scenes you want to reuse and save them as a kit. Then tell the chat

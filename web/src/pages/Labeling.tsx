@@ -68,7 +68,7 @@ export function LabelingPage() {
           <p className="mt-1 text-sm text-muted">{l.task === "count" ? "Finds and counts things" : "Sorts the photos"} ·
             {" "}{l.reviewed} of {l.photos.length} reviewed by you{l.models.length ? ` · used by ${l.models.length} model${l.models.length === 1 ? "" : "s"}` : ""}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
           <Button size="sm" variant="secondary" onClick={teach}><Sparkles className="h-4 w-4" /> Let the teacher mark them</Button>
           {counts.todo > 0 && <Button size="sm" onClick={() => setOpen(shown.find((p) => !p.reviewed)?.id ?? l.photos.find((p) => !p.reviewed)!.id)}>
             Review the photos left</Button>}

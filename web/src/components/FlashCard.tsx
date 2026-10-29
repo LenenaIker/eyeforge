@@ -142,7 +142,7 @@ export function FlashCard({ job, hardware, modelUrl, port: given, onBoard: known
           <Button className="w-full" onClick={() => start()}>
             <Zap className="h-4 w-4" /> {state.step === "idle" ? label ?? "Flash to my ESP32-CAM" : state.step === "failed" ? "Try again" : "Flash again"}
           </Button>
-          <button onClick={() => start(true)} className="w-full text-center text-xs text-muted underline hover:text-ink">
+          <button onClick={() => start(true)} className="w-full py-2.5 text-center text-xs text-muted underline hover:text-ink">
             Flash everything (for a board that does not start)
           </button>
         </>

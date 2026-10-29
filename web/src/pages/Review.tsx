@@ -254,7 +254,7 @@ export function Editor({ editing, labels, media, hue, teacher, onClose, onDone }
       <div className="flex max-h-dvh w-full max-w-3xl flex-col overflow-hidden bg-white sm:rounded-[var(--radius-card)]" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
           <div className="min-w-0">
-            <p className="truncate font-medium">{editing.title}</p>
+            <p className="font-medium">{editing.title}</p>
             <p className="text-xs text-muted">Tap where an object is missing; tap a mark to remove it. {points.length} marked.</p>
             {piled > 0 && <p className="text-xs text-red-600">{piled} marks of different classes sit on the same object.
               Tap it to remove the wrong ones until one class is left.</p>}

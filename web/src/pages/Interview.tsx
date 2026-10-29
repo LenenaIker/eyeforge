@@ -307,7 +307,7 @@ export default function Interview() {
         {busy && (
           <div className="flex items-start gap-3 text-sm text-muted">
             <BotAvatar />
-            <div className="min-w-0 max-w-[85%] rounded-2xl rounded-tl-sm bg-white px-4 py-3 shadow-sm ring-1 ring-line">
+            <div className="min-w-0 rounded-2xl rounded-tl-sm bg-white px-4 py-3 sm:max-w-[85%] shadow-sm ring-1 ring-line">
               {live?.steps.length ? <Steps steps={live.steps} offset={live.offset} /> :
                 <span><Spinner className="mr-2 text-brand-500" />{busy}</span>}
             </div>
@@ -355,8 +355,9 @@ export default function Interview() {
   );
 }
 
+// Not on a phone: the width goes to the answers and their cards.
 function BotAvatar() {
-  return <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-50 text-brand-600">
+  return <div className="hidden h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-50 text-brand-600 sm:grid">
     <Sparkles className="h-4 w-4" strokeWidth={1.75} />
   </div>;
 }
@@ -435,7 +436,7 @@ function Message({ m, session, onPick, onAddPhotos, confirm }: {
   return (
     <div className="flex items-start gap-3">
       <BotAvatar />
-      <div className="min-w-0 max-w-[85%] flex-1 space-y-3">
+      <div className="min-w-0 flex-1 space-y-3 sm:max-w-[85%]">
         {t?.activity && t.activity.length > 0 && <WorkedFor steps={t.activity} />}
         <p className="w-fit rounded-2xl rounded-tl-sm bg-white px-4 py-2.5 whitespace-pre-wrap shadow-sm ring-1 ring-line">{m.text}</p>
         {t?.kind === "photos" && (
@@ -499,7 +500,7 @@ function ScenePhotos({ photos }: { photos: API.SceneProposal[] }) {
               <img src={API.libraryPhotoUrl(p.photo_id)} alt="" className="aspect-[4/3] w-full object-cover" />
               <div className="p-2 text-xs">
                 {typeof st === "string" ? <span className="text-red-700">{st}</span> :
-                  st ? <span className="text-muted">{st.status === "ready" ? "Scene ready" : st.status === "failed" ? `Failed: ${st.why}` : "Being made, about 2 h"}</span> :
+                  st ? <span className="text-muted">{st.status === "ready" ? "Scene ready" : st.status === "failed" ? `Failed: ${st.why}` : "Being made, about 2\u00a0h"}</span> :
                   <Button size="sm" variant="secondary" className="w-full" onClick={() => make(p.photo_id)}>Create this scene</Button>}
               </div>
             </div>
@@ -528,7 +529,7 @@ function ConfirmCard({ spec, proposal, onEdit, blocked, onYes, onChange, plan, r
           </p>
         ))}
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Button className="flex-1" disabled={sent || !!blocked || !!nothing || (revise && !plan)} onClick={() => { setSent(true); onYes(); }}>
+          <Button className="sm:flex-1" disabled={sent || !!blocked || !!nothing || (revise && !plan)} onClick={() => { setSent(true); onYes(); }}>
             <Check className="h-4 w-4" /> {revise ? "Looks good, retrain it" : "Looks good, train it"}
           </Button>
           <Button variant="secondary" disabled={sent} onClick={onChange}><Pencil className="h-4 w-4" /> Change something</Button>
@@ -620,6 +621,8 @@ function SpecOptions({ spec, proposal, onEdit, realPhotos }: {
         <select value={spec.hardware ?? "generic"} onChange={(e) => onEdit({ ...spec, hardware: e.target.value })}
                 className="w-full rounded-[var(--radius-control)] border border-line bg-white px-2 py-1.5">
           {Object.entries(DEVICES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          {/* A profile the list does not offer (one an older spec chose) stays selectable as it is. */}
+          {spec.hardware && !(spec.hardware in DEVICES) && <option value={spec.hardware}>{spec.hardware.replace(/_/g, " ")}</option>}
         </select>
       </Option>
       {spec.user_data?.raw && spec.task === "count" && (
@@ -667,7 +670,7 @@ function AdvancedSpec({ spec, onTrain }: { spec: Spec | null; onTrain: (s: Spec)
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { if (spec) setValue(JSON.stringify(spec, null, 2)); }, [spec]);
   return (
-    <details className="mt-2 text-sm" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+    <details className="mt-2 hidden text-sm sm:block" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
       <summary className="cursor-pointer text-muted hover:text-ink">Advanced: the spec as JSON</summary>
       <textarea value={value} onChange={(e) => setValue(e.target.value)} spellCheck={false} rows={10}
                 placeholder='{"name": "...", "classes": [...]}'
