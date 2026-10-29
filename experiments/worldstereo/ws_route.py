@@ -8,6 +8,7 @@ Run the driver in the edge-sdg env (boto3 for the cloud steps); it calls each st
     python experiments/worldstereo/ws_route.py status --case e2e_photo21
     python experiments/worldstereo/ws_route.py run --case e2e_photo21                    # up to the walks' sheet
     python experiments/worldstereo/ws_route.py run --case e2e_photo21 --until bundle     # pays two VM runs
+    python experiments/worldstereo/ws_route.py remote <photo file> --photo P --case C   # all of it on the VM
 
 Every step can also run alone, in its interpreter: `<python> ws_route.py <step> --case <case> [...]`."""
 import argparse
@@ -24,8 +25,9 @@ def main():
         "init", "status", "run",
         "things", "masks", "split", "publish", "caption", "ingest", "pano", "pano_paste", "walks", "result_sheet",
         "cloud", "vm", "depth", "views", "train", "audit", "plan", "stage", "grid", "sheet", "compare",
-        "pseudo", "fix", "fixer_views", "bundle"])
-    ap.add_argument("what", nargs="?", help="vm: disk, prep, gpu, stop or status; ingest: the source photo")
+        "pseudo", "fix", "fixer_views", "bundle", "remote"])
+    ap.add_argument("what", nargs="?", help="vm: disk, prep, gpu, setup, stop or status; ingest, remote: the source "
+                                            "photo")
     ap.add_argument("--case")
     ap.add_argument("--photo", help="init, erase steps: the photo's name in data/panogen_test/in/")
     ap.add_argument("--pano-seed", type=int, default=0)
@@ -37,6 +39,7 @@ def main():
     ap.add_argument("--tag", help="fix, fixer_views: the Fixer round (F3a, ...)")
     ap.add_argument("--step", type=int, help="pseudo: the round's number, from 1")
     ap.add_argument("--base", help="fixer_views: the views file the pseudo views are added to")
+    ap.add_argument("--out", help="remote: the folder the bundle lands in (default the case's)")
     ap.add_argument("--resume", action="store_true", help="cloud: ship the generated legs, generate only new ones")
     a = ap.parse_args()
 
@@ -58,7 +61,12 @@ def main():
         return pano.ingest(Path(a.what), a.photo)
     if a.cmd == "vm":
         from wsroute import vm
-        return {"disk": vm.disk, "prep": vm.prep, "gpu": vm.gpu, "stop": vm.stop, "status": vm.status}[a.what]()
+        from wsroute import scenevm
+        return {"disk": vm.disk, "prep": vm.prep, "gpu": vm.gpu, "setup": scenevm.setup, "stop": vm.stop,
+                "status": vm.status}[a.what]()
+    if a.cmd == "remote":  # the whole route on the GPU VM (scenevm.py), through bundle
+        from wsroute import scenevm
+        return scenevm.remote(Path(a.what), a.photo, a.case, Path(a.out) if a.out else None)
 
     cfg = config.load(a.case)
     if a.cmd == "status":

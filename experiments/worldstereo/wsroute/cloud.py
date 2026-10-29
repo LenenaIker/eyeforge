@@ -24,8 +24,9 @@ def image() -> str:
     return f"{required('SIM2CHIP_NEBIUS_REGISTRY')}/eyeforge-worldstereo:{tag}"
 
 
-def preflight(case: Case, img: str):
-    """Free checks before paying for a GPU: the legs the job will read and the pushed image."""
+def preflight(case: Case, img: str, here: bool = False):
+    """Free checks before paying for a GPU: the legs the job will read and the pushed image (here: pulled on this
+    machine, the scene VM)."""
     legs = [t for t in case.scene.glob("*/traj*") if t.is_dir()]
     need = ("render.mp4", "render_mask.mp4", "camera.json", "traj_caption.json")
     missing = [f"{t.relative_to(case.scene)}/{n}" for t in legs for n in need if not (t / n).exists()]
@@ -34,9 +35,9 @@ def preflight(case: Case, img: str):
     missing += [] if (case.scene / "pano_bank/cameras.json").exists() else ["pano_bank/cameras.json"]
     if not legs or missing:
         sys.exit(f"scene not ready ({len(legs)} legs), missing: {missing}")
-    if subprocess.run(["docker", "manifest", "inspect", img], capture_output=True).returncode:
-        sys.exit(f"{img} is not in the registry: run experiments/worldstereo/build.sh")
-    print(f"preflight ok: {len(legs)} legs, image pushed")
+    if subprocess.run(["docker", "image" if here else "manifest", "inspect", img], capture_output=True).returncode:
+        sys.exit(f"{img} is not {'on this machine' if here else 'in the registry: run experiments/worldstereo/build.sh'}")
+    print(f"preflight ok: {len(legs)} legs, image {'here' if here else 'pushed'}")
 
 
 def store():

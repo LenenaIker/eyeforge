@@ -166,7 +166,8 @@ def preflight(todo: list[Step]):
             if not grut or not (Path(grut) / ".venv/bin/activate").exists():
                 missing.append(f"SIM2CHIP_GRUT_DIR with its .venv ({step.name})")
         elif step.env == "cloud":
-            missing += [f"{v} ({step.name})" for v in CLOUD_VARS if not env(v)]
+            need = ("SIM2CHIP_NEBIUS_REGISTRY",) if env("SIM2CHIP_WS_HERE") else CLOUD_VARS
+            missing += [f"{v} ({step.name})" for v in need if not env(v)]
             if not (ROOT / ".env").exists():
                 missing.append(f".env ({step.name})")
             if importlib.util.find_spec("boto3") is None:

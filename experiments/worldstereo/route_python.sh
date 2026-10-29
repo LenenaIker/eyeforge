@@ -10,7 +10,7 @@ mounts=()
 IFS=: read -ra dirs <<< "${SIM2CHIP_ROUTE_MOUNTS:-$PWD}"
 for d in "${dirs[@]}"; do mounts+=(-v "$d:$d"); done
 envs=()
-for v in $(compgen -e | grep -E '^(SIM2CHIP_|HF_|MOGE_|TOKEN_FACTORY|NEBIUS_API|PYTORCH_)'); do envs+=(-e "$v"); done
+for v in $(compgen -e | grep -E '^(SIM2CHIP_|HF_|MOGE_|TORCH_HOME|PYTORCH_)'); do envs+=(-e "$v"); done
 exec docker run --rm -i --gpus all --ipc=host --network host -u "$(id -u):$(id -g)" \
   --group-add "$(stat -c %g /var/run/docker.sock)" -v /var/run/docker.sock:/var/run/docker.sock \
   -e HOME=/tmp -e PYTHONUNBUFFERED=1 "${envs[@]}" "${mounts[@]}" -w "$PWD" \

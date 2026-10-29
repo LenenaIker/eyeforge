@@ -5,7 +5,9 @@ money (about 1 $ a scene): only a user's click (web) or the admin (CLI) starts a
 
 Progress lives in <home>/scene_jobs/<scene id>.json: {"status", "step", "done", "total", "why", "pid"}, read by the
 web; the route's whole output in <scene id>.log. The route's driver runs in SIM2CHIP_ROUTE_PYTHON (default this
-Python): its cloud steps need boto3 (the edge-sdg env), which the route checks before its first step.
+Python): its cloud steps need boto3 (the edge-sdg env), which the route checks before its first step. With
+SIM2CHIP_SCENE_VM=1 every step runs on that VM instead (wsroute/scenevm.py, `ws_route.py remote`): the server needs
+no GPU, only the VM's settings (VM_VARS), the nebius CLI and an ssh key the VM accepts.
 
     python -m sim2chip.scene_job --home data --owner local --photo 123   (what the server and CLI start)
 """
@@ -63,8 +65,22 @@ ROUTE_VARS = ("SIM2CHIP_SAM3_PYTHON", "SIM2CHIP_SCENE_PYTHON", "SIM2CHIP_ERASE_P
               "SIM2CHIP_MAPANYTHING_PYTHON", "SIM2CHIP_GSPLAT_PYTHON", "SIM2CHIP_GRUT_DIR")
 
 
+# With SIM2CHIP_SCENE_VM=1 the whole route runs on the Nebius GPU VM (wsroute/scenevm.py): this machine needs no
+# GPU, only the VM's settings, the nebius CLI and ssh.
+VM_VARS = ("SIM2CHIP_WS_PROJECT", "SIM2CHIP_WS_SUBNET", "SIM2CHIP_NEBIUS_REGISTRY", "AWS_ACCESS_KEY_ID",
+           "AWS_SECRET_ACCESS_KEY", "NEBIUS_API_KEY")
+
+
+def on_vm() -> bool:
+    return env("SIM2CHIP_SCENE_VM") == "1"
+
+
 def unavailable() -> str | None:
     """Why this machine cannot run the scene route, or None."""
+    if on_vm():
+        missing = [v for v in VM_VARS if not env(v)]
+        return f"scene extraction on the Nebius VM is not set up on this server (missing {', '.join(missing)})" \
+            if missing else None
     missing = [v for v in ROUTE_VARS if not (env(v) and Path(env(v)).exists())]
     return f"scene extraction is not set up on this server (missing {', '.join(missing)})" if missing else None
 
@@ -140,24 +156,35 @@ def run(home: Path, owner: str, photo_id: int) -> str:
         if why := no_focal(photo):
             raise RuntimeError(why)
         case = case_of(sid)
-        short("ingest", str(photo), "--photo", photo_of(sid))
-        short("init", "--photo", photo_of(sid), "--case", case)
-        names = steps(case)
-        save(total=len(names))
+        if on_vm():  # the VM prints the route's step list ("[status] ...") before running it
+            names = []
+            out = Path(home) / "scene_jobs" / sid
+            cmd = [*py, "remote", str(photo), "--photo", photo_of(sid), "--case", case, "--out", str(out)]
+            bundle = out / "bundle"
+        else:
+            short("ingest", str(photo), "--photo", photo_of(sid))
+            short("init", "--photo", photo_of(sid), "--case", case)
+            names = steps(case)
+            save(total=len(names))
+            cmd = [*py, "run", "--case", case, "--until", LAST]
+            bundle = REPO / "data" / "worldstereo_test" / case / "bundle"  # wsroute.paths.DATA
         tail: list[str] = []
-        with open(log, "a") as fh, subprocess.Popen([*py, "run", "--case", case, "--until", LAST], cwd=REPO,
-                                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                                    bufsize=1) as proc:
+        with open(log, "a") as fh, subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                                    text=True, bufsize=1) as proc:
             for line in proc.stdout:
                 fh.write(line)
+                fh.flush()
                 tail = (tail + [line.rstrip()])[-5:]
+                if line.startswith("[status] "):
+                    names.append(line[15:].split("  (paid)")[0].strip())
+                    save(total=len(names))
+                    continue
                 m = STEP_LINE.match(line.strip())
                 if m and m["step"] in names:
                     k = names.index(m["step"])
                     save(step=m["step"], done=k + (0 if line.rstrip().endswith("...") else 1))
         if proc.returncode:
             raise RuntimeError(f"the scene route stopped at {state['step']}: " + " | ".join(tail[-2:]))
-        bundle = REPO / "data" / "worldstereo_test" / case / "bundle"  # wsroute.paths.DATA
         lib.add_scene(sid, bundle)
         save(status="ready", step=LAST, done=state["total"])
     except Exception as e:  # the library keeps the failure and why; the page shows it

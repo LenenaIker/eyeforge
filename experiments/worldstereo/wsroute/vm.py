@@ -32,7 +32,8 @@ CPU_VM, GPU_VM = "eyeforge-ws-prep", "eyeforge-ws-gpu"
 USER = "eyeforge"
 MNT = "/mnt/w"
 LOG = DATA / "vm_times.jsonl"
-SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR"]
+SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+            *(["-i", env("SIM2CHIP_WS_SSH_KEY")] if env("SIM2CHIP_WS_SSH_KEY") else [])]  # the server's own key
 
 # Same downloads as job.sh, so its snapshot_download finds everything in the cache.
 DOWNLOAD = """from huggingface_hub import snapshot_download
@@ -198,7 +199,22 @@ def run(case_name: str, hours: float, resume: bool = False):
     on the one VM, across processes (the server, the CLI): another one waits for it, or its stop would cut this."""
     from sim2chip.locks import WS_VM, hold
     with hold(WS_VM, f"WorldStereo of {case_name}"):
-        _run(case_name, hours, resume)
+        (_run_here if env("SIM2CHIP_WS_HERE") else _run)(case_name, hours, resume)
+
+
+def _run_here(case_name: str, hours: float, resume: bool):
+    """On the scene VM itself (scenevm.py runs the whole route there): the job in the image on this machine's GPU,
+    nothing to start or stop. The image is already pulled (scenevm.remote)."""
+    case = Case(case_name)
+    img = cloud.image()
+    cloud.preflight(case, img, here=True)
+    script, log_url = cloud.upload(case, hours, resume)
+    t1 = time.time()
+    subprocess.run(["timeout", str(int(hours * 3600)), "docker", "run", "--rm", "--gpus", "all", "--shm-size", "32g",
+                    "-e", f"LOG_URL={log_url}", "-v", f"{MNT}/hf:/root/.cache/huggingface",
+                    "-v", f"{script}:/opt/ws_job.sh:ro", img, "bash", "/opt/ws_job.sh"], check=False)
+    note(step="here_job", case=case.name, s=round(time.time() - t1))
+    cloud.fetch(case)
 
 
 def _run(case_name: str, hours: float, resume: bool):
