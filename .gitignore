@@ -29,3 +29,29 @@ deploy/
 docs/deploy.md
 /Dockerfile
 /.dockerignore
+
+# secrets in any env file but the template
+.env.*
+!.env.example
+
+# tool caches
+.ruff_cache/
+.claude/
+
+# model weights and exports: they come from the pipeline or Hugging Face, never from the repo
+*.tflite
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.h5
+*.keras
+
+# internal documents kept out of the public repo: the server's open security notes and the submission strategy
+docs/seguridad.md
+docs/entrega_devpost.md
+docs/guion_video.md
+docs/dudas_organizacion.md
+docs/competitor_comparison.md
+docs/novedad_claims_2026-10-27.md
+docs/video/prompter.html
