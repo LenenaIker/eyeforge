@@ -336,7 +336,7 @@ function Result({ job, r, usd, version }: { job: string; r: Report; usd: number;
           ) : (
             <p className="mt-2 text-sm text-muted">
               The model runs without a network. On a microcontroller, the C array goes into the firmware; on a
-              phone, Raspberry Pi or Jetson, the .tflite file loads with TensorFlow Lite.
+              phone or a Raspberry Pi, the .tflite file loads with TensorFlow Lite.
             </p>
           )}
         </Card>

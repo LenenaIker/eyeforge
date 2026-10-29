@@ -139,10 +139,7 @@
 .lp .note {margin-top: 14px; font-size: 14px; color: var(--muted); }
 .lp .devs {display: grid; gap: 24px 16px; margin-top: 24px; }
 @media (min-width: 700px) {
-.lp .devs {grid-template-columns: repeat(2, 1fr); }
-}
-@media (min-width: 1040px) {
-.lp .devs {grid-template-columns: repeat(4, 1fr); }
+.lp .devs {grid-template-columns: repeat(3, 1fr); }
 }
 .lp .d {border: 1px solid var(--line); border-radius: var(--r); padding: 32px; background: #fff; }
 .lp .d h3 {font-size: 19px; font-weight: 600; }

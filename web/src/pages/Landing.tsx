@@ -98,7 +98,7 @@ export default function Landing() {
                 <span className="step"><b>3</b> Deploy</span>
                 <h3>A tiny model, tested on your real photos</h3>
                 <p>You get a score in plain words, the photos it got right and wrong, and a file ready for your board. Spot a mistake? Fix it and retrain.</p>
-                <p className="pw">int8, for <b>ESP32-CAM, Raspberry Pi, Jetson</b> or your computer</p>
+                <p className="pw">int8, for <b>ESP32-CAM, Raspberry Pi, a phone</b> or your computer</p>
               </div>
               <div className="shot">
                 <div className="chipcard">
@@ -120,7 +120,6 @@ export default function Landing() {
           <div className="devs">
             <div className="d"><h3>ESP32-CAM</h3><p>96 px, a few coarse classes</p></div>
             <div className="d"><h3>Raspberry Pi</h3><p>Detect and count</p></div>
-            <div className="d"><h3>NVIDIA Jetson</h3><p>Fine distinctions</p></div>
             <div className="d"><h3>Your GPU</h3><p>The biggest student</p></div>
           </div>
           <div className="built">
