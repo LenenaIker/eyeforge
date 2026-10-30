@@ -65,6 +65,8 @@ def vm_env() -> str:
         "SIM2CHIP_MAPANYTHING_PYTHON": route, "SIM2CHIP_GSPLAT_PYTHON": route, "SIM2CHIP_GRUT_DIR": "",
         "SIM2CHIP_ROUTE_IMAGE": img["route"], "SIM2CHIP_FIXER_IMAGE": img["fixer"], "SIM2CHIP_ROUTE_MOUNTS": MNT,
         "SIM2CHIP_WS_HERE": "1", "SIM2CHIP_QWEN_NF4": f"{MNT}/tools/qwen_edit_nf4", "HF_HOME": f"{MNT}/hf",
+        "HF_HUB_CACHE": f"{MNT}/hf/hub",  # pano.py's default is <tools>/hf_cache
+        "HF_HUB_OFFLINE": "1",  # every weight is on the disk (setup); online, a gated repo (SAM 3) answers 401
         "TORCH_HOME": f"{MNT}/torch", "MOGE_CKPT": f"{MNT}/tools/moge_ckpt/moge-2-vitl/model.pt",
     }
     lines.update({k: env(k) for k in SECRETS if env(k)})
@@ -120,7 +122,8 @@ def remote(photo_file: Path, photo: str, case: str, out: Path | None = None, hou
             ssh(host, f"mkdir -p {REPO}/in && cat > {REPO}/in/{shlex.quote(photo_file.name)}",
                 input=photo_file.read_bytes())
             route = f"{DRIVER} experiments/worldstereo/ws_route.py"
-            script = (f"cd {REPO} && set -e && {route} ingest in/{shlex.quote(photo_file.name)} --photo {photo} && "
+            # Hugging Face, torch and the route image's wrapper read their settings from the environment
+            script = (f"cd {REPO} && set -e && set -a && . ./.env && set +a && {route} ingest in/{shlex.quote(photo_file.name)} --photo {photo} && "
                       f"{route} init --photo {photo} --case {case} >/dev/null && "
                       f"{route} status --case {case} | sed 's/^/[status] /' && "
                       f"timeout {int(hours * 3600)} {route} run --case {case} --until bundle")
