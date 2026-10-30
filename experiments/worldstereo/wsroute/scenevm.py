@@ -11,7 +11,8 @@ The steps of SIM2CHIP_SCENE_PYTHON, SIM2CHIP_MAPANYTHING_PYTHON and SIM2CHIP_GSP
 (route.Dockerfile) through route_python.sh, Fixer in its own image, WorldStereo's legs in its image on the same
 GPU (vm.py, SIM2CHIP_WS_HERE).
 
-    ws_route.py vm setup                                 fill the disk (once; idempotent, ~1 GPU hour)
+    ws_route.py vm setup                                 fill the disk (once; idempotent, ~20 GPU minutes)
+    ws_route.py vm authorize --key <key.pub>             let the web server's ssh key in
     ws_route.py remote --photo-file F --photo P --case C the route for one photo, through bundle"""
 from __future__ import annotations
 
@@ -85,7 +86,8 @@ def code_tar() -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as t:
         for rel in CODE:
-            t.add(ROOT / rel, arcname=rel, filter=lambda ti: None if "__pycache__" in ti.name else ti)
+            t.add(ROOT / rel, arcname=rel,
+                  filter=lambda ti: None if "__pycache__" in ti.name or "/web/dist" in ti.name else ti)
     return buf.getvalue()
 
 
@@ -215,6 +217,22 @@ def setup():
         ssh(host, "cat > /tmp/setup.sh", input=script.encode())
         ssh(host, "read -r HF_TOKEN; export HF_TOKEN; bash /tmp/setup.sh", input=(token + "\n").encode())
         note(step="scene_setup", s=round(time.time() - t0))
+    finally:
+        stop()
+
+
+def authorize(pub: Path):
+    """Let another machine's ssh key in (the web server's, SIM2CHIP_WS_SSH_KEY there): the VM's user was made
+    with this machine's key only."""
+    key = Path(pub).read_text().strip()
+    if not key.startswith("ssh-"):
+        sys.exit(f"{pub} is not an ssh public key")
+    host = start()
+    try:
+        ssh(host, "mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && k=$(cat) && "
+                  "(grep -qxF \"$k\" ~/.ssh/authorized_keys || echo \"$k\" >> ~/.ssh/authorized_keys)",
+            input=key.encode())
+        print(f"authorized {key.split()[-1]} on {GPU_VM}")
     finally:
         stop()
 

@@ -60,7 +60,8 @@ sudo docker info --format '{{{{.DockerRootDir}}}} {{{{.Driver}}}}'
 
 
 def cli() -> str:
-    return env("SIM2CHIP_NEBIUS_CLI") or str(Path.home() / ".nebius/bin/nebius")
+    import shutil
+    return env("SIM2CHIP_NEBIUS_CLI") or shutil.which("nebius") or str(Path.home() / ".nebius/bin/nebius")
 
 
 def neb(*args, check=True) -> str:
@@ -78,6 +79,7 @@ def get(kind: str, name: str) -> dict | None:
 
 def note(**kw):
     kw["t"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    LOG.parent.mkdir(parents=True, exist_ok=True)
     with LOG.open("a") as f:
         f.write(json.dumps(kw) + "\n")
     print(kw, flush=True)

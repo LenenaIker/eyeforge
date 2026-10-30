@@ -26,8 +26,8 @@ def main():
         "things", "masks", "split", "publish", "caption", "ingest", "pano", "pano_paste", "walks", "result_sheet",
         "cloud", "vm", "depth", "views", "train", "audit", "plan", "stage", "grid", "sheet", "compare",
         "pseudo", "fix", "fixer_views", "bundle", "remote"])
-    ap.add_argument("what", nargs="?", help="vm: disk, prep, gpu, setup, stop or status; ingest, remote: the source "
-                                            "photo")
+    ap.add_argument("what", nargs="?", help="vm: disk, prep, gpu, setup, authorize (--key), stop or status; "
+                                            "ingest, remote: the source photo")
     ap.add_argument("--case")
     ap.add_argument("--photo", help="init, erase steps: the photo's name in data/panogen_test/in/")
     ap.add_argument("--pano-seed", type=int, default=0)
@@ -39,6 +39,7 @@ def main():
     ap.add_argument("--tag", help="fix, fixer_views: the Fixer round (F3a, ...)")
     ap.add_argument("--step", type=int, help="pseudo: the round's number, from 1")
     ap.add_argument("--base", help="fixer_views: the views file the pseudo views are added to")
+    ap.add_argument("--key", help="vm authorize: the ssh public key to let in")
     ap.add_argument("--out", help="remote: the folder the bundle lands in (default the case's)")
     ap.add_argument("--resume", action="store_true", help="cloud: ship the generated legs, generate only new ones")
     a = ap.parse_args()
@@ -62,6 +63,8 @@ def main():
     if a.cmd == "vm":
         from wsroute import vm
         from wsroute import scenevm
+        if a.what == "authorize":
+            return scenevm.authorize(Path(a.key))
         return {"disk": vm.disk, "prep": vm.prep, "gpu": vm.gpu, "setup": scenevm.setup, "stop": vm.stop,
                 "status": vm.status}[a.what]()
     if a.cmd == "remote":  # the whole route on the GPU VM (scenevm.py), through bundle
