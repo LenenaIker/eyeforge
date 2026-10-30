@@ -1,5 +1,7 @@
 # Arquitectura de EyeForge (motor `sim2chip`, 2026-09-24)
 
+Nota (2026-10-30): documento de la primera semana. Los principios siguen valiendo, pero las plantillas de escena (`scenes/road.py`) se retiraron el 2026-10-26: el sintético se renderiza en escenas de paseo (receta F3c, `experiments/worldstereo/`). La foto actual del pipeline está en el `README.md`.
+
 Estado: aprobada por el usuario e implementada en `sim2chip/` (semana 1). Sustituye a los scripts sueltos de `experiments/legacy/`, que se conservan como histórico.
 
 Cambios respecto a la propuesta inicial, decididos al implementar:

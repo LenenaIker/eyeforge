@@ -10,9 +10,13 @@ of the spec: an ESP32-CAM or a XIAO ESP32-S3 gets an int8 TFLite Micro model (an
 microcontroller, while a phone or a PC gets a larger model for finer distinctions. The model can classify a
 region of interest or count objects.
 
+- **Demo video (3 min):** https://youtu.be/sEvSlciHGKQ
+- **Devpost:** https://devpost.com/software/sim2chip (the page keeps the project's first name, Sim2Chip)
+- **Try it:** https://eyeforge.app (see [For judges](#for-judges-three-ways-to-try-it))
+
 The engine and CLI are still called `sim2chip`.
 
-Status: built for the Nebius x NVIDIA Global AI Hackathon (Apps track).
+Status: submitted to the Nebius x NVIDIA Global AI Hackathon (Apps track), 2026-10-30.
 
 ## New: synthetic data rendered in the user's own place
 
@@ -97,10 +101,10 @@ interview ──► spec.json ──► label ──► ingest ──► fetch_a
   the work on an L40S GPU in Nebius AI Cloud and brings the results back. A shared warm GPU starts when
   the user uploads photos, takes the labeling, calibration and training of several users as tasks, and
   stops 20 s after its last one (it boots a light image in about 92 s; runs with synthetic data get their
-  own GPU with Isaac Sim). Walk scenes run their WorldStereo steps on a stopped Nebius VM that starts only
-  for them.
+  own GPU with Isaac Sim). Walk scenes run on a stopped Nebius RTX PRO 6000 VM that starts only for them
+  and stops when the scene is done.
 
-Design notes: `docs/architecture.md`.
+Design notes: `docs/architecture.md` (in Spanish, written in the first week; this README is the current picture).
 
 ## First results
 
@@ -193,10 +197,14 @@ the Python environments go to the cache bucket and each run streams in only the 
 `SIM2CHIP_NEBIUS_REGISTRY` and `SIM2CHIP_IMAGE_TAG`, and copy the teachers' weights to the cache bucket
 (`scripts/upload_weights.py`), so no job needs a Hugging Face token.
 
-Making walk scenes needs a few more Python environments (Qwen-Image-Edit, MoGe-2, MapAnything, gsplat,
-3DGRUT) and the upstream checkouts in `SIM2CHIP_TOOLS`; `experiments/worldstereo/wsroute/paths.py` lists the
-variables. WorldStereo runs on a Nebius VM (`experiments/worldstereo/ws_vm.py`). Training in a ready scene
-needs only gsplat's environment next to Isaac Sim.
+Making walk scenes needs no local GPU: with `SIM2CHIP_SCENE_VM=1` the whole route runs on a Nebius RTX PRO
+6000 VM (`experiments/worldstereo/wsroute/scenevm.py`). Once, `ws_route.py vm disk`, `vm gpu` and `vm setup`
+create the VM and fill its disk with the Python environments (pinned in `experiments/worldstereo/envs/`), the
+route, Fixer and WorldStereo images (`experiments/worldstereo/build.sh`, `build.sh route`) and the weights. Then
+each scene starts the VM, runs every step there and stops it; the server only needs the `nebius` CLI, ssh and
+the `SIM2CHIP_WS_*` settings. The same route can also run on a local GPU with the environments that
+`experiments/worldstereo/wsroute/paths.py` lists. Training in a ready scene needs only gsplat's environment next
+to Isaac Sim.
 
 ## Usage
 
