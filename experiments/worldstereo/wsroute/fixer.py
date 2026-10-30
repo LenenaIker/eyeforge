@@ -110,7 +110,8 @@ def fix(case_name: str, tag: str, timestep: int):
     (out / f"t{timestep}").mkdir(exist_ok=True)
     (FIXER / "src" / "models").mkdir(exist_ok=True)
     cmd = ["docker", "run", "--rm", "--gpus", "all", "--ipc=host", "--user", f"{os.getuid()}:{os.getgid()}",
-           "-e", "HOME=/tmp", "-v", f"{(FIXER / 'src').resolve()}:/work",
+           # getpass reads USER before asking the image's passwd, which lacks the scene VM's user (uid 1001)
+           "-e", "HOME=/tmp", "-e", "USER=fixer", "-e", "LOGNAME=fixer", "-v", f"{(FIXER / 'src').resolve()}:/work",
            "-v", f"{(FIXER / 'models').resolve()}:/work/models", "-v", f"{out.resolve()}:/data", IMAGE,
            "-c", f"python /work/src/inference_pretrained_model.py --model /work/models/pretrained/pretrained_fixer.pkl"
                  f" --input /data/in --output /data/t{timestep} --timestep {timestep} --resolution 1024"]
