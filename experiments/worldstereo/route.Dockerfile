@@ -11,7 +11,7 @@ ARG GRUT_COMMIT=e6f4552
 ENV TORCH_CUDA_ARCH_LIST="8.6 8.9 12.0"
 RUN pip install -q --no-build-isolation gsplat==1.5.3 -c /opt/keep.txt
 RUN pip install -q lpips==0.1.4 plyfile==1.1.3 jaxtyping rich usd-core nvidia-ncore==19.8.3 simplejpeg tensorboard \
-        imageio-ffmpeg numpy==1.26.4 -c /opt/keep.txt
+        imageio-ffmpeg av==17.1.0 numpy==1.26.4 -c /opt/keep.txt
 RUN git clone -q https://github.com/nv-tlabs/3dgrut.git /opt/3dgrut && git -C /opt/3dgrut checkout -q $GRUT_COMMIT
 # The Fixer step starts Fixer's own container through the host's Docker socket (route_python.sh mounts it).
 RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \

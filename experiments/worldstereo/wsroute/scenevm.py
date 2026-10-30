@@ -136,6 +136,12 @@ def remote(photo_file: Path, photo: str, case: str, out: Path | None = None, hou
             with tarfile.open(fileobj=io.BytesIO(got)) as t:
                 t.extractall(out, filter="data")
             print(f"[{case}] bundle fetched -> {out / 'bundle'}", flush=True)
+            # The disk keeps the weights, not the cases (several GB each). A failed case stays: the next run of
+            # it skips the steps it finished, the paid WorldStereo legs among them.
+            d = f"{REPO}/data"
+            ssh(host, f"rm -rf {REPO}/in {d}/worldstereo_test/{case} {d}/worldstereo_test/scene_in/{case} "
+                      f"{d}/panogen_test/out/{case} {d}/panogen_test/in/{photo}.* {d}/panogen_test/in/{case}.*",
+                check=False)
         finally:
             ssh(host, f"rm -f {REPO}/.env", check=False)
             stop()
