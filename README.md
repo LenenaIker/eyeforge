@@ -38,9 +38,11 @@ scene"), and the training renders the objects to learn inside it:
   is built, and the objects to learn are added at training time. The same scene serves a bin counter today
   and a bicycle detector tomorrow, and public scenes (added by the admin) are shared by every user. This is
   what keeps the pipeline general: nothing in a scene is tied to a class.
-- **Made once, apart from training.** A scene takes about 2 hours and about $1 of cloud GPU, and is
-  started from the dataset page (EyeForge proposes six of the user's photos; *Extract* builds one) or
-  from the CLI (`sim2chip scene make`). A training run then picks ready scenes and starts at once.
+- **Made once, apart from training.** A scene takes about 2 hours on a local GPU plus about $1 of cloud
+  GPU for WorldStereo, or about 3 hours and $5 with every step on the Nebius VM (no local GPU; measured
+  2026-10-30). It is started from the dataset page (EyeForge proposes six of the user's photos;
+  *Extract* builds one) or from the CLI (`sim2chip scene make`). A training run then picks ready scenes
+  and starts at once.
 
 How a scene is made (recipe "F3c", `experiments/worldstereo/`):
 
@@ -225,7 +227,7 @@ sim2chip run specs/examples/lora_alarm_traffic.json --only render  # one stage (
 
 # Walk scenes (a training run uses the ones in its spec's generation.scenes)
 sim2chip scene list                    # the scenes in the library, with their state
-sim2chip scene make <photo id>         # build one from a library photo (about 2 h and $1 of cloud GPU)
+sim2chip scene make <photo id>         # build one from a library photo (2-3 h, see above)
 sim2chip scene add <bundle folder>     # add a finished scene; --public shares it with every user
 ```
 
