@@ -46,6 +46,9 @@ KNOWN: dict[str, str | None] = {
     "SIM2CHIP_WARM_SILENT_S": FLOAT, "SIM2CHIP_WARM_SETUP_S": FLOAT, "SIM2CHIP_RUN_RAM_GB": FLOAT,
     "SIM2CHIP_SCENE_QUEUE": None, "SIM2CHIP_SCENE_PARALLEL": INT, "SIM2CHIP_SCENE_GPU": None,
     "SIM2CHIP_SCENE_BIG": None,
+    # the scene route on the Nebius VM (scene_job.py, experiments/worldstereo/wsroute/scenevm.py)
+    "SIM2CHIP_SCENE_VM": None, "SIM2CHIP_WS_SSH_KEY": None, "SIM2CHIP_WS_HERE": None, "SIM2CHIP_ROUTE_IMAGE": None,
+    "SIM2CHIP_ROUTE_MOUNTS": None, "SIM2CHIP_FIXER_IMAGE": None,
     # the public server
     "SIM2CHIP_WEB_KEY": None, "SIM2CHIP_PUBLIC_URL": None, "SIM2CHIP_SESSION_SECRET": None,
     "SIM2CHIP_CONTACT": None, "SIM2CHIP_JUDGE_UNTIL": None, "SIM2CHIP_STRIPE_TAX": None,

@@ -151,11 +151,11 @@ def test_closing_refunds_the_paid_balance_left_and_drops_the_card(pay):
     p.handle(paid(acc.id, "10.00", "pi_old"))
     p.handle(paid(acc.id, "5.00", "pi_new"))
     accs.add(acc.id, 3, "grant")  # given, not paid: counted as spent first, never refunded beyond what was paid
-    accs.meter(acc.id, "job1", "run", 4.5)  # 9 $ used at the 2x margin: 9 $ left
+    accs.meter(acc.id, "job1", "run", 6.0)  # 7.8 $ used at the 1.3x margin: 10.2 $ left
     stripe.calls.clear()
-    assert p.close(acc.id) == pytest.approx(9)
+    assert p.close(acc.id) == pytest.approx(10.2)
     refunds = [(c[2]["payment_intent"], c[2]["amount"]) for c in stripe.calls if c[1] == "refunds"]
-    assert refunds == [("pi_new", 500), ("pi_old", 400)]  # newest first
+    assert refunds == [("pi_new", 500), ("pi_old", 520)]  # newest first
     assert ("DELETE", "customers/cus_1", None, None) in stripe.calls
     assert p.handle(refunded("pi_new", 500)) == "already refunded"  # its webhook comes later
     assert accs.balance(acc.id) == pytest.approx(0)

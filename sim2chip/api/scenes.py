@@ -68,7 +68,7 @@ def add(app: FastAPI, ctx) -> None:
 
     @app.post("/api/library/scenes/extract")
     async def library_scene_extract(request: Request):
-        """Start the scene job for one of the owner's photos (about two hours, two paid VM runs)."""
+        """Start the scene job for one of the owner's photos (two to three hours on a paid GPU)."""
         body = await request.json()
         owner = owner_of(request)
         pid = int(body.get("photo_id", -1))
@@ -87,7 +87,8 @@ def add(app: FastAPI, ctx) -> None:
         def work():
             done = scene_job.run(home, owner, pid)
             if acc is not None and accounts is not None and (lib.scene_status(owner, done) or {}).get("status") == "ready":
-                charged(acc.id, accounts.meter(acc.id, f"scene:{done}", "scene", scene_job.COST_USD))
+                usd = (scene_job.progress(home, done) or {}).get("cost", scene_job.COST_USD)
+                charged(acc.id, accounts.meter(acc.id, f"scene:{done}", "scene", usd))
         scene_runner.submit(work)
         return scene_state(owner, sid)
 

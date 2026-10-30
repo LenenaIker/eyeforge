@@ -23,10 +23,11 @@ from pathlib import Path
 
 # Sponsor, organiser and judges' companies of the Nebius x NVIDIA hackathon: the rules want them free of charge.
 JUDGE_DOMAINS = {"nvidia.com", "nebius.com", "tavily.com", "devpost.com"}
-MARGIN = 2.0  # price = our cost x MARGIN: failed tries, the warm GPU's idle minutes, payment fees (user, 2026-10-09)
+MARGIN = 1.3  # price = our cost x MARGIN: what we spent plus 30 % (user, 2026-10-30; was 2.0 since 2026-10-09)
 # Dollars the balance must hold to start each, about its usual price with the margin: a first Nebius run cost
-# 0.56 $ (2026-09-27), a labeling a few GPU minutes, a chat a few cents of tokens.
-START = {"run": 1.0, "label": 0.2, "chat": 0.05, "profile": 0.05, "scene": 1.0}
+# 0.56 $ (2026-09-27), a labeling a few GPU minutes, a chat a few cents of tokens, a scene on the VM about 5 $
+# (2026-10-30).
+START = {"run": 1.0, "label": 0.2, "chat": 0.05, "profile": 0.05, "scene": 6.5}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (

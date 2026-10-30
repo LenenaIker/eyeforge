@@ -1,7 +1,7 @@
 """The scene job: one of the owner's photos to a walk scene in their library, apart from any training (user,
 2026-10-26). It drives the WorldStereo route (experiments/worldstereo/ws_route.py, recipe F3c) through its last
 step, bundle, then adds the bundle to the library. The route's two WorldStereo legs run on the Nebius VM and cost
-money (about 1 $ a scene): only a user's click (web) or the admin (CLI) starts a job.
+money (about 1 $ a scene, about 5 $ with SIM2CHIP_SCENE_VM=1): only a user's click (web) or the admin (CLI) starts a job.
 
 Progress lives in <home>/scene_jobs/<scene id>.json: {"status", "step", "done", "total", "why", "pid"}, read by the
 web; the route's whole output in <scene id>.log. The route's driver runs in SIM2CHIP_ROUTE_PYTHON (default this
@@ -28,6 +28,7 @@ from .workspace import REPO
 ROUTE = REPO / "experiments" / "worldstereo" / "ws_route.py"
 LAST = "bundle"
 COST_USD = 1.0  # what a scene costs us, about: two WorldStereo runs on the VM and the vision model's calls
+VM_USD_H = 1.80  # the scene VM (wsroute/vm.py GPU) per hour: a scene made there costs its hours, start to stop
 STEP_LINE = re.compile(r"^\[(?P<case>[^\]]+)\] (?P<step>[\w.]+)(?: \.\.\.|: done|: nothing to erase)")
 
 
@@ -122,6 +123,14 @@ def steps(case: str) -> list[str]:
     return [line[6:].split("  (paid)")[0].strip() for line in out.splitlines() if line.strip()]
 
 
+def cost(state: dict) -> float:
+    """What a finished job cost us, in dollars: on the VM its hours (the VM starts and stops with the job), else
+    the usual COST_USD of the two WorldStereo runs."""
+    if on_vm():
+        return round((state.get("ended", time.time()) - state["started"]) / 3600 * VM_USD_H, 4)
+    return COST_USD
+
+
 def run(home: Path, owner: str, photo_id: int) -> str:
     """The whole job, blocking (hours): the library's scene goes from building to ready or failed."""
     from .library import Library
@@ -186,7 +195,8 @@ def run(home: Path, owner: str, photo_id: int) -> str:
         if proc.returncode:
             raise RuntimeError(f"the scene route stopped at {state['step']}: " + " | ".join(tail[-2:]))
         lib.add_scene(sid, bundle)
-        save(status="ready", step=LAST, done=state["total"])
+        state["ended"] = time.time()
+        save(status="ready", step=LAST, done=state["total"], cost=cost(state))
     except Exception as e:  # the library keeps the failure and why; the page shows it
         why = str(e) or type(e).__name__
         lib.fail_scene(sid, why)

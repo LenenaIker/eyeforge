@@ -121,15 +121,15 @@ def test_normal_account_pays_for_what_it_uses(server):
     name = new_job(c).json()["job"]
     assert len(server.launched) == 1
     assert c.get("/api/me").json()["account"]["balance"] == 1.1  # nothing charged before it uses anything
-    used(server, name, cloud_usd=0.2, tokens=50_000)  # 0.25 $ of cost, twice that charged
-    assert c.get("/api/me").json()["account"]["balance"] == 0.6
+    used(server, name, cloud_usd=0.2, tokens=50_000)  # 0.25 $ of cost, 30 % more charged
+    assert c.get("/api/me").json()["account"]["balance"] == 0.775
     used(server, name, cloud_usd=0.2, tokens=50_000)  # the same usage read again is not charged twice
-    assert c.get("/api/me").json()["account"]["balance"] == 0.6
+    assert c.get("/api/me").json()["account"]["balance"] == 0.775
     moves = c.get("/api/billing").json()["moves"]
-    assert moves[0] == {**moves[0], "amount": -0.5, "reason": "run", "detail": f"job:{name}"}
+    assert moves[0] == {**moves[0], "amount": -0.325, "reason": "run", "detail": f"job:{name}"}
     again = new_job(c)  # the same setup twice (a double click) is the running job
     assert again.status_code == 200 and again.json().get("already_running") and len(server.launched) == 1
-    assert new_job(c, "black cows").status_code == 402  # 0.6 $ does not cover a usual run
+    assert new_job(c, "black cows").status_code == 402  # 0.775 $ does not cover a usual run
 
 
 def test_a_job_stops_when_the_balance_runs_out(server):
@@ -137,8 +137,8 @@ def test_a_job_stops_when_the_balance_runs_out(server):
     acc = server.accounts.by_email("alice@gmail.com")[0]
     server.accounts.add(acc.id, 1.0, "grant")
     name = new_job(c).json()["job"]
-    job = used(server, name, cloud_usd=0.6)
-    assert server.accounts.balance(acc.id) == -0.2
+    job = used(server, name, cloud_usd=1.0)
+    assert server.accounts.balance(acc.id) == -0.3
     assert "the balance ran out" in (job.logs / "pipeline.log").read_text()
 
 
