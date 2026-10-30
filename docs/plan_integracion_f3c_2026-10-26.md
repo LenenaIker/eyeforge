@@ -37,7 +37,7 @@ La biblioteca ya tiene `scenes` (ruta, estado) y `objects` ligados a su escena, 
   - `library.add_scene(owner, photo_id, folder)`, sin trabajo de entrenamiento. Ruta `walk`; estado `building`, `ready` o `failed`.
   - `sim2chip scene <foto>` desde la CLI; en la web, las 6 fotos propuestas y el botón "Extraer" en la página del dataset.
   - Progreso en el sitio (barra y paso en curso); al acabar, la escena en Assets.
-- **2d. Para la entrega:** todo el trabajo en la VM RTX PRO 6000. Hay que instalar en su disco los entornos de SAM 3, Qwen (borrador y panorámica, más el LoRA 360 de 282 MB), MapAnything, gsplat, Fixer y 3DGRUT. El servidor de Hetzner lanza la VM y recoge el resultado. Estimación: 1 a 1.5 días.
+- **2d. Para la entrega:** todo el trabajo en la VM RTX PRO 6000. **Hecho el 2026-10-30** (`wsroute/scenevm.py`, `SIM2CHIP_SCENE_VM=1`): imagen de la ruta para sm_120, entornos de SAM 3 y Qwen en el disco de la VM, USDZ sin compilar 3DGRUT. Escena completa en la VM: unas 3 h y unos 5 $ (caso `e2e_lib_vmtest`, hoja `data/worldstereo_test/sheet_scene_vm_vs_local.jpg`). Falta activarlo en el servidor (clave ssh, variables, permisos de la cuenta de servicio en eu-south1).
 
 ## Punto 1: el entrenamiento usa la escena
 
