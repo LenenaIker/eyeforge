@@ -120,6 +120,9 @@ scenes: the synthetic images came from generic Isaac Sim scenes.
 
 A few real photos plus synthetic data beat either one alone by about 20 points.
 
+The 88% in the demo video is a different model: the waste bin detector (bin or no bin, 2 classes) trained
+on eyeforge.app from the user's street photos and scored on 56 real test photos.
+
 ## For judges: three ways to try it
 
 | Level | What you get | What you need |
