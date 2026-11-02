@@ -28,7 +28,7 @@ export type Turn = {
 
 export type Config = {
   backend: "local" | "nebius";
-  engine: string;  // the EyeForge this server runs, e.g. 0.9.0+1c20634 (sim2chip/version.py)
+  engine: string;  // the EyeForge this server runs, e.g. 1.0.0+1c20634 (sim2chip/version.py)
   first_question: string;
   public: boolean;
   busy: boolean;
