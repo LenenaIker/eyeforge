@@ -7,7 +7,7 @@ import { Logo } from "../components/ui";
 
 const OWNER = "Iker Leñena Ibarrola";  // the person who runs EyeForge (data controller and seller)
 const CONTACT = "contact@eyeforge.app";
-const UPDATED = "October 9, 2026";
+const UPDATED = "November 2, 2026";
 
 function Page({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -137,9 +137,10 @@ export function Terms() {
 
       <h2>Balance and prices</h2>
       <ul>
-        <li>You top up a balance in US dollars by card and pay as you use it. Each model, chat or labeling costs what
-          it used (cloud GPU time and AI model tokens) at twice what it costs us, charged as it runs and listed in
-          Billing. The prices shown before you start are estimates.</li>
+        <li>You top up a balance in US dollars by card and pay as you use it. Each model, scene, chat or labeling costs
+          what it used (cloud GPU time and AI model tokens) at what it costs us plus 30 %, charged as it runs and listed
+          in Billing. A scene is charged when it ends, for the GPU hours it used, also if it fails. The prices shown
+          before you start are estimates.</li>
         <li>Prices include VAT.</li>
         <li>Your balance does not expire and cannot be transferred.</li>
         <li>Auto top-up, if you turn it on, charges your saved card the amount you chose when your balance falls
@@ -151,7 +152,7 @@ export function Terms() {
         <li>You can ask for a refund of the unused part of a top-up within 14 days of buying it.</li>
         <li>If you delete your account (in Billing), what is left of your paid balance goes back to your card at
           once.</li>
-        <li>If a model fails because of a problem on our side, write to us and we return what it cost.</li>
+        <li>If a model or a scene fails because of a problem on our side, write to us and we return what it cost.</li>
         <li>What you have already used cannot be refunded: it is spent on cloud computing as soon as it runs, which
           you ask for when you start it.</li>
       </ul>

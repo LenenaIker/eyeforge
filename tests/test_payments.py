@@ -2,11 +2,13 @@
 import hashlib
 import hmac
 import json
+import re
 import time
+from pathlib import Path
 
 import pytest
 
-from sim2chip.accounts import Accounts
+from sim2chip.accounts import MARGIN, Accounts
 from sim2chip.payments import PaymentError, Payments, _flat
 
 SECRET = "whsec_test"
@@ -159,3 +161,9 @@ def test_closing_refunds_the_paid_balance_left_and_drops_the_card(pay):
     assert ("DELETE", "customers/cus_1", None, None) in stripe.calls
     assert p.handle(refunded("pi_new", 500)) == "already refunded"  # its webhook comes later
     assert accs.balance(acc.id) == pytest.approx(0)
+
+
+def test_the_terms_state_the_margin_we_charge():
+    terms = (Path(__file__).parents[1] / "web" / "src" / "pages" / "Legal.tsx").read_text()
+    assert [int(n) for n in re.findall(r"plus (\d+) %", terms)] == [round((MARGIN - 1) * 100)]
+    assert "twice" not in terms
