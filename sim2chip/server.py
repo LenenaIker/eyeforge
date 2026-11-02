@@ -293,6 +293,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         return sum(START["label" if (d / LABELING).exists() else "run"] for d in (root.iterdir() if root.exists() else [])
                    if (d / PAYER).exists() and (d / PAYER).read_text().strip() == acc_id and jobs.running(Job(d)))
 
+    closing: set[str] = set()  # accounts being closed right now: they start nothing more
+
     def may_start(request: Request, reason: str):
         """The signed-in account, when it may start this (accounts.START); 402 when its balance cannot cover the
         usual price, also counting its running jobs and its scenes being made or queued (a scene is charged when it
@@ -300,6 +302,8 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         if accounts is None:
             return None
         acc = request.state.account
+        if acc.id in closing:
+            raise HTTPException(409, "this account is being closed")
         held = jobs_held(acc.id) + START["scene"] * len(lib.building_scenes(acc.id))
         if not accounts.can_start(acc, reason, held):
             if accounts.tier(acc) == "banned":
@@ -517,7 +521,7 @@ def create_app(home: Path, backend: str = "local", max_usd: float | None = None,
         home=home, lib=lib, jobs=jobs, public=public, backend=backend, accounts=accounts, payments=payments,
         contact=contact, describer=describer, interviewer=interviewer, profiling=profiling, profiler=profiler,
         chat_payer=chat_payer, owns_upload=owns_upload, owner_of=owner_of, visitor=visitor, may_start=may_start,
-        jobs_held=jobs_held, bill_to=bill_to, meter_chat=meter_chat, charged=charged, mine=mine, job_of=job_of,
+        jobs_held=jobs_held, closing=closing, bill_to=bill_to, meter_chat=meter_chat, charged=charged, mine=mine, job_of=job_of,
         interview_usage=interview_usage, credit_interview=credit_interview, keep_chat=keep_chat,
         start_run=start_run, room_for_a_run=room_for_a_run, budget_left=budget_left, owned=owned,
         profile_soon=profile_soon, my_jobs=my_jobs)

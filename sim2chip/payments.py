@@ -210,8 +210,7 @@ class Payments:
             row = self._paid(payment)
             if row is None:
                 return "refund of an unknown payment"
-            taken = -self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ? AND detail = ?",
-                                     (row[0], detail)).fetchone()[0]
+            taken = self._taken(row[0], detail)
             more = round(row[1] * min(cents_refunded / cents_paid, 1) - taken, 2) if cents_paid > 0 else 0
             if more <= 0:
                 return "already refunded"
@@ -241,8 +240,7 @@ class Payments:
         detail = f"dispute {dispute}"
         if self.db.execute("SELECT 1 FROM credits WHERE account = ? AND detail = ?", (account, detail)).fetchone():
             return f"dispute {dispute}: already taken"
-        refunded = -self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ? AND detail = ?",
-                                    (account, f"refund {payment}")).fetchone()[0]
+        refunded = self._taken(account, f"refund {payment}")
         others = self.db.execute("SELECT COALESCE(SUM(taken), 0) FROM disputes WHERE payment = ? AND id != ?",
                                  (payment, dispute)).fetchone()[0]
         left = added - refunded - others
@@ -297,38 +295,14 @@ class Payments:
         payments first; balance given for free is not money to return) and delete its Stripe customer, which
         drops the saved card. Returns the dollars refunded. Raises PaymentError before deleting anything when
         Stripe refuses a refund, or when a dispute holds back money that could not go back."""
-        refunded = 0.0
-        # The accounts' lock while refunding: the charge.refunded webhook of these refunds waits until they are
-        # written down, then finds nothing more to take back.
-        with self.accounts.lock:
-            left = self.accounts.balance(acc_id)
-            paid = self.db.execute("SELECT amount, detail FROM credits WHERE account = ? AND amount > 0 AND "
-                                   "reason IN ('purchase', 'auto top-up') AND detail LIKE 'pi_%' ORDER BY t DESC",
-                                   (acc_id,)).fetchall()
-            for amount, payment in paid:
-                if left < 0.01:
-                    break
-                if self.db.execute("SELECT 1 FROM disputes WHERE payment = ? AND COALESCE(status, '') NOT IN (?, ?, ?, ?)",
-                                   (payment, *DISPUTE_OVER)).fetchone():
-                    continue  # Stripe refuses a refund of a disputed payment
-                detail = f"refund {payment}"
-                taken = -self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ? AND "
-                                         "detail = ?", (acc_id, detail)).fetchone()[0]
-                cents = int(round(min(amount - taken, left) * 100))
-                if cents < 1:
-                    continue
-                self._call("POST", "refunds", {"payment_intent": payment, "amount": cents,
-                                               "metadata": {"account": acc_id, "kind": "account closed"}},
-                           idempotency=f"close-{payment}-{cents}")
-                self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)",
-                                (acc_id, -cents / 100, "refund", detail, time.time()))
-                left -= cents / 100
-                refunded += cents / 100
-            if left >= 0.01 and self.db.execute(
-                    f"SELECT 1 FROM disputes WHERE taken = 0 AND COALESCE(status, '') NOT IN (?, ?, ?, ?, 'lost') AND "
-                    f"payment IN ({','.join('?' * len(paid))})", (*DISPUTE_OVER, *[p for _, p in paid])).fetchone():
-                raise PaymentError("a payment is under dispute, so part of your balance cannot go back to your card "
-                                   "until it is settled: write to us")
+        with self.lock:  # no auto top-up from here on; a refused closing leaves it as it was
+            auto_on = self._row(acc_id)["auto_on"]
+            self.db.execute("UPDATE stripe SET auto_on = 0 WHERE account = ?", (acc_id,))
+        try:
+            refunded = self._refund_left(acc_id)
+        except PaymentError:
+            self.db.execute("UPDATE stripe SET auto_on = ? WHERE account = ?", (auto_on, acc_id))
+            raise
         r = self._row(acc_id)
         if r["customer"]:
             try:
@@ -337,6 +311,46 @@ class Payments:
                 print(f"stripe: could not delete customer {r['customer']}: {e}", flush=True)
         self.db.execute("DELETE FROM stripe WHERE account = ?", (acc_id,))
         return round(refunded, 2)
+
+    def _refund_left(self, acc_id: str) -> float:
+        """Refund the balance left, without holding the accounts' lock while Stripe answers: the charge.refunded
+        webhook may come before or after each move is written, and both only write what the other has not."""
+        refunded = 0.0
+        left = self.accounts.balance(acc_id)
+        paid = self.db.execute("SELECT amount, detail FROM credits WHERE account = ? AND amount > 0 AND "
+                               "reason IN ('purchase', 'auto top-up') AND detail LIKE 'pi_%' ORDER BY t DESC",
+                               (acc_id,)).fetchall()
+        for amount, payment in paid:
+            if left < 0.01:
+                break
+            if self.db.execute("SELECT 1 FROM disputes WHERE payment = ? AND COALESCE(status, '') NOT IN (?, ?, ?, ?)",
+                               (payment, *DISPUTE_OVER)).fetchone():
+                continue  # Stripe refuses a refund of a disputed payment
+            detail = f"refund {payment}"
+            taken = self._taken(acc_id, detail)
+            cents = int(round(min(amount - taken, left) * 100))
+            if cents < 1:
+                continue
+            self._call("POST", "refunds", {"payment_intent": payment, "amount": cents,
+                                           "metadata": {"account": acc_id, "kind": "account closed"}},
+                       idempotency=f"close-{payment}-{cents}")
+            with self.accounts.lock:
+                more = round(taken + cents / 100 - self._taken(acc_id, detail), 2)
+                if more > 0:
+                    self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)",
+                                    (acc_id, -more, "refund", detail, time.time()))
+            left -= cents / 100
+            refunded += cents / 100
+        if left >= 0.01 and self.db.execute(
+                f"SELECT 1 FROM disputes WHERE taken = 0 AND COALESCE(status, '') NOT IN (?, ?, ?, ?, 'lost') AND "
+                f"payment IN ({','.join('?' * len(paid))})", (*DISPUTE_OVER, *[p for _, p in paid])).fetchone():
+            raise PaymentError("a payment is under dispute, so part of your balance cannot go back to your card "
+                               "until it is settled: write to us")
+        return refunded
+
+    def _taken(self, acc_id: str, detail: str) -> float:
+        return -self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ? AND detail = ?",
+                                (acc_id, detail)).fetchone()[0]
 
     # Auto top-up ----------------------------------------------------------------------------------------
 

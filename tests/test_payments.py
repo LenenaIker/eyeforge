@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import re
+import sqlite3
 import time
 from pathlib import Path
 
@@ -132,6 +133,30 @@ def test_server_top_up_and_webhook(tmp_path):
     assert anyone.post("/api/stripe/webhook", content=body, headers={"stripe-signature": "t=1,v1=x"}).status_code == 400
     assert anyone.post("/api/stripe/webhook", content=body, headers={"stripe-signature": sig}).status_code == 200
     assert c.get("/api/me").json()["account"]["balance"] == 25
+
+
+def test_an_account_being_closed_starts_nothing(tmp_path):
+    from test_accounts import fake_http, new_job, sign_in
+    from sim2chip.auth import Auth
+    from sim2chip.server import create_app
+    auth = Auth("https://eyeforge.test", "x" * 32, {"google": ("gid", "gsec")}, http=fake_http)
+    accs = Accounts(tmp_path / "accounts.db")
+    stripe, seen = FakeStripe(), []
+    pays = Payments(accs, "https://eyeforge.test", "sk_test", SECRET, http=stripe)
+    app = create_app(tmp_path, backend="nebius", public=True, auth=auth, accounts=accs, payments=pays)
+    c = sign_in(app, "google", "alice")
+    acc = accs.by_email("alice@gmail.com")[0]
+    pays.checkout(acc, 10)
+    pays.handle(paid(acc.id))
+
+    def http(method, url, secret, data=None, idempotency=None):
+        if url.endswith("/refunds"):  # half way through the closing, from another tab
+            seen.append(new_job(c).status_code)
+            seen.append(c.post("/api/account/delete", json={"confirm": "delete"}).status_code)
+        return stripe(method, url, secret, data, idempotency)
+    pays.http = http
+    assert c.post("/api/account/delete", json={"confirm": "delete"}).json()["refunded"] == 10
+    assert seen == [409, 409]
 
 
 def refunded(pi="pi_1", cents=1000, paid_cents=1000):
@@ -322,6 +347,68 @@ def test_closing_refunds_a_payment_whose_dispute_we_won(pay):
     p.handle(dispute("funds_withdrawn"))
     p.handle(dispute("closed", "won"))
     assert p.close(acc.id) == 10
+
+
+def test_closing_turns_auto_top_up_off_and_a_refusal_puts_it_back(pay):
+    p, accs, acc, stripe = pay
+    p.checkout(acc, 10)
+    p.handle(paid(acc.id))
+    p.set_auto(acc.id, True, 2, 10)
+    real, charged = stripe.__call__, []
+
+    def refuse(method, url, secret, data=None, idempotency=None):
+        charged.append(p.maybe_auto(acc.id, 1.0))  # the balance is low now, while it closes
+        raise PaymentError("refused")
+    p.http = refuse
+    with pytest.raises(PaymentError):
+        p.close(acc.id)
+    assert charged == [None]
+    assert p.settings(acc.id)["auto"]["on"] is True
+    p.http = real
+    assert p.close(acc.id) == 10
+
+
+@pytest.mark.parametrize("webhook_first", [True, False])
+def test_closing_and_the_refund_webhook_count_once_in_either_order(pay, webhook_first):
+    p, accs, acc, stripe = pay
+    p.checkout(acc, 10)
+    p.handle(paid(acc.id))
+    real = stripe.__call__
+
+    def http(method, url, secret, data=None, idempotency=None):
+        assert not accs.lock.locked()  # Stripe's answer must not stop everyone else's usage
+        out = real(method, url, secret, data, idempotency)
+        if url.endswith("/refunds") and webhook_first:
+            p.handle(refunded(cents=data["amount"]))
+        return out
+    p.http = http
+    assert p.close(acc.id) == 10
+    assert accs.balance(acc.id) == pytest.approx(0)
+    assert p.handle(refunded(cents=1000)) == "already refunded"
+    assert accs.balance(acc.id) == pytest.approx(0)
+
+
+def test_the_ledger_refuses_a_payment_twice_but_not_a_second_partial_refund(pay):
+    _, accs, acc, _ = pay
+    insert = "INSERT INTO credits VALUES (?, ?, ?, ?, 0)"
+    accs.db.execute(insert, (acc.id, 5, "purchase", "pi_1"))
+    with pytest.raises(sqlite3.IntegrityError):
+        accs.db.execute(insert, (acc.id, 5, "purchase", "pi_1"))
+    for amount in (-1, -2):
+        accs.db.execute(insert, (acc.id, amount, "refund", "refund pi_1"))
+    assert accs.balance(acc.id) == 2
+
+
+def test_a_ledger_with_a_payment_twice_still_starts(tmp_path, capsys):
+    db = sqlite3.connect(tmp_path / "a.db")
+    db.execute("CREATE TABLE credits (account TEXT NOT NULL, amount REAL NOT NULL, reason TEXT NOT NULL, detail TEXT, "
+               "t REAL NOT NULL)")
+    for _ in range(2):
+        db.execute("INSERT INTO credits VALUES ('a', 5, 'purchase', 'pi_1', 0)")
+    db.commit()
+    db.close()
+    assert Accounts(tmp_path / "a.db").balance("a") == 10
+    assert "TWICE" in capsys.readouterr().out
 
 
 def test_the_terms_state_the_margin_we_charge():

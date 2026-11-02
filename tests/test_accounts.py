@@ -314,6 +314,20 @@ def extract(c, photo):
     return c.post("/api/library/scenes/extract", json={"photo_id": photo})
 
 
+def test_an_account_cannot_close_while_its_scene_is_being_made(server, monkeypatch):
+    c, acc, lib, ids = scene_payer(server, 7.0, monkeypatch)
+    asked, free = held_scene_job(monkeypatch)
+    try:
+        assert extract(c, ids[0]).json()["status"] == "building"
+        r = c.post("/api/account/delete", json={"confirm": "delete"})
+        assert r.status_code == 409 and "scene" in r.json()["detail"]
+        assert server.accounts.get(acc.id) is not None
+    finally:
+        free.set()
+    until(lambda: lib.building_scenes(acc.id) == [])
+    assert c.post("/api/account/delete", json={"confirm": "delete"}).status_code == 200
+
+
 def test_the_balance_of_one_scene_does_not_queue_two(server, monkeypatch):
     c, acc, lib, ids = scene_payer(server, 7.0, monkeypatch)
     asked, free = held_scene_job(monkeypatch)

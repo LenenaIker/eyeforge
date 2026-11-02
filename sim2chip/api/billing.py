@@ -73,7 +73,6 @@ def add(app: FastAPI, ctx) -> None:
         """Close the signed-in account (privacy policy and terms): refund what is left of its paid balance, then
         delete its jobs (and their buckets in the cloud), chats, library and Stripe customer, and remove its name
         and email. Money moves stay, under an anonymous id, as tax records."""
-        from ..payments import PaymentError
         acc = getattr(request.state, "account", None)
         if accounts is None or acc is None:
             raise HTTPException(401, "sign in first")
@@ -81,11 +80,23 @@ def add(app: FastAPI, ctx) -> None:
             raise HTTPException(400, 'type "delete" to confirm')
         if accounts.tier(acc) == "banned":
             raise HTTPException(403, f"write to {contact} to close this account")
+        if acc.id in ctx.closing:
+            raise HTTPException(409, "this account is already being closed")
+        ctx.closing.add(acc.id)
+        try:
+            return close_account(acc)
+        finally:
+            ctx.closing.discard(acc.id)
+
+    def close_account(acc):
+        from ..payments import PaymentError
         root = home / "jobs"
         own = [Job(d) for d in sorted(root.iterdir()) if (d / OWNER).is_file()
                and (d / OWNER).read_text().strip() == acc.id] if root.exists() else []
         if any(jobs.running(j) for j in own):
             raise HTTPException(409, "a model is still running: cancel it or wait until it ends")
+        if lib.building_scenes(acc.id):
+            raise HTTPException(409, "a scene is still being made: wait until it ends")
         refunded = 0.0
         if payments is not None:
             try:

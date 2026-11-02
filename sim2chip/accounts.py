@@ -65,6 +65,11 @@ class Accounts:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self.db.executescript(SCHEMA)
+        try:  # a payment counts once, also for the database. Refunds are not here: partial ones repeat their detail
+            self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS credits_once ON credits (account, detail) "
+                            "WHERE amount > 0 AND (detail LIKE 'pi_%' OR detail LIKE 'cs_%')")
+        except sqlite3.IntegrityError:  # a payment counted twice is a fault to look at, not a reason not to start
+            print("accounts: A PAYMENT IS IN THE LEDGER TWICE, look at it by hand", flush=True)
         self.lock = threading.Lock()
         self.judge_until = judge_until
 
@@ -156,8 +161,8 @@ class Accounts:
         with self.lock:
             if self.db.execute("SELECT 1 FROM credits WHERE account = ? AND detail = ?", (acc_id, detail)).fetchone():
                 return False
-            self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)", (acc_id, amount, reason, detail, time.time()))
-            return True
+            return self.db.execute("INSERT OR IGNORE INTO credits VALUES (?, ?, ?, ?, ?)",
+                                   (acc_id, amount, reason, detail, time.time())).rowcount > 0
 
     def can_start(self, acc: Account, reason: str, held: float = 0.0) -> bool:
         """May this account start a run, a labeling, a chat...: free for a judge, never when banned, else when
