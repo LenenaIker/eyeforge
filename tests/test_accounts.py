@@ -1,7 +1,9 @@
 """Login with Google or GitHub, judge access and credits, with a fake OAuth provider."""
 import json
+import os
 import threading
 import time
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -381,6 +383,9 @@ def scene_on_the_vm(monkeypatch, hours):
     clock, real = [0.0], time.time
     monkeypatch.setattr(scene_job.time, "time", lambda: real() + clock[0])
     monkeypatch.setattr(scene_job.subprocess, "Popen", RouteOnTheVM(clock, hours))
+    stopped = []
+    monkeypatch.setattr(scene_job, "vm_off", lambda home: stopped.append(home))
+    return stopped
 
 
 def charges(app, acc):
@@ -389,9 +394,10 @@ def charges(app, acc):
 
 def test_a_scene_that_fails_pays_the_hours_the_vm_ran_and_each_attempt_counts(server, monkeypatch):
     c, acc, lib, ids = scene_payer(server, 20.0, monkeypatch, n=1)
-    scene_on_the_vm(monkeypatch, hours=2)
+    stopped = scene_on_the_vm(monkeypatch, hours=2)
     assert extract(c, ids[0]).json()["status"] == "building"
     until(lambda: charges(server, acc))
+    assert stopped == [server.home]  # the route may have died without stopping the VM
     assert lib.scene_status(acc.id, lib.scene_of_photo(acc.id, ids[0]))["status"] == "failed"
     assert charges(server, acc)[0]["amount"] == pytest.approx(-2 * 1.80 * 1.3, abs=0.01)
     assert extract(c, ids[0]).json()["status"] == "building"  # "Try again": the same scene, more hours
@@ -408,6 +414,7 @@ def test_a_scene_that_fails_before_the_vm_costs_nothing(server, monkeypatch):
     until(lambda: lib.building_scenes(acc.id) == [])
     until(lambda: (scene_job.progress(server.home, lib.scene_of_photo(acc.id, ids[0])) or {}).get("cost") == 0.0)
     assert charges(server, acc) == [] and server.accounts.balance(acc.id) == 7.0
+    assert not scene_job.vm_mark(server.home).exists()  # it never got there: nothing to stop
 
 
 def test_a_judges_scene_is_free_even_if_it_fails(server, monkeypatch):
@@ -420,3 +427,18 @@ def test_a_judges_scene_is_free_even_if_it_fails(server, monkeypatch):
     extract(c, ids[0])
     until(lambda: charges(server, acc))
     assert charges(server, acc)[0]["amount"] == 0 and server.accounts.balance(acc.id) == 0
+
+
+def test_a_server_that_restarts_stops_the_vm_and_frees_the_scene(tmp_path, monkeypatch):
+    """In a container the new server has the old one's pid: the scene must not look alive and hold its price."""
+    from sim2chip import scene_job
+    lib, ids = scene_photos(SimpleNamespace(home=tmp_path), "u", 1)
+    sid = lib.start_scene("u", ids[0])
+    scene_job.vm_mark(tmp_path).parent.mkdir(parents=True)
+    scene_job.vm_mark(tmp_path).write_text(str(os.getpid()))
+    scene_job.progress_file(tmp_path, sid).write_text(json.dumps({"status": "building", "pid": os.getpid()}))
+    stopped = []
+    monkeypatch.setattr(scene_job, "vm_off", lambda home: stopped.append(home))
+    create_app(tmp_path)
+    until(lambda: stopped == [tmp_path])
+    assert lib.building_scenes("u") == [] and "restarted" in lib.scene_status("u", sid)["why"]

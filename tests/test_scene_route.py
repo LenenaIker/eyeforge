@@ -3,6 +3,7 @@ paid step is done only with every leg back, an empty next-best-view plan pays no
 output stops the route, missing interpreters stop it before the first step, and a scene whose job is gone fails."""
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -112,9 +113,87 @@ def test_a_scene_whose_job_is_gone_is_stale(tmp_path):
     f = scene_job.progress_file(tmp_path, "s")
     f.parent.mkdir(parents=True)
     assert scene_job.stale(tmp_path, "s")  # queued in a server that stopped: no progress yet
-    f.write_text(json.dumps({"status": "building", "pid": os.getpid()}))
-    assert not scene_job.stale(tmp_path, "s")
+    with subprocess.Popen(["sleep", "30"]) as other:  # the CLI's job: still running
+        f.write_text(json.dumps({"status": "building", "pid": other.pid}))
+        assert not scene_job.stale(tmp_path, "s")
+        other.kill()
     f.write_text(json.dumps({"status": "building", "pid": 2 ** 22 + 12345}))
+    assert scene_job.stale(tmp_path, "s")
+    f.write_text(json.dumps({"status": "building", "pid": os.getpid()}))  # in a container the old server had our pid
     assert scene_job.stale(tmp_path, "s")
     f.write_text(json.dumps({"status": "failed", "pid": os.getpid()}))  # an older run's file
     assert scene_job.stale(tmp_path, "s")
+
+
+def test_a_vm_left_on_is_only_a_gone_jobs(tmp_path):
+    mark = scene_job.vm_mark(tmp_path)
+    mark.parent.mkdir(parents=True)
+    assert not scene_job.vm_left_on(tmp_path)  # no job has marked it
+    mark.write_text(str(2 ** 22 + 12345))
+    assert scene_job.vm_left_on(tmp_path)
+    mark.write_text(str(os.getpid()))  # the server before, in a container
+    assert scene_job.vm_left_on(tmp_path)
+    with subprocess.Popen(["sleep", "30"]) as other:  # the CLI's job on the VM: not to be cut
+        mark.write_text(str(other.pid))
+        assert not scene_job.vm_left_on(tmp_path)
+        other.kill()
+    mark.write_text("")  # killed while writing it
+    assert scene_job.vm_left_on(tmp_path)
+
+
+def test_vm_off_asks_again_until_nebius_agrees(tmp_path, monkeypatch):
+    mark = scene_job.vm_mark(tmp_path)
+    mark.parent.mkdir(parents=True)
+    mark.write_text("1")
+    answers = [subprocess.CompletedProcess([], 1, "", "nebius is down"), OSError("no python"),
+               subprocess.CompletedProcess([], 0, "stopped", "")]
+
+    def fake_run(*a, **kw):
+        assert mark.exists()  # kept until the VM is known to be off
+        got = answers.pop(0)
+        if isinstance(got, Exception):
+            raise got
+        return got
+    monkeypatch.setattr(scene_job.subprocess, "run", fake_run)
+    scene_job.vm_off(tmp_path, wait=0)
+    assert answers == [] and not mark.exists()
+
+
+@pytest.fixture
+def vm_module(monkeypatch):
+    """wsroute/vm.py on a fake Nebius: the states `get` answers in turn, the stops asked for."""
+    from wsroute import vm
+    stops = []
+    monkeypatch.setattr(vm.time, "sleep", lambda s: None)
+    monkeypatch.setattr(vm, "neb", lambda *a, check=True: stops.append(a) or "")
+
+    def answers(*states):
+        left = list(states)
+
+        def get(kind, name):
+            state = left.pop(0)
+            return state and {"metadata": {"id": "vm1"}, "status": {"state": state}}
+        monkeypatch.setattr(vm, "get", get)
+        return left
+    return vm, stops, answers
+
+
+def test_stop_is_done_only_when_nebius_says_so(vm_module):
+    vm, stops, answers = vm_module
+    answers("RUNNING", "STOPPING")
+    vm.stop()
+    assert len(stops) == 1
+    stops.clear()
+    answers("STOPPED")
+    vm.stop()
+    assert stops == []  # already off
+
+
+def test_stop_tries_again_and_fails_loudly(vm_module):
+    vm, stops, answers = vm_module
+    answers(None, "RUNNING", "RUNNING", "RUNNING", "STOPPED")  # Nebius did not answer; the first stop did nothing
+    vm.stop()
+    assert len(stops) == 2
+    answers(None, None, None)
+    with pytest.raises(SystemExit, match="could not stop"):
+        vm.stop()

@@ -7,7 +7,9 @@ Progress lives in <home>/scene_jobs/<scene id>.json: {"status", "step", "done", 
 web; the route's whole output in <scene id>.log. The route's driver runs in SIM2CHIP_ROUTE_PYTHON (default this
 Python): its cloud steps need boto3 (the edge-sdg env), which the route checks before its first step. With
 SIM2CHIP_SCENE_VM=1 every step runs on that VM instead (wsroute/scenevm.py, `ws_route.py remote`): the server needs
-no GPU, only the VM's settings (VM_VARS), the nebius CLI and an ssh key the VM accepts.
+no GPU, only the VM's settings (VM_VARS), the nebius CLI and an ssh key the VM accepts. A job killed there (a server
+restart) cannot stop the VM, and the VM must not stop itself (Nebius counts a shutdown inside it as a failure and keeps
+billing): <home>/scene_jobs/vm_on says it may be on until Nebius says it is not, and the next server stops it (vm_off).
 
     python -m sim2chip.scene_job --home data --owner local --photo 123   (what the server and CLI start)
 """
@@ -98,12 +100,44 @@ def alive(pid) -> bool:
     return True
 
 
+def gone(pid) -> bool:
+    """Is that job's process gone, seen from a server that has just started? A job of the server runs inside it, and
+    in a container every server has the same pid (1): its own pid is the job of the server before."""
+    return pid == os.getpid() or not alive(pid)
+
+
 def stale(home: Path, sid: str) -> bool:
     """A building scene whose job is gone (the server restarted, the process was killed): it never ends by itself.
     A job still queued in the server has no progress file yet; the server calls this only at start, when its queue
     is empty."""
     p = progress(home, sid)
-    return not (p and p.get("status") == "building" and alive(p.get("pid")))
+    return not (p and p.get("status") == "building" and not gone(p.get("pid")))
+
+
+def vm_mark(home: Path) -> Path:
+    return Path(home) / "scene_jobs" / "vm_on"
+
+
+def vm_left_on(home: Path) -> bool:
+    """Did a job that is gone leave the VM on, or perhaps on? For a server that has just started (gone)."""
+    try:
+        return gone(int(vm_mark(home).read_text()))
+    except (OSError, ValueError):
+        return vm_mark(home).exists()
+
+
+def vm_off(home: Path, wait: float = 60) -> None:
+    """Stop the VM, asking again until Nebius agrees: nobody is watching a VM left on, and it costs 1.80 $/h."""
+    while True:
+        try:
+            r = subprocess.run([route_python(), str(ROUTE), "vm", "stop"], cwd=REPO, capture_output=True, text=True)
+            if r.returncode == 0:
+                vm_mark(home).unlink(missing_ok=True)
+                return
+            print(f"the scene VM may still be on: {(r.stderr.strip() or r.stdout.strip())[-300:]}", flush=True)
+        except OSError as e:
+            print(f"the scene VM may still be on: {e}", flush=True)
+        time.sleep(wait)
 
 
 def photo_of(sid: str) -> str:
@@ -180,6 +214,8 @@ def run(home: Path, owner: str, photo_id: int) -> str:
             bundle = REPO / "data" / "worldstereo_test" / case / "bundle"  # wsroute.paths.DATA
         tail: list[str] = []
         on_the_vm = on_vm()
+        if on_the_vm:
+            vm_mark(home).write_text(str(os.getpid()))
         with open(log, "a") as fh, subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                                     text=True, bufsize=1) as proc:
             for line in proc.stdout:
@@ -206,6 +242,9 @@ def run(home: Path, owner: str, photo_id: int) -> str:
         # The hours the VM ran are paid, like a training that fails (user, 2026-11-02). Off the VM nothing measures
         # how far the paid runs got, so a failure there is not charged.
         save(status="failed", why=why, cost=cost(state) if on_the_vm else 0.0)
+    finally:
+        if on_the_vm:  # the route stops it, unless it was killed (out of memory) or Nebius did not answer
+            vm_off(home)
     return sid
 
 

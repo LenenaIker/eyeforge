@@ -180,10 +180,21 @@ def gpu():
 
 
 def stop():
-    vm = get("instance", GPU_VM)
-    if vm and vm["status"].get("state") not in ("STOPPED", "STOPPING"):
-        neb("compute", "instance", "stop", "--id", vm["metadata"]["id"])
-    print(f"{GPU_VM} stopped")
+    """Stop the GPU VM, and fail unless Nebius says it is stopped or stopping: a VM left on costs 1.80 $/h, and a
+    failed call to Nebius looks the same as no VM (get) or stays a warning."""
+    def off(vm):
+        return vm and vm["status"].get("state") in ("STOPPED", "STOPPING")
+
+    for attempt in range(3):
+        if attempt:
+            time.sleep(30)
+        vm = get("instance", GPU_VM)
+        if vm and not off(vm):
+            neb("compute", "instance", "stop", "--id", vm["metadata"]["id"], check=False)
+            vm = get("instance", GPU_VM)
+        if off(vm):
+            return print(f"{GPU_VM} stopped")
+    sys.exit(f"could not stop {GPU_VM}: it may still be running and billed")
 
 
 def wait_stopped(name: str) -> dict:

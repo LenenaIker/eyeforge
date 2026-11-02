@@ -24,6 +24,14 @@ def add(app: FastAPI, ctx) -> None:
                 lib.fail_scene(sid, "stopped when the server restarted: extract it again")
     fail_stale_scenes()
 
+    def stop_vm_left_on() -> None:
+        """First in the queue, so no new scene starts on a VM that is about to be stopped."""
+        from .. import scene_job
+        if scene_job.vm_left_on(home):
+            print("the scene VM may have been left on by a job that is gone: stopping it", flush=True)
+            scene_runner.submit(scene_job.vm_off, home)
+    stop_vm_left_on()
+
     def propose_soon(owner: str, ds: str, made: float) -> None:
         if ds in proposing:
             return
