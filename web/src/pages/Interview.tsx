@@ -500,7 +500,7 @@ function ScenePhotos({ photos }: { photos: API.SceneProposal[] }) {
               <img src={API.libraryPhotoUrl(p.photo_id)} alt="" className="aspect-[4/3] w-full object-cover" />
               <div className="p-2 text-xs">
                 {typeof st === "string" ? <span className="text-red-700">{st}</span> :
-                  st ? <span className="text-muted">{st.status === "ready" ? "Scene ready" : st.status === "failed" ? `Failed: ${st.why}` : "Being made, about 2\u00a0h"}</span> :
+                  st ? <span className="text-muted">{st.status === "ready" ? "Scene ready" : st.status === "failed" ? `Failed: ${st.why}` : "Being made, about 3\u00a0h"}</span> :
                   <Button size="sm" variant="secondary" className="w-full" onClick={() => make(p.photo_id)}>Create this scene</Button>}
               </div>
             </div>

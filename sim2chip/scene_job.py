@@ -124,7 +124,7 @@ def steps(case: str) -> list[str]:
 
 
 def cost(state: dict) -> float:
-    """What a finished job cost us, in dollars: on the VM its hours (the VM starts and stops with the job), else
+    """What a job cost us when it ended, in dollars: on the VM its hours (the VM starts and stops with the job), else
     the usual COST_USD of the two WorldStereo runs."""
     if on_vm():
         return round((state.get("ended", time.time()) - state["started"]) / 3600 * VM_USD_H, 4)
@@ -158,6 +158,7 @@ def run(home: Path, owner: str, photo_id: int) -> str:
             raise RuntimeError(f"ws_route.py {args[0]} failed: {last}")
 
     py = [route_python(), str(ROUTE)]
+    on_the_vm = False  # has the job reached the VM's hours?
     try:
         photo = lib.photo_file(owner, photo_id)
         if photo is None or not photo.exists():
@@ -178,6 +179,7 @@ def run(home: Path, owner: str, photo_id: int) -> str:
             cmd = [*py, "run", "--case", case, "--until", LAST]
             bundle = REPO / "data" / "worldstereo_test" / case / "bundle"  # wsroute.paths.DATA
         tail: list[str] = []
+        on_the_vm = on_vm()
         with open(log, "a") as fh, subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                                     text=True, bufsize=1) as proc:
             for line in proc.stdout:
@@ -199,8 +201,11 @@ def run(home: Path, owner: str, photo_id: int) -> str:
         save(status="ready", step=LAST, done=state["total"], cost=cost(state))
     except Exception as e:  # the library keeps the failure and why; the page shows it
         why = str(e) or type(e).__name__
+        state["ended"] = time.time()
         lib.fail_scene(sid, why)
-        save(status="failed", why=why)
+        # The hours the VM ran are paid, like a training that fails (user, 2026-11-02). Off the VM nothing measures
+        # how far the paid runs got, so a failure there is not charged.
+        save(status="failed", why=why, cost=cost(state) if on_the_vm else 0.0)
     return sid
 
 

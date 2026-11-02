@@ -4,17 +4,17 @@ import { Link, useSearchParams } from "react-router-dom";
 import { deleteAccount, getBilling, setAutoTopup, startTopup, usd, type Billing as BillingData, type Topup } from "../api";
 import { Badge, Button, Card, Notice, cx } from "../components/ui";
 
-// The balance in dollars, how things are priced (by use) and every move: money in, and what each model, chat or
-// labeling used (sim2chip/accounts.py).
+// The balance in dollars, how things are priced (by use) and every move: money in, and what each model, scene, chat
+// or labeling used (sim2chip/accounts.py).
 
 const REASONS: Record<string, string> = {
-  grant: "Balance given", purchase: "Top-up", "auto top-up": "Auto top-up", run: "Model", label: "Labeling", chat: "Chat", profile: "Dataset look",
+  grant: "Balance given", purchase: "Top-up", "auto top-up": "Auto top-up", run: "Model", scene: "Scene", label: "Labeling", chat: "Chat", profile: "Dataset look",
   interview: "Chat", refund: "Refund",
 };
-// What a usage line is about: "job:<name>", "chat:<session>", "profile:<dataset>_<time>".
+// What a usage line is about: "job:<name>", "chat:<session>", "profile:<dataset>_<time>", "scene:<id>:<attempt>".
 // Money in carries Stripe's payment id, which says nothing to the user.
 const about = (d: string | null) => !d ? null : d.startsWith("job:") ? d.slice(4).replace(/_/g, " ")
-  : /^(chat|profile):|^(pi|cs)_/.test(d) ? null : d.replace(/_/g, " ");
+  : /^(chat|profile|scene):|^(pi|cs)_/.test(d) ? null : d.replace(/_/g, " ");
 const small = "h-10 w-20 rounded-[var(--radius-control)] border border-line px-3 outline-none focus:border-brand-500";
 const when = (t: number) => new Date(t * 1000).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
@@ -54,10 +54,12 @@ export default function Billing() {
           </Card>
           <Card className="p-5">
             <div className="text-sm text-muted">Prices</div>
-            <p className="mt-2 text-sm">Each model, chat or labeling costs what it used: cloud GPU time on Nebius and
-              AI model tokens, at {b.costs.margin}x what they cost us. It is charged as it runs and listed below.</p>
+            <p className="mt-2 text-sm">Each model, scene, chat or labeling costs what it used: cloud GPU time on Nebius and
+              AI model tokens, at {b.costs.margin}x what they cost us. It is charged as it runs and listed below. A scene
+              is charged when it ends, for the GPU hours it used, also if it fails.</p>
             <dl className="mt-3 space-y-2 text-sm">
               <div className="flex justify-between"><dt>A model, usually</dt><dd className="font-medium">about {usd(b.costs.start.run)}</dd></div>
+              <div className="flex justify-between"><dt>A scene, usually</dt><dd className="font-medium">about {usd(b.costs.start.scene)}</dd></div>
               <div className="flex justify-between"><dt>Labeling a dataset</dt><dd className="font-medium">about {usd(b.costs.start.label)}</dd></div>
               <div className="flex justify-between"><dt>A chat</dt><dd className="font-medium">a few cents</dd></div>
             </dl>

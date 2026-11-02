@@ -1,9 +1,9 @@
 import { ArrowLeft, Copy, GraduationCap, Mountain, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { copyLabeling, createLabeling, deleteLabeling, extractScene, getDataset, getSceneProposals, libraryPhotoUrl,
+import { copyLabeling, createLabeling, deleteLabeling, extractScene, getBilling, getDataset, getSceneProposals, libraryPhotoUrl,
          renameLabeling, reprofileDataset, type DatasetPage, type DatasetProfile, type Labeling,
-         type SceneProposal } from "../api";
+         type SceneProposal, usd } from "../api";
 import { ConfirmDialog, Dialog, MoreMenu, NameDialog, field, menuItem } from "../components/library";
 import { Badge, Button, Card, Notice, Spinner, cx } from "../components/ui";
 
@@ -221,6 +221,8 @@ function SceneProposals({ id, profiling }: { id: string; profiling: boolean }) {
   const [list, setList] = useState<SceneProposal[] | null>(null);
   const [computing, setComputing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [price, setPrice] = useState<number | null>(null);  // what a scene usually costs this account, if it pays
+  useEffect(() => { getBilling().then((b) => setPrice(b.tier === "normal" ? b.costs.start.scene : null)).catch(() => {}); }, []);
   const load = useCallback(() => {
     getSceneProposals(id).then((r) => { setList(r.proposals); setComputing(r.computing); }).catch((e) => setError(e.message));
   }, [id]);
@@ -237,7 +239,8 @@ function SceneProposals({ id, profiling }: { id: string; profiling: boolean }) {
       <div>
         <div className="font-semibold">Scenes from these photos</div>
         <p className="text-sm text-muted">A scene is the place in a photo rebuilt in 3D, big objects erased, to train with
-          synthetic images of any class. It takes about two hours; you can leave the page.</p>
+          synthetic images of any class. It takes about three hours; you can leave the page.
+          {price !== null && ` It usually costs about ${usd(price)}: the GPU hours it uses, also if it fails.`}</p>
       </div>
       {error && <Notice tone="bad">{error}</Notice>}
       {list === null || (computing && list.length === 0)
@@ -254,7 +257,7 @@ function SceneProposals({ id, profiling }: { id: string; profiling: boolean }) {
                     <img src={libraryPhotoUrl(p.photo_id)} alt="" loading="lazy" className="aspect-[4/3] w-full bg-gray-100 object-cover" />
                     <div className="space-y-2 p-2.5">
                       {!sc || sc.status === "failed" ? <>
-                        {sc?.status === "failed" && <p className="text-xs text-red-700">No scene: {sc.why ?? "unknown"}.</p>}
+                        {sc?.status === "failed" && <p className="text-xs text-red-700">No scene: {sc.why ?? "unknown"}. What it used is listed in <Link to="/app/billing" className="underline">Billing</Link>.</p>}
                         <Button size="sm" className="w-full" onClick={() => extract(p.photo_id)}>
                           <Mountain className="h-4 w-4" /> {sc ? "Try again" : "Extract"}
                         </Button>

@@ -1,5 +1,6 @@
 """Login with Google or GitHub, judge access and credits, with a fake OAuth provider."""
 import json
+import threading
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -13,6 +14,7 @@ from sim2chip.accounts import Accounts  # noqa: E402
 from sim2chip.auth import Auth  # noqa: E402
 from sim2chip.server import create_app  # noqa: E402
 
+from test_library import photos  # noqa: E402
 from test_server import GOOD, FakeProc, Scripted  # noqa: E402
 
 USERS = {  # access token -> what the provider says about the user
@@ -264,3 +266,157 @@ def test_deleting_an_account_removes_its_data_and_identity(server, monkeypatch):
     again = sign_in(server, "google", "alice")  # the same login makes a new, empty account
     assert again.get("/api/me").json()["account"]["balance"] == 0
     assert name not in again.get("/api/jobs").json()["jobs"]
+
+
+def scene_photos(app, acc_id, n=2):
+    from sim2chip.library import Library
+    lib = Library(app.home, app.home / "cache")
+    ds = lib.new_dataset(acc_id, "Street", photos(app.home / "up", ["red", "blue", "green"][:n]))
+    return lib, [p["id"] for p in lib.photos(ds)]
+
+
+def until(what, seconds=10):
+    end = time.time() + seconds
+    while not what():
+        assert time.time() < end, "it never happened"
+        time.sleep(0.01)
+
+
+def scene_payer(app, usd, monkeypatch, n=2):
+    """A signed-in account with this balance, its photos, on a server that can make scenes."""
+    from sim2chip import scene_job
+    monkeypatch.setattr(scene_job, "unavailable", lambda: None)
+    c = sign_in(app, "google", "alice")
+    acc = app.accounts.by_email("alice@gmail.com")[0]
+    app.accounts.add(acc.id, usd, "grant")
+    return (c, acc, *scene_photos(app, acc.id, n))
+
+
+def held_scene_job(monkeypatch):
+    """A scene job that waits for `free`, and the photos it was asked for."""
+    from sim2chip import scene_job
+    asked, free = [], threading.Event()
+
+    def run(home, owner, photo):
+        asked.append(photo)
+        assert free.wait(10)
+        from sim2chip.library import Library
+        lib = Library(home, home / "cache")
+        lib.fail_scene(lib.scene_of_photo(owner, photo), "made up")
+        return lib.scene_of_photo(owner, photo)
+    monkeypatch.setattr(scene_job, "run", run)
+    return asked, free
+
+
+def extract(c, photo):
+    return c.post("/api/library/scenes/extract", json={"photo_id": photo})
+
+
+def test_the_balance_of_one_scene_does_not_queue_two(server, monkeypatch):
+    c, acc, lib, ids = scene_payer(server, 7.0, monkeypatch)
+    asked, free = held_scene_job(monkeypatch)
+    try:
+        assert extract(c, ids[0]).json()["status"] == "building"
+        r = extract(c, ids[1])
+        assert r.status_code == 402 and lib.scene_status(acc.id, lib.scene_of_photo(acc.id, ids[1])) is None
+        assert new_job(c).status_code == 402  # a scene being made holds its price from a run too
+        assert extract(c, ids[0]).status_code == 200  # asking again for the same scene is not a second one
+    finally:
+        free.set()
+    until(lambda: lib.building_scenes(acc.id) == [])
+    assert extract(c, ids[1]).json()["status"] == "building"  # it ended: its price is free again
+    until(lambda: lib.building_scenes(acc.id) == [])
+    assert asked == ids
+
+
+def test_a_queued_scene_starts_only_if_the_balance_still_covers_it(server, monkeypatch):
+    c, acc, lib, ids = scene_payer(server, 14.0, monkeypatch)
+    asked, free = held_scene_job(monkeypatch)
+    extract(c, ids[0])
+    extract(c, ids[1])
+    until(lambda: asked == ids[:1])
+    server.accounts.add(acc.id, -10.0, "refund")
+    free.set()
+    until(lambda: lib.building_scenes(acc.id) == [])
+    assert asked == ids[:1]  # the VM never started for the second one
+    assert "no longer covers" in lib.scene_status(acc.id, lib.scene_of_photo(acc.id, ids[1]))["why"]
+
+
+def test_a_scene_job_that_breaks_does_not_hold_its_price_for_good(server, monkeypatch):
+    from sim2chip import scene_job
+    c, acc, lib, ids = scene_payer(server, 7.0, monkeypatch)
+
+    def broken(*a):
+        raise OSError("disk full")
+    monkeypatch.setattr(scene_job, "run", broken)
+    extract(c, ids[0])
+    until(lambda: lib.building_scenes(acc.id) == [])
+    assert lib.scene_status(acc.id, lib.scene_of_photo(acc.id, ids[0]))["status"] == "failed"
+    assert server.accounts.moves(acc.id)[0]["reason"] == "grant"
+
+
+class RouteOnTheVM:
+    """The route on the VM (subprocess.Popen in scene_job): it runs `hours` of the clock, then ends with `code`."""
+
+    def __init__(self, clock, hours, code=1):
+        self.clock, self.hours, self.returncode = clock, hours, code
+
+    def __call__(self, *args, **kw):
+        self.clock[0] += self.hours * 3600
+        self.stdout = iter(["[case] pano ...\n"])
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def scene_on_the_vm(monkeypatch, hours):
+    """The scene job on the VM with a clock the route moves on."""
+    from sim2chip import scene_job
+    monkeypatch.setenv("SIM2CHIP_SCENE_VM", "1")
+    monkeypatch.setattr(scene_job, "no_focal", lambda photo: None)
+    clock, real = [0.0], time.time
+    monkeypatch.setattr(scene_job.time, "time", lambda: real() + clock[0])
+    monkeypatch.setattr(scene_job.subprocess, "Popen", RouteOnTheVM(clock, hours))
+
+
+def charges(app, acc):
+    return [m for m in app.accounts.moves(acc.id) if m["reason"] == "scene"]
+
+
+def test_a_scene_that_fails_pays_the_hours_the_vm_ran_and_each_attempt_counts(server, monkeypatch):
+    c, acc, lib, ids = scene_payer(server, 20.0, monkeypatch, n=1)
+    scene_on_the_vm(monkeypatch, hours=2)
+    assert extract(c, ids[0]).json()["status"] == "building"
+    until(lambda: charges(server, acc))
+    assert lib.scene_status(acc.id, lib.scene_of_photo(acc.id, ids[0]))["status"] == "failed"
+    assert charges(server, acc)[0]["amount"] == pytest.approx(-2 * 1.80 * 1.3, abs=0.01)
+    assert extract(c, ids[0]).json()["status"] == "building"  # "Try again": the same scene, more hours
+    until(lambda: len(charges(server, acc)) == 2)
+    assert server.accounts.balance(acc.id) == pytest.approx(20 - 2 * (2 * 1.80 * 1.3), abs=0.02)
+
+
+def test_a_scene_that_fails_before_the_vm_costs_nothing(server, monkeypatch):
+    from sim2chip import scene_job
+    c, acc, lib, ids = scene_payer(server, 7.0, monkeypatch, n=1)
+    scene_on_the_vm(monkeypatch, hours=2)
+    monkeypatch.setattr(scene_job, "no_focal", lambda photo: "no focal length")
+    extract(c, ids[0])
+    until(lambda: lib.building_scenes(acc.id) == [])
+    until(lambda: (scene_job.progress(server.home, lib.scene_of_photo(acc.id, ids[0])) or {}).get("cost") == 0.0)
+    assert charges(server, acc) == [] and server.accounts.balance(acc.id) == 7.0
+
+
+def test_a_judges_scene_is_free_even_if_it_fails(server, monkeypatch):
+    from sim2chip import scene_job
+    monkeypatch.setattr(scene_job, "unavailable", lambda: None)
+    c = sign_in(server, "google", "judge")
+    acc = server.accounts.by_email("judge@nvidia.com")[0]
+    lib, ids = scene_photos(server, acc.id, 1)
+    scene_on_the_vm(monkeypatch, hours=2)
+    extract(c, ids[0])
+    until(lambda: charges(server, acc))
+    assert charges(server, acc)[0]["amount"] == 0 and server.accounts.balance(acc.id) == 0

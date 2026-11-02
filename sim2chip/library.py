@@ -807,9 +807,13 @@ class Library:
             self.db.execute("UPDATE scenes SET status = 'ready', why = NULL, dir = ?, thumb = ?, info = ? WHERE id = ?",
                             (folder, thumb, json.dumps(info), sid))
 
-    def building_scenes(self) -> list[str]:
-        """Every scene still being made, of any owner (the server checks them at start: scene_job.stale)."""
-        return [sid for (sid,) in self.db.execute("SELECT id FROM scenes WHERE status = 'building'")]
+    def building_scenes(self, owner: str | None = None) -> list[str]:
+        """The scenes still being made or queued, of one owner or of any (the server checks them at start:
+        scene_job.stale)."""
+        if owner is None:
+            return [sid for (sid,) in self.db.execute("SELECT id FROM scenes WHERE status = 'building'")]
+        return [sid for (sid,) in self.db.execute("SELECT id FROM scenes WHERE status = 'building' AND owner = ?",
+                                                  (owner,))]
 
     def fail_scene(self, sid: str, why: str) -> None:
         with self.lock:

@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Request
 def add(app: FastAPI, ctx) -> None:
     lib, home, profiler, owned = ctx.lib, ctx.home, ctx.profiler, ctx.owned
     profiling, owner_of = ctx.profiling, ctx.owner_of
-    may_start, accounts, charged = ctx.may_start, ctx.accounts, ctx.charged
+    may_start, jobs_held, accounts, charged = ctx.may_start, ctx.jobs_held, ctx.accounts, ctx.charged
 
     proposals: dict[str, tuple[float, list[dict]]] = {}  # dataset -> (profile time, proposals)
     proposing: set[str] = set()
@@ -85,10 +85,22 @@ def add(app: FastAPI, ctx) -> None:
         lib.start_scene(owner, pid)
 
         def work():
-            done = scene_job.run(home, owner, pid)
-            if acc is not None and accounts is not None and (lib.scene_status(owner, done) or {}).get("status") == "ready":
-                usd = (scene_job.progress(home, done) or {}).get("cost", scene_job.COST_USD)
-                charged(acc.id, accounts.meter(acc.id, f"scene:{done}", "scene", usd))
+            # Hours may have passed in the queue. Only one scene runs at a time, so the others wait behind this one.
+            now = accounts.get(acc.id) if acc is not None else None
+            if acc is not None and not (now and accounts.can_start(now, "scene", jobs_held(acc.id))):
+                lib.fail_scene(sid, "your balance no longer covers a scene: top up and try again")
+                return
+            try:
+                scene_job.run(home, owner, pid)
+            except Exception as e:  # never left building: that would hold the price of a scene for good
+                print(f"scene {sid} failed: {type(e).__name__}: {e}", flush=True)
+                lib.fail_scene(sid, f"the scene job stopped ({type(e).__name__})")
+                return
+            # What it used, ready or not. "Try again" keeps the scene's id, and a usage line only grows: each attempt
+            # has its own line, or a second attempt would be free up to what the first one cost.
+            p = scene_job.progress(home, sid) or {}
+            if acc is not None and p.get("cost"):
+                charged(acc.id, accounts.meter(acc.id, f"scene:{sid}:{int(p['started'])}", "scene", p["cost"]))
         scene_runner.submit(work)
         return scene_state(owner, sid)
 

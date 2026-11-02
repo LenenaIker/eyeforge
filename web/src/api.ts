@@ -505,7 +505,7 @@ export const cardUrl = (kind: "object" | "scene", id: string) => `/api/library/$
 export type CreditMove = { amount: number; reason: string; detail: string | null; t: number };
 // Things are charged by use: what Nebius, Token Factory and Tavily charge us times margin. start: the dollars the
 // balance must hold to start each (about its usual price).
-export type Costs = { margin: number; start: Record<"run" | "label" | "chat" | "profile", number> };
+export type Costs = { margin: number; start: Record<"run" | "label" | "chat" | "profile" | "scene", number> };
 export const usd = (n: number) => `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
 // Top-ups with Stripe: the saved card (after a first card payment) and the auto top-up that uses it.
 export type AutoTopup = { available: boolean; on: boolean; below: number; amount: number; error: string | null };
