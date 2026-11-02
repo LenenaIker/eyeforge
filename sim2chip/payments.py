@@ -9,9 +9,14 @@ Without the first two there are no top-ups.
 - A top-up is a Stripe Checkout page: Stripe shows the card form, no card data reaches this server. The card is
   saved for later (setup_future_usage), so an auto top-up can charge it while the user is away.
 - Money reaches the balance only through payments Stripe confirms: the signed webhook (checkout.session.completed,
-  payment_intent.succeeded) or the answer to an auto top-up. Each payment counts once (its id is the move's detail).
+  checkout.session.async_payment_succeeded, payment_intent.succeeded) or the answer to an auto top-up, and only
+  when what Stripe charged is what the balance would grow by. Each payment counts once (its id is the move's detail).
 - A refund made on the Stripe dashboard (charge.refunded) takes that money back from the balance, which may go
-  below zero when it was already used.
+  below zero when it was already used. Its share of the payment: the VAT of a refund was never in the balance.
+- A dispute (charge.dispute.*) stops auto top-up at once. Its money leaves the balance when it leaves our Stripe
+  account (funds_withdrawn: an inquiry moves none) and comes back if we win. A failed refund (refund.failed) is
+  only logged: it is paid by hand. Banning someone is the owner's call (`sim2chip accounts`).
+- The webhook endpoint listens to all of these, and to charge.dispute.created and charge.dispute.closed.
 - Auto top-up: when the balance falls below the account's threshold, its amount is charged to the saved card,
   at most once every AUTO_GAP_S. A refused card switches auto top-up off and says why. With Stripe Tax on it is
   not offered: a payment made without the checkout page would skip the VAT.
@@ -34,11 +39,14 @@ AMOUNTS = [5, 10, 25, 50]  # dollars offered on the Billing page
 MIN_USD, MAX_USD = 5, 500  # a top-up, also an auto one
 AUTO_GAP_S = 600           # one auto top-up per account in this time, whatever the meter says meanwhile
 SIGNATURE_AGE_S = 300      # webhook calls older than this are refused (replays)
+DISPUTE_OVER = ("won", "warning_closed", "charge_refunded", "prevented")  # under any other status: no refunds
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS stripe (
     account TEXT PRIMARY KEY, customer TEXT, payment_method TEXT, card TEXT, auto_on INTEGER NOT NULL DEFAULT 0,
     auto_below REAL NOT NULL DEFAULT 2, auto_amount REAL NOT NULL DEFAULT 10, auto_error TEXT, last_auto REAL);
+CREATE TABLE IF NOT EXISTS disputes (
+    id TEXT PRIMARY KEY, payment TEXT NOT NULL, status TEXT, taken REAL NOT NULL DEFAULT 0);
 """
 
 
@@ -140,6 +148,7 @@ class Payments:
                     "currency": "usd", "unit_amount": cents, "tax_behavior": "exclusive" if self.tax else None,
                     "product_data": {"name": "EyeForge balance",
                                      "description": "Pay-as-you-go balance for models, labeling and chats"}}}],
+                "allowed_payment_method_types": ["card"],  # auto top-up needs a card, and a card pays at once
                 "payment_intent_data": {"setup_future_usage": "off_session", "metadata": meta},
                 "metadata": meta,
                 "success_url": f"{self.public_url}/app/billing?paid={{CHECKOUT_SESSION_ID}}",
@@ -169,38 +178,99 @@ class Payments:
     def handle(self, event: dict) -> str:
         """Act on a verified event; says what it did (for the log)."""
         obj = event.get("data", {}).get("object", {})
-        if event.get("type") == "checkout.session.completed" and obj.get("payment_status") == "paid":
+        kind = event.get("type")
+        if kind in ("checkout.session.completed", "checkout.session.async_payment_succeeded") \
+                and obj.get("payment_status") == "paid":
             meta = obj.get("metadata") or {}
-            done = self._credit(meta, obj.get("payment_intent") or obj["id"])
+            done = self._credit(meta, obj.get("payment_intent") or obj["id"], obj.get("amount_subtotal"), obj.get("currency"))
             if obj.get("payment_intent"):
                 self._keep_card(meta.get("account"), obj["payment_intent"])
             return done
-        if event.get("type") == "payment_intent.succeeded" and (obj.get("metadata") or {}).get("kind") == "auto":
-            return self._credit(obj["metadata"], obj["id"])
-        if event.get("type") == "charge.refunded" and obj.get("payment_intent"):
-            return self._refund(obj["payment_intent"], obj.get("amount_refunded") or 0)
+        if kind == "payment_intent.succeeded" and (obj.get("metadata") or {}).get("kind") == "auto":
+            return self._credit(obj["metadata"], obj["id"], obj.get("amount_received"), obj.get("currency"))
+        if kind == "charge.refunded" and obj.get("payment_intent"):
+            return self._refund(obj["payment_intent"], obj.get("amount_refunded") or 0, obj.get("amount") or 0)
+        if kind == "refund.failed":
+            return f"REFUND FAILED, pay it by hand: {obj.get('id')} of {obj.get('payment_intent')}, " \
+                   f"{obj.get('amount')} cents: {obj.get('failure_reason')}"
+        if kind and kind.startswith("charge.dispute."):
+            return self._dispute(kind.removeprefix("charge.dispute."), obj)
         return "ignored"
 
-    def _refund(self, payment: str, cents_refunded: int) -> str:
-        """Take back what was refunded of `payment`. Stripe sends the total refunded so far, so a second partial
-        refund (or the same event twice) only takes back the difference."""
+    def _paid(self, payment: str) -> tuple | None:
+        """(account, dollars added) of a payment, also of a closed account (its moves stay under the new id)."""
+        return self.db.execute("SELECT account, amount FROM credits WHERE detail = ? AND amount > 0", (payment,)).fetchone()
+
+    def _refund(self, payment: str, cents_refunded: int, cents_paid: int) -> str:
+        """Take back what was refunded of `payment`, its share of what the payment added to the balance. Stripe sends
+        the total refunded so far, so a second partial refund (or the same event twice) only takes back the
+        difference."""
         detail = f"refund {payment}"
         with self.accounts.lock:
-            row = self.db.execute("SELECT account FROM credits WHERE detail = ? AND amount > 0", (payment,)).fetchone()
+            row = self._paid(payment)
             if row is None:
                 return "refund of an unknown payment"
             taken = -self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ? AND detail = ?",
                                      (row[0], detail)).fetchone()[0]
-            more = round(cents_refunded / 100 - taken, 2)
+            more = round(row[1] * min(cents_refunded / cents_paid, 1) - taken, 2) if cents_paid > 0 else 0
             if more <= 0:
                 return "already refunded"
             self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)", (row[0], -more, "refund", detail, time.time()))
         return f"refunded {more:.2f}"
 
-    def _credit(self, meta: dict, payment: str) -> str:
+    def _dispute(self, what: str, obj: dict) -> str:
+        """A bank questioning a payment. Each dispute counts once (a payment can have several); what it took is
+        at most what is left of the payment in the balance, and all of it comes back if we win."""
+        dispute, payment, status = obj.get("id"), obj.get("payment_intent"), obj.get("status")
+        with self.accounts.lock:
+            paid = self._paid(payment) if dispute and payment else None
+            if paid is None:
+                return f"dispute {dispute} of an unknown payment"
+            account, added = paid
+            self.db.execute("INSERT INTO disputes (id, payment, status) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE "
+                            "SET status = excluded.status", (dispute, payment, status))
+            self.db.execute("UPDATE stripe SET auto_on = 0, auto_error = 'a payment was disputed' WHERE account = ?",
+                            (account,))
+            if what == "funds_withdrawn":
+                return self._dispute_take(account, dispute, payment, added, obj)
+            if what in ("funds_reinstated", "closed") and status == "won":
+                return self._dispute_return(account, dispute)
+        return f"DISPUTE {dispute} of {payment}: {what}, {status}. Answer it on the Stripe dashboard"
+
+    def _dispute_take(self, account: str, dispute: str, payment: str, added: float, obj: dict) -> str:
+        detail = f"dispute {dispute}"
+        if self.db.execute("SELECT 1 FROM credits WHERE account = ? AND detail = ?", (account, detail)).fetchone():
+            return f"dispute {dispute}: already taken"
+        refunded = -self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ? AND detail = ?",
+                                    (account, f"refund {payment}")).fetchone()[0]
+        others = self.db.execute("SELECT COALESCE(SUM(taken), 0) FROM disputes WHERE payment = ? AND id != ?",
+                                 (payment, dispute)).fetchone()[0]
+        left = added - refunded - others
+        wanted = obj.get("amount", 0) / 100 if obj.get("currency") == "usd" else left
+        taken = round(max(min(wanted, left), 0), 2)
+        self.db.execute("UPDATE disputes SET taken = ? WHERE id = ?", (taken, dispute))
+        self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)", (account, -taken, "dispute", detail, time.time()))
+        return f"DISPUTE {dispute} of {payment}: {taken:.2f} taken from the balance. Answer it on the Stripe dashboard"
+
+    def _dispute_return(self, account: str, dispute: str) -> str:
+        detail = f"dispute won {dispute}"
+        if self.db.execute("SELECT 1 FROM credits WHERE account = ? AND detail = ?", (account, detail)).fetchone():
+            return f"dispute {dispute}: already returned"
+        taken = self.db.execute("SELECT taken FROM disputes WHERE id = ?", (dispute,)).fetchone()[0]
+        self.db.execute("UPDATE disputes SET taken = 0 WHERE id = ?", (dispute,))
+        if taken > 0:
+            self.db.execute("INSERT INTO credits VALUES (?, ?, ?, ?, ?)", (account, taken, "dispute won", detail, time.time()))
+        return f"dispute {dispute} won: {taken:.2f} returned"
+
+    def _credit(self, meta: dict, payment: str, cents: int | None, currency: str | None) -> str:
+        """`cents` and `currency`: what Stripe charged, without VAT (never the balance's)."""
         acc_id, usd = meta.get("account"), float(meta.get("usd") or 0)
-        if not acc_id or usd <= 0 or self.accounts.get(acc_id) is None:
+        if not acc_id or usd <= 0:
             return "no account"
+        if self.accounts.get(acc_id) is None:
+            return f"PAID BUT THE ACCOUNT IS GONE, refund it by hand: {payment}"
+        if currency != "usd" or cents != round(usd * 100):
+            return f"PAID BUT NOT ADDED, look at it by hand: {payment} charged {cents} {currency} for {usd:.2f} usd"
         reason = "auto top-up" if meta.get("kind") == "auto" else "purchase"
         return "added" if self.accounts.add_once(acc_id, usd, reason, payment) else "already added"
 
@@ -226,7 +296,7 @@ class Payments:
         """Before an account is deleted: refund what is left of its paid balance to the cards it came from (newest
         payments first; balance given for free is not money to return) and delete its Stripe customer, which
         drops the saved card. Returns the dollars refunded. Raises PaymentError before deleting anything when
-        Stripe refuses a refund."""
+        Stripe refuses a refund, or when a dispute holds back money that could not go back."""
         refunded = 0.0
         # The accounts' lock while refunding: the charge.refunded webhook of these refunds waits until they are
         # written down, then finds nothing more to take back.
@@ -238,6 +308,9 @@ class Payments:
             for amount, payment in paid:
                 if left < 0.01:
                     break
+                if self.db.execute("SELECT 1 FROM disputes WHERE payment = ? AND COALESCE(status, '') NOT IN (?, ?, ?, ?)",
+                                   (payment, *DISPUTE_OVER)).fetchone():
+                    continue  # Stripe refuses a refund of a disputed payment
                 detail = f"refund {payment}"
                 taken = -self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM credits WHERE account = ? AND "
                                          "detail = ?", (acc_id, detail)).fetchone()[0]
@@ -251,6 +324,11 @@ class Payments:
                                 (acc_id, -cents / 100, "refund", detail, time.time()))
                 left -= cents / 100
                 refunded += cents / 100
+            if left >= 0.01 and self.db.execute(
+                    f"SELECT 1 FROM disputes WHERE taken = 0 AND COALESCE(status, '') NOT IN (?, ?, ?, ?, 'lost') AND "
+                    f"payment IN ({','.join('?' * len(paid))})", (*DISPUTE_OVER, *[p for _, p in paid])).fetchone():
+                raise PaymentError("a payment is under dispute, so part of your balance cannot go back to your card "
+                                   "until it is settled: write to us")
         r = self._row(acc_id)
         if r["customer"]:
             try:
@@ -295,7 +373,7 @@ class Payments:
             self.db.execute("UPDATE stripe SET auto_on = 0, auto_error = ? WHERE account = ?", (str(e)[:200], acc_id))
             return f"refused: {e}"
         if pi.get("status") == "succeeded":
-            return self._credit(meta, pi["id"])
+            return self._credit(meta, pi["id"], pi.get("amount_received"), pi.get("currency"))
         self.db.execute("UPDATE stripe SET auto_on = 0, auto_error = ? WHERE account = ?",
                         (f"the payment is {pi.get('status')}; top up by hand", acc_id))
         return f"not paid: {pi.get('status')}"

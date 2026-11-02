@@ -9,12 +9,12 @@ import { Badge, Button, Card, Notice, cx } from "../components/ui";
 
 const REASONS: Record<string, string> = {
   grant: "Balance given", purchase: "Top-up", "auto top-up": "Auto top-up", run: "Model", scene: "Scene", label: "Labeling", chat: "Chat", profile: "Dataset look",
-  interview: "Chat", refund: "Refund",
+  interview: "Chat", refund: "Refund", dispute: "Disputed payment", "dispute won": "Dispute won",
 };
 // What a usage line is about: "job:<name>", "chat:<session>", "profile:<dataset>_<time>", "scene:<id>:<attempt>".
 // Money in carries Stripe's payment id, which says nothing to the user.
 const about = (d: string | null) => !d ? null : d.startsWith("job:") ? d.slice(4).replace(/_/g, " ")
-  : /^(chat|profile|scene):|^(pi|cs)_/.test(d) ? null : d.replace(/_/g, " ");
+  : /^(chat|profile|scene):|^(pi|cs)_|^(refund|dispute) /.test(d) ? null : d.replace(/_/g, " ");
 const small = "h-10 w-20 rounded-[var(--radius-control)] border border-line px-3 outline-none focus:border-brand-500";
 const when = (t: number) => new Date(t * 1000).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 

@@ -34,7 +34,8 @@ class FakeStripe:
         if path == "payment_intents":
             if self.refuse:
                 raise PaymentError(self.refuse)
-            return {"id": f"pi_auto{len(self.calls)}", "status": "succeeded"}
+            return {"id": f"pi_auto{len(self.calls)}", "status": "succeeded", "amount_received": data["amount"],
+                    "currency": data["currency"]}
         raise AssertionError(path)
 
 
@@ -56,6 +57,7 @@ def signed(event: dict, t: int | None = None) -> tuple[bytes, str]:
 def paid(acc_id, usd="10.00", pi="pi_1"):
     return {"id": "evt_1", "type": "checkout.session.completed", "data": {"object": {
         "id": "cs_1", "payment_status": "paid", "payment_intent": pi,
+        "amount_subtotal": round(float(usd) * 100), "currency": "usd",
         "metadata": {"account": acc_id, "usd": usd, "kind": "checkout"}}}}
 
 
@@ -70,6 +72,7 @@ def test_checkout_page_saves_the_card_for_later(pay):
     item = data["line_items"][0]["price_data"]
     assert item["unit_amount"] == 1000 and item["currency"] == "usd"
     assert data["payment_intent_data"]["setup_future_usage"] == "off_session"
+    assert data["allowed_payment_method_types"] == ["card"] and "payment_method_types" not in data
     assert data["metadata"] == {"account": acc.id, "usd": "10.00", "kind": "checkout"}
     p.checkout(acc, 5)
     assert [c[1] for c in stripe.calls].count("customers") == 1  # one Stripe customer per account
@@ -131,9 +134,9 @@ def test_server_top_up_and_webhook(tmp_path):
     assert c.get("/api/me").json()["account"]["balance"] == 25
 
 
-def refunded(pi="pi_1", cents=1000):
+def refunded(pi="pi_1", cents=1000, paid_cents=1000):
     return {"id": "evt_r", "type": "charge.refunded", "data": {"object": {
-        "id": "ch_1", "payment_intent": pi, "amount_refunded": cents}}}
+        "id": "ch_1", "payment_intent": pi, "amount_refunded": cents, "amount": paid_cents}}}
 
 
 def test_refund_takes_the_money_back_once(pay):
@@ -159,8 +162,166 @@ def test_closing_refunds_the_paid_balance_left_and_drops_the_card(pay):
     refunds = [(c[2]["payment_intent"], c[2]["amount"]) for c in stripe.calls if c[1] == "refunds"]
     assert refunds == [("pi_new", 500), ("pi_old", 520)]  # newest first
     assert ("DELETE", "customers/cus_1", None, None) in stripe.calls
-    assert p.handle(refunded("pi_new", 500)) == "already refunded"  # its webhook comes later
+    assert p.handle(refunded("pi_new", 500, 500)) == "already refunded"  # its webhook comes later
     assert accs.balance(acc.id) == pytest.approx(0)
+
+
+def test_a_payment_that_clears_later_counts_when_it_clears_and_once(pay):
+    p, accs, acc, _ = pay
+    event = paid(acc.id)
+    event["data"]["object"]["payment_status"] = "unpaid"
+    assert p.handle(event) == "ignored"
+    assert accs.balance(acc.id) == 0
+    event["type"], event["data"]["object"]["payment_status"] = "checkout.session.async_payment_succeeded", "paid"
+    assert p.handle(event) == "added"
+    assert p.handle(event) == "already added"
+    assert accs.balance(acc.id) == 10
+
+
+def test_a_charge_that_is_not_the_top_up_adds_nothing(pay):
+    p, accs, acc, _ = pay
+    for field, value in (("currency", "eur"), ("amount_subtotal", 500)):
+        event = paid(acc.id)
+        event["data"]["object"][field] = value
+        assert p.handle(event).startswith("PAID BUT NOT ADDED")
+    assert accs.balance(acc.id) == 0
+
+
+def test_a_payment_for_a_closed_account_is_flagged(pay):
+    p, accs, acc, _ = pay
+    accs.forget(acc.id)
+    assert p.handle(paid(acc.id)).startswith("PAID BUT THE ACCOUNT IS GONE")
+
+
+def test_auto_top_up_checks_the_webhook_amount_too(pay):
+    p, accs, acc, _ = pay
+    event = {"type": "payment_intent.succeeded", "data": {"object": {
+        "id": "pi_a", "amount_received": 1000, "currency": "usd",
+        "metadata": {"account": acc.id, "usd": "10.00", "kind": "auto"}}}}
+    assert p.handle(event) == "added"
+    assert accs.balance(acc.id) == 10
+
+
+def test_refund_with_vat_takes_only_what_was_added(pay):
+    p, accs, acc, _ = pay
+    p.handle(paid(acc.id))                                        # 10 $ added, 12.10 $ charged with VAT
+    assert p.handle(refunded(cents=605, paid_cents=1210)) == "refunded 5.00"
+    assert p.handle(refunded(cents=1210, paid_cents=1210)) == "refunded 5.00"
+    assert accs.balance(acc.id) == pytest.approx(0)
+
+
+def test_a_failed_refund_is_flagged_for_the_owner(pay):
+    p, _, _, _ = pay
+    done = p.handle({"type": "refund.failed", "data": {"object": {
+        "id": "re_1", "payment_intent": "pi_1", "amount": 500, "failure_reason": "expired_or_canceled_card"}}})
+    assert done.startswith("REFUND FAILED") and "re_1" in done
+
+
+def dispute(what, status="needs_response", cents=1000, pi="pi_1", id="du_1", currency="usd"):
+    return {"type": f"charge.dispute.{what}", "data": {"object": {
+        "id": id, "payment_intent": pi, "amount": cents, "currency": currency, "status": status}}}
+
+
+def test_a_dispute_stops_auto_top_up_but_an_inquiry_moves_no_money(pay):
+    p, accs, acc, _ = pay
+    p.handle(paid(acc.id))
+    p.set_auto(acc.id, True, 2, 10)
+    p.handle(dispute("created", "warning_needs_response"))
+    assert accs.balance(acc.id) == 10
+    auto = p.settings(acc.id)["auto"]
+    assert auto["on"] is False and auto["error"] == "a payment was disputed"
+    p.handle(dispute("closed", "warning_closed"))
+    assert accs.balance(acc.id) == 10
+
+
+def test_a_dispute_takes_the_money_once_and_a_win_returns_it_once(pay):
+    p, accs, acc, _ = pay
+    p.handle(paid(acc.id))
+    accs.meter(acc.id, "job1", "run", 5.0)  # 6.5 $ used: the balance goes below zero, that blocks new work
+    assert "10.00 taken" in p.handle(dispute("funds_withdrawn"))
+    assert "already taken" in p.handle(dispute("funds_withdrawn"))
+    assert accs.balance(acc.id) == pytest.approx(-6.5)
+    assert "10.00 returned" in p.handle(dispute("funds_reinstated", "won"))
+    assert "already returned" in p.handle(dispute("closed", "won"))
+    assert accs.balance(acc.id) == pytest.approx(3.5)
+
+
+def test_a_lost_dispute_returns_nothing(pay):
+    p, accs, acc, _ = pay
+    p.handle(paid(acc.id))
+    p.handle(dispute("funds_withdrawn"))
+    p.handle(dispute("funds_reinstated", "lost", cents=400))  # a partly refunded payment: not a win
+    p.handle(dispute("closed", "lost"))
+    assert accs.balance(acc.id) == pytest.approx(0)
+
+
+def test_a_dispute_never_takes_more_than_is_left_of_the_payment(pay):
+    p, accs, acc, _ = pay
+    p.handle(paid(acc.id))
+    p.handle(refunded(cents=400))
+    assert "6.00 taken" in p.handle(dispute("funds_withdrawn", id="du_1"))
+    assert "0.00 taken" in p.handle(dispute("funds_withdrawn", id="du_2"))  # two disputes on one payment
+    assert accs.balance(acc.id) == pytest.approx(0)
+
+
+def test_a_dispute_in_another_currency_takes_what_is_left(pay):
+    p, accs, acc, _ = pay
+    p.handle(paid(acc.id))
+    p.handle(dispute("funds_withdrawn", cents=90000, currency="jpy"))
+    assert accs.balance(acc.id) == pytest.approx(0)
+
+
+def test_a_dispute_of_a_payment_we_do_not_know_changes_nothing(pay):
+    p, accs, acc, _ = pay
+    assert "unknown payment" in p.handle(dispute("funds_withdrawn"))
+    assert "unknown payment" in p.handle(dispute("funds_withdrawn", pi=None))
+    assert accs.balance(acc.id) == 0
+
+
+def test_closing_skips_a_disputed_payment_and_refunds_the_others(pay):
+    p, accs, acc, stripe = pay
+    p.checkout(acc, 5)
+    p.handle(paid(acc.id, "5.00", "pi_old"))
+    p.handle(paid(acc.id, "10.00", "pi_new"))
+    p.handle(dispute("funds_withdrawn", pi="pi_new"))
+    stripe.calls.clear()
+    assert p.close(acc.id) == pytest.approx(5)
+    assert [c[2]["payment_intent"] for c in stripe.calls if c[1] == "refunds"] == ["pi_old"]
+
+
+def test_closing_waits_when_a_dispute_holds_back_money_it_cannot_return(pay):
+    p, accs, acc, stripe = pay
+    p.checkout(acc, 10)
+    p.handle(paid(acc.id))
+    p.handle(dispute("created", "warning_needs_response"))  # an inquiry: the money is still in the balance
+    stripe.calls.clear()
+    with pytest.raises(PaymentError, match="under dispute"):
+        p.close(acc.id)
+    assert not [c for c in stripe.calls if c[1] == "refunds" or c[0] == "DELETE"]
+    assert accs.balance(acc.id) == 10
+    p.handle(dispute("closed", "warning_closed"))  # settled: it can go back now
+    assert p.close(acc.id) == 10
+
+
+def test_a_lost_dispute_does_not_keep_an_account_open(pay):
+    p, accs, acc, stripe = pay
+    p.checkout(acc, 10)
+    p.handle(paid(acc.id))
+    accs.add(acc.id, 3, "grant")  # given, not paid: nothing to send back
+    p.handle(dispute("funds_withdrawn"))
+    p.handle(dispute("closed", "lost"))
+    stripe.calls.clear()
+    assert p.close(acc.id) == 0
+    assert not [c for c in stripe.calls if c[1] == "refunds"]
+
+
+def test_closing_refunds_a_payment_whose_dispute_we_won(pay):
+    p, accs, acc, stripe = pay
+    p.checkout(acc, 10)
+    p.handle(paid(acc.id))
+    p.handle(dispute("funds_withdrawn"))
+    p.handle(dispute("closed", "won"))
+    assert p.close(acc.id) == 10
 
 
 def test_the_terms_state_the_margin_we_charge():
